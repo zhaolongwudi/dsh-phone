@@ -2,12 +2,13 @@
 <!-- APK-LINK:BEGIN -->
 ## 📱 最新 APK（每日自动构建，debug 签名）
 
-- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1034/app-debug.apk
-- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1034/app-debug.apk
+- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1105/app-debug.apk
+- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1105/app-debug.apk
 
-- 构建版本：`build-20261010-1034`
+- 构建版本：`build-20261010-1105`
 
 <!-- APK-LINK:END -->
+
 
 
 这是一个 **DeepSeek Harness 的社区 Android 封装与适配项目**。它把 AI 聊天、模型账号管理、QQ 机器人、技能、长期记忆和代码工作区放进一个手机应用，让手机可以独立运行助手、管理自己的资料，并通过 QQ 接收任务。
