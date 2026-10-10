@@ -10,6 +10,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# 0) 一键开关：存在 .github/capsule/DISABLED 时跳过全部外挂（纯净构建 = 纯上游镜像）。
+#    测试上游原版行为时创建该文件；恢复胶囊时删除即可，无需改 workflow。
+if [ -f .github/capsule/DISABLED ]; then
+  echo "胶囊外挂已禁用（.github/capsule/DISABLED 存在），本次构建 = 纯上游镜像"
+  exit 0
+fi
+
 # 1) 胶囊独有源文件（全新增路径，不覆盖任何上游文件）
 cp -a .github/capsule/files/. .
 
