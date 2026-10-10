@@ -1,3 +1,9 @@
+import { vi } from 'vitest'
+
+// 胶囊客户端依赖宿主注入的 react（esbuild external，本仓库无 react）：
+// 组件渲染不在此测，mock 空模块即可让纯函数 import 链通过。
+vi.mock('react', () => ({}))
+vi.mock('react-dom', () => ({ createPortal: () => null }))
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
