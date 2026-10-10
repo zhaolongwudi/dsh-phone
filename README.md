@@ -349,3 +349,13 @@ ZCode 账号卡片支持自动、每日赠送 Start Plan、个人 BigModel 套�
 ## GitHub 公开版的 Gemini OAuth 配置
 
 本公开版本移除了内置 Google OAuth 客户端 ID 和密钥。使用 Gemini 浏览器授权前，请在启动环境配置自己的 `CMDC_PAK_GOOGLE_CLIENT_ID` 与 `CMDC_PAK_GOOGLE_CLIENT_SECRET`；其他供应商不受此配置影响。不要将实际值提交到仓库。配置方式见 [公开版配置说明](docs/github-public-config.md)。
+
+<!-- APK-LINK:BEGIN -->
+## 📱 最新 APK（每日自动构建，debug 签名）
+
+- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-0913/app-debug.apk
+- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-0913/app-debug.apk
+
+- 构建版本：`build-20261010-0913`
+
+<!-- APK-LINK:END -->
