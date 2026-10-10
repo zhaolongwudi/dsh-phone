@@ -61,6 +61,18 @@ import { translateReasoningEffort } from './reasoning-ladder.js'
 // 语义两套实现」的红线）与全部真实缺陷记录见该文件模块头。**不要**在本文件另写一份。
 import { UNUSABLE, pickSoonestProvider, priceFactorFromName } from './aggregate-core.js'
 export { pickSoonestProvider, priceFactorFromName } from './aggregate-core.js'
+// 「目标收下请求却零输出」的判据与目标级冷却（issue IKJW31 的 B 方案，移植自 Gitee）。
+// ⚠️ 判据的**唯一权威**在那个模块（纯函数、零 IO）；本文件只负责接线。
+import {
+  emptyZeroOutputProbe,
+  isTargetCoolingDown,
+  isZeroOutputWallHit,
+  noteChunk,
+  noteZeroOutputHit,
+  zeroOutputKey,
+  ZERO_OUTPUT_COOLDOWN_MS,
+  type ZeroOutputCooldownMap,
+} from './zero-output-guard.js'
 // ⚠️ 临期折算的**唯一权威**是 `aggregate-expiry.ts`：本文件的 `expiryOf` 只是它的
 // **薄委托**（只提供 auto 的取号方式）。四个 `*Expiry` 折算函数 Task 7 已**搬移**到
 // 那里（不是复制）—— 两份同义实现必然漂移（AGENTS.md 首条判据的静默失效）。
@@ -151,6 +163,15 @@ export class AutoAdapter extends LlmAdapter {
    * ⚠️ 旧实现在 `expiryOf` 里每次新建 ⇒ 缓存永不命中 ⇒ 每次请求都重打上游。
    */
   private expiryProbeInstance: ReturnType<typeof createExpiryProbe> | undefined
+
+  /**
+   * 「目标收下请求却零输出」的目标级冷却表（issue IKJW31 的 B 方案）。
+   *
+   * ⚠️ **纯内存、进程内、不落盘**：它优化的是「本次运行内别再三连撞同一堵墙」，
+   * 重启后重新试探是**正确**行为 —— 用户可能已升级插件、上游可能已扩容，
+   * 落盘只会让一次误判跨重启生效。
+   */
+  private zeroOutputCooldowns: ZeroOutputCooldownMap = new Map()
 
   constructor(private readonly ctx: Context, private readonly options: AutoAdapterOptions) {
     super()
@@ -258,7 +279,15 @@ export class AutoAdapter extends LlmAdapter {
         if (!(await this.providerSupportsImages(provider))) continue
         let expiry = await this.expiryOf(provider, signal)
         // 目录空/模型全关 ⇒ 该 provider 不可调用，不能当改道目标（PR !69 审计实测）。
-        if ((await this.firstModelOf(provider)) === undefined) expiry = UNUSABLE
+        const imgModel = await this.firstModelOf(provider)
+        if (imgModel === undefined) {
+          expiry = UNUSABLE
+        } else if (!await this.hasUsableAccountFor(provider, imgModel, signal)) {
+          // ⚠️ 改道路径同样要按将要派发的模型复核可用性（移植自 Gitee 2026-10-07
+          //    修复，同型缺陷的第三处实例）：一个「支持图片但额度已尽」的渠道
+          //    仍会被选成 imageTarget ⇒ 带图请求发出去必然失败。
+          expiry = UNUSABLE
+        }
         entries.push([provider, expiry])
       }
       const picked = pickSoonestProvider(entries)
@@ -330,9 +359,10 @@ export class AutoAdapter extends LlmAdapter {
   }
 
   /**
-   * 按目标 provider 转发一次请求，**先翻译思考档位**。
+   * 按目标 provider 转发一次请求，**先翻译思考档位**；并观测「收下请求却零输出」
+   * 的失败形态，命中时**顺位改道下一个 provider 重发一次**（issue IKJW31 的 B 方案）。
    *
-   * ## 为什么要翻译（真实缺陷，用户报障 2026-10-05）
+   * ## 为什么要翻译档位（真实缺陷，用户报障 2026-10-05）
    *
    * auto 借用的 `reasoning.efforts` 来自**本次选中的目标模型**（如 zcode 的
    * `low` / `high` / `max`），但请求里的 `reasoningEffort` 是 harness 依据
@@ -355,17 +385,31 @@ export class AutoAdapter extends LlmAdapter {
    *   下发**该字段（让上游走它自己的默认），而不是硬塞一个错的；
    * - `unknown` → 请求值是未登记的怪名字，**删掉该字段**并 warn：让上游按默认
    *   走，比抛错打断整轮对话更可取（用户改个档位不该让整个任务失败）。
+   *
+   * ## ★ 零输出撞墙的改道（B 方案，移植自 Gitee）
+   *
+   * 判据在 `zero-output-guard.ts`（**唯一权威**）：`max-tokens` **且零输出**。
+   * ⚠️ 必须同时要求零输出 —— 有输出的 `max-tokens` 是「正常答到半截撞了输出
+   * 上限」，那时换目标会**丢掉已产出的正文**（与 `aggregate-adapter.ts` 的
+   * 「已吐内容就不许切换」是同一个安全方向）。
+   *
+   * ⚠️ **已透出帧的处理**：零输出意味着 `textDelta` 从未出现，而
+   * `block-start` 只在有内容时才发（`openai-compat.ts`）⇒ 这一轮唯一
+   * 可能已透出的只有 `usage` 帧，而它对 `BlockAssembler` 是**覆盖式**赋值
+   * ⇒ 重发安全。故这里**不必缓冲整个流**。一旦某天有适配器在零内容时
+   * 也发 `block-start`，本条注释的前提即失效 —— 那时必须先缓冲再改道。
    */
-  private dispatch(
+  private async *dispatch(
     target: DispatchTarget,
     options: GenerateOptions,
+    /** 本次请求内已撞过墙、不得再选的目标（递归传递，避免无限改道）。 */
+    exclude: ReadonlySet<string> = new Set(),
   ): AsyncIterable<StreamChunk> {
     /**
      * ⚠️⚠️ **在「转发一开始」就记下真实目标**（供客户端实时读数）。
-     *
-     * auto 只有一个目标、**不做失败切换**（跨 provider 的那一层只有这一次选择），
-     * 故这里就是「实际发往」的权威点：模型选择器只显示虚拟名 `Auto（临期优先）`，
-     * 用户看不到到底发给了谁、发的哪个真实模型。
+     * （胶囊接线，手机版特有；Gitee 原版无。async generator 下首次迭代即执行，
+     * 仍先于 `ctx.llm.stream` 调用 —— 「请求发出前」的语义保持。改道后对新目标
+     * 再记一次，回答的正是「实际发往谁」。）
      *
      * ⚠️ 写入时机是**请求发出前**（不是「成功之后」）—— 它回答的是「此刻在用什么」，
      * 而聚合那张 `activeProviderByModel` 回答的是「该看哪个渠道的余额」，
@@ -373,9 +417,77 @@ export class AutoAdapter extends LlmAdapter {
      */
     activeRoutes.record(AUTO_PROVIDER, target.provider, target.model)
     const requested = options.reasoningEffort
-    if (requested === undefined) {
-      return this.ctx.llm.stream({ ...options, provider: target.provider, model: target.model })
+    const base = { ...options, provider: target.provider, model: target.model }
+    const forwarded = this.withTranslatedEffort(target, base, requested)
+    let probe = emptyZeroOutputProbe()
+    for await (const chunk of this.ctx.llm.stream(forwarded)) {
+      probe = noteChunk(probe, chunk)
+      // ⚠️ 判定必须在**透出该终止帧之前**：一旦把 `max-tokens` 交给 harness，
+      //    本轮就结束了（DSH 对 `max-tokens` 不自动重试），改道机会随即消失。
+      if (chunk.type === 'finish' && isZeroOutputWallHit(probe)) {
+        const next = await this.replaceAfterZeroOutput(target, options, exclude)
+        if (next !== undefined) {
+          // 记冷却（跨请求）：否则下一个请求仍会撞同一堵墙（60 秒选型缓存）。
+          this.zeroOutputCooldowns = noteZeroOutputHit(
+            this.zeroOutputCooldowns, target.provider, target.model, this.now(),
+          )
+          const nextExclude = new Set(exclude)
+          nextExclude.add(zeroOutputKey(target.provider, target.model))
+          this.ctx.logger?.warn?.(
+            `[jet-hub-auto] ${target.provider}（${target.model}）收下请求却零输出`
+            + `（疑似声明窗口虚高），已改道到 ${next.provider}（${next.model}）重发；`
+            + `该目标在 ${Math.round(ZERO_OUTPUT_COOLDOWN_MS / 60_000)} 分钟内不再被选`,
+          )
+          yield* this.dispatch(next, options, nextExclude)
+          return
+        }
+        // 没有下一个候选：**如实透出**这轮的终止帧（不吞掉失败、不伪造成功）。
+        this.ctx.logger?.warn?.(
+          `[jet-hub-auto] ${target.provider}（${target.model}）收下请求却零输出，`
+          + `但池内已无其他候选可改道；如实上报该失败`,
+        )
+      }
+      yield chunk
     }
+  }
+
+  /**
+   * 零输出撞墙后顺位选下一个目标；无候选时返回 `undefined`。
+   *
+   * ⚠️ 复用 {@link selectProvider}（**同一套临期/可用性/冷却判据**）而不是在这里
+   * 另写一份「挑下一个」—— 那会是同一语义两套实现（本仓库红线），且必然漂移。
+   */
+  private async replaceAfterZeroOutput(
+    current: DispatchTarget,
+    options: GenerateOptions,
+    exclude: ReadonlySet<string>,
+  ): Promise<DispatchTarget | undefined> {
+    const nextExclude = new Set(exclude)
+    nextExclude.add(zeroOutputKey(current.provider, current.model))
+    const picked = await this.selectProvider(
+      options.signal,
+      p => this.firstModelOf(p),
+      nextExclude,
+    )
+    if (picked === undefined) return undefined
+    // 选回自己（同 provider 同 model）没有意义 —— 那会立刻再撞一次同一堵墙。
+    if (picked.provider === current.provider && picked.model === current.model) return undefined
+    // ⚠️ 必须经 `dispatchTargetOf` 解析**新目标的档位**：换目标后档位语义跟着变，
+    //    直接把 `AutoChoice` 当目标用会漏掉翻译。
+    return await this.dispatchTargetOf(picked, options.signal)
+  }
+  /**
+   * 按目标档位表翻译 `reasoningEffort`，返回可交给 `ctx.llm.stream` 的选项。
+   *
+   * ⚠️ 抽成独立方法是为了让 `dispatch` 的观测/改道逻辑与档位翻译**分开**：
+   * 后者是纯函数式的选项改写（既有行为，逐字节不变），前者是新增的失败恢复。
+   */
+  private withTranslatedEffort(
+    target: DispatchTarget,
+    base: GenerateOptions,
+    requested: GenerateOptions['reasoningEffort'],
+  ): GenerateOptions {
+    if (requested === undefined) return base
     const requestedEffort = String(requested)
     const declared = target.efforts
     if (declared.length === 0) {
@@ -383,38 +495,29 @@ export class AutoAdapter extends LlmAdapter {
       this.ctx.logger?.warn?.(
         `[jet-hub-auto] ${target.provider}（${target.model}）未声明思考档位，已忽略请求的「${requestedEffort}」`,
       )
-      return this.ctx.llm.stream({
-        ...options,
-        provider: target.provider,
-        model: target.model,
-        reasoningEffort: undefined,
-      })
+      return { ...base, reasoningEffort: undefined }
     }
     const mapped = translateReasoningEffort(requestedEffort, declared)
-    if (mapped.kind === 'exact') {
-      return this.ctx.llm.stream({ ...options, provider: target.provider, model: target.model })
-    }
+    if (mapped.kind === 'exact') return base
     if (mapped.kind === 'mapped') {
       this.ctx.logger?.warn?.(
         `[jet-hub-auto] ${target.provider}（${target.model}）没有档位「${requestedEffort}」，已就近改为「${mapped.effort}」`,
       )
-      return this.ctx.llm.stream({
-        ...options,
-        provider: target.provider,
-        model: target.model,
+      return {
+        ...base,
         reasoningEffort: ReasoningEffortId(mapped.effort) as GenerateOptions['reasoningEffort'],
-      })
+      }
     }
     // unexpressible / unknown：不下发该字段，让上游走自己的默认。
     this.ctx.logger?.warn?.(
       `[jet-hub-auto] ${target.provider}（${target.model}）无法表达档位「${requestedEffort}」（${mapped.kind}），本次按上游默认发送`,
     )
-    return this.ctx.llm.stream({
-      ...options,
-      provider: target.provider,
-      model: target.model,
-      reasoningEffort: undefined,
-    })
+    return { ...base, reasoningEffort: undefined }
+  }
+
+  /** 注入的当前时刻（与选型缓存共用同一时钟，便于单测控制冷却边界）。 */
+  private now(): number {
+    return this.options.now?.() ?? Date.now()
   }
 
   /**
@@ -454,8 +557,24 @@ export class AutoAdapter extends LlmAdapter {
     // 是「请先在 Jet Hub 面板登录至少一个」。而缓存命中分支根本不查 signal，
     // 同一个取消事件在 60 秒窗口的不同位置会产出两种完全不同的错误，极难复现。
     signal?.throwIfAborted()
-    if (this.cached !== undefined && now - this.cached.at < (this.options.ttlMs ?? AUTO_CHOICE_TTL_MS)) {
-      return { choice: this.cached.choice, info: this.cachedInfo }
+    /**
+     * ⚠️⚠️ 缓存命中前必须复核「该目标是否已进零输出冷却」（issue IKJW31 的 B 方案）。
+     *
+     * 不查的后果是**冷却形同虚设**：选型缓存 60 秒，而冷却 10 分钟 ⇒ 每个请求都会
+     * 先按缓存**撞一次同一堵墙**（撞完才在 `dispatch` 里改道）。⇒ 冷却中的缓存项
+     * **视为过期**，落到下面重新选型。
+     *
+     * ⚠️ 判据复用 `isTargetCoolingDown`（**唯一权威**在 `zero-output-guard.ts`），
+     *    不在这里另写一份时刻比较。
+     */
+    const cachedChoice = this.cached
+    const cachedCooling = cachedChoice !== undefined
+      && isTargetCoolingDown(
+        this.zeroOutputCooldowns, cachedChoice.choice.provider, cachedChoice.choice.model, now,
+      )
+    if (cachedChoice !== undefined && !cachedCooling
+      && now - cachedChoice.at < (this.options.ttlMs ?? AUTO_CHOICE_TTL_MS)) {
+      return { choice: cachedChoice.choice, info: this.cachedInfo }
     }
     const picked = await this.selectProvider(signal, choice => this.firstModelOf(choice))
     if (picked?.model === undefined) {
@@ -483,17 +602,51 @@ export class AutoAdapter extends LlmAdapter {
    * 一个 provider 余额充足、但目录为空或模型被用户全关时，仍**不能**当选 ——
    * 初版会让它拿到请求再发出一个必然 404 的模型 id。故排序时就把这类 provider
    * 当作 `UNUSABLE` 剔除，顺位让给下一个候选（而不是整体放弃 auto）。
+   *
+   * ## ⚠️⚠️ 还必须按 `modelOf` 返回的**真实模型**复核账号可用性（移植自 Gitee 2026-10-07）
+   *
+   * 「额度耗尽」在账号池里是**按 modelId 记账**的（`entry.modelRateLimits[modelId]`），
+   * 而折算取号用的模型键**未必等于**这里要派发的模型（生产装配下共享探针取
+   * 「目录第一个」，`firstModelOf` 是「按倍率挑最便宜」——两者可能不同，
+   * 按 modelId 的限流过滤会整体失效）。故这里对将要派发的模型显式复核
+   * {@link hasUsableAccountFor}。
    */
   async selectProvider(
     signal?: AbortSignal,
     modelOf?: (provider: string) => Promise<string | undefined>,
+    /**
+     * 已尝试过、本次请求内**不得再选**的目标（`` `${provider}\u0000${model}` ``）。
+     * 零输出改道用它顺位换下一个 provider；默认空集 ⇒ 既有调用方行为不变。
+     */
+    exclude?: ReadonlySet<string>,
   ): Promise<AutoChoice | undefined> {
+    const now = this.options.now?.() ?? Date.now()
     const entries: Array<readonly [string, number]> = []
     for (const provider of AUTO_PROVIDERS) {
       let expiry = await this.expiryOf(provider, signal)
       if (expiry !== UNUSABLE && modelOf !== undefined) {
         // 目录空/全关 ⇒ 退出候选（不可调用），与「不可用」同等对待。
-        if ((await modelOf(provider)) === undefined) expiry = UNUSABLE
+        const model = await modelOf(provider)
+        if (model === undefined) {
+          expiry = UNUSABLE
+        } else if (!await this.hasUsableAccountFor(provider, model, signal)) {
+          // 该 provider 在**将要派发的那个模型**上没有可用账号（额度已尽/限流中）
+          // ⇒ 剔除，顺位让给下一个候选。否则请求发出去必然失败。
+          expiry = UNUSABLE
+        } else if (exclude?.has(zeroOutputKey(provider, model)) === true) {
+          // 本次请求内已经撞过它的墙 ⇒ 顺位换下一个（B 方案）。
+          expiry = UNUSABLE
+        } else if (isTargetCoolingDown(this.zeroOutputCooldowns, provider, model, now)) {
+          // ⚠️ **跨请求**的目标级冷却（issue IKJW31 的 B 方案）：该目标近期
+          //    「收下请求却零输出」，在一段时间内别再选它。
+          // ⚠️ 用既有 `UNUSABLE` 哨兵剔除（**不新造「冷却」概念**）：排序/兜底
+          //    规则因此完全复用。到期即自动解除 ⇒ 无需清理任务。
+          this.ctx.logger?.warn?.(
+            `[jet-hub-auto] ${provider}（${model}）近期出现过「收下请求却零输出」`
+            + `（疑似声明窗口虚高），本次暂时跳过；到期自动恢复`,
+          )
+          expiry = UNUSABLE
+        }
       }
       entries.push([provider, expiry])
     }
@@ -502,6 +655,45 @@ export class AutoAdapter extends LlmAdapter {
     const model = modelOf !== undefined ? await modelOf(winner) : undefined
     if (modelOf !== undefined && model === undefined) return undefined
     return { provider: winner, model: model ?? '' }
+  }
+
+  /**
+   * 该 provider 在**指定模型**上是否还有可用账号（额度未耗尽 / 未在限流中）。
+   *
+   * ⚠️ 判据交给账号池（`getAvailableAccount` 按 `modelRateLimits[modelId]` 过滤）
+   * —— 不在这里另写一份「额度是否耗尽」的判据（那会是同一语义两套实现）。
+   *
+   * ⚠️ 三条边界（移植自 Gitee，与 `aggregate-adapter.ts` 的 `filterByModelAvailability`
+   * 逐格同构）：
+   * - 池未实现该方法 ⇒ **视为可用**（跳过过滤）：大量既有单测桩只实现
+   *   `disabledModelsFor`，判成不可用会让所有桩用例「零候选」。
+   * - 查询抛错 ⇒ **视为可用**：一次池查询异常不该让渠道整体消失。
+   * - ⚠️ **中止必须原样逃逸**：判据取三条 —— `signal.aborted` /
+   *   `name === 'AbortError'` / `code === 'ABORTED'`。不要只判 `name`：
+   *   别的调用方可能只设 `code`，只判 `name` 会把中止吞成「视为可用」并继续发请求。
+   */
+  private async hasUsableAccountFor(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const pool = this.options.accountPool as unknown as {
+      getAvailableAccount?: (provider: string, modelId: string) => Promise<unknown>
+    }
+    if (typeof pool.getAvailableAccount !== 'function') return true
+    signal?.throwIfAborted()
+    try {
+      const available = await pool.getAvailableAccount(provider, model)
+      return available !== null && available !== undefined
+    } catch (error) {
+      signal?.throwIfAborted()
+      // 三条判据，与 `aggregate-adapter.ts` 的 `isAbortLike` 逐字同构。
+      if (error !== null && typeof error === 'object') {
+        const candidate = error as { name?: unknown; code?: unknown }
+        if (candidate.name === 'AbortError' || candidate.code === 'ABORTED') throw error
+      }
+      return true
+    }
   }
 
   /**
