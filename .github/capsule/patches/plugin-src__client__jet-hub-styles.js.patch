@@ -1,0 +1,49 @@
+--- a/vendor/dsh-codearts-auth/plugin-src/client/jet-hub-styles.js
++++ b/vendor/dsh-codearts-auth/plugin-src/client/jet-hub-styles.js
+@@ -1045,0 +1045,40 @@
+ .dim-jh-aggFooter { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-secondary); }
+ .dim-jh-aggFooter p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--dsw-alias-label-tertiary); }
+ 
++/* 「在用模型」实时读数胶囊（输入区最下方，conversation.composer.dock）。
++   ⚠️ 该槽是 list，官方按 order 注入 activity / usage 两枚统计胶囊；本插件以
++   order 2 追加在它们之后，故这里只需保证自身不挤压、可整体省略。
++   ⚠️⚠️ **竖排两行 + 更小字号**（真机实测后改，2026-10-10）：第一版是一行
++   「在用 · 渠道 · 模型」，而 dock 是 display:flex 且**没有 flex-wrap**，
++   四个元素共处一行 ⇒ 宽度是**相加**的，三枚文字胶囊全被截断
++   （实测：20 ... / 74.3... / 在用 · CodeBuddy (）。竖排后本胶囊宽度从
++   「渠道+模型」的和变成两者的**较大值**（约减半），是保住官方两枚显示的关键。
++   ⚠️ 因此这里**不得**再加 white-space: nowrap 之类会撑宽的单行约束。
++   ⚠️ 本条注释不得使用反引号：本文件的 STYLES 是模板字符串，反引号会提前闭合它
++   （见 docs/agent-notes/client-ui.md 的同类事故记录）。 */
++/* ⚠️⚠️ 宽度上限只写在**外层** root 上（32%）。内层 button 必须是 max-width: 100%
++   —— 我第一版把 32% 同时写在两层上，而百分比是相对**各自的包含块**解析的：
++   button 的包含块是 root，于是实际可用宽度变成 32% × 32% ≈ 视口的 10%，
++   模型名会被砍到只剩几个字符（比不加约束更糟）。 */
++.dim-jh-routePill { box-sizing: border-box; display: inline-flex; flex-direction: column; justify-content: center; gap: 0; min-width: 0; max-width: 100%; padding: 0 6px; border: none; border-radius: 8px; background: 0 0; font: inherit; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); }
++button.dim-jh-routePill { cursor: pointer; }
++button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { color: var(--dsw-alias-label-secondary); }
++/* 唯一的上限：让出宽度给官方 activity / usage 两枚胶囊（三枚共处一行）。 */
++.dim-jh-routePillRoot { display: inline-flex; min-width: 0; max-width: 32%; }
++/* 两行各自省略：行内 overflow 必须由行自己扛（容器是 column，overflow 会切成整块）。
++   ⚠️ 不加 min-width: 0 也能工作 —— 列向容器的交叉轴（宽）由本行的 max-width: 100%
++   与容器的 32% 上限共同约束，省略号即在这些边界处生效。 */
++.dim-jh-routePillTop, .dim-jh-routePillBottom { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++/* 上行渠道：更弱一档（它是「谁」、不常变，让视线先落到下面的模型名上）。 */
++.dim-jh-routePillTop { font-size: 9px; line-height: 11px; opacity: 0.75; }
++/* 下行模型：略大一点，且等宽数字（模型名里常带 4.1 / 5.2 这类版本号）。 */
++.dim-jh-routePillBottom { font-size: 10px; line-height: 12px; }
++
++/* 点开后的明细弹层（用户 2026-10-10 建议：把完整读数放进弹层，
++   胶囊本体只留两行短文本 —— 这是手机上唯一能同时保住官方两枚胶囊的做法）。
++   ⚠️ 定位（left/top）由 JS 算好内联进来（贴边夹紧、优先放上方），
++   故这里**不得**写 position: fixed 之外的定位值，也不要写 top/left。 */
++.dim-jh-routePanel { position: fixed; z-index: 60; box-sizing: border-box; min-width: 168px; max-width: min(260px, calc(100vw - 24px)); padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #fff); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16); font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
++.dim-jh-routePanelTitle { margin-bottom: 4px; font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-primary); }
++/* 两列网格：标签定宽、值可换行（长模型名不能撑破弹层）。 */
++.dim-jh-routePanelRows { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; }
++.dim-jh-routePanelRows dt { color: var(--dsw-alias-label-tertiary); }
++.dim-jh-routePanelRows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); }
++
+ .dim-jh-aggFooter { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-secondary); }
+ .dim-jh-aggFooter p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--dsw-alias-label-tertiary); }
+ 
