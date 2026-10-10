@@ -353,9 +353,9 @@ ZCode 账号卡片支持自动、每日赠送 Start Plan、个人 BigModel 套�
 <!-- APK-LINK:BEGIN -->
 ## 📱 最新 APK（每日自动构建，debug 签名）
 
-- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-0913/app-debug.apk
-- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-0913/app-debug.apk
+- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-0955/app-debug.apk
+- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-0955/app-debug.apk
 
-- 构建版本：`build-20261010-0913`
+- 构建版本：`build-20261010-0955`
 
 <!-- APK-LINK:END -->
