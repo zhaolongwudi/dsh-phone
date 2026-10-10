@@ -57,8 +57,9 @@ def unpack_deb(data: bytes, dest: Path) -> None:
         raw = subprocess.run(["zstd", "-d", str(member), "-o", str(dest / "data.tar"), "-f"],
                              check=True, capture_output=True)
         member = dest / "data.tar"
+    # 包内成员自带 data/ 前缀（与上游 prepare-native.py 的解包布局一致）
     with tarfile.open(member) as tar:
-        tar.extractall(dest / "data")
+        tar.extractall(dest)
 
 
 def strip_version(lib: str) -> str:
@@ -102,7 +103,8 @@ def main() -> None:
         usr = tmp / "data/data/com.termux/files/usr"
         node = usr / "bin/node"
         if not node.is_file():
-            raise SystemExit("包内没有 bin/node")
+            sample = [str(p.relative_to(tmp)) for p in list(tmp.rglob("*"))[:15]]
+            raise SystemExit(f"包内没有 bin/node。解包样本: {sample}")
 
         TARGET.mkdir(parents=True, exist_ok=True)
         (TARGET / "libnode.so").write_bytes(fix_elf_names(node.read_bytes()))
