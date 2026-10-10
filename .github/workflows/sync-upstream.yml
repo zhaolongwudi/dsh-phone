@@ -45,6 +45,15 @@ jobs:
 
           if git merge upstream/main --no-edit; then
             git push origin main
+            # 上游同步会覆盖本地修改的 .github/workflows/build-apk.yml：
+            # 从 capsule 模板恢复 + 重新应用外挂（apply.sh 幂等），[skip ci] 提交。
+            cp .github/capsule/build-apk.yml .github/workflows/build-apk.yml
+            bash .github/capsule/apply.sh
+            git add .github/workflows/build-apk.yml
+            git commit -m "chore: 恢复胶囊外挂配置 [skip ci]" || true
+            git push || true
+            # 同步后立即触发一次构建，避免下次定时构建前 APK 落后上游。
+            gh workflow run build-apk.yml
             exit 0
           fi
 
@@ -57,8 +66,13 @@ jobs:
             TAG=$(gh api repos/zhaolongwudi/dsh-phone/releases/latest --jq .tag_name 2>/dev/null || true)
             python3 .github/scripts/apk-link.py README.md "$TAG"
             git add README.md
+            # 同上恢复胶囊 workflow + 应用外挂。
+            cp .github/capsule/build-apk.yml .github/workflows/build-apk.yml
+            bash .github/capsule/apply.sh
+            git add .github/workflows/build-apk.yml
             git commit --no-edit
             git push origin main
+            gh workflow run build-apk.yml
           else
             git merge --abort || true
             echo "::error::与上游存在非 README 冲突，需人工处理：$CONFLICTS"
