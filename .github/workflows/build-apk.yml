@@ -1,10 +1,11 @@
-# 构建可安装的 debug APK：每次 sync-upstream 拉到更新后自动触发，也可手动触发
+# 构建可安装的 debug APK：sync-upstream 推送新提交后自动触发（push 事件），
+# 也可在 Actions 页面手动触发。README 链接更新的提交带 [skip ci]，不会循环。
+# 原生产物（libnode / bash / rg / 三个 Rust .so）有缓存：生成脚本未变时直接复用，
+# 跳过 NDK 下载与 Rust 编译，日常构建只需组装资源 + Gradle。
 name: build-apk
 
 on:
-  workflow_run:
-    workflows: [sync-upstream]
-    types: [completed]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -13,20 +14,18 @@ permissions:
 
 concurrency:
   group: build-apk
-  cancel-in-progress: false
+  # 连续推送只保留最新一次构建
+  cancel-in-progress: true
 
 env:
   # ubuntu runner 预装 Android SDK 的位置
   ANDROID_HOME: /usr/local/lib/android/sdk
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  # 仓库文档固定的 NDK r28c
   ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/28.2.13676358
   GRADLE_USER_HOME: ~/.gradle
 
 jobs:
   build:
-    # 手动触发总是构建；由 sync 触发时仅当 sync 成功才构建
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -44,24 +43,20 @@ jobs:
       - name: 安装 pnpm
         run: npm install -g pnpm@10
 
-      - name: Rust 目标（Android arm64）
-        run: |
-          rustup update stable
-          rustup target add aarch64-linux-android
-
-      - name: 缓存 NDK r28c
+      # 原生产物只随这些输入变化：node/bash/rg 准备脚本与包清单、
+      # Rust 构建脚本（固定 noema commit）、flock/landlock 源码
+      - name: 缓存原生产物（jniLibs）
         uses: actions/cache@v4
+        id: jnilibs
         with:
-          path: /usr/local/lib/android/sdk/ndk/28.2.13676358
-          key: android-ndk-r28c
+          path: app/src/main/jniLibs/arm64-v8a
+          key: jnilibs-${{ hashFiles('scripts/prepare-native.py', 'native/**', 'scripts/build-noema-android.py', 'scripts/build-flock-android.py', 'scripts/build-landlock-android.py', '.github/scripts/prepare-node-android.py') }}
 
       - name: 安装 Android SDK 组件
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" --install "platform-tools" "platforms;android-36" \
-            "build-tools;36.0.0" "ndk;28.2.13676358" > /dev/null
-          ls "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/"
+          "$SDKM" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null
 
       - name: 缓存 Gradle
         uses: actions/cache@v4
@@ -79,14 +74,25 @@ jobs:
           key: pnpm-${{ hashFiles('runtime/pnpm-lock.yaml') }}
           restore-keys: pnpm-
 
-      - name: 准备 arm64 Node 运行时（Termux 官方包 -> libnode.so）
-        run: python3 .github/scripts/prepare-node-android.py
+      - name: 缓存并安装 NDK r28c
+        if: steps.jnilibs.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        id: ndk
+        with:
+          path: /usr/local/lib/android/sdk/ndk/28.2.13676358
+          key: android-ndk-r28c
 
-      - name: 准备 Bash / ripgrep 原生库
-        run: python3 scripts/prepare-native.py
-
-      - name: 编译 Noema / flock / landlock（Rust + NDK）
+      - name: 安装 NDK r28c
+        if: steps.jnilibs.outputs.cache-hit != 'true' && steps.ndk.outputs.cache-hit != 'true'
         run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null
+          ls "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/"
+
+      - name: 准备原生运行时（node / bash / ripgrep / Rust 三件套）
+        if: steps.jnilibs.outputs.cache-hit != 'true'
+        run: |
+          python3 .github/scripts/prepare-node-android.py
+          python3 scripts/prepare-native.py
           python3 scripts/build-noema-android.py
           python3 scripts/build-flock-android.py
           python3 scripts/build-landlock-android.py
@@ -102,8 +108,6 @@ jobs:
 
       - name: 编译 APK
         run: ./gradlew :app:clean :app:assembleDebug --no-daemon
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME }}
 
       - name: 发布 Release
         env:
