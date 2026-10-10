@@ -2,12 +2,13 @@
 <!-- APK-LINK:BEGIN -->
 ## 📱 最新 APK（每日自动构建，debug 签名）
 
-- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1201/app-debug.apk
-- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1201/app-debug.apk
+- 国内加速下载：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1723/app-debug.apk
+- GitHub 直链：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261010-1723/app-debug.apk
 
-- 构建版本：`build-20261010-1201`
+- 构建版本：`build-20261010-1723`
 
 <!-- APK-LINK:END -->
+
 
 
 这是一个 **DeepSeek Harness 的社区 Android 封装与适配项目**。它把 AI 聊天、模型账号管理、QQ 机器人、技能、长期记忆和代码工作区放进一个手机应用，让手机可以独立运行助手、管理自己的资料，并通过 QQ 接收任务。
@@ -19,7 +20,6 @@
 当前应用版本为 **0.1.62 / versionCode 65**，包名 `com.dshphone`，支持 **Android 9 及以上、arm64**。
 
 桌面和手机聊天回车用于换行，点击「发送」按钮发送；保留 Ctrl/Cmd+Enter 快捷发送。Jet Hub 同一模型连续使用当前账号，额度不足或账号限流时由下一个可用账号接续；ZCode 账号卡片可选择每日赠送、个人套餐和机构流量来源。
-
 
 WorkBuddy 国际版在手机系统浏览器完成授权；DSH 保留本机页面等待授权结果，成功后自动刷新积分。授权超时会重读账号列表并提示重试，避免继续显示失效的待登录卡片。手机端不再调用电脑版独立登录组件。
 
@@ -286,7 +286,6 @@ ChatGPT 会员流式接口有时在逐条发送完整输出后，用空输出列
 
 资源版本 34；请直接覆盖安装，账号、对话、技能、API 配置和电脑配对继续保留。验证包含缺少浏览器方法时的上游模型加载失败复现，以及修复后的配置列表与自定义 API 添加入口。
 
-
 ## 0.1.31：统一上传入口与 Android 图片处理
 
 输入框「上传」和「＋」打开同一菜单，只列「上传图片」和「上传文件」。从文件入口选择标准技能 ZIP 或 SKILL.md 时自动走技能导入，保留参考文件；普通文本进入待发送草稿。上传、导入都不会自动发送消息。Jet Hub 用量弹窗按可见屏幕定位，内容可独立滚动。
@@ -332,7 +331,6 @@ node --test scripts/client-connection-recovery.test.mjs
 
 「服务」与「设置」提供手机工具箱，原有配对和授权设置保留。通用接入包附带 Codex、桌面 DSH、Hermes 和其他 MCP stdio 客户端配置示例；真实桌面 DSH MCP 插件已在隔离环境执行本地示例、生成文件并通过未批准/重复执行/撤销恢复检查。配置样例与兼容测试不代表已接通使用者的手机或完成真实模型调用。
 
-
 ### 0.1.46 手机工具与设置布局
 
 手机操作复用现有会话的三种权限。完全权限可直接操作 App 和运行已接入的 Termux 命令，无需再开启连续控制或逐步批准；查看与工作区模式保留观察能力。新增界面截图、长按、按 App 读取 Shizuku Logcat 和 Termux 输出、错误及退出码，详见 [手机操作插件](phone-control/README.md)。
@@ -353,11 +351,9 @@ ChatGPT 会员沿用同样的接续方式，仅使用已授权且官方目录支
 
 ZCode 账号卡片支持自动、每日赠送 Start Plan、个人 BigModel 套餐、机构流量，以及账号实际拥有的团队来源。登录后读取账号关联的现有凭据，不要求手填 API Key，也不自动创建云端密钥。机构流量可能产生该账号对应的费用，按用户明确选择的来源调用。
 
-
 ## 0.1.54：MCP 调度与独立浏览器
 
 新增「设置 → MCP 服务」和「服务 → 内置浏览器」，接入 DSH 自己的模型探针、自动派单与子代理复用；保留手机操作、文件、Termux、工作流和记忆隔离。与 Operit 的已具备能力和剩余差距见 [功能与使用说明](peer/mcp-manager/README.md)。资源版本57，覆盖更新保留个人数据。
-
 
 ## GitHub 公开版的 Gemini OAuth 配置
 
