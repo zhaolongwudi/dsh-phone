@@ -91,7 +91,9 @@ describe('active-route：两处写入点', () => {
   it('自动适配器在 dispatch 内写（转发前，且用真实 model）', () => {
     const source = codeOf(read('src/auto-adapter.ts'))
     expect(source).toMatch(/activeRoutes\.record\(\s*AUTO_PROVIDER,\s*target\.provider,\s*target\.model\s*\)/)
-    const dispatchIndex = source.indexOf('private dispatch(')
+    // Phase 3 后 dispatch 是 async generator（零输出改道），锚点随之更新；
+    // 断言语义不变：record 仍写在 dispatch 方法体内、先于转发。
+    const dispatchIndex = source.indexOf('private async *dispatch(')
     const recordIndex = source.indexOf('activeRoutes.record(AUTO_PROVIDER')
     expect(dispatchIndex).toBeGreaterThan(-1)
     expect(recordIndex).toBeGreaterThan(dispatchIndex)
