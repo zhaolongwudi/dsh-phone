@@ -79,6 +79,7 @@ def unpack_package(name: str, dest: Path):
     if fields is None:
         print(f"跳过（索引无此包）: {name}")
         return None
+    dest.mkdir(parents=True, exist_ok=True)
     deb = fetch(REPO + "/" + fields["Filename"])
     got = hashlib.sha256(deb).hexdigest()
     if got != fields["SHA256"]:
