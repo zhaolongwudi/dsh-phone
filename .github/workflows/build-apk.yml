@@ -38,28 +38,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="build-$(date -u +%Y%m%d-%H%M)"
-          export TAG
           echo "TAG=$TAG" >> "$GITHUB_ENV"
-          python3 - <<'PYEOF'
-          import os, re
-          from pathlib import Path
-          tag = os.environ["TAG"]
-          readme = Path("README.md")
-          raw = f"https://github.com/zhaolongwudi/dsh-phone/releases/download/{tag}/app-debug.apk"
-          proxy = "https://gh-proxy.com/" + raw
-          block = (
-              "<!-- APK-LINK:BEGIN -->\n## 📱 最新 APK（每日自动构建，debug 签名）\n\n"
-              f"- 国内加速下载：{proxy}\n- GitHub 直链：{raw}\n\n"
-              f"- 构建版本：`{tag}`\n\n<!-- APK-LINK:END -->"
-          )
-          text = readme.read_text(encoding="utf-8")
-          if "<!-- APK-LINK:BEGIN -->" in text and "<!-- APK-LINK:END -->" in text:
-              text = re.sub(re.escape("<!-- APK-LINK:BEGIN -->") + r".*?" + re.escape("<!-- APK-LINK:END -->"), "", text, flags=re.S)
-              text = text.replace("\n\n\n", "\n\n")
-          m = re.search(r"^# .*$", text, flags=re.M)
-          insert_at = (m.end() + 1) if m else 0
-          readme.write_text(text[:insert_at] + block + "\n\n" + text[insert_at:], encoding="utf-8")
-          PYEOF
+          python3 .github/capsule/update-readme.py README.md "$TAG"
           git config user.name "dsh-build-bot"
           git config user.email "dsh-build-bot@users.noreply.github.com"
           git add README.md
@@ -171,41 +151,7 @@ jobs:
 
       - name: 更新 README 下载链接
         run: |
-          python3 - <<'PYEOF'
-          import os, re
-          from pathlib import Path
-          tag = os.environ['TAG']
-          readme = Path('README.md')
-          raw = f"https://github.com/zhaolongwudi/dsh-phone/releases/download/{tag}/app-debug.apk"
-          proxy = "https://gh-proxy.com/" + raw
-          block = (
-              "<!-- APK-LINK:BEGIN -->
-## 📱 最新 APK（每日自动构建，debug 签名）
-
-"
-              f"- 国内加速下载：{proxy}
-- GitHub 直链：{raw}
-
-"
-              f"- 构建版本：`{tag}`
-
-<!-- APK-LINK:END -->"
-          )
-          text = readme.read_text(encoding='utf-8')
-          if '<!-- APK-LINK:BEGIN -->' in text and '<!-- APK-LINK:END -->' in text:
-              text = re.sub(re.escape('<!-- APK-LINK:BEGIN -->') + r'.*?', re.escape('<!-- APK-LINK:END -->'), '', text, flags=re.S)
-              text = text.replace('
-
-
-', '
-
-')
-          m = re.search(r'^# .*, text, flags=re.M)
-          insert_at = (m.end() + 1) if m else 0
-          readme.write_text(text[:insert_at] + block + '
-
-' + text[insert_at:], encoding='utf-8')
-          PYEOF
+          python3 .github/capsule/update-readme.py README.md "$TAG"
           git config user.name "dsh-build-bot"
           git config user.email "dsh-build-bot@users.noreply.github.com"
           git add README.md
