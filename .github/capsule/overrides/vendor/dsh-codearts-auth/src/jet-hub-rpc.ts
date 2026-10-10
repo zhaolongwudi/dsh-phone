@@ -221,6 +221,9 @@ import {
   testAccount,
 } from './account-probe.js'
 import { exportBackup, importBackup } from './backup.js'
+// Phase 5（移植自 Gitee）：目录变更广播的唯一实现（本文件的 broadcastCatalogChanged
+// 委托到这里；同 tick 合并 / microtask 防重入 / 防广播风暴，见模块头）。
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import { handleOpencodeRpc } from './opencode-rpc.js'
 import { clearDeadModels, deadModelIdsFor } from './dead-model-store.js'
 import { OPENCODE } from './opencode-product.js'
@@ -1151,15 +1154,12 @@ export interface ModelCatalogSource {
  * `retryPolicy`）必然通过，不会误报 INVARIANT。
  *
  * ⚠️ **通知失败不能反噬已经落盘的开关**：否则用户看到「切换失败」而实际已生效，
- * 再点一次又因幂等而看似「无效」，比不提示更难排查。故这里自行吞掉异常只记日志。
+ * 再点一次又因幂等而看似「无效」，比不提示更难排查。
+ *
+ * Phase 5 起实现**收敛到唯一实现** `catalog-broadcast.ts`（移植自 Gitee）：
+ * 同 tick 合并 + `queueMicrotask` 派发防重入 + emit 后清标记防广播风暴，
+ * 语义细节见该模块头。本文件所有调用点不变。
  */
-function broadcastCatalogChanged(ctx: Context): void {
-  try {
-    ctx.emit('llm/adapters-updated')
-  } catch (error) {
-    ctx.logger.warn(`[jet-hub] 广播模型目录变更事件失败：${String(error)}`)
-  }
-}
 
 /**
  * 取某 provider 的**全量模型 id**（不套黑名单），供「关闭全部」与「关闭供应商」共用。

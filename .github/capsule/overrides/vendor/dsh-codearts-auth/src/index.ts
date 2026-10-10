@@ -88,6 +88,12 @@ import { OPENCODE } from './opencode-product.js'
 import { deriveProjectId, opencodeUserAgent } from './opencode.js'
 import { primeOpencodeCapabilities, refreshOpencodeCapabilities } from './opencode-capability.js'
 import { closeAllProxyDispatchers } from './opencode-proxy.js'
+// ===== Phase 5 · 目录广播与预热（移植自 Gitee 原作者 04de37c1，issue IKJVTF）=====
+// broadcast：唯一广播实现（同 tick 合并 + microtask 防重入 + emit 后清标记防风暴），
+//   替换 jet-hub-rpc.ts 与下方 OpenCode 能力回调里的内联 emit。
+// prewarm：冷启动有界目录预热（链式排程，间隔 > 闸门 30s 冷却），目录首拉失败后自愈。
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
+import { startCatalogPrewarm } from './catalog-prewarm.js'
 // ===== Phase 1 · 能力注册表底座（移植自 Gitee 原作者 04de37c1）=====
 // 三个文件都是全新增（.github/capsule/files/，不覆盖任何上游文件）。
 // 注册块只挂 {descriptor, expiry} 最小域：临期查表（Phase 2 的 runtimeOf）是
@@ -2131,13 +2137,9 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   // 首次运行磁盘没缓存时，本次刷新可能晚于首帧几十秒；那段时间能力按纯文本
   // 保守处理（见 opencode-capability.ts 的模块头）。
   primeOpencodeCapabilities()
-  refreshOpencodeCapabilities(() => {
-    try {
-      ctx.emit('llm/adapters-updated')
-    } catch (error) {
-      ctx.logger.warn(`[codearts-auth] 广播 OpenCode 能力更新失败：${String(error)}`)
-    }
-  })
+  // ⚠️ 走唯一的广播实现（Phase 5 移植的 catalog-broadcast.ts）：能力表一变必须让
+  // 客户端重读目录；同 tick 合并与 microtask 派发语义见该模块头。（原为内联 emit）
+  refreshOpencodeCapabilities(() => { broadcastCatalogChanged(ctx) })
   // ⚠️ 这里**不再**调 `registerOpencodeRpc`：opencode 的端点已并入
   // `registerJetHubRpc` 内部的 handleMethod（见 `opencode-rpc.ts` 模块头）。
   // 代理 dispatcher 是常驻连接池：插件卸载必须回收，否则进程退出会挂住。
@@ -2336,6 +2338,17 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   }
 
   registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini, modelAdapters)
+  // ===== Phase 5 · 冷启动有界目录预热（移植自 Gitee，issue IKJVTF）=====
+  // 首拉失败后不再等用户碰巧触发重读：链式排程 [0, 35s, 75s] 三轮补拉自愈
+  // （间隔 > 闸门 30s 冷却，约束由 isPrewarmSpacingValid 守着）。
+  // ⚠️ 走 ctx.llm.listModels（完整路径：账号门控 → ensureRemoteModels → 闸门），
+  //    目录已就绪时是零网络的；对 withDeadModelPruning 包装透明。
+  // ⚠️ 不 await：预热发网络请求，不进插件启动路径；停止函数挂 ctx.effect。
+  ctx.effect(() => startCatalogPrewarm({
+    providers: Object.keys(modelAdapters),
+    warm: (provider) => ctx.llm.listModels(provider),
+    logger: { warn: (message) => ctx.logger?.warn?.(message) },
+  }))
   // 网关是旁路功能：这里传 `pool` 只为读设置页里的开关，其内部任何失败都已
   // 自行降级为日志，绝不会让插件 apply() 失败。
   mountOpenAiGateway(ctx, pool)
