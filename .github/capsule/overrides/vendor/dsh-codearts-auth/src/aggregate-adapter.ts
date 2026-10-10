@@ -70,6 +70,12 @@ export const AGGREGATE_PROVIDER = 'aggregate'
 export const AGGREGATE_AUTO_MODEL = 'auto'
 
 /**
+ * 聚合虚拟模型上下文窗口的**兜底值**：候选里没有任何一家声明 contextWindow
+ * （或目录尚未加载）时使用。移植自上游 Gitee 原作者的 contextWindowFor 实现口径。
+ */
+export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 200_000
+
+/**
  * 临期探针的类型 `ExpiryProbe` 定义在 **`aggregate-core.ts`**（纯类型、零 IO）——
  * 实现是 `aggregate-expiry.ts` 的 `createExpiryProbe`，`auto-adapter.ts` 的
  * `expiryOf` 也复用它（薄委托）。
@@ -141,6 +147,8 @@ export class AggregateAdapter extends LlmAdapter {
    * ⚠️ 一分钟内临期时刻不会显著变化，故 60 秒 TTL 不破坏「临期优先」的语义。
    */
   private readonly choiceCache = new Map<string, { at: number; targets: DispatchTarget[] }>()
+  /** 虚拟模型 → 解析出的最大上下文窗口。仅在**全部候选**解析成功时记忆化。 */
+  private readonly contextWindowCache = new Map<string, number>()
 
   /**
    * 「上次**实际**转发成功的渠道」——按虚拟模型分别记录（P3，供用量徽标显示）。
@@ -532,6 +540,8 @@ export class AggregateAdapter extends LlmAdapter {
     // ⚠️ 先记下**上一次**推导出的全量目录（下面的判据要用它判断「用户关的是整个 provider」）。
     const previousIds = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)]
     this.catalog = buildVirtualModels(catalogs)
+    // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
+    this.contextWindowCache.clear()
       .filter((virtual) => virtual.candidates.some((c) => WIRED_EXPIRY_PROVIDERS.includes(c.provider)))
     this.catalogAt = now
     // ⚠️⚠️ **维持「整个 provider 已关闭」的语义**（真实缺陷，实测复现）。
@@ -759,7 +769,7 @@ export class AggregateAdapter extends LlmAdapter {
         name: info.name,
         ...(info.description === undefined ? {} : { description: info.description }),
         inputModalities: ['text', 'image'],
-        context: { contextWindow: 200_000 },
+        context: { contextWindow: await this.contextWindowFor(model, this.aggregateCandidatePool(), signal) },
         reasoning: aggregateReasoningInfo(),
       }
     }
@@ -783,7 +793,7 @@ export class AggregateAdapter extends LlmAdapter {
       id: model,
       name: this.nameOf(virtual),
       inputModalities: ['text', 'image'],
-      context: { contextWindow: 200_000 },
+      context: { contextWindow: await this.contextWindowFor(model, virtual.candidates, signal) },
       reasoning: aggregateReasoningInfo(),
     }
   }
@@ -1018,6 +1028,71 @@ export class AggregateAdapter extends LlmAdapter {
    * ⚠️ 失败时按**保守**方向回落：档位为空（不下发该字段）、图片为 `false`
    * （不把它当带图候选）。理由见 {@link DispatchTarget.imageCapable}。
    */
+  /**
+   * 虚拟模型声明给宿主的上下文窗口：**取候选集里已声明的最大值**（移植自上游
+   * Gitee 原作者 contextWindowFor 的实现口径）。
+   *
+   * ## 为什么是「最大值」
+   *
+   * 聚合的派发按临期在候选间切换，请求实际发往哪家取决于运行时状态；目录元数据
+   * 只有一份，声明任何具体一家的窗口都会在切到别家时失真。取最大值 ⇒ 压缩阈值与
+   * 占用指示器按最宽的候选计算，切换供应商时「实际可用 ≥ 已声明」恒成立。
+   *
+   * ## ⚠️ 只有当每一个候选都解析成功时才记忆化
+   *
+   * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进缓存，目录服务抖动一次就会把
+   * 兜底值固化整个 TTL 周期。失败时返回值照给（调用方需要立即拿到可用值），但
+   * 不写缓存，下一次调用重新尝试解析。
+   */
+  private async contextWindowFor(
+    modelKey: string,
+    candidates: readonly { provider: string; realId: string }[],
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const remembered = this.contextWindowCache.get(modelKey)
+    if (remembered !== undefined) return remembered
+    let widest: number | undefined
+    let allResolved = true
+    for (const candidate of candidates) {
+      let window: number | undefined
+      try {
+        const info = await this.ctx.llm.resolveModelInfo(candidate.provider, candidate.realId, signal)
+        // 已解析；未声明窗口的渠道（undefined）不参与取大。
+        window = info.context?.contextWindow
+      } catch (error) {
+        // 中止不得被吞成「解析失败」（与 capabilityOf 同一口径）。
+        signal?.throwIfAborted()
+        if (error !== null && typeof error === 'object'
+          && (error as { name?: unknown }).name === 'AbortError') throw error
+        allResolved = false
+        continue
+      }
+      if (window !== undefined && (widest === undefined || window > widest)) widest = window
+    }
+    const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW
+    if (allResolved) this.contextWindowCache.set(modelKey, resolved)
+    return resolved
+  }
+
+  /**
+   * auto 的候选池：所有虚拟模型的候选并集（去重）。
+   * 与 candidatesFor 的 auto 分支同口径，但不做余额探测（这里只要候选表）。
+   */
+  private aggregateCandidatePool(): readonly { provider: string; realId: string }[] {
+    const SEP = String.fromCharCode(0)
+    const seen = new Set<string>()
+    const pool: { provider: string; realId: string }[] = []
+    for (const virtual of this.catalog) {
+      for (const candidate of virtual.candidates) {
+        const key = candidate.provider + SEP + candidate.realId
+        if (seen.has(key)) continue
+        seen.add(key)
+        pool.push({ provider: candidate.provider, realId: candidate.realId })
+      }
+    }
+    return pool
+  }
+
   private async capabilityOf(
     provider: string,
     realId: string,
