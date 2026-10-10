@@ -120,13 +120,9 @@ jobs:
 
       # 接线后的 vendor 源码重新编译（lib/ 全是编译产物）：tsc 做类型检查，
       # esbuild 重建面板 bundle；胶囊接线错误在这里显式失败。
+      # 纯净构建（.github/capsule/DISABLED 存在）时跳过重建，直接用仓库预编译 lib。
       - name: 编译 vendor 插件（胶囊接线重建 lib）
-        run: |
-          cd vendor/dsh-codearts-auth
-          pnpm install --no-frozen-lockfile --ignore-scripts
-          pnpm exec vitest run tests/unit/active-route.spec.ts tests/unit/active-model-pill.spec.ts
-          pnpm run build:all
-          ls -l lib/index.js lib/client/jet-hub.js
+        run: bash .github/capsule/rebuild-vendor.sh
 
       - name: 组装运行时资源
         run: |
