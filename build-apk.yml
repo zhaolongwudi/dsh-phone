@@ -31,6 +31,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 构建一开始即生成版本号并更新 README 下载链接（[skip ci] 不触发本流水线）：
+      # 仓库 README 立刻指向即将发布的产物，消除「用户看到上一版链接」的窗口期。
+      - name: 生成构建版本号并更新 README 下载链接
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-$(date -u +%Y%m%d-%H%M)"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          python3 apk-link.py README.md "$TAG"
+          git config user.name "dsh-build-bot"
+          git config user.email "dsh-build-bot@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: APK 下载链接更新为 $TAG [skip ci]" || true
+          git push || true
+
       # 「在用模型」胶囊外挂：把 .github/capsule/ 的文件复制/覆盖到工作区，
       # 随 APK 打包后丢弃。git 仓库内容不变，sync 合并永不冲突。
       - name: 应用胶囊外挂（Active Model Pill）
@@ -128,8 +143,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="build-$(date -u +%Y%m%d-%H%M)"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
           gh release create "$TAG" \
             --title "APK 构建 $TAG" \
             --notes "上游 main @ $(git rev-parse --short HEAD)" \
@@ -142,5 +155,6 @@ jobs:
           git config user.name "dsh-build-bot"
           git config user.email "dsh-build-bot@users.noreply.github.com"
           git add README.md
-          git commit -m "docs: 更新 APK 下载链接（$TAG） [skip ci]"
+          # 幂等：内容无变化不提交（防循环），有变化才 push。
+          git diff --cached --quiet || git commit -m "docs: 更新 APK 下载链接（$TAG） [skip ci]"
           git push
