@@ -1,0 +1,66 @@
+# 每天定时检查上游 jwoo1982217-eng/dsh-phone 并合并到本仓库 main
+name: sync-upstream
+
+on:
+  schedule:
+    # 北京时间每天 07:30（GitHub cron 用 UTC；高峰期可能有 10-30 分钟延迟）
+    - cron: '30 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name "dsh-sync-bot"
+          git config user.email "dsh-sync-bot@users.noreply.github.com"
+
+      - name: 拉取上游并合并
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/jwoo1982217-eng/dsh-phone.git
+          git fetch upstream main
+          BEHIND=$(git rev-list --count main..upstream/main)
+          echo "上游领先本仓库：$BEHIND 个提交"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "上游无更新，本次跳过"
+            exit 0
+          fi
+          git log --oneline main..upstream/main | head -30
+
+          if git merge upstream/main --no-edit; then
+            git push origin main
+            exit 0
+          fi
+
+          # 合并冲突兜底：README.md 的下载区块是本仓库自动生成的，
+          # 可安全改用上游版本并重建区块；其余文件冲突必须人工处理。
+          CONFLICTS=$(git diff --name-only --diff-filter=U || true)
+          echo "冲突文件：$CONFLICTS"
+          if [ "$CONFLICTS" = "README.md" ]; then
+            git checkout --theirs README.md
+            TAG=$(gh api repos/zhaolongwudi/dsh-phone/releases/latest --jq .tag_name 2>/dev/null || true)
+            python3 .github/scripts/apk-link.py README.md "$TAG"
+            git add README.md
+            git commit --no-edit
+            git push origin main
+          else
+            git merge --abort || true
+            echo "::error::与上游存在非 README 冲突，需人工处理：$CONFLICTS"
+            exit 1
+          fi
