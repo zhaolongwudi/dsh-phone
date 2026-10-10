@@ -16,11 +16,8 @@ cp -a .github/capsule/files/. .
 # 2) 接线覆盖文件（基线 = 上游 0.1.60 同名文件 + 胶囊接线）
 cp -a .github/capsule/overrides/. .
 
-# 3) 上下文仍与上游匹配的补丁（胶囊样式）
-for p in .github/capsule/patches/*.patch; do
-  git apply -p1 "$p"
-  echo "补丁已应用: $(basename "$p")"
-done
+# 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
+#    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
 
 # 4) 自检：关键接线点缺一即失败（保证「胶囊失效」永远显式可见）
 grep -q "activeRoutes.record(AGGREGATE_PROVIDER" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
