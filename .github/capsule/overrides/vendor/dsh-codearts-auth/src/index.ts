@@ -88,6 +88,14 @@ import { OPENCODE } from './opencode-product.js'
 import { deriveProjectId, opencodeUserAgent } from './opencode.js'
 import { primeOpencodeCapabilities, refreshOpencodeCapabilities } from './opencode-capability.js'
 import { closeAllProxyDispatchers } from './opencode-proxy.js'
+// ===== Phase 1 · 能力注册表底座（移植自 Gitee 原作者 04de37c1）=====
+// 三个文件都是全新增（.github/capsule/files/，不覆盖任何上游文件）。
+// 注册块只挂 {descriptor, expiry} 最小域：临期查表（Phase 2 的 runtimeOf）是
+// 手机版当前唯一消费点；auth/credits/onboarding/probe 域的手机版消费方
+// （wiredRefreshTargets / account-probe / RPC 查表化）尚不存在，接线时再补注册。
+import { descriptorOf } from './provider-registry.js'
+import { expiryOf, registerProviderRuntime } from './provider-runtime.js'
+import { createProviderExpiry } from './provider-expiry.js'
 import { execFile } from 'node:child_process'
 
 /**
@@ -2296,6 +2304,36 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   // 直接关掉 DSH 而上一轮的 flush 还在排队 —— 落一次盘几乎零成本，
   // 丢的却是「下一轮工具调用能不能带上签名」。
   ctx.effect(() => () => { void geminiSigStore.flush().catch(() => {}) })
+
+  // ===== Phase 1 · provider runtime 注册（移植自 Gitee index.ts 的注册块）=====
+  // ⚠️ 必须在所有 provider 实例都创建之后（此处 13 家 auth 均已就绪）：
+  //    registerProviderRuntime 只记「实例引用 + descriptor + expiry」的 Map 条目，
+  //    注册失败返回 false 属 fiber 重启竞态（记 info，不是错误）。
+  // ⚠️ 只挂 expiry 域：Phase 2 的 aggregate-expiry.runtimeOf 是唯一消费点，
+  //    表内容（createProviderExpiry 的 7 家）与本文件临期分派的 7-case switch
+  //    逐项等价；auth/credits/onboarding/probe 域待手机版有消费方时再补。
+  {
+    const expiryTable = createProviderExpiry()
+    const registryIds: readonly string[] = [
+      'codearts', 'buddy', 'workbuddy', 'lobsterai', 'qoder', 'qodercn',
+      'trae', 'cline', 'loomy', 'raccoon', 'minimax', 'zcode', 'gemini',
+    ]
+    for (const id of registryIds) {
+      const descriptor = descriptorOf(id)
+      if (descriptor === undefined) {
+        // 不静默跳过：registry 清单与 provider-registry.ts 漂移会表现为「某 provider 功能没了」。
+        ctx.logger?.warn?.(`[jet-hub] provider registry 缺少声明：${id}`)
+        continue
+      }
+      const registered = registerProviderRuntime({
+        descriptor,
+        expiry: expiryOf(expiryTable, id),
+      })
+      if (!registered) {
+        ctx.logger?.info?.(`[jet-hub] provider runtime "${id}" 已注册（插件 fiber 重启竞态），跳过本次`)
+      }
+    }
+  }
 
   registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini, modelAdapters)
   // 网关是旁路功能：这里传 `pool` 只为读设置页里的开关，其内部任何失败都已
