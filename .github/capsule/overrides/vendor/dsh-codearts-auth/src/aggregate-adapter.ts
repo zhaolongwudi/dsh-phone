@@ -540,9 +540,10 @@ export class AggregateAdapter extends LlmAdapter {
     // ⚠️ 先记下**上一次**推导出的全量目录（下面的判据要用它判断「用户关的是整个 provider」）。
     const previousIds = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)]
     this.catalog = buildVirtualModels(catalogs)
+      .filter((virtual) => virtual.candidates.some((c) => WIRED_EXPIRY_PROVIDERS.includes(c.provider)))
+    // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
     // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
     this.contextWindowCache.clear()
-      .filter((virtual) => virtual.candidates.some((c) => WIRED_EXPIRY_PROVIDERS.includes(c.provider)))
     this.catalogAt = now
     // ⚠️⚠️ **维持「整个 provider 已关闭」的语义**（真实缺陷，实测复现）。
     //
