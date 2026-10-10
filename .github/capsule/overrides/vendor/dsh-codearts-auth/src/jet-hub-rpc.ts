@@ -44,7 +44,6 @@ import type { RaccoonAuth } from './raccoon-auth.js'
 import type { ZcodeAuth } from './zcode-auth.js'
 import { ZCODE } from './zcode-product.js'
 import { zcodeSources } from './zcode-sources.js'
-import { describeZcodePendingGrants } from './zcode-upstream.js'
 import type { ZcodeCredential } from './zcode.js'
 import { phoneFromUserId, isUsableZcodeCredential } from './zcode.js'
 import type { ZcodeBalanceResult } from './zcode-upstream.js'
@@ -227,6 +226,8 @@ import { clearDeadModels, deadModelIdsFor } from './dead-model-store.js'
 import { OPENCODE } from './opencode-product.js'
 import type {
   ProviderAccountEntry,
+  BackupImportMode,
+  RpcBackupExportRequest,
   RpcBackupExportResponse,
   RpcBackupImportRequest,
   RpcBackupImportResponse,
@@ -1593,7 +1594,6 @@ function registerJetHubEndpoints(
       // 仍是**全桶汇总**，与 `packages` 逐项之和一致（`fetchZcodeBalance` 的
       // `:251-260` 就是这么累加的）。
       total: result.remaining,
-      ...(result.pendingGrants?.length ? { pendingNote: describeZcodePendingGrants(result.pendingGrants) } : {}),
       // ZCode 不在同一响应里区分「已失效包」，故为 0。
       expiredTotal: 0,
       packages,
@@ -1631,7 +1631,6 @@ function registerJetHubEndpoints(
         const req = payload as { accountId: string; sourceId: string }
         if (typeof req.sourceId !== 'string') throw new Error('额度来源参数无效')
         await zcodeSources(ctx, pool).select(req.accountId, req.sourceId)
-        usageBadge.clear()
         return { ok: true, value: { selected: req.sourceId } }
       }
       case 'account.list': {
@@ -2870,15 +2869,6 @@ function registerJetHubEndpoints(
             } satisfies RpcCreditsStatusResponse,
           }
         }
-        if (req.provider === ZCODE.id) {
-          const accounts = await pool.listAccounts(req.provider)
-          const value = await collectCreditsStatus<ZcodeCredential, undefined>(accounts, undefined, {
-            resolve: ref => ctx.credentials.resolve(ref),
-            fetchStatus: credential => zcode.fetchCheckinStatusFor(credential),
-            warn: msg => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: { accounts: value } satisfies RpcCreditsStatusResponse }
-        }
         if (req.provider === MINIMAX.id) {
           // ⚠️ MiniMax **有**独立的签到状态端点（`/minimax-cloud/api/v1/signin/status`），
           // 与 LobsterAI/TRAE/Cline 那几个「如实返回 null」的 provider 不同 ——
@@ -3541,25 +3531,6 @@ function registerJetHubEndpoints(
                 accountId: account.id, nickname: account.nickname,
                 balance: null, error: '凭据解析失败',
               })
-              continue
-            }
-            // 明确选择的个人/机构配额与 Start Plan 的 token 池是不同来源。
-            if (account.zcodeSource && !['auto', 'start-plan'].includes(account.zcodeSource)) {
-              try {
-                const snapshot = await zcodeSources(ctx, pool).list(account.id, true)
-                const source = snapshot.sources.find(s => s.id === snapshot.selected)
-                const text = source?.quota
-                if (!source?.available || !text || text.includes('查询失败')) {
-                  values.push({ accountId: account.id, nickname: account.nickname, balance: null,
-                    error: source?.reason ?? text ?? '所选额度来源查询失败' })
-                } else {
-                  values.push({ accountId: account.id, nickname: account.nickname,
-                    balance: { total: 0, packages: [], expiredTotal: 0,
-                      sourceQuota: { label: source.label, text } } })
-                }
-              } catch {
-                values.push({ accountId: account.id, nickname: account.nickname, balance: null, error: '所选额度来源查询失败，请刷新' })
-              }
               continue
             }
             const result = await zcode.fetchBalanceFor(credential)
@@ -4519,7 +4490,13 @@ function registerJetHubEndpoints(
       // 安全约定：加密在浏览器侧完成（PBKDF2 + AES-GCM），RPC 只接收/返回
       // 明文载荷；明文 JSON 不经过本层持久化与日志。
       case 'backup.export': {
-        const result = await exportBackup(pool, ctx.credentials)
+        // accountIds 只作用于 accounts / credentials 两个字段；黑名单与锁定表
+        // 仍是全量，故产物始终是一份可整体还原的自包含快照。（移植自 Gitee）
+        const exportReq = (payload ?? {}) as RpcBackupExportRequest
+        const accountIds = Array.isArray(exportReq.accountIds)
+          ? exportReq.accountIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+          : undefined
+        const result = await exportBackup(pool, ctx.credentials, { accountIds })
         const value: RpcBackupExportResponse = {
           payload: result.payload,
           warnings: result.warnings,
@@ -4527,18 +4504,30 @@ function registerJetHubEndpoints(
         return { ok: true, value }
       }
 
-      // 导入 = 整体替换（还原快照，不是合并）。写入顺序刻意「先凭据、后账号池」：
-      // 账号池整体替换成功后，门控（hasLoggedInAccount）与黑名单立即反映新状态；
-      // 若凭据写入中途失败（非法 ref 等），只跳过该条、不中断整体。
+      // 导入有两种模式（移植自 Gitee）：
+      // - `replace`（缺省）= 整体替换（还原快照，不是合并）；
+      // - `merge` = 只追加，按 id 跳过已存在的账号，不碰黑名单与锁定表。
+      // 写入顺序刻意「先凭据、后账号池」：账号池写入成功后，门控
+      // （hasLoggedInAccount）与黑名单立即反映新状态；若凭据写入中途失败
+      // （非法 ref 等），只跳过该条、不中断整体。
+      //
+      // ⚠️ 模式必须显式取白名单，不能把请求里的任意字符串透传下去：未知值
+      // 会被 importBackup 的 `?? 'replace'` 静默当成整体替换 —— 那时用户以为
+      // 只是「加一个账号」，实际账号池被清空，属于不可逆的数据损失。
       case 'backup.import': {
         const req = payload as RpcBackupImportRequest
-        const result = await importBackup(ctx.credentials, pool, req.payload)
+        const mode: BackupImportMode = req?.mode === 'merge' ? 'merge' : 'replace'
+        const result = await importBackup(ctx.credentials, pool, req.payload, { mode })
         // 导入会改变账号集合（门控依赖 hasLoggedInAccount）与模型黑名单，
         // 必须广播目录变更，否则界面仍显示旧目录。
         broadcastCatalogChanged(ctx)
+        if (mode === 'merge') {
+          ctx.logger.info(`[jet-hub] 合并导入：新增 ${result.accountsImported} 个账号，跳过 ${result.accountsSkipped.length} 个已存在`)
+        }
         const value: RpcBackupImportResponse = {
           credentialsImported: result.credentialsImported,
           accountsImported: result.accountsImported,
+          accountsSkipped: result.accountsSkipped,
           skipped: result.skipped,
           expiredAccounts: result.expiredAccounts,
           missingCredentials: result.missingCredentials,

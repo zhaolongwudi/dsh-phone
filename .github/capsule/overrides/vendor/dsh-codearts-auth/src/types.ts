@@ -1421,18 +1421,50 @@ export interface RpcBackupExportResponse {
   warnings: string[]
 }
 
+/**
+ * 导入模式。（移植自 Gitee 原作者 04de37c1）
+ *
+ * - `replace`：**整体替换**账号池与模型黑名单（还原快照）。既有的「恢复」行为。
+ * - `merge`：**只追加**——按 id 判重，已存在的账号跳过；**不碰**模型黑名单、
+ *   永久积分锁定表与其余账号的凭据。用于「单独导入一个账号」。
+ *
+ * ⚠️ 两者都**不提升** {@link BACKUP_VERSION}：模式是**导入时的选择**，不是
+ * 文件格式的一部分 —— 同一份备份文件既可整体还原也可合并追加。
+ */
+export type BackupImportMode = 'replace' | 'merge'
+
+/** RPC: 导出备份请求。 */
+export interface RpcBackupExportRequest {
+  /**
+   * 只导出这些账号 id（单独导出某个账号时传**一个**元素）。
+   * 缺省 / 空数组 = 导出全部账号。
+   */
+  accountIds?: string[]
+}
+
 /** RPC: 导入备份请求。 */
 export interface RpcBackupImportRequest {
   /** 备份载荷（明文 JSON 解析后的对象；加密文件在浏览器侧解密后传入）。 */
   payload: unknown
+  /**
+   * 导入模式，缺省 `replace`（保持既有调用方行为不变）。
+   *
+   * ⚠️ 必须是**可选**字段：老客户端不带它，后端必须按旧的「整体替换」处理。
+   */
+  mode?: BackupImportMode
 }
 
 /** RPC: 导入备份响应。 */
 export interface RpcBackupImportResponse {
   /** 写入的凭据条数。 */
   credentialsImported: number
-  /** 写入的账号数。 */
+  /** 写入的账号数（合并模式下 = 实际新增的账号数）。 */
   accountsImported: number
+  /**
+   * 合并模式下因 id 已存在而**跳过**的账号 id。（移植自 Gitee）
+   * `replace` 模式恒为空数组。
+   */
+  accountsSkipped: string[]
   /** 跳过的凭据 ref（非法 ref 等）。 */
   skipped: string[]
   /**
