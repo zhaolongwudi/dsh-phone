@@ -11,6 +11,7 @@
 
 
 
+
 这是一个 **DeepSeek Harness 的社区 Android 封装与适配项目**。它把 AI 聊天、模型账号管理、QQ 机器人、技能、长期记忆和代码工作区放进一个手机应用，让手机可以独立运行助手、管理自己的资料，并通过 QQ 接收任务。
 
 **主项目来自 DeepSeek 官方开源的 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)**。本仓库在官方引擎和社区插件的基础上，增加 Android 启动与后台服务、手机界面适配、账号入口、QQ 安装及扫码引导，以及手机技能和文件管理功能。
