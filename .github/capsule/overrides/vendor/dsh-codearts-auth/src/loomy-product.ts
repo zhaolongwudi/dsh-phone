@@ -97,7 +97,9 @@ export interface LoomyProduct {
  * ⚠️ `contextWindow` 用远端 `context_length`。`spark-x` 是**已知分歧**：
  * 远端声明 1048576，而 Loomy 客户端用本地表
  * `MODEL_CONTEXT_OVERRIDES = { 'spark-x': 262144 }` 强制降到 262144。
- * 本表**先采信远端**；若实测长上下文被拒，改为 262144（见设计文档 §11）。
+ * ⚠️ **2026-10-12 已按客户端口径改为 262144**（原为远端 1048576）：触发条件
+ * 「实测长上下文被拒」已满足 —— 本机会话到 20.9 万 token 时被派给 spark-x，
+ * 连续两轮以 `finish: max-tokens` 收场（见该行上方注释与 HANDOFF 9.21）。
  */
 /**
  * 实测的思考档位（8 个 chat 模型**完全一致**，2026-09-28 用真实凭据采集）。
@@ -126,7 +128,12 @@ const LOOMY_FALLBACK_MODELS: readonly LoomyFallbackModel[] = [
   { id: 'qwen-3.8-max', name: 'Qwen 3.8 Max · x12.0', contextWindow: 1_000_000, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'GLM-5.3-Flash', name: 'GLM 5.3 Flash · x0.8', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'qwen3.8-flash', name: 'qwen 3.8 flash · x0.8', contextWindow: 1_000_000, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
-  { id: 'spark-x', name: 'Spark X2.5 · x0.1', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
+  // ⚠️ 2026-10-12 改为 Loomy **客户端自己的口径** 262144（原为远端声明的 1048576）：
+  //    本机实测已发生「按 1M 声明、实际约 26 万就截断」——用户 2026-10-12 报障：
+  //    `aggregate/auto` 会话到 20.9 万 token 时，被派给 spark-x 后连续两轮以
+  //    `finish: max-tokens` 收场（会话记录可证）。即上面那条注释里写的
+  //    「若实测长上下文被拒，改为 262144」的**触发条件已满足**。
+  { id: 'spark-x', name: 'Spark X2.5 · x0.1', contextWindow: 262_144, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'mimo-v2.5', name: 'MiMo V2.5 · x3.3', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
 ]
 

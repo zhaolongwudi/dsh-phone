@@ -13,11 +13,14 @@
  * **起步给大 → 撞墙报错 → 收窄**，并配合 DSH 自带的压缩恢复链。
  * ⇒ 本模块只服务**兜底**路径：调用方一旦拿到了供应商的真实声明，**不得**查这里。
  *
- * ## 接入点（两处）
+ * ## 接入点（三处）
  * - `aggregate-adapter.ts`：虚拟模型**所有候选都没声明**窗口时的兜底；
  * - `zcode-adapter.ts` + `zcode-upstream.ts`：zcode 远端目录对第三方模型**不带**
  *   `contextWindow`（那批模型此前被目录统一写成写死的 200K），现改为目录给**起步值**、
  *   适配器每请求读**学习值**（`resolveModel` 不被缓存 ⇒ 收窄立刻生效）。
+ * - `aggregate-adapter.ts` 的 `dispatch`：**截断**（`finish: max-tokens`）也算证据 ——
+ *   上游不报错、只按自己的上限截断时，用本轮观测规模（`usage.totalTokens`）记上限
+ *   （{@link rememberContextWindowCeiling}），并据此在派发前跳过太窄的候选。
  *
  * ## ⚠️ 为什么「收窄」必须快
  *
@@ -111,6 +114,39 @@ export function rememberContextWindowFailure(key: string, failureText: string): 
     DYNAMIC_CONTEXT_WINDOW_FLOOR,
     Math.floor(dynamicContextWindowFor(key) / 2),
   )
+  learned.set(key, next)
+  return next
+}
+
+/**
+ * **截断时**调用：把观测到的本轮规模记为该键的**上限下界**。
+ *
+ * ## 为什么与 {@link rememberContextWindowFailure} 分开
+ *
+ * 那个读的是**失败报文**里的 `maximum`；而上游常常**不报错** —— 它按自己的上限把输出
+ * 截断（`finish_reason: length` / DSH 的 `finish: max-tokens`），报错通道里什么都没有。
+ * 实测（2026-10-12，`aggregate/auto` → loomy `spark-x`）：会话 20.9 万 token、
+ * 虚拟模型声明 1M，spark-x 真实上限约 262K ⇒ 连续两轮以 `max-tokens` 收场，
+ * 而学习器一条信号都没收到（它只挂在失败路径上）。
+ *
+ * ## 取值语义与方向
+ *
+ * `observedTokens` = 截断发生时**在飞的总量**（`usage.totalTokens`）。它证明
+ * 「该键的有效上限 ≲ 这个数」，故：
+ * - 记入后**只用于收窄**（比当前值大就不记）⇒ 放大声明值这种事永远不会发生；
+ * - 低于 {@link DYNAMIC_CONTEXT_WINDOW_FLOOR} 的观测值**不记**（那是异常报文，不是窗口）；
+ * - 后续更小的截断会继续压低它（单调收窄，方向保守）。
+ *
+ * ⚠️ 收窄的代价只是「压缩更早发生」（浪费一点上下文），而不收窄的代价是
+ * **每轮都撞同一个天花板**（用户实测：连续两轮被截断）。
+ *
+ * @returns 记入后的值；未记入（观测无效 / 不比当前值小）返回 `undefined`。
+ */
+export function rememberContextWindowCeiling(key: string, observedTokens: number): number | undefined {
+  if (!Number.isFinite(observedTokens) || observedTokens < DYNAMIC_CONTEXT_WINDOW_FLOOR) return undefined
+  const current = learned.get(key)
+  if (current !== undefined && current <= observedTokens) return undefined
+  const next = Math.floor(observedTokens)
   learned.set(key, next)
   return next
 }

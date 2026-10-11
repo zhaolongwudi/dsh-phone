@@ -10,6 +10,7 @@ import {
   contextWindowKey,
   dynamicContextWindowFor,
   learnedContextWindow,
+  rememberContextWindowCeiling,
   rememberContextWindowFailure,
   resetLearnedContextWindows,
 } from '../../src/context-window-learn.js'
@@ -100,13 +101,49 @@ describe('context-window-learn：解析不出时减半收敛', () => {
 describe('聚合层接线（源码文本断言）', () => {
   const source = read('src/aggregate-adapter.ts')
 
-  it('兜底是动态值，且真值优先（`widest ??` 的顺序不得颠倒）', () => {
-    expect(source).toContain('widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))')
+  it('声明值仍是候选最大值（`widest`），但**学习值可以收窄它**（方案 A，2026-10-12）', () => {
+    // 旧形态是 `widest ?? dynamicContextWindowFor(...)`：只要有任一候选声明了窗口，
+    // 学习表就再也查不到（`aggregate/auto` 的候选声明 1M ⇒ 恒走真值分支）⇒
+    // 用户实测「声明 1M、实际候选只有 26 万，会话到 20 万就被反复截断」。
+    // ⇒ 现在声明值先算出来，再经 `applyLearnedWindow` 收窄。
+    expect(source).toContain('const declared = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))')
+    expect(source).toContain('const resolved = this.applyLearnedWindow(modelKey, declared, widest === undefined)')
+    // 反向：旧的「真值优先、动态值只做 fallback」一行式**不得回来**。
+    expect(source).not.toContain('const resolved = widest ?? dynamicContextWindowFor(')
+  })
+
+  it('收窄判据与 zcode 同构（只在学到的更小时覆盖）', () => {
+    expect(source).toContain('if (learned < declared) {')
+    expect(source).toContain('const learned = learnedContextWindow(key)')
+  })
+
+  it('缓存只存**纯声明值**，收窄值不得固化（否则后来学到的更小值被挡住）', () => {
+    expect(source).toContain('this.contextWindowCache.set(modelKey, widest)')
+    expect(source).not.toContain('this.contextWindowCache.set(modelKey, resolved)')
+    expect(source).toContain('return this.applyLearnedWindow(modelKey, remembered)')
   })
 
   it('撞墙处（且仅在归成溢出码时）记录学习', () => {
     expect(source).toContain('if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {')
     expect(source).toContain('rememberContextWindowFailure(')
+  })
+
+  it('**截断也算证据**：`finish: max-tokens` 时用观测规模记上限（方案 B，2026-10-12）', () => {
+    // 上游常常不报错、只按自己的上限截断 ⇒ 只挂失败路径的学习器完全收不到信号。
+    expect(source).toContain("chunk.type === 'finish' && chunk.reason.kind === 'max-tokens'")
+    expect(source).toContain('rememberContextWindowCeiling(')
+    expect(source).toContain('const seen = contextTokensOfUsage(chunk.usage)')
+    expect(source).toContain('self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)')
+  })
+
+  it('**派发前按本轮体积跳过太窄的候选**（方案 C，2026-10-12）', () => {
+    expect(source).toContain('let attemptTargets: readonly DispatchTarget[] = targets')
+    expect(source).toContain('for (let index = 0; index < attemptTargets.length; index += 1)')
+    expect(source).toContain('const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))')
+    // 留 5% 余量（上游按「输入 + 输出」计总量）。
+    expect(source).toContain('Math.ceil(observedTokens * 1.05)')
+    // ⚠️ 兜底：全被筛掉时**不得**凭空得出「没有可用候选」。
+    expect(source).toContain('放弃筛选、照常逐个尝试')
   })
 
   it('动态值不进记忆化缓存（解析到真值才缓存，学过才能立刻生效）', () => {
@@ -115,6 +152,37 @@ describe('聚合层接线（源码文本断言）', () => {
 
   it('写死的 200K 兜底常量已删除', () => {
     expect(source).not.toContain('AGGREGATE_FALLBACK_CONTEXT_WINDOW')
+  })
+})
+
+describe('截断学习与 loomy spark-x 口径（2026-10-12 用户实测）', () => {
+  it('`rememberContextWindowCeiling`：只收窄、不放大，且低于下限不记', () => {
+    const key = contextWindowKey('loomy', 'spark-x')
+    expect(learnedContextWindow(key)).toBeUndefined()
+    expect(rememberContextWindowCeiling(key, 209_000)).toBe(209_000)
+    expect(learnedContextWindow(key)).toBe(209_000)
+    // 更大的观测值**不得**把声明放大。
+    expect(rememberContextWindowCeiling(key, 300_000)).toBeUndefined()
+    expect(learnedContextWindow(key)).toBe(209_000)
+    // 更小的观测继续收窄（单调、方向保守）。
+    expect(rememberContextWindowCeiling(key, 150_000)).toBe(150_000)
+    // 无效观测不记（「未知不编造」）。
+    expect(rememberContextWindowCeiling(contextWindowKey('a', 'b'), Number.NaN)).toBeUndefined()
+    expect(rememberContextWindowCeiling(contextWindowKey('a', 'b'), 1_000)).toBeUndefined()
+  })
+
+  it('spark-x 的声明值改为 Loomy **客户端自己的口径** 262144', () => {
+    const product = read('src/loomy-product.ts')
+    expect(product).toContain("contextWindow: 262_144")
+    // 反向：远端那条 1M 声明不得回来（它是本次报障的成因）。
+    expect(product).not.toContain("spark-x', name: 'Spark X2.5 · x0.1', contextWindow: 1_048_576")
+  })
+
+  it('usage 规模解析：totalTokens 优先，缺失时四项求和，全无则 undefined', () => {
+    const source = read('src/aggregate-adapter.ts')
+    expect(source).toContain('function contextTokensOfUsage(')
+    expect(source).toContain('if (typeof usage.totalTokens === \'number\'')
+    expect(source).toContain('return sum > 0 ? sum : undefined')
   })
 })
 

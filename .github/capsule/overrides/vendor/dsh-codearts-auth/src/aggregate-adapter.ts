@@ -67,6 +67,8 @@ import { WIRED_EXPIRY_PROVIDERS } from './aggregate-expiry.js'
 import {
   contextWindowKey,
   dynamicContextWindowFor,
+  learnedContextWindow,
+  rememberContextWindowCeiling,
   rememberContextWindowFailure,
 } from './context-window-learn.js'
 // ⚠️ 共享的「上下文超限」判据（宿主分类器 + 网关措辞兜底）。
@@ -141,6 +143,37 @@ export interface AggregateAdapterOptions {
   rejections?: () => AggregateRejectionMap
 }
 
+/**
+ * 一次 `usage` 帧代表的**本轮规模**（token）。
+ *
+ * DSH 的 `TokenUsage` 各计数是**互斥**的（`inputTokens` 只含未缓存部分，缓存命中另计
+ * `cacheReadTokens`/`cacheWriteTokens`）⇒ 「在飞的上下文规模」= 四者之和；
+ * 上游给了 `totalTokens` 时以它为准（那是权威口径）。
+ *
+ * ⚠️ 拿不到任何正数就返回 `undefined`（**不编造**）：方案 B/C 都建立在
+ * 「确实观测到规模」之上，猜一个值会让筛选误伤宽窗口候选。
+ */
+function contextTokensOfUsage(
+  usage: {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+  } | undefined,
+): number | undefined {
+  if (usage === undefined) return undefined
+  if (typeof usage.totalTokens === 'number' && Number.isFinite(usage.totalTokens) && usage.totalTokens > 0) {
+    return usage.totalTokens
+  }
+  const parts = [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]
+  let sum = 0
+  for (const part of parts) {
+    if (typeof part === 'number' && Number.isFinite(part) && part > 0) sum += part
+  }
+  return sum > 0 ? sum : undefined
+}
+
 /** 聚合适配器。 */
 export class AggregateAdapter extends LlmAdapter {
   /** 上次目录读取结果（面板与 listModels 共用一次推导）。 */
@@ -166,6 +199,26 @@ export class AggregateAdapter extends LlmAdapter {
   private readonly choiceCache = new Map<string, { at: number; targets: DispatchTarget[] }>()
   /** 虚拟模型 → 解析出的最大上下文窗口。仅在**全部候选**解析成功时记忆化。 */
   private readonly contextWindowCache = new Map<string, number>()
+  /**
+   * `provider\u0000realId` → 该候选**声明**的上下文窗口（解析时顺手记下）。
+   *
+   * ⚠️ 用途是**派发前按本轮体积跳过太窄的候选**（方案 C，2026-10-12）：
+   * `aggregate/auto` 的候选横跨十几个渠道，声明的窗口相差两个数量级（1M vs 32K），
+   * 而 DSH 只看到虚拟模型那**一个**窗口。若不筛，一个 20 万 token 的会话会被派给
+   * 3.2 万窗口的候选 ⇒ 上游报超限（或按自己的上限截断）。
+   * ⚠️ 只记「确实有声明」的值；未知的候选**不筛**（未知 ≠ 太窄）。
+   */
+  private readonly candidateWindow = new Map<string, number>()
+
+  /**
+   * 最近一次观测到的**本轮上下文规模**（token，来自 `usage` 帧的 `totalTokens`）。
+   *
+   * ⚠️ 这是进程内的会话规模近似值，用于两个新机制：
+   * - 方案 C：派发前比较「候选窗口 vs 本轮体积」；
+   * - 方案 B：`finish: max-tokens` 截断时，把它当作该候选的**上限下界**记入学习表。
+   * ⚠️ 取观测值的**最大值**（同一次请求里 usage 可能到多帧）：规模只会增长，取最大才安全。
+   */
+  private lastContextTokens: number | undefined
 
   /**
    * 「上次**实际**转发成功的渠道」——按虚拟模型分别记录（P3，供用量徽标显示）。
@@ -1137,13 +1190,51 @@ export class AggregateAdapter extends LlmAdapter {
    * 兜底值固化整个 TTL 周期。失败时返回值照给（调用方需要立即拿到可用值），但
    * 不写缓存，下一次调用重新尝试解析。
    */
+  /**
+   * 把「学到的窗口」套到声明值上 —— **学习值可以收窄声明值**（方案 A，2026-10-12）。
+   *
+   * ## 为什么必须能收窄（用户 2026-10-12 实测报障）
+   *
+   * 原实现是 `widest ?? dynamicContextWindowFor(...)`：**只要任一候选声明了窗口**，
+   * 学习表就再也查不到（`aggregate/auto` 的候选里 loomy/codearts 都声明 1M ⇒ `widest`
+   * 恒有值）。后果与用户实测完全一致：虚拟模型对外报 1M ⇒ DSH 压缩阈值 800K，
+   * 而**实际派发**到的候选真实上限只有 262K ⇒ 会话长到 20 万 token 时那一家开始截断，
+   * 而 DSH 永远不会提前压缩。
+   *
+   * ⚠️ 这与 **zcode 适配器**的既有规则**同构**（那里是
+   * `learned !== undefined && (contextWindow === undefined || learned < contextWindow)
+   *   ? learned : contextWindow`）—— 同一套「学到就收窄」的方案，两个接入点判据必须一致。
+   * 方向保守：收窄只会让压缩**更早**发生（浪费一点上下文，不致命），
+   * 而放着不管就是「撞墙 → 压缩 → 再撞墙」甚至反复截断。
+   *
+   * @param modelKey - 虚拟模型 id（`auto` 或规范键）。
+   * @param declared - 当前声明值（候选最大值；全无声明时是动态起步值/上次学习值）。
+   * @param declaredIsFallback - `declared` 是否来自「候选全无声明」的兜底路径。
+   */
+  private applyLearnedWindow(modelKey: string, declared: number, declaredIsFallback = false): number {
+    const key = contextWindowKey(AGGREGATE_PROVIDER, modelKey)
+    const learned = learnedContextWindow(key)
+    if (learned === undefined) return declared
+    // 兜底路径下 `declared` 本身就是学习值（`dynamicContextWindowFor` 会返回它），直接用它。
+    if (declaredIsFallback) return declared
+    if (learned < declared) {
+      this.ctx.logger?.info?.(
+        `[jet-hub] 窗口收窄 ${modelKey}: 学习值 ${learned} < 声明值 ${declared} ⇒ 采用 ${learned}`,
+      )
+      return learned
+    }
+    return declared
+  }
+
   private async contextWindowFor(
     modelKey: string,
     candidates: readonly { provider: string; realId: string }[],
     signal?: AbortSignal,
   ): Promise<number> {
+    // ⚠️ 缓存里存的是**纯声明值**（候选里的最大值），不是最终对外值 ——
+    //    因为学习值可以**收窄**它，而收窄必须「学过立刻生效」（见 applyLearnedWindow）。
     const remembered = this.contextWindowCache.get(modelKey)
-    if (remembered !== undefined) return remembered
+    if (remembered !== undefined) return this.applyLearnedWindow(modelKey, remembered)
     let widest: number | undefined
     let allResolved = true
     // 手机版诊断（2026-10-11）：逐候选记录解析结果，定位「声明在哪一家丢失」。
@@ -1164,13 +1255,22 @@ export class AggregateAdapter extends LlmAdapter {
       }
       traces.push(`${candidate.provider}(${candidate.realId})=${window ?? '未声明'}`)
       if (window !== undefined && (widest === undefined || window > widest)) widest = window
+      // ⚠️ 顺手记下**逐候选**的声明窗口（方案 C 用）：派发前按本轮体积跳过太窄的候选。
+      //    这里本来就在逐个 resolve，故不额外产生调用。
+      if (window !== undefined) {
+        this.candidateWindow.set(
+          candidate.provider + String.fromCharCode(0) + candidate.realId,
+          window,
+        )
+      }
     }
     // ⚠️ 兜底**必须**是动态值：候选全都没声明时也得给一个正数（`context` 为空会让压缩链
     // 直接抛 `compaction-basic: no context capacity …`），而写死 200K 会让真有 1M 窗口的
     // 模型永远只用到五分之一。学习值/起步值都来自 `context-window-learn.ts`，
     // 撞墙后由 `dispatch` 的失败路径收窄。
     // ⚠️ 它**不进** `contextWindowCache`（见下方记忆化条件）——学过之后要立刻生效。
-    const resolved = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))
+    const declared = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))
+    const resolved = this.applyLearnedWindow(modelKey, declared, widest === undefined)
     // ⚠️ **手机版修正（2026-10-11，用户实测报障）**：记忆化必须同时要求
     // 「无抛错」**和**「真的解析到了声明」。原条件只看 `allResolved`（没抛错）——
     // 渠道目录未就绪时 `resolveModelInfo` 会**成功返回但不带窗口声明**（undefined），
@@ -1180,7 +1280,9 @@ export class AggregateAdapter extends LlmAdapter {
     // ⇒ 只缓存「确有声明」的结果（widest !== undefined）；解析不出时**不缓存**，
     //    下一次调用重新尝试（目录就绪后自然取到各家声明的最大值）。
     //    兜底值仅作本次的**瞬时**回落，不进入任何缓存。
-    if (allResolved && widest !== undefined) this.contextWindowCache.set(modelKey, resolved)
+    // ⚠️ **缓存的是声明值 widest，不是收窄后的 resolved**：把收窄值缓存下来会让
+    //    「后来才学到的更小值」被固化挡住（收窄必须立刻生效）。
+    if (allResolved && widest !== undefined) this.contextWindowCache.set(modelKey, widest)
     // 诊断日志：每次实际解析（未命中缓存）打一行汇总，含逐候选窗口与是否固化。
     this.ctx.logger?.info?.(
       `[jet-hub] 窗口解析 ${modelKey}: ${traces.join(', ')} → ${resolved}`
@@ -1316,7 +1418,55 @@ export class AggregateAdapter extends LlmAdapter {
        * ⇒ 记录类型，切换前判定（`text` 是安全类型，因为它最可能就是下一个候选要开的）。
        */
       const openedBlocks = new Map<number, string>()
-      for (let index = 0; index < targets.length; index += 1) {
+      /**
+       * **方案 C（2026-10-12）：派发前按本轮体积跳过太窄的候选**。
+       *
+       * ## 为什么必须筛
+       * `aggregate/auto` 的候选横跨十几个渠道，声明窗口相差两个数量级；而 DSH 只看到
+       * 虚拟模型那一个（取候选最大值）⇒ 一个 20 万 token 的会话会被派给 3.2 万窗口的
+       * 候选，上游报超限、或按自己的上限把输出截断（用户 2026-10-12 实测的正是后者）。
+       *
+       * ## 判据
+       * - 本轮体积取**最近一次观测**（`usage.totalTokens` 的最大值）；没观测过 ⇒ **不筛**
+       *   （首轮无从判断，且「未知不编造」）。
+       * - 候选上限取**学习值优先**（`learnedContextWindow`，来自截断/超限学习），
+       *   否则取它声明的窗口；**两者都没有 ⇒ 不筛**（未知 ≠ 太窄）。
+       * - 留 5% 余量：上游按「输入 + 输出」计总量，贴着上限派发必然失败。
+       *
+       * ## ⚠️ 兜底：一个都不剩时**不过滤**（宁可去试，也不能凭空报「没有可用候选」）。
+       */
+      let attemptTargets: readonly DispatchTarget[] = targets
+      const observedTokens = self.lastContextTokens
+      if (observedTokens !== undefined && observedTokens > 0) {
+        const required = Math.ceil(observedTokens * 1.05)
+        const kept: DispatchTarget[] = []
+        const skipped: string[] = []
+        for (const candidate of targets) {
+          const sep = String.fromCharCode(0)
+          const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))
+            ?? self.candidateWindow.get(candidate.provider + sep + candidate.realId)
+          if (cap !== undefined && cap < required) {
+            skipped.push(`${candidate.provider}(${candidate.realId})=${cap}`)
+            continue
+          }
+          kept.push(candidate)
+        }
+        if (kept.length > 0 && skipped.length > 0) {
+          attemptTargets = kept
+          self.ctx.logger?.info?.(
+            `[jet-hub] 候选筛选 ${modelKey}: 本轮约 ${observedTokens} tokens（需 ${required}），`
+            + `跳过 ${skipped.length} 个太窄候选 [${skipped.join(', ')}]`,
+          )
+        } else if (kept.length === 0) {
+          // ⚠️ 全被筛掉 ⇒ 不过滤：宁可去试一次（失败也是如实报错），
+          //    也不能让用户看到「没有任何可用候选」这种由本机制凭空造出的结论。
+          self.ctx.logger?.warn?.(
+            `[jet-hub] 候选筛选 ${modelKey}: 本轮 ${observedTokens} tokens 已超出全部 `
+            + `${targets.length} 个候选的已知上限，放弃筛选、照常逐个尝试`,
+          )
+        }
+      }
+      for (let index = 0; index < attemptTargets.length; index += 1) {
         const target = targets[index]!
         // 该候选是否已经产出过内容（决定失败时能否安全切换，见上方长注释）。
         let emitted = false
@@ -1501,6 +1651,50 @@ export class AggregateAdapter extends LlmAdapter {
               // ⇒ 改为：这里只记 `pendingProvider`，等**这一轮的 `for await` 正常结束**
               //   （即候选真的把整轮跑完）才提交进 Map。见下方 `return` 之前的提交处。
               pendingProvider = target.provider
+            }
+            // ⚠️⚠️ **方案 B（2026-10-12）：把「截断」也变成可学的信号**。
+            //
+            // ## 为什么必须单独处理（用户实测报障的根因）
+            //
+            // 既有学习钩子只在**失败**（`finish: error` 且归成 `CONTEXT_WINDOW_EXCEEDED`）
+            // 时触发。但多数上游**不报错**：它们按自己的上限把输出截断，回
+            // `finish_reason: length`（DSH 侧显示「已达到输出 token 上限」）。
+            // 实测（本机 2026-10-12，`aggregate/auto` → loomy spark-x）：
+            // 会话 20.9 万 token、虚拟模型声明 1M ⇒ DSH 压缩阈值 800K 永不触发，
+            // 而 spark-x 真实上限约 262K ⇒ 连续两轮以 `max-tokens` 收场。
+            // ⇒ 这种形态下**没有任何失败帧**，学习器完全是瞎的。
+            //
+            // ## 判据与取值
+            //
+            // `finish: max-tokens` = 模型在本轮**用尽了自己的预算**，此刻在飞的
+            // 规模（`usage.totalTokens`）就是该候选的有效上限**下界**。
+            // 记它有两个作用：
+            // 1. **虚拟模型**收窄 ⇒ 对外声明变小 ⇒ DSH 下轮更早压缩（用户要的
+            //    「自动降低上限并压缩」）；
+            // 2. **该候选**收窄 ⇒ 方案 C 的筛选在后续轮次**跳过**它（20 万 token 的
+            //    会话不再派给 26 万上限的 spark-x）。
+            // ⚠️ 只在**有观测值**时记：拿不到 usage 就不猜（「未知不编造」）。
+            if (chunk.type === 'usage') {
+              const seen = contextTokensOfUsage(chunk.usage)
+              if (seen !== undefined) {
+                self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)
+              }
+            }
+            if (chunk.type === 'finish' && chunk.reason.kind === 'max-tokens') {
+              const observed = self.lastContextTokens
+              if (observed !== undefined) {
+                const virtual = rememberContextWindowCeiling(
+                  contextWindowKey(AGGREGATE_PROVIDER, modelKey), observed,
+                )
+                const perCandidate = rememberContextWindowCeiling(
+                  contextWindowKey(target.provider, target.realId), observed,
+                )
+                self.ctx.logger?.warn?.(
+                  `[jet-hub] 窗口学习(截断) ${modelKey}: ${target.provider}（${target.realId}）`
+                  + `以 max-tokens 收场，本轮 ${observed} tokens ⇒ 虚拟模型记 ${virtual ?? '未记'}`
+                  + `、该候选记 ${perCandidate ?? '未记'}`,
+                )
+              }
             }
             yield chunk
           }
