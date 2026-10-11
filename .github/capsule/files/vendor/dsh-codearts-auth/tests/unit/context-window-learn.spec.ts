@@ -146,6 +146,23 @@ describe('聚合层接线（源码文本断言）', () => {
     expect(source).toContain('放弃筛选、照常逐个尝试')
   })
 
+
+  it('**零输出撞墙 ⇒ 换下一个候选重发**（方案 F，2026-10-12 接线；此前只有 auto 接了）', () => {
+    // 判据必须复用共享守卫（`zero-output-guard.ts` 是唯一权威），不得另写一份。
+    expect(source).toContain("import {")
+    expect(source).toContain("} from './zero-output-guard.js'")
+    expect(source).toContain('zeroProbe = noteChunk(zeroProbe, chunk)')
+    expect(source).toContain('if (chunk.type === \'finish\' && isZeroOutputWallHit(zeroProbe)) {')
+    expect(source).toContain('self.zeroOutputCooldowns = noteZeroOutputHit(')
+    expect(source).toContain('if (reroute) continue')
+    // ⚠️ 已开块/已吐内容**不得**重发（重发会让内容灌进错误的块类型）。
+    expect(source).toContain('if (emitted || openedBlocks.size > 0) {')
+  })
+
+  it('冷却中的候选在派发前被跳过（与体积筛选同一处，避免重复撞墙）', () => {
+    expect(source).toContain('isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId')
+  })
+
   it('动态值不进记忆化缓存（解析到真值才缓存，学过才能立刻生效）', () => {
     expect(source).toContain('allResolved && widest !== undefined')
   })

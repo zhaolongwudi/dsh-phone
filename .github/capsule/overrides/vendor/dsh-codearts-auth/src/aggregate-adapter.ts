@@ -29,6 +29,23 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { activeRoutes } from './active-route.js'
+// ⚠️ 零输出撞墙的判据与目标级冷却（issue IKJW31 的 B 方案）——**唯一权威**在那个模块。
+//    本文件此前只在该模块头里被列为「调用方之一」却**从未接线**（真实缺口，2026-10-12
+//    用户实测报障）：`jet-hub-auto` 能在「上游收下请求却零输出」时改道下一个 provider，
+//    而聚合层只能把 `finish: max-tokens` 原样透出（DSH 对 max-tokens **不自动重试**）
+//    ⇒ 用户侧看到「回答被截断」，且下一次仍派给同一家（最便宜的那家）。
+//    ⚠️ 判据复用共享函数，**不在这里另写一份**（本仓库红线：同一语义不得两套判据）。
+import {
+  emptyZeroOutputProbe,
+  isTargetCoolingDown,
+  isZeroOutputWallHit,
+  noteChunk,
+  noteZeroOutputHit,
+  zeroOutputKey,
+  ZERO_OUTPUT_COOLDOWN_MS,
+  type ZeroOutputCooldownMap,
+} from './zero-output-guard.js'
+
 // ⚠️ `contentHasImage` 是**值导入**（`auto-adapter.ts` 同款）：带图判定必须与宿主
 // capability 判据**同一函数**（它含 tool-result 递归），自己写一遍必然漂移。
 import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage } from '@deepseek-ai/dsh-llm'
@@ -199,6 +216,17 @@ export class AggregateAdapter extends LlmAdapter {
   private readonly choiceCache = new Map<string, { at: number; targets: DispatchTarget[] }>()
   /** 虚拟模型 → 解析出的最大上下文窗口。仅在**全部候选**解析成功时记忆化。 */
   private readonly contextWindowCache = new Map<string, number>()
+  /**
+   * 「目标收下请求却零输出」的目标级冷却表（issue IKJW31 的 B 方案，2026-10-12 接线）。
+   *
+   * ⚠️ **纯内存、进程内、不落盘**：它优化的是「本次运行内别再三连撞同一堵墙」，
+   * 重启后重新试探是**正确**行为（用户可能已升级插件、上游可能已扩容）。
+   * ⚠️ 与 `jet-hub-auto` 的 `zeroOutputCooldowns` **同一语义、同一判据**，只是各记各的
+   * （两家路由的候选池不同，共用一张表会让一家的失败影响另一家的选型）。
+   */
+  private zeroOutputCooldowns: ZeroOutputCooldownMap = new Map()
+
+
   /**
    * `provider\u0000realId` → 该候选**声明**的上下文窗口（解析时顺手记下）。
    *
@@ -1443,6 +1471,12 @@ export class AggregateAdapter extends LlmAdapter {
         const skipped: string[] = []
         for (const candidate of targets) {
           const sep = String.fromCharCode(0)
+          // ⚠️ 零输出冷却中的目标**优先跳过**（与体积无关的理由）：它上一轮刚吞掉
+          //    一次请求、零输出（方案 F 记的冷却），再派给它只会重复一次失败。
+          if (isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId, self.options.now?.() ?? Date.now())) {
+            skipped.push(`${candidate.provider}(${candidate.realId})=零输出冷却中`)
+            continue
+          }
           const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))
             ?? self.candidateWindow.get(candidate.provider + sep + candidate.realId)
           if (cap !== undefined && cap < required) {
@@ -1470,6 +1504,10 @@ export class AggregateAdapter extends LlmAdapter {
         const target = targets[index]!
         // 该候选是否已经产出过内容（决定失败时能否安全切换，见上方长注释）。
         let emitted = false
+        /** 本候选的「零输出撞墙」探针（见下方方案 F 的接线）。 */
+        let zeroProbe = emptyZeroOutputProbe()
+        /** 本次尝试是否因「零输出撞墙」而改道（决定内层 break 后走 continue）。 */
+        let reroute = false
         /**
          * ⚠️⚠️ **在「转发一开始」就记下真实目标**（`activeRoutes`，供客户端实时读数）。
          *
@@ -1696,8 +1734,51 @@ export class AggregateAdapter extends LlmAdapter {
                 )
               }
             }
+            // ⚠️⚠️ **零输出撞墙 ⇒ 换下一个候选重发**（方案 F，2026-10-12 接线）。
+            //
+            // 判据在 `zero-output-guard.ts`（**唯一权威**）：`max-tokens` **且零输出**。
+            // ⚠️ 必须同时要求零输出 —— 有输出的 `max-tokens` 是「正常答到半截撞了输出
+            // 上限」，换候选会把已经产出的内容撤回（本文件上方两道守卫正是防这个）。
+            //
+            // ⚠️ 判定必须在**透出该终止帧之前**：一旦把 `max-tokens` 交给 harness，
+            //    本轮就结束了（DSH 对 `max-tokens` 不自动重试），改道机会随即消失。
+            //
+            // ⚠️ 额外要求 `openedBlocks.size === 0`：`block-start` **不算**可见内容
+            //（见 `isVisibleContent`），故「零输出」仍可能已经开过块 —— 而按 index
+            // 幂等的 `BlockAssembler` 会让下一个候选的内容灌进错误类型的块（本文件
+            // 上方那段长注释记录的真实缺陷）。零输出 + 没开过块才是**可安全重发**的形态。
+            zeroProbe = noteChunk(zeroProbe, chunk)
+            if (chunk.type === 'finish' && isZeroOutputWallHit(zeroProbe)) {
+              if (emitted || openedBlocks.size > 0) {
+                // 已开块/已吐内容：**如实透出**（重发会丢内容，比截断更糟）。
+                self.ctx.logger?.warn?.(
+                  `[aggregate] ${target.provider}（${target.realId}）零输出撞墙，但已开过 `
+                  + `${openedBlocks.size} 个块，不重发（重发会让内容灌进错误的块类型）`,
+                )
+              } else if (index + 1 < attemptTargets.length) {
+                self.zeroOutputCooldowns = noteZeroOutputHit(
+                  self.zeroOutputCooldowns, target.provider, target.realId, self.options.now?.() ?? Date.now(),
+                )
+                self.ctx.logger?.warn?.(
+                  `[aggregate] ${modelKey}: ${target.provider}（${target.realId}）收下请求却零输出`
+                  + `（疑似声明窗口虚高），改道下一个候选重发；该目标在 `
+                  + `${Math.round(ZERO_OUTPUT_COOLDOWN_MS / 60_000)} 分钟内不再被选`,
+                )
+                reroute = true
+                break
+              } else {
+                // 没有下一个候选：**如实透出**这轮的终止帧（不吞掉、不伪造成功）。
+                self.ctx.logger?.warn?.(
+                  `[aggregate] ${modelKey}: ${target.provider}（${target.realId}）收下请求却零输出，`
+                  + `但候选序已到末位；如实上报该结果`,
+                )
+              }
+            }
             yield chunk
           }
+          // ⚠️ 零输出撞墙改道：内层 `break` 出来，**不提交**任何「实际选中」记录，
+          //    直接试下一个候选（与 auto-adapter 的 `yield* this.dispatch(next, ...)` 同语义）。
+          if (reroute) continue
           // ⚠️ 走到这里 = 该候选的流**正常结束**（没有抛错、没有失败帧）⇒ 提交「实际选中」。
           if (pendingProvider !== undefined) {
             // ⚠️ 是**实际发往**的 `target.provider`，不是候选序第一个（带图改道时可能不同）。

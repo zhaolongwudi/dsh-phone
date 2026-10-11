@@ -82,7 +82,9 @@ describe('active-route：两处写入点', () => {
     //    写 modelKey 会让读数恒显示 `auto` 这类虚拟名，等于没做。
     expect(source).not.toMatch(/activeRoutes\.record\(\s*AGGREGATE_PROVIDER,\s*target\.provider,\s*modelKey\s*\)/)
     // 且必须在候选循环体内（每次尝试都覆盖写 ⇒ 失败切换后读数跟着变）。
-    const loopIndex = source.indexOf('for (let index = 0; index < targets.length; index += 1)')
+    // ⚠️ 循环头 2026-10-12 起是 `attemptTargets`（方案 C 的候选筛选后列表；
+    //    未筛时它与 `targets` 同一引用）—— 断言只关心「record 在循环体内」。
+    const loopIndex = source.indexOf('for (let index = 0; index < attemptTargets.length; index += 1)')
     const recordIndex = source.indexOf('activeRoutes.record(AGGREGATE_PROVIDER')
     expect(loopIndex).toBeGreaterThan(-1)
     expect(recordIndex).toBeGreaterThan(loopIndex)
