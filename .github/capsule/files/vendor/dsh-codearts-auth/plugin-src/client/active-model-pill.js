@@ -62,6 +62,8 @@ export const ROUTER_PROVIDER_IDS = Object.freeze(['aggregate', 'jet-hub-auto']);
  * `remote.session` 注入，解析失败不等于永远不可用。共 4 次、约 4.5 秒。
  */
 const RESOLVE_RETRY_DELAYS = [300, 700, 1500, 2000];
+/** 显式退避用尽后的**常驻重试**间隔（毫秒）。见 tryResolve 内的长注释。 */
+const PERSISTENT_RETRY_MS = 5_000;
 
 /** 无历史时的占位文案（路由型 provider）。 */
 export const PENDING_LABEL = '等待首次请求';
@@ -282,6 +284,8 @@ export function ActiveModelPill(props) {
     let alive = true;
     const timers = [];
     let attempt = 0;
+    // 「退避用尽」的 warn 只发一次（组件生命周期内）。
+    let gaveUpWarned = false;
     const tryResolve = () => {
       if (!alive || resolvedRef.current) return;
       let resolved = null;
@@ -304,7 +308,18 @@ export function ActiveModelPill(props) {
         return;
       }
       attempt += 1;
-      if (attempt >= RESOLVE_RETRY_DELAYS.length) return;
+      if (attempt >= RESOLVE_RETRY_DELAYS.length) {
+        // ⚠️⚠️ **不再「安静放弃」**（与用量徽标同一缺陷、同一修复，2026-10-11）：
+        // 对话开始的流式期 RPC 拥塞会让 4.5 秒显式退避全部失败 ⇒ 胶囊整块消失
+        // 且直到组件重挂载都不回来（用户报障「正式开始调用的时候，胶囊又没有了」）。
+        // ⇒ 退化为每 5 秒的常驻低频重试（纯内存读，成本可忽略），成功即恢复。
+        if (!gaveUpWarned) {
+          gaveUpWarned = true;
+          console.warn('[jet-hub pill] 目录解析显式退避用尽，转常驻低频重试（每 5s）');
+        }
+        timers.push(setTimeout(tryResolve, PERSISTENT_RETRY_MS));
+        return;
+      }
       timers.push(setTimeout(tryResolve, RESOLVE_RETRY_DELAYS[attempt - 1]));
     };
     tryResolve();

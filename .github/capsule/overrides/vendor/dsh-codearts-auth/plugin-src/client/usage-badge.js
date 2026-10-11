@@ -114,6 +114,8 @@ export const CREDITS_COLLAPSED_LIMIT = 5;
  * 之后安静放弃 —— 再长就变成用户可感知的「徽标迟迟不出来」。
  */
 const RESOLVE_RETRY_DELAYS = [300, 700, 1500, 2000];
+/** 显式退避用尽后的**常驻重试**间隔（毫秒）。见 tryResolve 内的长注释。 */
+const PERSISTENT_RETRY_MS = 5_000;
 
 /**
  * 徽标本体：只做门控，真正的工作在 {@link UsageBadgeActive}。
@@ -165,6 +167,8 @@ export function UsageBadge(props) {
     if (resolvedRef.current) return undefined;
     let alive = true;
     const timers = [];
+    // 「退避用尽」的 warn 只发一次（组件生命周期内）。
+    let gaveUpWarned = false;
     let attempt = 0;
     const tryResolve = () => {
       if (!alive || resolvedRef.current) return;
@@ -195,8 +199,19 @@ export function UsageBadge(props) {
       }
       attempt += 1;
       if (attempt >= RESOLVE_RETRY_DELAYS.length) {
-        // eslint-disable-next-line no-console
-        console.warn('[jet-hub usage] 目录解析最终失败，徽标不显示');
+        // ⚠️⚠️ **不再「安静放弃」**（真实缺陷，用户报障 2026-10-11「正式开始调用的时候
+        // 胶囊又没有了」）：对话开始后宿主进入流式期，RPC 通道被请求与目录刷新占用，
+        // 4.5 秒的显式退避可能**全部落在这个窗口里** ⇒ 解析全部失败 ⇒ 徽标/胶囊
+        // 整块消失且**直到组件重挂载都不回来**。而「会话中途换模型/新开会话」恰恰
+        // 会重挂输入区 —— 用户看到的正是「一开始在、一开始对话就没了」。
+        // ⇒ 退化为**常驻低频重试**（每 5 秒，与本文件的路由/余额轮询同量级）：
+        //    解析本身是纯内存读（directoryFor + load），失败成本可忽略；
+        //    成功即恢复显示。warn 只记一次（不刷屏）。
+        if (!gaveUpWarned) {
+          gaveUpWarned = true;
+          console.warn('[jet-hub usage] 目录解析最终失败（转常驻低频重试，每 5s）——对话期 RPC 拥塞是常见原因');
+        }
+        timers.push(setTimeout(tryResolve, PERSISTENT_RETRY_MS));
         return;
       }
       timers.push(setTimeout(tryResolve, RESOLVE_RETRY_DELAYS[attempt - 1]));
