@@ -46,6 +46,20 @@ jobs:
           git commit -m "docs: APK 下载链接更新为 $TAG [skip ci]" || true
           git push || true
 
+      # ⚠️ 手机版自有修复（2026-10-11 实测定位，移植验收循环失效的元凶）：
+      # `NodeRunner.ensureExtracted` 只在 `files/dsh.version != ASSET_VERSION` 时解压
+      # assets（程序树 tree/ 与内嵌 vendor）。而 ASSET_VERSION 是**源码硬编码常量**
+      # （上游恒为 "65"），不随构建变化 ⇒ 装新 APK 后判定「版本相同」→ 跳过解压
+      # ⇒ **vendor 永远停留在旧版本**（实测：装 0010/0023/0039 三个包，tree/ 下
+      # dsh-codearts-auth 的 mtime 始终不变，跑的仍是旧代码）。
+      # ⇒ 用构建 TAG 派生唯一版本号，保证每个新包首次启动必然重解压程序树；
+      #    用户数据（dsh-home：账号/令牌/会话/设置）按既有逻辑完整保留。
+      - name: 注入资源版本（强制新包解压 vendor）
+        run: |
+          VER="$(echo "$TAG" | sed 's/^build-//')"
+          sed -i "s/const val ASSET_VERSION = \"[^\"]*\"/const val ASSET_VERSION = \"$VER\"/" app/src/main/java/com/dshphone/NodeRunner.kt
+          grep -n 'ASSET_VERSION' app/src/main/java/com/dshphone/NodeRunner.kt
+
       # 「在用模型」胶囊外挂：把 .github/capsule/ 的文件复制/覆盖到工作区，
       # 随 APK 打包后丢弃。git 仓库内容不变，sync 合并永不冲突。
       - name: 应用胶囊外挂（Active Model Pill）
