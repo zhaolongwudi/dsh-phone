@@ -23,6 +23,18 @@ cp -a .github/capsule/files/. .
 # 2) 接线覆盖文件（基线 = 上游 0.1.60 同名文件 + 胶囊接线）
 cp -a .github/capsule/overrides/. .
 
+# 2.5) 防撞自检：files/ 与 overrides/ 出现同路径 = 配置错误（overrides 会静默胜出）。
+#      正常情况两者是互斥集合（全新增 vs 覆盖上游）；发现交集立即失败，防静默遮蔽。
+if comm -12 \
+    <(cd .github/capsule/files && find . -type f | sort) \
+    <(cd .github/capsule/overrides && find . -type f | sort) | grep -q .; then
+  echo "::error::capsule files/ 与 overrides/ 存在同路径文件（overrides 将静默遮蔽 files/），请二选一："
+  comm -12 \
+    <(cd .github/capsule/files && find . -type f | sort) \
+    <(cd .github/capsule/overrides && find . -type f | sort)
+  exit 1
+fi
+
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
 #    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
 
