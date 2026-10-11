@@ -1638,6 +1638,38 @@ export interface RpcUsageBadgeResponse {
    * 后台任务跑起来后变化，缓存住会让界面一直停在旧状态（看起来像「开关点了没反应」）。
    */
   autoCheckin: RpcUsageAutoCheckinState
+  /**
+   * `jet-hub-auto` 本次**实际**发往的渠道与模型（仅当请求的是 auto 且已发过请求时存在）。
+   *
+   * ⚠️ 宿主端的 auto 没有自己的账号与余额，`usage.badge` 会把请求改写成「临期胜者」
+   * 再去查余额；这份字段就是告诉客户端「改写成了谁」，供折叠胶囊显示
+   * 「实际在用的渠道 + 模型」—— 徽标是**止损工具**，用户原话「以为在用 A，
+   * 实际在烧 B，等发现时积分已经没了」。
+   *
+   * ⚠️ 上游 `ba10f4f` 重写 aggregate 时把本字段一并删掉了（旧 auto 的徽标随之失效）。
+   * 这里补回来（用户 2026-10-08 选定「两条都修」）。
+   */
+  autoActual?: { provider: string; model: string; viaImageFallback: boolean }
+  /**
+   * 本次 auto 胜者的额度失效时刻（毫秒）—— 折叠胶囊的临期倒计时用。
+   *
+   * ⚠️ **只有有限值才回传**：`Infinity`（只有长期积分）会被 JSON 序列化成 `null`，
+   * 客户端按 `typeof === 'number'` 判空。故 `null` 与「字段缺席」在语义上等价，
+   * 客户端只需判 `typeof`。
+   */
+  autoExpiryAt?: number
+  /**
+   * auto 本次目标的**计费倍率**（`priceFactorFromName` 的结果）。
+   *
+   * ⚠️ 只有**有限**值才回传：`Infinity` 是「无标注」的哨兵，拼进文案会渲染出
+   * `xInfinity`。`0` 是合法值（显示「免费」）。
+   *
+   * ⚠️ 存在的理由（用户报障 2026-10-08「没倍率显示？」）：auto 是跨渠道的单一
+   * 模型名，**它自己没有倍率** —— 倍率取决于这次选中谁。模型选择器显示的是
+   * `listModels` 的静态名（对所有请求都一样），往那里写死倍率就是编造。
+   * ⇒ 倍率只能显示在胶囊里（那里才有「实际用了谁」）。
+   */
+  autoPrice?: number
 }
 
 /**

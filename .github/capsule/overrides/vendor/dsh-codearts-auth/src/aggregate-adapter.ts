@@ -709,7 +709,7 @@ export class AggregateAdapter extends LlmAdapter {
     if (!disabled.has(AGGREGATE_AUTO_MODEL)) entries.push(this.autoModelInfo())
     for (const model of models) {
       if (disabled.has(model.key)) continue
-      entries.push({ provider, id: model.key, name: this.nameOf(model), inputModalities: ['text', 'image'] })
+      entries.push({ provider, id: model.key, name: this.pickerNameOf(model), inputModalities: ['text', 'image'] })
     }
     return entries
   }
@@ -726,7 +726,7 @@ export class AggregateAdapter extends LlmAdapter {
   listAllModels(): readonly { id: string; name: string }[] {
     return [
       { id: AGGREGATE_AUTO_MODEL, name: this.autoModelInfo().name },
-      ...this.catalog.map((model) => ({ id: model.key, name: this.nameOf(model) })),
+      ...this.catalog.map((model) => ({ id: model.key, name: this.pickerNameOf(model) })),
     ]
   }
 
@@ -752,8 +752,84 @@ export class AggregateAdapter extends LlmAdapter {
    * 「有没有冗余渠道」是**设置页**的信息（§7.3：按厂商分组、组内按候选渠道数降序、
    * 展开看逐条候选），不该混进模型展示名。
    */
+  /** 虚拟模型的展示名 —— **设置页与解析路径用**（不带倍率，见 {@link pickerNameOf}）。
+   *
+   * ⚠️ 本方法**保持无倍率**：`resolveModel` 与 `describeCatalog` 的返回值被三处
+   * 既有断言逐字钉住（`aggregate-adapter.spec.ts:88`、`aggregate-rejections.spec.ts:251`、
+   * `aggregate-catalog.spec.ts:21` 全是 `'DeepSeek V4.1 Flash'`），且 `describeCatalog`
+   * 的候选子列表**逐条**显示倍率（`candidateRowLabel`）—— 在模型名上再叠一次
+   * 会出现「两个倍率」的重复展示。倍率只加在**模型选择器**那一条路径上，
+   * 即 {@link pickerNameOf}。
+   */
   private nameOf(model: VirtualModel): string {
     return model.name
+  }
+
+  /**
+   * **模型选择器**里的展示名 = 规范名 + 倍率后缀（如 `GLM-5.3-Flash · 最低 x0.06`）。
+   *
+   * ## 为什么需要它（用户报障 2026-10-08）
+   *
+   * 用户原话：「没倍率显示？」—— 切到聚合后，选择器里每条虚拟模型**都没有倍率**，
+   * 而同屏的普通渠道（`GLM-5.3-Flash · x0.06`）有。用户据此无法判断「聚合给我
+   * 挑的是不是便宜的那个」，而本功能的全部卖点正是「省钱烧临期」。
+   *
+   * 根因：`nameOf` 只回规范名，而倍率其实**早就算好了** ——
+   * `aggregate-catalog.ts` 的 `CandidateEntry.price` 就是 `priceFactorFromName(realName)`
+   * 的结果，只是从没被展示层用过。
+   *
+   * ## ⚠️⚠️ 为什么文案是「**最低** x…」而不是直接 `· x…`（真实缺陷，复审实测）
+   *
+   * 初版取全局最小 `price` 并直接拼成 `· x0.03`，其注释推理是「轮换的**第二**判据
+   * 是同临期档内倍率升序 ⇒ 最便宜候选最可能被选中」。**该推理在跨临期档时不成立**：
+   * `rankCandidates` 的第一判据是**临期升序**，倍率只在**同档内**才起作用。
+   * 复审实测（真实 `lib/aggregate-adapter.js` + 真实 `prepareCall`）：
+   *
+   * ```
+   * 候选：buddy x0.29（临期 100，最早） / codearts x0.03（临期 900）
+   * 选择器显示："DeepSeek V4.1 Flash · x0.03"   <-- 让用户以为会挑便宜的
+   * 实际发往  ：["buddy"]                         <-- 实际挑的是最贵的
+   * ```
+   *
+   * ⇒ 直接写 `x0.03` 会**误导用户**，与本 PR 自己在 `types.ts` 立下的判据
+   *（「往静态名里写死倍率就是编造」）同型：显示的价与实际会用的价不符。
+   *
+   * ⚠️ 修法**不是**「按临期最早那档取最便宜候选」：`CandidateEntry` 里**没有**
+   * `expiry`（临期是运行期由 `expiryProbe` 折算的，见 `aggregate-expiry.ts`），
+   * 而本方法被 `listModels` / `listAllModels` 调用、**契约要求同步**
+   *（`ModelCatalogSource` 的注释）⇒ 这里根本拿不到临期档。若为它改成异步或
+   * 触发一轮余额查询，代价远大于收益（选择器渲染路径不能打网络）。
+   * ⇒ 采用**如实表达下界**的口径：`最低 x0.03` 的语义是「这个虚拟模型下最便宜的
+   * 可路由候选」，它**不声称**本次会选它 —— 用户据此仍能判断「值不值得选这个
+   * 模型」，且不会被误导成「一定会用 0.03」。
+   *
+   * ⚠️ **不显示「区间」**（如 `x0.03–x0.29`）：那会变成最长行，而选择器是窄菜单
+   *（与 `buddy-adapter.ts` 的「不写 `（促销 …）`」同一取舍）。
+   *
+   * ## 三条不显示倍率的规则（都是既有约定）
+   *
+   * 1. **全部候选都无标注**（`Infinity`）⇒ 不加后缀。直接拼会渲染出
+   *    `xInfinity`，那是明显的渲染缺陷（`aggregate-panel-logic.js` 同款判据）。
+   * 2. **`0` 显示「免费」**（本仓库既有口径，见 `candidateRowLabel`）。
+   * 3. **解析不出就不猜**：宁可没有倍率，也不编一个（`buddy.ts` 同款理由：
+   *    编造倍率比不显示更糟）。
+   *
+   * ⚠️ 只用于 `listModels` / `listAllModels`（选择器与设置页「显示列表」）。
+   * **不得**用于 `resolveModel` / `describeCatalog` —— 见 {@link nameOf} 的注释。
+   */
+  private pickerNameOf(model: VirtualModel): string {
+    const prices = model.candidates
+      // ⚠️ 只取**已接入临期折算**的候选（与 `describeCatalog` 的过滤同一口径）：
+      //    未接入的渠道经 `expiryProbe` 得 `UNUSABLE`、**永远不会被路由到**，
+      //    把它的价格显示出来等于替一个用不上的候选报价（规格 §9.2.1：
+      //    只广告可路由的东西）。
+      .filter((candidate) => WIRED_EXPIRY_PROVIDERS.includes(candidate.provider))
+      .map((candidate) => candidate.price)
+      .filter((price) => Number.isFinite(price))
+    if (prices.length === 0) return model.name
+    const best = Math.min(...prices)
+    // ⚠️ 「最低」二字不可省：见方法头那段实测 —— 省掉会让用户以为本次就用这个价。
+    return `${model.name} · 最低 ${best === 0 ? '免费' : `x${best}`}`
   }
 
   /**

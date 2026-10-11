@@ -73,7 +73,7 @@ import { GEMINI } from './gemini.js'
 import type { GeminiCredential } from './gemini.js'
 import { createGeminiSigStore } from './gemini-sigstore.js'
 import { registerOpencodeLlm } from './opencode-adapter.js'
-import { registerAutoLlm } from './auto-adapter.js'
+import { AUTO_PROVIDER, registerAutoLlm } from './auto-adapter.js'
 import { AGGREGATE_PROVIDER, registerAggregateLlm } from './aggregate-adapter.js'
 // ⚠️ `createExpiryProbe` 从**底座**导入，不是从 `aggregate-adapter.js`
 //（它定义在 `aggregate-expiry.ts`，理由见该文件与 Task 7 的 Files 说明）。
@@ -2233,6 +2233,24 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   //    两个缓存不同，只清折算缓存会让「刚登录的账号」在 60 秒内仍不进候选序）。
   sharedChoiceCacheRef = aggregateAdapter
   // ===== Jet Hub RPC 注册 =====
+  // ===== Jet Hub「自动」注册（移植自 Gitee 93d20230）=====
+  // 一个 `auto` 模型名用整池，按「积分最快作废」跨 provider 选型（见 `auto-adapter.ts`
+  // 模块头）。注册放在全部 provider 适配器之后：它经 ctx.llm 公开路径委托目标适配器，
+  // 目录/凭据此时均已就绪。
+  //
+  // ⚠️ 位置必须在 `modelAdapters` 表**之前**：那张表要收它的实例（见下面的
+  //    `'jet-hub-auto'` 键），而 `usage.badge` 对 `jet-hub-auto` 的改写依赖它。
+  // ⚠️ 上游 `ba10f4f` 重写 aggregate 时把这条接线一并删掉了 ⇒ 旧 auto 的徽标
+  //    彻底消失（用户报障 2026-10-08「也没胶囊了？」）。这里补回来。
+  const autoAdapter = registerAutoLlm(ctx, {
+    accountPool: pool,
+    // ⚠️ **与 aggregate 共用同一个探针**（真实缺陷，对抗审计实测证伪）：
+    //    不传时 `AutoAdapter` 会**自建一份**，于是有两份独立缓存 ⇒
+    //    ① 同一渠道被折算两次（白打两次上游余额接口）；
+    //    ② 缓存失效要清两次，漏一次就让「刚登录的账号最长 60 秒对路由不可见」。
+    expiryProbe: sharedExpiryProbe,
+  })
+
   // provider → 适配器实例：Jet Hub「显示列表」需要 `listAllModels()`（不受用户
   // 黑名单影响的全量目录，带最终展示名/倍率）。DSH 的 `ctx.llm` 只保证
   // `listModels`，不透传自定义方法，故这里显式把实例传下去。
@@ -2299,6 +2317,14 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     //       `listModels` 只返回 `['auto','m2']`）。
     //    ⇒ 传 `enabled: false` 让本函数**直接返回原适配器**，历史遗留记录被忽略。
     aggregate: pruned(AGGREGATE_PROVIDER, aggregateAdapter, { enabled: false }),
+    // ⚠️ 旧 auto 也必须进这张表：`jet-hub-rpc.ts` 的 `usage.badge` 经它取
+    //    「实际转发历史 / 预测 / 倍率」（见 `ModelCatalogSource.autoState`）。
+    //    ⚠️ **不能**给 `registerJetHubRpc` 加第 17 个位置参数 —— 那条派生式不变量
+    //    「客户端 PROVIDERS 条数 + 1 == 形参个数」会立刻变红（实测 10 条接线断言
+    //    同时失败），而它正是为了防「位置错位 = 拿 A 的实例当 B 用」。
+    //    ⚠️ 同样传 `enabled: false`：auto 是**动态**的单模型（真实目标由选型决定），
+    //    「编译期兜底快照跟不上上游下架」那套记录/过滤机制对它没有意义。
+    'jet-hub-auto': pruned(AUTO_PROVIDER, autoAdapter, { enabled: false }),
     autoclaw: pruned('autoclaw', autoclaw.adapter),
   }
 
@@ -2357,16 +2383,5 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   // ⚠️ 它依赖 `agents` 服务，故内部用 `ctx.inject(['agents'], …)` 挂载：
   // 该服务缺席的 profile 里本功能整体不生效，不会让插件永久 pending。
   installLoopResume(ctx)
-  // Jet Hub「自动」：一个 `auto` 模型名用整池，按「积分最快作废」跨 provider 选型
-  // （见 `auto-adapter.ts` 模块头）。注册放在全部 provider 适配器之后：它经
-  // ctx.llm 公开路径委托目标适配器，目录/凭据此时均已就绪。
-  registerAutoLlm(ctx, {
-    accountPool: pool,
-    // ⚠️ **与 aggregate 共用同一个探针**（真实缺陷，对抗审计实测证伪）：
-    //    不传时 `AutoAdapter` 会**自建一份**，于是有两份独立缓存 ⇒
-    //    ① 同一渠道被折算两次（白打两次上游余额接口）；
-    //    ② 缓存失效要清两次，漏一次就让「刚登录的账号最长 60 秒对路由不可见」。
-    expiryProbe: sharedExpiryProbe,
-  })
   ctx.provide('accountPool', pool)
 }

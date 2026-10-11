@@ -18,6 +18,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { AccountPool } from './account-pool.js'
+import { AUTO_PROVIDER as AUTO_PROVIDER_ID } from './auto-adapter.js'
+import { resolveAutoBadgeRewrite, type AutoBadgeState } from './auto-badge.js'
 import { activeRoutes } from './active-route.js'
 import { isGatewayEnabled } from './openai-gateway/config.js'
 import { collectGatewayEffortViews, collectGatewayModels, toGatewayModelIds, type GatewayModelSource } from './openai-gateway/models.js'
@@ -1131,6 +1133,24 @@ export interface ModelCatalogSource {
    *（`describeCatalog` 的零查询契约不受影响，见那里的注释）。
    */
   describeExpiryOrder?(signal?: AbortSignal): Promise<Record<string, number>>
+  /**
+   * auto 的**实际转发历史**与选型入口（**可选** —— 只有 `jet-hub-auto` 实现它）。
+   *
+   * ## ⚠️ 为什么放在 `modelAdapters` 表里，而不是给 `registerJetHubRpc` 加一个位置参数
+   *
+   * 那个函数是**位置传参**，其形参列表有成文警告「历史上已因少传/插队错位复发 6 次」，
+   * 且 `zcode-wiring.spec.ts` 有一条**派生式不变量**：
+   * 「客户端 `PROVIDERS` 条数 + 1 == 形参个数」。
+   * 加第 17 个位置参数会直接打破它（实测：10 条接线断言同时变红），而那条不变量
+   * 正是为了防「中间某个 provider 位置错位 = 拿 A 的实例当 B 用」这类真实故障。
+   *
+   * ⇒ 走**按 id 键控**的 `modelAdapters` 表：加一个键不影响任何位置，也不影响
+   *   那条不变量（它只数形参）。聚合 provider 同样在这张表里（见 `index.ts`）。
+   *
+   * ⚠️ 返回类型复用 `auto-badge.ts` 的 `AutoBadgeState`（**唯一权威**）——
+   *    在 `usage.badge` 里再声明一份同样的形状必然漂移。
+   */
+  autoState?(): AutoBadgeState
 }
 
 /**
@@ -4572,8 +4592,41 @@ function registerJetHubEndpoints(
         if (provider.length === 0) {
           return { ok: false, error: { code: 'bad-request', message: 'provider 不能为空' } }
         }
-        const value = await usageBadge.read(provider, req.force === true ? { force: true } : {})
-        // `read()` 返回的就是本端点的响应信封（`{ ok, value|error }`），直接透传。
+        // auto 的「余额」= **临期胜者**的余额（真实缺陷，用户报障 2026-10-06）：
+        // auto 自己没有账号也没有余额，徽标若按字面查会显示「用量不可用」。
+        // ⇒ 把请求改写给「auto 现在真正会用的那个 provider」。
+        //
+        // ⚠️ 判定逻辑在 `src/auto-badge.ts` 的 `resolveAutoBadgeRewrite`（**纯函数**）——
+        //    本文件 4500+ 行且大量 import，单测无法 import 它的内部逻辑，只能做
+        //    源码字符串断言，而**字符串断言是恒真的假用例**（把实现改成
+        //    `if (false && …)` 后正则照样命中、用例依然全绿 —— 我实测撞过）。
+        //    ⇒ 搬出去后测试可以行为断言（喂不同的 autoState，断言改写结果）。
+        const rewrite = await resolveAutoBadgeRewrite(
+          provider,
+          AUTO_PROVIDER_ID,
+          modelAdapters?.[AUTO_PROVIDER_ID]?.autoState?.(),
+        )
+        if (rewrite.kind === 'error') {
+          return { ok: false, error: { code: 'bad-request', message: rewrite.message } }
+        }
+        const effectiveProvider = rewrite.kind === 'rewrite' ? rewrite.effectiveProvider : provider
+        const value = await usageBadge.read(effectiveProvider, req.force === true ? { force: true } : {})
+        // ⚠️ 响应里的 `provider` 必须**改回请求的 provider**（即 auto）：客户端
+        // 用它做「这份读数属不属于我」的对号（usage-badge.js 的
+        // `value.provider !== provider` 守卫）。原样透传被改写后的 provider 会被
+        // 客户端当成「别的渠道的读数」丢弃 —— 表现就是徽标一直停在初始态。
+        if (value?.ok === true && value.value !== undefined && rewrite.kind === 'rewrite') {
+          return {
+            ...value,
+            value: {
+              ...value.value,
+              provider,
+              ...(rewrite.autoActual === undefined ? {} : { autoActual: rewrite.autoActual }),
+              ...(rewrite.autoExpiryAt === undefined ? {} : { autoExpiryAt: rewrite.autoExpiryAt }),
+              ...(rewrite.autoPrice === undefined ? {} : { autoPrice: rewrite.autoPrice }),
+            },
+          }
+        }
         return value
       }
 
