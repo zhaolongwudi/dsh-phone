@@ -1060,6 +1060,8 @@ export class AggregateAdapter extends LlmAdapter {
     if (remembered !== undefined) return remembered
     let widest: number | undefined
     let allResolved = true
+    // 手机版诊断（2026-10-11）：逐候选记录解析结果，定位「声明在哪一家丢失」。
+    const traces: string[] = []
     for (const candidate of candidates) {
       let window: number | undefined
       try {
@@ -1072,8 +1074,10 @@ export class AggregateAdapter extends LlmAdapter {
         if (error !== null && typeof error === 'object'
           && (error as { name?: unknown }).name === 'AbortError') throw error
         allResolved = false
+        traces.push(`${candidate.provider}(${candidate.realId})=解析失败`)
         continue
       }
+      traces.push(`${candidate.provider}(${candidate.realId})=${window ?? '未声明'}`)
       if (window !== undefined && (widest === undefined || window > widest)) widest = window
     }
     const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW
@@ -1087,6 +1091,11 @@ export class AggregateAdapter extends LlmAdapter {
     //    下一次调用重新尝试（目录就绪后自然取到各家声明的最大值）。
     //    兜底值仅作本次的**瞬时**回落，不进入任何缓存。
     if (allResolved && widest !== undefined) this.contextWindowCache.set(modelKey, resolved)
+    // 诊断日志：每次实际解析（未命中缓存）打一行汇总，含逐候选窗口与是否固化。
+    this.ctx.logger?.info?.(
+      `[jet-hub] 窗口解析 ${modelKey}: ${traces.join(', ')} → ${resolved}`
+        + `${allResolved && widest !== undefined ? '（已缓存）' : '（未缓存）'}`,
+    )
     return resolved
   }
 
