@@ -1,26 +1,60 @@
-# ⚠️ port-gitee 测试分支专用：只做类型检查级验证（vitest + tsc + esbuild），
-# 跳过 APK 打包 / Release / README 更新 —— 移植轮次的快速反馈环。
-# main 的完整构建模板在 .github/capsule/build-apk.yml（sync 后由 sync-upstream 恢复）。
-# 合并回 main 时：不带本文件，或恢复完整版 workflow。
-name: build-apk (port-gitee typecheck only)
+# 构建可安装的 debug APK：sync-upstream 推送新提交后自动触发（push 事件），
+# 也可在 Actions 页面手动触发。README 链接更新的提交带 [skip ci]，不会循环。
+# 原生产物（libnode / bash / rg / 三个 Rust .so）有缓存：生成脚本未变时直接复用，
+# 跳过 NDK 下载与 Rust 编译，日常构建只需组装资源 + Gradle。
+name: build-apk
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: build-apk
+  # 连续推送只保留最新一次构建
+  cancel-in-progress: true
+
+env:
+  # ubuntu runner 预装 Android SDK 的位置
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/28.2.13676358
+  GRADLE_USER_HOME: ~/.gradle
 
 jobs:
-  typecheck:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
-      # 「在用模型」胶囊外挂：把 .github/capsule/ 的文件复制/覆盖到工作区。
-      # 自检项缺失会显式失败（保证「胶囊失效」永远可见）。
+      # 构建一开始即生成版本号并更新 README 下载链接（[skip ci] 不触发本流水线）：
+      # 仓库 README 立刻指向即将发布的产物，消除「用户看到上一版链接」的窗口期。
+      - name: 生成构建版本号并更新 README 下载链接
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-$(date -u +%Y%m%d-%H%M)"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          python3 .github/capsule/update-readme.py README.md "$TAG"
+          git config user.name "dsh-build-bot"
+          git config user.email "dsh-build-bot@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: APK 下载链接更新为 $TAG [skip ci]" || true
+          git push || true
+
+      # 「在用模型」胶囊外挂：把 .github/capsule/ 的文件复制/覆盖到工作区，
+      # 随 APK 打包后丢弃。git 仓库内容不变，sync 合并永不冲突。
       - name: 应用胶囊外挂（Active Model Pill）
         run: bash .github/capsule/apply.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - uses: actions/setup-node@v4
         with:
@@ -29,6 +63,30 @@ jobs:
       - name: 安装 pnpm
         run: npm install -g pnpm@10
 
+      # 原生产物只随这些输入变化：node/bash/rg 准备脚本与包清单、
+      # Rust 构建脚本（固定 noema commit）、flock/landlock 源码
+      - name: 缓存原生产物（jniLibs）
+        uses: actions/cache@v4
+        id: jnilibs
+        with:
+          path: app/src/main/jniLibs/arm64-v8a
+          key: jnilibs-${{ hashFiles('scripts/prepare-native.py', 'native/**', 'scripts/build-noema-android.py', 'scripts/build-flock-android.py', 'scripts/build-landlock-android.py', '.github/scripts/prepare-node-android.py') }}
+
+      - name: 安装 Android SDK 组件
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+
+      - name: 缓存 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
       - name: 缓存 pnpm
         uses: actions/cache@v4
         with:
@@ -36,7 +94,63 @@ jobs:
           key: pnpm-${{ hashFiles('runtime/pnpm-lock.yaml') }}
           restore-keys: pnpm-
 
-      # 接线后的 vendor 源码验证：vitest 胶囊 spec → tsc 类型检查 → esbuild 重建
-      # bundle。移植代码的类型错误在这里显式失败（上游自己从不跑 tsc）。
-      - name: vendor 验证（vitest + tsc + esbuild）
+      - name: 缓存并安装 NDK r28c
+        if: steps.jnilibs.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        id: ndk
+        with:
+          path: /usr/local/lib/android/sdk/ndk/28.2.13676358
+          key: android-ndk-r28c
+
+      - name: 安装 NDK r28c
+        if: steps.jnilibs.outputs.cache-hit != 'true' && steps.ndk.outputs.cache-hit != 'true'
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null
+          ls "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/"
+
+      - name: 准备原生运行时（node / bash / ripgrep / Rust 三件套）
+        if: steps.jnilibs.outputs.cache-hit != 'true'
+        run: |
+          python3 .github/scripts/prepare-node-android.py
+          python3 scripts/prepare-native.py
+          python3 scripts/build-noema-android.py
+          python3 scripts/build-flock-android.py
+          python3 scripts/build-landlock-android.py
+          ls -l app/src/main/jniLibs/arm64-v8a/
+
+      # 接线后的 vendor 源码重新编译（lib/ 全是编译产物）：tsc 做类型检查，
+      # esbuild 重建面板 bundle；胶囊接线错误在这里显式失败。
+      # 纯净构建（.github/capsule/DISABLED 存在）时跳过重建，直接用仓库预编译 lib。
+      - name: 编译 vendor 插件（胶囊接线重建 lib）
         run: bash .github/capsule/rebuild-vendor.sh
+
+      - name: 组装运行时资源
+        run: |
+          cd runtime
+          pnpm install --frozen-lockfile --ignore-scripts
+          cd ..
+          python3 scripts/build-assets.py
+          ls -l app/src/main/assets/ | head
+
+      - name: 编译 APK
+        run: ./gradlew :app:clean :app:assembleDebug --no-daemon
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" \
+            --title "APK 构建 $TAG" \
+            --notes "上游 main @ $(git rev-parse --short HEAD)" \
+            --target main
+          gh release upload "$TAG" app/build/outputs/apk/debug/app-debug.apk
+
+      - name: 更新 README 下载链接
+        run: |
+          python3 .github/capsule/update-readme.py README.md "$TAG"
+          git config user.name "dsh-build-bot"
+          git config user.email "dsh-build-bot@users.noreply.github.com"
+          git add README.md
+          # 幂等：内容无变化不提交（防循环），有变化才 push。
+          git diff --cached --quiet || git commit -m "docs: 更新 APK 下载链接（$TAG） [skip ci]"
+          git push
