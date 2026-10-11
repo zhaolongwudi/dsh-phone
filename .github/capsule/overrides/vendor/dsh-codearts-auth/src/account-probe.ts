@@ -46,6 +46,10 @@ import { zcodeProductById } from './zcode-product.js'
 import { GeminiAdapter } from './gemini-adapter.js'
 import { MinimaxAdapter } from './minimax-adapter.js'
 import { MINIMAX, minimaxProductById } from './minimax-product.js'
+import { LoomyAdapter } from './loomy-adapter.js'
+import { LOOMY } from './loomy-product.js'
+import { RaccoonAdapter } from './raccoon-adapter.js'
+import { RACCOON } from './raccoon-product.js'
 import { GEMINI, GEMINI_DEFAULT_PROJECT, GEMINI_SESSION_LANE_SMOKE } from './gemini.js'
 import type { BuddyCredential } from './buddy.js'
 import type { LobsteraiCredential } from './lobsterai.js'
@@ -55,6 +59,8 @@ import type { ZcodeCredential } from './zcode.js'
 import type { TraeCredential } from './trae.js'
 import type { GeminiCredential } from './gemini.js'
 import type { MinimaxCredential } from './minimax.js'
+import type { LoomyCredential } from './loomy.js'
+import type { RaccoonCredential } from './raccoon.js'
 import type {
   CodeArtsCredential,
   ProbeAccountResult,
@@ -89,6 +95,8 @@ type ProbeCredential =
   | TraeCredential
   | GeminiCredential
   | MinimaxCredential
+  | LoomyCredential
+  | RaccoonCredential
 
 /** 探测请求的提示语（与 e2e 探针保持一致，最大化可比性）。 */
 const PROBE_PROMPT = '只回答两个字：收到'
@@ -257,6 +265,8 @@ async function probeWithAdapter(
     | TraeAdapter
     | GeminiAdapter
     | MinimaxAdapter
+    | LoomyAdapter
+    | RaccoonAdapter
     | CodeArtsAdapter
   if (buddyProduct !== undefined) {
     adapter = new BuddyAdapter({
@@ -318,6 +328,35 @@ async function probeWithAdapter(
       credentialRef: ref,
       resolveCredential: async () => credential as TraeCredential,
       refresh: async () => {},
+    })
+  } else if (entry.provider === LOOMY.id) {
+    // Loomy（讯飞）→ 自己的端点。
+    //
+    // ⚠️ **旧 else-if 链漏了它**（上游记为「第 5 次同型缺陷」，2026-10-08 修）：
+    // 落 `else` 会被交给**华为云 HMAC 签名**的 `CodeArtsAdapter` 去发 Loomy 凭据
+    // ⇒ 探测必然失败，而它的限流标记（UTC+8 当日 24:00）**永远清不掉**。
+    // ⚠️ 手机版客户端把 loomy 登记为 `rateLimit: false`（按钮隐藏），但 RPC
+    // `account.retest` 仍可达 ⇒ 属纵深防御，不能因此省掉这条分支。
+    adapter = new LoomyAdapter({
+      credentialRef: ref,
+      resolveCredential: async () => credential as LoomyCredential,
+      refresh: async () => {},
+      product: LOOMY,
+    })
+  } else if (entry.provider === RACCOON.id) {
+    // Raccoon Work（商汤小浣熊）→ 自己的端点。
+    //
+    // ⚠️ **与 loomy 同一处缺陷**（上游记为「第 5 次同型缺陷」）：手机版此前同样
+    // 没有分支 ⇒ 落 `else` 被交给 CodeArtsAdapter。
+    // ⚠️ **本家是用户可见缺陷**：`raccoon` **未**登记 `rateLimit: false`
+    // ⇒ 客户端「重测 / 重置」按钮**会渲染**，而点击后必然报
+    // 「codearts: no usable credential; log in first」（本机实测），
+    // 标记也永远清不掉（raccoon 的额度受限**每次都会**写 modelRateLimits）。
+    adapter = new RaccoonAdapter({
+      credentialRef: ref,
+      resolveCredential: async () => credential as RaccoonCredential,
+      refresh: async () => {},
+      product: RACCOON,
     })
   } else if (minimaxProduct !== undefined) {
     // MiniMax Code（中国版）→ Anthropic Messages 端点。

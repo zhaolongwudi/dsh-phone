@@ -13,6 +13,6 @@ fi
 
 cd vendor/dsh-codearts-auth
 pnpm install --no-frozen-lockfile --ignore-scripts
-pnpm exec vitest run tests/unit/active-route.spec.ts tests/unit/active-model-pill.spec.ts tests/unit/context-window-learn.spec.ts tests/unit/llm-adapter-context-overflow.spec.ts tests/unit/context-overflow-channels.spec.ts tests/unit/openai-gateway-server.spec.ts tests/unit/minimax-adapter.spec.ts tests/unit/minimax-messages.spec.ts
+pnpm exec vitest run tests/unit/active-route.spec.ts tests/unit/active-model-pill.spec.ts tests/unit/context-window-learn.spec.ts tests/unit/llm-adapter-context-overflow.spec.ts tests/unit/context-overflow-channels.spec.ts tests/unit/openai-gateway-server.spec.ts tests/unit/minimax-adapter.spec.ts tests/unit/minimax-messages.spec.ts tests/unit/probe-dispatch-guard.spec.ts
 pnpm run build:all
 ls -l lib/index.js lib/client/jet-hub.js
