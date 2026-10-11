@@ -1319,8 +1319,13 @@ export class AggregateAdapter extends LlmAdapter {
               const failure = chunk.reason.failure
               const message = `aggregate: ${target.provider}（${target.realId}）上游失败`
                 + `${describeFailure(failure)}`
-              const code = typeof upstreamCode === 'string' && upstreamCode.length > 0
-                ? upstreamCode : 'SERVER'
+              // ⚠️ 手机版补充（2026-10-11）：上游其实说的是「请求超出上下文窗口」时，
+              //    必须如实归成 `CONTEXT_WINDOW_EXCEEDED`，否则 DSH 的压缩恢复链
+              //    **根本不会启动**（`dsh-compaction-basic` 的 request-error listener
+              //    第一行就是这个判据）——归成 `SERVER` / `INVALID_REQUEST` 的代价是
+              //    **长会话越过窗口后每轮报废**，而误归一次的最坏代价只是一次无效压缩。
+              //    方向不对称，与 `buddy-adapter.ts` / `gemini-adapter.ts` 的成文口径一致。
+              const code = resolveUpstreamCode(upstreamCode, message)
               // ⚠️⚠️ **逐字段独立回退**（不是整袋回退）。
               //
               // 我先前的两版都有问题：
@@ -1743,6 +1748,36 @@ function isContextOverflowFailure(error: unknown): boolean {
   const detail = [typeof code === 'string' ? code : '', typeof message === 'string' ? message : '']
     .filter((part) => part.length > 0).join(' ')
   return detail.length > 0 && isContextWindowExceededError(detail)
+}
+
+/**
+ * 定这次上游失败最终该报什么码（手机版补充，2026-10-11）。
+ *
+ * ## 为什么要在**聚合层**再判一次
+ *
+ * DSH 的「撞窗口 → 剪工具结果 + 压缩 → 重试」链**只认** `CONTEXT_WINDOW_EXCEEDED`
+ * （`dsh-compaction-basic/lib/index.js` 的 `agent/request-error` listener 第一行即本判据）。
+ * 而聚合的候选横跨十几个适配器，其中多数把上游的「输入超限」按**通用码**抛出
+ * ——HTTP 400 更是被共享层一律映射成 `INVALID_REQUEST`（`openai-compat.ts` 的
+ * `httpErrorCode`）⇒ 用户只看到裸错误，且**长会话越过窗口后每轮报废**。
+ * 在聚合层补这一次判断，等于让**所有走 aggregate / auto 的模型**同时获得恢复能力，
+ * 不必逐个改十三个适配器（各适配器内的同类修正见 `buddy-adapter.ts` /
+ * `llm-adapter.ts` / `gemini-adapter.ts` 的 `httpErrorCode`）。
+ *
+ * ## 只对「泛化码」再判（不覆盖已归好的语义）
+ *
+ * `AUTH` / `QUOTA_EXCEEDED` / `RATE_LIMIT` / `TRANSPORT` / `TIMEOUT` / `EMPTY_RESPONSE` 等
+ * 都是**已经归好类**的失败，覆盖它们只会丢掉更具体的诊断信息。真正「没归类」的载体
+ * 只有两个：`SERVER`（兜底）与 `INVALID_REQUEST`（HTTP 400 的兜底）。
+ *
+ * ⚠️ 判据复用 {@link isContextOverflowFailure}（宿主规范码 + 宿主措辞分类器），
+ * **本文件里没有第二套措辞匹配**（本仓库红线：同一语义不得两套判据）。
+ */
+function resolveUpstreamCode(upstreamCode: unknown, message: string): string {
+  const code = typeof upstreamCode === 'string' && upstreamCode.length > 0 ? upstreamCode : 'SERVER'
+  if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return code
+  if (code !== 'SERVER' && code !== 'INVALID_REQUEST') return code
+  return isContextOverflowFailure({ code, message }) ? CONTEXT_WINDOW_EXCEEDED_CODE : code
 }
 
 /**
