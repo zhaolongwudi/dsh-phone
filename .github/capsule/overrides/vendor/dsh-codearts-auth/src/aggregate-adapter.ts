@@ -71,15 +71,15 @@ export const AGGREGATE_AUTO_MODEL = 'auto'
 
 /**
  * 聚合虚拟模型上下文窗口的**兜底值**：候选里没有任何一家声明 contextWindow
- * （或目录尚未加载）时使用。
+ * （或目录尚未加载）时使用。移植自上游 Gitee 原作者的 contextWindowFor 实现口径。
  *
- * ⚠️ **手机版自有改定（2026-10-11，用户实测拍板）**：上游/Gitee 原值 200_000 ——
- * 冷启动目录未就绪时 buildModelCatalog 会把兜底值固化进客户端目录缓存（ready
- * 短路），用户侧长期显示 200K 而非候选集真实的 1M 口径（实测报障）。候选里声明
- * 1M 的渠道（codearts GLM 系）是现实常态，兜底取 1_000_000 让「解析不出」时
- * 也按 1M 计；真实渠道窗口小于此值时由派发路径的临期切换兜底，不再依赖声明值。
+ * ⚠️ 2026-10-11 复盘：曾按用户「改到 1M」的表述把它改成 1_000_000，用户随后
+ * 澄清**不是拍板兜底值**——同一虚拟模型的 5 家候选对窗口的声明各不相同，
+ * 一刀切（1M 或 200K）都不符合真实。真正的问题在**记忆化固化**（见
+ * contextWindowFor 内的手机版修正：解析不到声明不再写缓存），兜底只应作为
+ * 解析不出时的**瞬时**回落，保持上游原值 200_000（保守方向）。
  */
-export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 1_000_000
+export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 200_000
 
 /**
  * 临期探针的类型 `ExpiryProbe` 定义在 **`aggregate-core.ts`**（纯类型、零 IO）——
@@ -1077,7 +1077,16 @@ export class AggregateAdapter extends LlmAdapter {
       if (window !== undefined && (widest === undefined || window > widest)) widest = window
     }
     const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW
-    if (allResolved) this.contextWindowCache.set(modelKey, resolved)
+    // ⚠️ **手机版修正（2026-10-11，用户实测报障）**：记忆化必须同时要求
+    // 「无抛错」**和**「真的解析到了声明」。原条件只看 `allResolved`（没抛错）——
+    // 渠道目录未就绪时 `resolveModelInfo` 会**成功返回但不带窗口声明**（undefined），
+    // 5 家全 undefined ⇒ 兜底值被当成「解析成功」**写进缓存固化**：此后即使各家
+    // 目录就绪、各自声明了不同窗口（实测同一虚拟模型 5 家候选声明各异），
+    // 也永远返回固化的兜底值 ⇒ GUI 恒显示 200K。
+    // ⇒ 只缓存「确有声明」的结果（widest !== undefined）；解析不出时**不缓存**，
+    //    下一次调用重新尝试（目录就绪后自然取到各家声明的最大值）。
+    //    兜底值仅作本次的**瞬时**回落，不进入任何缓存。
+    if (allResolved && widest !== undefined) this.contextWindowCache.set(modelKey, resolved)
     return resolved
   }
 

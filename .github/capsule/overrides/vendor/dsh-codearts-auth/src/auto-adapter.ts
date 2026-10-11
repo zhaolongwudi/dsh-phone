@@ -218,10 +218,10 @@ export class AutoAdapter extends LlmAdapter {
       name: AUTO_MODEL_INFO.name,
       ...(AUTO_MODEL_INFO.description === undefined ? {} : { description: AUTO_MODEL_INFO.description }),
       inputModalities: ['text', 'image'],
-      // ⚠️ **手机版自有改定（2026-10-11，用户实测拍板）**：上游/Gitee 原值 200_000，
-      // 是 GUI 显示 200K 的最后一处硬编码（Gitee 未修）。auto 的候选池与聚合同源，
-      // 声明口径对齐聚合的 1_000_000 兜底（AGGREGATE_FALLBACK_CONTEXT_WINDOW）。
-      context: { contextWindow: 1_000_000 },
+      // 2026-10-11 复盘：曾改 1_000_000，用户澄清兜底不该一刀切（5 家候选声明各异），
+      // 恢复上游/Gitee 原值 200_000。auto 的动态窗口化（复用聚合 contextWindowFor 口径）
+      // 留待用户确认需求后再立项。
+      context: { contextWindow: 200_000 },
     }
   }
 
