@@ -124,7 +124,12 @@ describe('codearts 400：上下文超限必须归成 CONTEXT_WINDOW_EXCEEDED', (
     expect(await failureCodeFor(500, json({ error_code: 'X', error_msg: 'boom' })))
       .toBe('SERVER')
     expect(await failureCodeFor(400, json({ error_code: 'InferHub.4291.200', error_msg: 'insufficient quota' })))
-      .toBe('QUOTA')
+      // ⚠️ **字面量 `'QUOTA_EXCEEDED'`，不是 harness 的 `QUOTA_EXCEEDED_CODE`（= `'QUOTA'`）**
+      // —— 2026-10-12 自上游 c2546558 移植（Gitee issue IKJVCW）：DSH 客户端对
+      // `'QUOTA'`/`'ACCOUNT_QUOTA'`/`'AUTH'` 三个码会**丢弃适配器写的 message、
+      // 换成固定文案**（`message.failure.quota` =「当前请求的额度已用尽」），于是
+      // 带解禁时间的那句说明到不了用户眼前。可重试性与 `'QUOTA'` 一致。
+      .toBe('QUOTA_EXCEEDED')
   })
 
   it('反向：排队语义不被改判（TM.00001041 仍走排队分支）', async () => {
