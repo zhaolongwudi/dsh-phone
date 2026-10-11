@@ -156,6 +156,23 @@ describe('三条通道同源（源码文本断言）', () => {
   })
 
   /**
+   * **聚合层的兜底网也必须用同一判据**（2026-10-11 9.16 补）。
+   *
+   * `aggregate-adapter.ts` 的 `isContextOverflowFailure` 是「候选适配器没归好码」时的
+   * 最后一道网（`resolveUpstreamCode` 依赖它）。它原先只喂宿主
+   * `isContextWindowExceededError`，于是**网关措辞**
+   * （`prompt is too long: N tokens > M maximum`，宿主分类器认不出）在这道网上漏判。
+   * 这正是 9.15/9.16 在另外三条通道上修掉的同一类缺陷 ⇒ 这里断言它也已同源。
+   */
+  it('聚合层兜底网复用共享判据（不再只喂宿主分类器）', () => {
+    const source = read('src/aggregate-adapter.ts')
+    expect(source).toContain("import { isContextOverflowBody } from './openai-compat.js'")
+    expect(source).toContain('return detail.length > 0 && isContextOverflowBody(detail)')
+    // 旧的「仅宿主分类器」形态必须消失。
+    expect(source).not.toContain('return detail.length > 0 && isContextWindowExceededError(detail)')
+  })
+
+  /**
    * ⚠️ **buddy 那份重复常量的防分叉闸门**（Step A 尾巴 ②，2026-10-11）。
    *
    * `buddy-adapter.ts` 有一份与共享层**逐字相同**的 `GATEWAY_PROMPT_TOO_LONG`

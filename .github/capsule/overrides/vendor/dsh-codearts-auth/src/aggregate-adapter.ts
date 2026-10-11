@@ -31,7 +31,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { activeRoutes } from './active-route.js'
 // ⚠️ `contentHasImage` 是**值导入**（`auto-adapter.ts` 同款）：带图判定必须与宿主
 // capability 判据**同一函数**（它含 tool-result 递归），自己写一遍必然漂移。
-import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage, isContextWindowExceededError } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage } from '@deepseek-ai/dsh-llm'
 import type { LlmErrorOptions } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -69,6 +69,12 @@ import {
   dynamicContextWindowFor,
   rememberContextWindowFailure,
 } from './context-window-learn.js'
+// ⚠️ 共享的「上下文超限」判据（宿主分类器 + 网关措辞兜底）。
+// 本文件的兜底网（`isContextOverflowFailure`）原先**只喂宿主分类器**，于是
+// 「HTTP 200/400 + 通用码 + `prompt is too long: N tokens > M maximum`」这类
+// 报文在这里**漏判**（那正是 9.15/9.16 在四条通道上统一修掉的那一类）。
+// 复用同一判据是刻意的：本仓库红线「同一语义不得两套判据」。
+import { isContextOverflowBody } from './openai-compat.js'
 
 /** 注册到 `ctx.llm` 的路由，也是 `providerInfo().id`（DSH 校验二者相等）。 */
 export const AGGREGATE_PROVIDER = 'aggregate'
@@ -1759,9 +1765,13 @@ function describeFailure(failure: { message?: string; code?: string; status?: nu
  *    （`@deepseek-ai/dsh-llm` 的成文要求：「route on this, never by parsing message」）。
  *    已验证 `dsh-llm-pi-ai` / `dsh-llm-deepseek` 真的会下发它（前者含「usage 超出
  *    已解析目录容量」这条用量侧判据）。
- * 2. 否则退回宿主共享的措辞判定器 `isContextWindowExceededError(code + message)` ——
+ * 2. 否则退回**共享**判据 `isContextOverflowBody(code + message)` ——
  *    **有些渠道**仍沿用通用码（如 `SERVER` / `INVALID_REQUEST`）只把原因写在文案里，
  *    只认规范码会让这些渠道的溢出在日志里继续隐身。
+ *    ⚠️ 2026-10-11（9.16 补）：这里原先只喂宿主 `isContextWindowExceededError`，
+ *    于是**网关措辞**（`prompt is too long: N tokens > M maximum`，宿主分类器认不出）
+ *    在本兜底网**漏判**。改用共享判据后，与另外三条通道（HTTP 400 / 流内帧 / zcode）
+ *    **同一语义、同一判据**。
  *
  * ⚠️ 第 2 条只在第 1 条不成立时执行，且**只用于日志**；将来若上游把所有渠道都归了
  *    规范码，可安全删掉第 2 条（行为不变，只少一层兜底）。
@@ -1772,7 +1782,7 @@ function isContextOverflowFailure(error: unknown): boolean {
   if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return true
   const detail = [typeof code === 'string' ? code : '', typeof message === 'string' ? message : '']
     .filter((part) => part.length > 0).join(' ')
-  return detail.length > 0 && isContextWindowExceededError(detail)
+  return detail.length > 0 && isContextOverflowBody(detail)
 }
 
 /**
