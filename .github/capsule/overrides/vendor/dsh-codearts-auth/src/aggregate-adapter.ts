@@ -31,7 +31,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { activeRoutes } from './active-route.js'
 // ⚠️ `contentHasImage` 是**值导入**（`auto-adapter.ts` 同款）：带图判定必须与宿主
 // capability 判据**同一函数**（它含 tool-result 递归），自己写一遍必然漂移。
-import { LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage, isContextWindowExceededError } from '@deepseek-ai/dsh-llm'
 import type { LlmErrorOptions } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -1490,8 +1490,20 @@ export class AggregateAdapter extends LlmAdapter {
             throw error
           }
           if (index + 1 < targets.length) {
+            // ⚠️ 显式点名「上下文超限」（手机版补充，2026-10-11）：此前日志只有泛化的
+            //    失败文案，看不出这次切换是因为**请求超出该候选的窗口**。
+            //    为什么这情形会真实发生：{@link contextWindowFor} 按候选**最大值**声明
+            //    窗口（切换渠道时「实际可用 ≥ 已声明」恒成立的代价），而**实际选中**的
+            //    候选窗口可能更窄 ⇒ 溢出后换下一个候选正是应有的行为，需在日志里可辨认。
+            //    ⚠️ **只影响日志文案，不改任何行为**：既不把失败改归成
+            //    `CONTEXT_WINDOW_EXCEEDED`（那会触发 DSH 的压缩重试链，见
+            //    `zero-output-guard.ts` 模块头「为什么不把这类失败归成…」），
+            //    也不改变切换范围（本日志位于 `emitted` / `openedBlocks` 两道
+            //    「不许切换」判据**之后**，走到这里就一定会切换）。
+            const overflow = isContextOverflowFailure(error)
+              ? '（上下文超限：请求超出该候选窗口）' : ''
             self.ctx.logger?.warn?.(
-              `[aggregate] ${target.provider}（${target.realId}）失败，切换下一个候选：${String(error)}`,
+              `[aggregate] ${target.provider}（${target.realId}）失败${overflow}，切换下一个候选：${String(error)}`,
             )
           }
         }
@@ -1698,6 +1710,39 @@ function describeFailure(failure: { message?: string; code?: string; status?: nu
     parts.push(`status=${String(failure.status)}（越界，已丢弃）`)
   }
   return parts.length === 0 ? '（上游未给出原因）' : `：${parts.join(' ')}`
+}
+
+/**
+ * 判一个候选失败是不是「请求超出该候选的上下文窗口」——**仅供日志点名**。
+ *
+ * ## 为什么需要一个判定（问题形态）
+ *
+ * 聚合把虚拟模型的窗口按候选**最大值**声明（见 {@link contextWindowFor}），而实际
+ * 选中的候选窗口可能更窄 ⇒ 上游会以「上下文超限」拒绝 ⇒ 聚合换下一个候选重试。
+ * 这条链路此前在日志里与普通失败**完全同形**，看不出是「窗口不够」还是真故障。
+ *
+ * ## 为什么用两条判据（而不是只看错误码）
+ *
+ * 两者都来自宿主同一个模块，**没有本地重新实现措辞匹配**（本仓库红线：同一语义
+ * 不得两套判据）：
+ * 1. `code === CONTEXT_WINDOW_EXCEEDED_CODE` —— 机器可路由的**规范码**
+ *    （`@deepseek-ai/dsh-llm` 的成文要求：「route on this, never by parsing message」）。
+ *    已验证 `dsh-llm-pi-ai` / `dsh-llm-deepseek` 真的会下发它（前者含「usage 超出
+ *    已解析目录容量」这条用量侧判据）。
+ * 2. 否则退回宿主共享的措辞判定器 `isContextWindowExceededError(code + message)` ——
+ *    **有些渠道**仍沿用通用码（如 `SERVER` / `INVALID_REQUEST`）只把原因写在文案里，
+ *    只认规范码会让这些渠道的溢出在日志里继续隐身。
+ *
+ * ⚠️ 第 2 条只在第 1 条不成立时执行，且**只用于日志**；将来若上游把所有渠道都归了
+ *    规范码，可安全删掉第 2 条（行为不变，只少一层兜底）。
+ */
+function isContextOverflowFailure(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false
+  const { code, message } = error as { code?: unknown; message?: unknown }
+  if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return true
+  const detail = [typeof code === 'string' ? code : '', typeof message === 'string' ? message : '']
+    .filter((part) => part.length > 0).join(' ')
+  return detail.length > 0 && isContextWindowExceededError(detail)
 }
 
 /**
