@@ -62,6 +62,13 @@ import { registerAdapterIdempotent } from './llm-register-compat.js'
 // ⚠️ 只导入**常量**（不导入 `createExpiryProbe`）⇒ 依赖方向仍是
 // `aggregate-adapter → aggregate-expiry → aggregate-core`，无环。
 import { WIRED_EXPIRY_PROVIDERS } from './aggregate-expiry.js'
+// ⚠️ 动态窗口学习器（Step B 切片一）：只服务「候选**全都不声明**窗口」的**兜底**路径 ——
+// 一旦拿到供应商真值（`widest !== undefined`）就用真值，**不查**它（约定 3）。
+import {
+  contextWindowKey,
+  dynamicContextWindowFor,
+  rememberContextWindowFailure,
+} from './context-window-learn.js'
 
 /** 注册到 `ctx.llm` 的路由，也是 `providerInfo().id`（DSH 校验二者相等）。 */
 export const AGGREGATE_PROVIDER = 'aggregate'
@@ -70,16 +77,14 @@ export const AGGREGATE_PROVIDER = 'aggregate'
 export const AGGREGATE_AUTO_MODEL = 'auto'
 
 /**
- * 聚合虚拟模型上下文窗口的**兜底值**：候选里没有任何一家声明 contextWindow
- * （或目录尚未加载）时使用。移植自上游 Gitee 原作者的 contextWindowFor 实现口径。
+ * ⚠️ 这里**不再有**「候选全无声明时的写死兜底值」。
  *
- * ⚠️ 2026-10-11 复盘：曾按用户「改到 1M」的表述把它改成 1_000_000，用户随后
- * 澄清**不是拍板兜底值**——同一虚拟模型的 5 家候选对窗口的声明各不相同，
- * 一刀切（1M 或 200K）都不符合真实。真正的问题在**记忆化固化**（见
- * contextWindowFor 内的手机版修正：解析不到声明不再写缓存），兜底只应作为
- * 解析不出时的**瞬时**回落，保持上游原值 200_000（保守方向）。
+ * 沿革（别把它改回去）：2026-10-11 曾把兜底改成 1M（**被用户否决**：一刀切不符合
+ * 「各家声明各不相同」的真实），随后查明真问题是**记忆化固化**（解析不到声明也写缓存
+ * ⇒ 目录就绪后仍返回固化值）。本轮按用户新口径（接力文档「设计约定 3」）改为
+ * **动态方案**：能拿到真值的用真值；拿不到的起步给大 → 撞墙 → 收窄
+ * （见 `context-window-learn.ts` 的 {@link dynamicContextWindowFor}）。
  */
-export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 200_000
 
 /**
  * 临期探针的类型 `ExpiryProbe` 定义在 **`aggregate-core.ts`**（纯类型、零 IO）——
@@ -1080,7 +1085,12 @@ export class AggregateAdapter extends LlmAdapter {
       traces.push(`${candidate.provider}(${candidate.realId})=${window ?? '未声明'}`)
       if (window !== undefined && (widest === undefined || window > widest)) widest = window
     }
-    const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW
+    // ⚠️ 兜底**必须**是动态值：候选全都没声明时也得给一个正数（`context` 为空会让压缩链
+    // 直接抛 `compaction-basic: no context capacity …`），而写死 200K 会让真有 1M 窗口的
+    // 模型永远只用到五分之一。学习值/起步值都来自 `context-window-learn.ts`，
+    // 撞墙后由 `dispatch` 的失败路径收窄。
+    // ⚠️ 它**不进** `contextWindowCache`（见下方记忆化条件）——学过之后要立刻生效。
+    const resolved = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))
     // ⚠️ **手机版修正（2026-10-11，用户实测报障）**：记忆化必须同时要求
     // 「无抛错」**和**「真的解析到了声明」。原条件只看 `allResolved`（没抛错）——
     // 渠道目录未就绪时 `resolveModelInfo` 会**成功返回但不带窗口声明**（undefined），
@@ -1326,6 +1336,21 @@ export class AggregateAdapter extends LlmAdapter {
               //    **长会话越过窗口后每轮报废**，而误归一次的最坏代价只是一次无效压缩。
               //    方向不对称，与 `buddy-adapter.ts` / `gemini-adapter.ts` 的成文口径一致。
               const code = resolveUpstreamCode(upstreamCode, message)
+              // ⚠️ **动态窗口学习**（Step B 切片一）：上游确实说「超出窗口」时把上限记下来。
+              //    取值优先级：报文里的**真实上限** > 当前声明值**减半**（见
+              //    `context-window-learn.ts`）。这一步必须紧跟归码、不能放到「重试之后」——
+              //    压缩链一启动就会重发请求，越早收窄越少「撞墙 → 压缩 → 再撞墙」。
+              //    ⚠️ 这里**不设**「该模型当前是否走兜底」的前置条件：记录本身无害，而
+              //    `contextWindowFor` 只在**候选全无声明**时才查学习表 —— 某家一旦给了真值，
+              //    真值仍然优先（约定 3）。反过来若声明与真实不符，这里记下的至少更接近真实。
+              //    ⚠️ 多候选时按**虚拟模型**记：某个窄窗口候选撞墙 ⇒ 整个虚拟模型收窄到它的
+              //    上限。方向保守（宁可早压缩），代价是宽窗口候选的那部分能力被让掉。
+              if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {
+                const learned = rememberContextWindowFailure(
+                  contextWindowKey(AGGREGATE_PROVIDER, modelKey), message,
+                )
+                self.ctx.logger?.info?.(`[jet-hub] 窗口学习 ${modelKey}: 上游报超限 → 记 ${learned}`)
+              }
               // ⚠️⚠️ **逐字段独立回退**（不是整袋回退）。
               //
               // 我先前的两版都有问题：
