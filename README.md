@@ -10,7 +10,6 @@
 <!-- APK-LINK:END -->
 
 
-
 ---
 
 ## 🙏 致谢与上游项目
@@ -20,6 +19,7 @@
 | 上游项目 | 本项目用到了什么 | 来源 |
 | --- | --- | --- |
 | **DeepSeek 官方 DeepSeek Harness** | AI 助手主引擎、聊天界面、插件体系、账号协议 | [GitHub](https://github.com/deepseek-ai/deepseek-harness) · [官方文档](https://deepseek-harness.github.io/deepseek-harness/) · MIT |
+| **jwoo1982217-eng：dsh-phone** | 本仓库的上游基底：Android 手机壳、构建流水线与手机适配 | [GitHub](https://github.com/jwoo1982217-eng/dsh-phone) |
 | **Jet／iJetLi：deepseek-harness-codearts** | Jet Hub 多供应商账号登录、模型接入、本机模型网关 | [Gitee](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-codearts-auth) · MIT |
 | **ZSeven-W：dsh-noema／Noema** | 长期记忆插件与记忆引擎 | [GitHub](https://github.com/ZSeven-W/dsh-noema) · MIT |
 | **Termux 与 NapCatQQ** | 手机 Linux 运行环境、QQ 登录／OneBot 连接 | [Termux](https://github.com/termux/termux-app) · [NapCatQQ](https://github.com/NapNeko/NapCatQQ) |
