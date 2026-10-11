@@ -71,9 +71,15 @@ export const AGGREGATE_AUTO_MODEL = 'auto'
 
 /**
  * 聚合虚拟模型上下文窗口的**兜底值**：候选里没有任何一家声明 contextWindow
- * （或目录尚未加载）时使用。移植自上游 Gitee 原作者的 contextWindowFor 实现口径。
+ * （或目录尚未加载）时使用。
+ *
+ * ⚠️ **手机版自有改定（2026-10-11，用户实测拍板）**：上游/Gitee 原值 200_000 ——
+ * 冷启动目录未就绪时 buildModelCatalog 会把兜底值固化进客户端目录缓存（ready
+ * 短路），用户侧长期显示 200K 而非候选集真实的 1M 口径（实测报障）。候选里声明
+ * 1M 的渠道（codearts GLM 系）是现实常态，兜底取 1_000_000 让「解析不出」时
+ * 也按 1M 计；真实渠道窗口小于此值时由派发路径的临期切换兜底，不再依赖声明值。
  */
-export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 200_000
+export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 1_000_000
 
 /**
  * 临期探针的类型 `ExpiryProbe` 定义在 **`aggregate-core.ts`**（纯类型、零 IO）——

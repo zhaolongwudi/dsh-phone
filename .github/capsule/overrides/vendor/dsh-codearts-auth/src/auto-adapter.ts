@@ -218,7 +218,10 @@ export class AutoAdapter extends LlmAdapter {
       name: AUTO_MODEL_INFO.name,
       ...(AUTO_MODEL_INFO.description === undefined ? {} : { description: AUTO_MODEL_INFO.description }),
       inputModalities: ['text', 'image'],
-      context: { contextWindow: 200_000 },
+      // ⚠️ **手机版自有改定（2026-10-11，用户实测拍板）**：上游/Gitee 原值 200_000，
+      // 是 GUI 显示 200K 的最后一处硬编码（Gitee 未修）。auto 的候选池与聚合同源，
+      // 声明口径对齐聚合的 1_000_000 兜底（AGGREGATE_FALLBACK_CONTEXT_WINDOW）。
+      context: { contextWindow: 1_000_000 },
     }
   }
 
