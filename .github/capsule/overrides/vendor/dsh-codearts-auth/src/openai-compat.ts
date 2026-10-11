@@ -326,8 +326,12 @@ const PROMPT_TOO_LONG_BODY = /\bprompt\s+is\s+too\s+long\b[\s\S]{0,40}?\b\d[\d,]
  * ⚠️ 判定看**完整报文**，展示才用 `errorDetail()` 的归一化文本 —— 后者在能提取到
  * `error.*` / `message` 时会丢掉 `extError` / `displayMsg` 等字段，实测那些字段
  * 恰恰是稳定命中的依据（`buddy-adapter.ts` 同款结论）。
+ *
+ * ⚠️ **导出是给 `llm-adapter.ts`（codearts）用的**（2026-10-11）：它的 400 分支
+ * 此前只喂 `errorDetail(body)`，同样会漏掉 `extError.code`，且没有网关措辞兜底。
+ * 两处**必须同源**，否则会重演本模块已修过的「只改了一条通道」缺陷。
  */
-function isContextOverflowBody(body: string): boolean {
+export function isContextOverflowBody(body: string): boolean {
   return body.length > 0
     && (isContextWindowExceededError(body) || PROMPT_TOO_LONG_BODY.test(body))
 }
