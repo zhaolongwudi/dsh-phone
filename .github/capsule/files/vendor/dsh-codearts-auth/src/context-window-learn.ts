@@ -13,6 +13,12 @@
  * **起步给大 → 撞墙报错 → 收窄**，并配合 DSH 自带的压缩恢复链。
  * ⇒ 本模块只服务**兜底**路径：调用方一旦拿到了供应商的真实声明，**不得**查这里。
  *
+ * ## 接入点（两处）
+ * - `aggregate-adapter.ts`：虚拟模型**所有候选都没声明**窗口时的兜底；
+ * - `zcode-adapter.ts` + `zcode-upstream.ts`：zcode 远端目录对第三方模型**不带**
+ *   `contextWindow`（那批模型此前被目录统一写成写死的 200K），现改为目录给**起步值**、
+ *   适配器每请求读**学习值**（`resolveModel` 不被缓存 ⇒ 收窄立刻生效）。
+ *
  * ## ⚠️ 为什么「收窄」必须快
  *
  * 声明得比真实窗口**大**时，DSH 的压缩阈值会跟着算宽：撞墙后压缩一次、阈值仍高于
@@ -58,6 +64,16 @@ export function contextWindowKey(provider: string, model: string): string {
 /** 动态声明值：学过用学到的，没学过给起步值。 */
 export function dynamicContextWindowFor(key: string): number {
   return learned.get(key) ?? DYNAMIC_CONTEXT_WINDOW_START
+}
+
+/**
+ * 已学到的窗口；没学过返回 `undefined`。
+ *
+ * ⚠️ 与 {@link dynamicContextWindowFor} 的区别就在这个 `undefined`：**zcode 适配器**
+ * 要的是「学过就用学到的、没学过才回落目录声明值」，故它读本函数而不是起步值那个。
+ */
+export function learnedContextWindow(key: string): number | undefined {
+  return learned.get(key)
 }
 
 /**

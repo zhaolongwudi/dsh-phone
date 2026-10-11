@@ -71,6 +71,10 @@ import { streamZcodeOrganization } from './zcode-source-stream.js'
 import { projectRequestImage, type ImageRequestTarget } from './image-budget.js'
 import type { ZcodeCredential } from './zcode.js'
 import { ZCODE, type ZcodeFallbackModel, type ZcodeProduct, type ZcodeRemoteModelLike } from './zcode-product.js'
+// ⚠️ 动态窗口学习（Step B 切片二）：zcode 远端目录对**第三方模型**不带 `contextWindow`
+//    （`zcode-upstream.ts` 起先给它们写死 200K），故这里按「学过就用学到的」声明，
+//    没学过则回落到目录给的起步值。见 `context-window-learn.ts` 模块头的接入点说明。
+import { contextWindowKey, learnedContextWindow, rememberContextWindowFailure } from './context-window-learn.js'
 import {
   buildChannelRequest,
   describeChannels,
@@ -475,9 +479,20 @@ export class ZcodeAdapter extends LlmAdapter {
       inputModalities: this.inputModalitiesFor(entry),
     }
     const contextWindow = entry?.contextWindow ?? fallback?.contextWindow
+    // ⚠️ 动态窗口（Step B 切片二）：**只在学到的值更小时**才覆盖目录声明值。
+    //
+    // 为什么不是「一律用学到的」：约定 3 要求**能拿到真值就用真值**。远端真的声明了
+    // 窗口的模型（如 GLM-5.3-Flash=1M）走 `entry.contextWindow`；而学习只在**上游真的
+    // 报过超限**时发生 —— 那时声明显然偏大，收窄才有依据。反过来没报过超限就没有学习值，
+    // 声明值原样生效。
+    // ⚠️ 本方法**不被 DSH 缓存**（每次请求都调），所以收窄后立刻生效。
+    const learned = learnedContextWindow(contextWindowKey(this.product.id, model))
+    const effective = learned !== undefined && (contextWindow === undefined || learned < contextWindow)
+      ? learned
+      : contextWindow
     // 未知模型不编造 context（宁可让 DSH 用默认值，也不报一个假窗口）。
-    if (contextWindow !== undefined && contextWindow > 0) {
-      resolved.context = { contextWindow }
+    if (effective !== undefined && effective > 0) {
+      resolved.context = { contextWindow: effective }
     }
     const maxTokens = positiveMaxTokens(entry?.maxTokens ?? fallback?.maxTokens)
     if (maxTokens !== undefined) resolved.defaultMaxTokens = maxTokens
@@ -1263,9 +1278,20 @@ export class ZcodeAdapter extends LlmAdapter {
             now: Date.now(),
           })
           : undefined
+        const code = httpErrorCodeForZcode(response.status, text)
+        // ⚠️ 动态窗口学习（Step B 切片二）：与聚合层**同一套判据、同一个学习表** ——
+        //    只认已经归好的规范码，**不在这里另写一套措辞匹配**（本仓库红线）。
+        //    记录本身无害：目录真的声明了窗口的模型仍以声明为准（见 `resolveModel`）。
+        if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {
+          const learned = rememberContextWindowFailure(
+            contextWindowKey(this.product.id, options.model),
+            `zcode: ${describeUpstreamError(response.status, text)}`,
+          )
+          this.options.log?.(`zcode: 窗口学习 ${options.model}: 上游报超限 → 记 ${learned}`)
+        }
         throw new LlmError(
           `zcode: ${describeUpstreamError(response.status, text, diagnostic)}`,
-          httpErrorCodeForZcode(response.status, text),
+          code,
           { status: response.status },
         )
       }
