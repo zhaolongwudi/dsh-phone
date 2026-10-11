@@ -54,7 +54,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, ReasoningEffortId, isContextWindowExceededError } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
@@ -65,7 +65,7 @@ import type {
 import { AccountPool, providerCatalogVisible } from './account-pool.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
 import { settingsNamespaceFor } from './settings-compat.js'
-import { collectImages, serializeMessages } from './openai-compat.js'
+import { collectImages, isContextOverflowBody, serializeMessages } from './openai-compat.js'
 import { rotationRequest } from './account-rotation.js'
 import { streamZcodeOrganization } from './zcode-source-stream.js'
 import { projectRequestImage, type ImageRequestTarget } from './image-budget.js'
@@ -2083,12 +2083,20 @@ export function httpErrorCodeForZcode(status: number, body: string): string {
      * 方向因此取「宁可多判一次溢出」，与 `buddy-adapter.ts` / `llm-adapter.ts` /
      * `gemini-adapter.ts` 的成文口径一致。
      *
-     * ⚠️ 判据只用**宿主**分类器 `isContextWindowExceededError`（**不写本地措辞匹配**，
-     * 本仓库红线：同一语义不得两套判据）。该分类器只认英文措辞；zcode 下游多为
-     * 第三方模型、透传报文常是英文，故这里能覆盖一部分。⚠️ **中文措辞暂不猜** ——
-     * 等真实报文出现（聚合层日志会带上原文）再按证据补判据。
+     * ⚠️ 判据用**共享层**的 `isContextOverflowBody`（宿主分类器 + 网关措辞兜底），
+     * **不写本地措辞匹配**（本仓库红线：同一语义不得两套判据）。
+     *
+     * ⚠️ 为什么必须带上网关措辞兜底（2026-10-11 补）：zcode 的端点是
+     * **Anthropic 协议**的 `/api/v1/zcode-plan/anthropic/v1/messages`，而 Anthropic
+     * 原生的超限报文正是 `prompt is too long: N tokens > M maximum` —— 宿主分类器
+     * **认不出这句**（它各分支都要求 `context` / `for this model` 等字样）。
+     * 只喂宿主分类器时该形态落 `INVALID_REQUEST` ⇒ 长会话每轮报废。这与
+     * `buddy-adapter.ts` / `llm-adapter.ts` / `openai-compat.ts` 的口径同源。
+     *
+     * ⚠️ **中文措辞暂不猜**：宿主分类器与这条兜底都只认英文；等真实报文出现
+     * （会话记录里有原文，见接力文档 9.10 的取证链）再按证据补判据。
      */
-    if (isContextWindowExceededError(trimmed)) return CONTEXT_WINDOW_EXCEEDED_CODE
+    if (isContextOverflowBody(trimmed)) return CONTEXT_WINDOW_EXCEEDED_CODE
     return 'INVALID_REQUEST'
   }
   return 'SERVER'

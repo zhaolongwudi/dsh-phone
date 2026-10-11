@@ -1,0 +1,60 @@
+# main 上的**类型检查快环**（2026-10-11 新增，用户定夺后落地）。
+#
+# ## 为什么需要它
+#
+# `build-apk.yml` 在 main 上必须保持**完整版**（push main 即出 APK + Release，
+# 单次约 5-6 分钟，含 gradle/NDK/Release 步骤）。移植与维护期间真正需要的往往
+# 只是「胶囊 spec + tsc + esbuild」这一分钟级的反馈环 —— 本 workflow 就是它。
+#
+# ## 与 build-apk.yml 的关系
+#
+# - **不替代**完整构建：只做 `rebuild-vendor.sh`（vitest 胶囊 spec → tsc → esbuild），
+#   **不打包 APK、不出 Release、不改 README**。
+# - 触发方式**只有手动**（`workflow_dispatch`）：push main 仍走完整版，
+#   避免每次提交都多跑一条流水线。
+#
+# ## ⚠️ 维护须知
+#
+# - 本文件**不在** `sync-upstream.yml` 的恢复名单里（那份只恢复 `build-apk.yml`），
+#   因为上游没有同名文件 ⇒ 手动 sync 不会覆盖它。若将来上游引入了同名 workflow，
+#   需把本文件也纳入 sync 的恢复逻辑。
+# - `rebuild-vendor.sh` 里的 vitest 名单是**显式列举**的（不是全量 `pnpm test`）：
+#   新增胶囊 spec 必须同时加进那个名单，否则不会被跑到。
+name: typecheck
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # 胶囊外挂：把 .github/capsule/ 的文件复制/覆盖到工作区（等价构建期的第一步）。
+      # 自检项缺失会显式失败，保证「胶囊失效」永远可见。
+      - name: 应用胶囊外挂（Active Model Pill）
+        run: bash .github/capsule/apply.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+
+      - name: 安装 pnpm
+        run: npm install -g pnpm@10
+
+      - name: 缓存 pnpm
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ hashFiles('runtime/pnpm-lock.yaml') }}
+          restore-keys: pnpm-
+
+      # 接线后的 vendor 验证：vitest 胶囊 spec → tsc 类型检查 → esbuild 重建 bundle。
+      # 上游自己从不跑 tsc，故移植引入的类型错误在这里显式失败。
+      - name: vendor 验证（vitest + tsc + esbuild）
+        run: bash .github/capsule/rebuild-vendor.sh

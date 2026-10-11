@@ -33,11 +33,14 @@ import { AccountPool, providerCatalogVisible } from './account-pool.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
 import { settingsNamespaceFor } from './settings-compat.js'
 import { parseRateLimitError } from './llm-adapter.js'
-// ⚠️ 只复用**错误码映射**这一个函数（本仓库红线：同一语义不得两套判据）。
+// ⚠️ 只复用**错误码映射**这两个函数（本仓库红线：同一语义不得两套判据）。
 // 序列化与 SSE 仍用本文件自己的实现，见 `openai-compat.ts` 模块头
 // 「既有适配器（buddy / lobsterai）刻意不改用它」那一段 —— 那条约束针对的是
-// 约 200 行的协议层逻辑，不含这个 5 行的状态码映射。
-import { httpErrorCode } from './openai-compat.js'
+// 约 200 行的协议层逻辑，不含这两个小函数。
+// ⚠️ `sseFailureCode`（2026-10-11 补）：流内失败的码此前在本文件固定写 `SERVER`，
+// 是**第三份**同义判据 —— 上游以「HTTP 200 + 流内错误帧」下发上下文超限时，
+// 直连 lobsterai 的长会话照样每轮报废（归成 SERVER 不触发压缩链）。
+import { httpErrorCode, sseFailureCode } from './openai-compat.js'
 import {
   LOBSTERAI_CHAT_PATH,
   LOBSTERAI_MODELS_PATH,
@@ -639,15 +642,22 @@ function buildLobsteraiFailure(input: LobsteraiFailureInput): LlmError {
     return new LlmError(`${prefix}（${detail}）`, 'QUOTA_EXCEEDED', { status })
   }
 
+  // ⚠️ **流内失败**（HTTP 200 + 流内错误帧）不能用 `httpErrorCode(status)`：
+  //    状态码是 200，那条映射只会得到 `HTTP_200`。此前这里固定写 `SERVER`，
+  //    于是「上游以流内帧下发上下文超限」被归成 SERVER ⇒ 不触发 DSH 的压缩恢复链，
+  //    直连 lobsterai 的长会话越过窗口后**每轮报废**。
+  //    改用共享的 `sseFailureCode`（与 HTTP 层**同一判据**；非超限时仍为 SERVER）。
+  const code = fromStream ? sseFailureCode(text) : httpErrorCode(status, text)
+
   if (exhausted) {
     return new LlmError(
       `lobsterai: 模型 ${model} 所有账号均不可用（${detail}）`,
-      fromStream ? 'SERVER' : httpErrorCode(status, text),
+      code,
       { status },
     )
   }
 
-  return new LlmError(`lobsterai: ${detail}`, fromStream ? 'SERVER' : httpErrorCode(status, text), { status })
+  return new LlmError(`lobsterai: ${detail}`, code, { status })
 }
 
 /** 从错误体提取可读 detail 文本。 */

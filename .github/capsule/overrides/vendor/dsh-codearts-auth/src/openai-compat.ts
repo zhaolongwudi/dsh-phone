@@ -373,8 +373,12 @@ export function httpErrorCode(status: number, body = ''): string {
  * （{@link isContextOverflowBody}）：溢出既可能以 HTTP 400 下发，也可能以
  * **HTTP 200 + 流内错误帧**下发。两条通道必须一致，否则会重演本模块已修过的
  * 「只修了一条通道」缺陷（排队与额度用尽两处都有同款注释）。
+ *
+ * ⚠️ **导出是给 `lobsterai-adapter.ts` 用的**（2026-10-11）：它有自己的 SSE 实现
+ * （刻意不复用本模块约 200 行的协议层），流内失败的码此前固定写 `SERVER` ——
+ * 那是**第三份**同义判据。它只复用这一个函数，与本模块的协议层无关。
  */
-function sseFailureCode(text: string): string {
+export function sseFailureCode(text: string): string {
   return isContextOverflowBody(text) ? CONTEXT_WINDOW_EXCEEDED_CODE : 'SERVER'
 }
 
