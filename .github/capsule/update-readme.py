@@ -24,16 +24,16 @@ if TAG:
     proxy = "https://gh-proxy.com/" + raw
     block = (
         f"{BEGIN}\n"
-        "## 📱 最新 APK（每日自动构建，debug 签名）\n\n"
-        f"- 国内加速下载：{proxy}\n"
-        f"- GitHub 直链：{raw}\n\n"
+        "## 📱 下载\n\n"
+        f"- 国内加速直连：{proxy}\n"
+        f"- GitHub 直连：{raw}\n\n"
         f"- 构建版本：`{TAG}`\n\n"
         f"{END}"
     )
 else:
     block = (
         f"{BEGIN}\n"
-        "## 📱 最新 APK\n\n"
+        "## 📱 下载\n\n"
         "暂无构建产物，等待 build-apk 流水线完成首次构建。\n\n"
         f"{END}"
     )
