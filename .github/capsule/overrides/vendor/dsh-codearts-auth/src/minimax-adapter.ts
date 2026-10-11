@@ -42,6 +42,7 @@ import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { providerCatalogVisible } from './account-pool.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
 import type { AccountPool } from './account-pool.js'
+import { planSessionTitleThinking } from './session-title.js'
 import { httpErrorCode, collectImages } from './openai-compat.js'
 import { MINIMAX, MINIMAX_INFER_PATH, type MinimaxProduct } from './minimax-product.js'
 import { minimaxInferHeaders } from './minimax.js'
@@ -578,9 +579,30 @@ export class MinimaxAdapter extends LlmAdapter {
       ? undefined
       : String(options.reasoningEffort)
     const declared = entry === undefined ? undefined : minimaxReasoningInfo(entry)
-    const effort = requested !== undefined
-      && declared?.efforts.some((e) => String(e.id) === requested) === true
-      ? requested
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH，
+     * 2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**。若照常让模型
+     * 思考，思考会把 64 个 token 吃满、正文 0 字符 ⇒ `dsh-session-title-llm`
+     * 直接拒绝，标题永远停在 fallback。
+     *
+     * ⚠️ **本家关不关得掉要看模型**，这正是「决策共享、细节各家自留」的形态：
+     * - **M3**（`switchable`，档位表里有我们追加的 `none`）→ **关得掉**；
+     * - **M3.1-Flash-Preview**（`forced_on`）→ **关不掉**：传 `disabled` 会硬 400
+     *   （`2013`），故只能走抬预算兜底；
+     * - **M2.7 系**（`forced_on` 且无档位）→ **关不掉**：传 `disabled` 被**静默
+     *   忽略**（思考照旧），故同样只能抬预算。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: requested,
+      declaredEfforts: declared?.efforts.map((e) => String(e.id)) ?? [],
+      maxTokens: options.maxTokens,
+    })
+    const effort = titlePlan.effort !== undefined
+      && declared?.efforts.some((e) => String(e.id) === titlePlan.effort) === true
+      ? titlePlan.effort
       : undefined
 
     const payload = buildMinimaxMessagesPayload({
@@ -589,7 +611,7 @@ export class MinimaxAdapter extends LlmAdapter {
       system: options.system,
       tools: options.tools,
       temperature: options.temperature,
-      maxTokens: options.maxTokens,
+      maxTokens: titlePlan.maxTokens,
       stop: options.stop,
       effort,
       requiresAdaptiveThinking,

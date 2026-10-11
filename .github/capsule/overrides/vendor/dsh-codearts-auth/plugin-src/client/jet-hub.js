@@ -1065,6 +1065,18 @@ function ModelListPanel({ provider, rpcCall, onClose }) {
   // 单次开关操作的失败提示。与 `error` 分开：列表本身的读取失败要用整页
   // 错误态替换，而单次切换失败只需顶部提示、列表必须保留。
   const [toggleError, setToggleError] = React.useState(null);
+  /**
+   * 上一次开关操作的**非致命警告**（Issue IKJW33，2026-10-12 自上游移植）。
+   *
+   * 服务端对「不在当前目录的 id」照常写入、但在响应里带 `warnings[]`：
+   * 打开一个已下架、且不在黑名单里的 id 时，写入是**纯空操作**，
+   * 旧实现只回「成功」，用户与 AI 助手都会以为开关生效了。
+   *
+   * ⚠️ 与 `toggleError` **分开存**：那条是「操作失败」（红色、`role=alert`），
+   * 本条是「操作成功但没有实际效果」（中性色、`role=status`）。合并会让
+   * 「下架模型」看起来像故障。
+   */
+  const [toggleWarnings, setToggleWarnings] = React.useState([]);
   // 正在提交的模型 id 集合：只禁用被点的那一行，避免整表锁死。
   const [busyIds, setBusyIds] = React.useState(() => new Set());
   /** 「全部重新显示」是否在提交（批量恢复失效记录）。 */
@@ -1137,8 +1149,12 @@ function ModelListPanel({ provider, rpcCall, onClose }) {
   const toggleModel = async (modelId, disabled) => {
     setBusyIds(prev => new Set(prev).add(modelId));
     setToggleError(null);
+    setToggleWarnings([]);
     try {
-      await rpcCall('model.setDisabled', { provider, modelId, disabled });
+      const res = await rpcCall('model.setDisabled', { provider, modelId, disabled });
+      // ⚠️ 必须展示服务端的 `warnings`（Issue IKJW33）：对已从上游目录消失的 id
+      // 开关时写入是空操作，旧实现只回「成功」⇒ 用户/脚本会以为生效了。
+      setToggleWarnings(res?.warnings || []);
       if (!mounted.current) return;
       setModels(prev => (prev || []).map(m => (m.id === modelId ? { ...m, disabled } : m)));
     } catch (caught) {
@@ -1277,8 +1293,11 @@ function ModelListPanel({ provider, rpcCall, onClose }) {
     }
     setGroupBusy(group.key);
     setToggleError(null);
+    setToggleWarnings([]);
     try {
-      await rpcCall('model.setDisabledMany', { provider, modelIds: ids, disabled });
+      const res = await rpcCall('model.setDisabledMany', { provider, modelIds: ids, disabled });
+      // 同单条开关：服务端的 warnings 必须展示（Issue IKJW33）。
+      setToggleWarnings(res?.warnings || []);
       if (!mounted.current) return;
       // 就地更新（不等重新拉取）：端点返回的是权威黑名单，但列表里还有展示名等
       // 字段，只能按 id 就地翻 `disabled`（与顶部批量开关同款做法）。
@@ -1433,6 +1452,19 @@ function ModelListPanel({ provider, rpcCall, onClose }) {
             'data-tone': 'error',
             role: 'alert',
           }, React.createElement('div', null, toggleError))
+        : null,
+      // ⚠️ 与 `toggleError` 分开渲染（Issue IKJW33）：本条是「操作成功，但没有
+      // 实际效果」的说明（下架模型的空操作），用中性 tone + `role=status`；
+      // 混进错误通道会让「模型已下架」看起来像插件故障。
+      toggleWarnings.length > 0
+        ? React.createElement('div', {
+            className: 'dim-jh-probeNotice',
+            // ⚠️ tone 取值必须是 `warn`：样式表里定义的是 `[data-tone="warn"]`
+            //（全仓既有约定），写成 `warning` 会静默落到默认中性色 —— 不报错，
+            // 但提示看起来和普通文字一样，等于没做。
+            'data-tone': 'warn',
+            role: 'status',
+          }, toggleWarnings.map((text, index) => React.createElement('div', { key: index }, text)))
         : null,
       phase === 'error'
         ? React.createElement('div', { className: 'dim-jh-modalBody' },

@@ -44,6 +44,7 @@ import {
   type RaccoonProduct,
 } from './raccoon-product.js'
 import { projectRequestImage, type ImageRequestTarget } from './image-budget.js'
+import { planSessionTitleThinking } from './session-title.js'
 import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
@@ -285,6 +286,37 @@ export function shouldRotateRaccoonAccount(errorText: string, status: number): b
   return classifyRaccoonFailure(errorText, status) !== 'other'
 }
 
+
+/**
+ * 499「客户端断开」口径的统一抛出：归 aborted 形态，而非普通错误。
+ *
+ * 🔴 实测（2026-10-11，上游会话多次）：raccoon 网关返回 **HTTP 499 + body
+ * `client has aborted request`**（nginx「client closed request」＝ 连接在响应
+ * 完成前被断开，多为**请求体过大/网关超时**）。旧路径把它包成普通
+ * `LlmError`（code=httpErrorCode(499)）⇒ agent loop 按 name/code 归
+ * `kind:'error'` ⇒ 终端显示「本轮运行失败」，用户误以为 provider 坏了。
+ *
+ * 归 **aborted** 的语义收益：
+ * - 终端显示「已中止」而非「运行失败」（如实：请求没跑完，重发即可）；
+ * - **不改道**：499 的真实成因多为请求体过大（长上下文），换号重发**照样 499**
+ *   —— 改道只会烧光轮换预算；真正的恢复是压缩上下文（pressure-lane 的
+ *   预警/compaction 兜底正是干这个的）。
+ * ⚠️ 与 `aggregate-adapter.ts` 的 `isAbortLike` 第四条判据同口径（aborted
+ * request|HTTP_?499）—— aggregate 侧判「要不要原样重抛」，本侧判「直接抛
+ * 什么形态」，两处覆盖不同的到达路径（raccoon 是直接 provider，不经 aggregate）。
+ * ⚠️ 手机版形态：`httpErrorCode(status, errorText)` 双参（9.15 起 feed 原始报文），
+ * 与上游单参不同 —— 本函数保留手机版形态。
+ */
+function abortLikeOrNormal(errorText: string, status: number): LlmError {
+  const message = `raccoon: ${errorDetail(errorText)}`
+  if (status === 499 || /aborted request|HTTP_?499/i.test(errorText)) {
+    const e = new LlmError(message, 'ABORTED', { status })
+    e.name = 'AbortError'
+    return e
+  }
+  return new LlmError(message, httpErrorCode(status, errorText), { status })
+}
+
 /**
  * 该类别是否要写冷却标记。
  *
@@ -507,15 +539,31 @@ export class RaccoonAdapter extends LlmAdapter {
      *
      * ⚠️ 在 `buildBody` **之外**算一次：`buildBody` 会在重试时被多次调用，
      * 每次重算虽无害但没必要。
+     *
+     * ⚠️ **会话自动命名（`purpose: 'session-title'`）必须关闭思考**（issue
+     * IKKVDH，2026-10-12 自上游 0840ae0c 移植）：DSH 用 **64 token** 发标题请求
+     * 且**不传 `reasoningEffort`**，而宿主会把本模型的默认档（本家恒为 `'on'`）
+     * 注入进来（`effective = requested ?? reasoning.defaultEffort`）。照常开思考时
+     * 实测均值约 222 个思考 token，必然顶穿 64 ⇒ 正文 0 字符、
+     * `finish_reason:'length'` ⇒ DSH 直接拒绝、标题永远停在 fallback。
+     *
+     * 本家的档位表是**恒声明的两档**（`on`/`off`，与模型无关，见
+     * `raccoon-product.ts`）⇒ 任何模型都**关得掉**，故不需要抬预算。
      */
-    const thinking = raccoonThinkingExtraBody(options.reasoningEffort)
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      declaredEfforts: RACCOON_REASONING_EFFORTS,
+      maxTokens: options.maxTokens,
+    })
+    const thinking = raccoonThinkingExtraBody(titlePlan.effort)
 
     /** 构造请求体。 */
     const buildBody = (): string => JSON.stringify({
       model: options.model,
       messages: wireMessages,
       stream: true,
-      ...options.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {},
+      ...titlePlan.maxTokens !== undefined ? { max_tokens: titlePlan.maxTokens } : {},
       ...options.temperature !== undefined ? { temperature: options.temperature } : {},
       ...options.stop !== undefined && options.stop.length > 0 ? { stop: options.stop } : {},
       // ⚠️ tools 必须真的下发到请求体**顶层**：Qoder/TRAE 都因漏发而让模型
@@ -673,7 +721,8 @@ export class RaccoonAdapter extends LlmAdapter {
           await markCurrentAccount()
           if (failureClass === 'other') {
             // 新账号失败但不是可换号类别：按原错误分类抛出（buddy 同款）。
-            throw new LlmError(`raccoon: ${errorDetail(errorText)}`, httpErrorCode(status, errorText), { status })
+            // 499/aborted request 归 aborted 形态（2026-10-12 自上游 c411fa8 移植）。
+            throw abortLikeOrNormal(errorText, status)
           }
         }
         throw new LlmError(
@@ -684,7 +733,7 @@ export class RaccoonAdapter extends LlmAdapter {
           { status },
         )
       }
-      throw new LlmError(`raccoon: ${errorDetail(errorText)}`, httpErrorCode(status, errorText), { status })
+      throw abortLikeOrNormal(errorText, status)
     }
 
     // ⚠️ 业务失败也可能以 HTTP 200 + SSE 内嵌错误帧返回，由 consumeOpenAiSse 处理。

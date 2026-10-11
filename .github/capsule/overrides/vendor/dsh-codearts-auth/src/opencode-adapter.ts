@@ -56,6 +56,7 @@ import { consumeOpenAiSse, collectImages, httpErrorCode, serializeMessages } fro
 import { registerAdapterIdempotent } from './llm-register-compat.js'
 import { reportLedgerAccount } from './token-ledger.js'
 import { retryAfterMsFromResponse } from './retry-after.js'
+import { planSessionTitleThinking } from './session-title.js'
 
 /** 目录条目（远端与兜底共用的输出形状）。 */
 export interface OpencodeCatalogEntry extends OpencodeFallbackModel {}
@@ -526,17 +527,36 @@ export class OpencodeAdapter extends LlmAdapter {
     // 否则图片会被静默丢掉（Qoder 图片丢失事故的同型缺陷）。
     const imageUrls = await this.resolveImageUrls(options.model, options.messages)
     const messages = serializeMessages(options.messages, imageUrls)
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策
+     *（issue IKKVDH，2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * `normalizeEfforts` 声明的默认档注入进来。本家的档位来自 models.dev
+     * `reasoning_options`：`effort` 形态给原值、`toggle` 形态给
+     * `['none','low']`（含 `none`）⇒ 声明了 `none` 的模型关得掉；
+     * `budget_tokens` 形态**不声明档位** ⇒ 只能抬预算兜底。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      // ⚠️ 档位声明与 `resolveModel` **同源**（能力表的 `efforts`，来自 models.dev）
+      // —— 自己另查一份必然漂移：UI 给了「关闭思考」而请求把它丢掉的缺陷形态。
+      declaredEfforts: getOpencodeCapabilitiesSync().find((c) => c.id === options.model)?.efforts ?? [],
+      maxTokens: options.maxTokens,
+    })
     const payload = buildOpencodePayload({
       model: options.model,
       messages,
       ...options.system !== undefined && options.system.length > 0 ? { system: options.system } : {},
       ...options.tools !== undefined ? { tools: options.tools } : {},
       ...options.temperature !== undefined ? { temperature: options.temperature } : {},
-      ...options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {},
+      ...titlePlan.maxTokens !== undefined ? { maxTokens: titlePlan.maxTokens } : {},
       // ⚠️ 思考档位（issue IKJJ0V）：`ReasoningEffortId` 是品牌类型，转普通字符串。
       // `none`（关闭思考）也照发 —— models.dev 的 toggle 形态就产出这一档。
-      ...options.reasoningEffort !== undefined
-        ? { reasoningEffort: String(options.reasoningEffort) }
+      // ⚠️ 标题请求改走 `titlePlan.effort`（声明了 `none` 时就是它）。
+      ...titlePlan.effort !== undefined
+        ? { reasoningEffort: titlePlan.effort }
         : {},
     })
     const headers: Record<string, string> = {

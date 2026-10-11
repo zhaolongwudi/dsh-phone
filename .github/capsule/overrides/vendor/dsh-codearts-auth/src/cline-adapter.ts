@@ -70,6 +70,7 @@ import {
   isTransportError,
   serializeMessages,
 } from './openai-compat.js'
+import { planSessionTitleThinking } from './session-title.js'
 
 /** 本适配器注册的 provider 路由名（等价于 `CLINE.id`）。 */
 export const PROVIDER = 'cline'
@@ -586,7 +587,21 @@ export class ClineAdapter extends LlmAdapter {
       }))
     }
     if (options.temperature !== undefined) bodyObj.temperature = options.temperature
-    const maxTokens = clampClineMaxTokens(options.maxTokens)
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策
+     *（issue IKKVDH，2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * `CLINE_DEFAULT_REASONING_EFFORT` 注入进来。本家档位是**产品级常量**
+     *（`CLINE_REASONING_EFFORTS`，与模型无关）且**含 `none`** ⇒ 关得掉。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      declaredEfforts: CLINE_REASONING_EFFORTS.map((effort) => effort.id),
+      maxTokens: options.maxTokens,
+    })
+    const maxTokens = clampClineMaxTokens(titlePlan.maxTokens)
     if (maxTokens !== undefined) bodyObj.max_tokens = maxTokens
     if (options.stop !== undefined && options.stop.length > 0) bodyObj.stop = options.stop
     // 推理强度：DSH 注入的 `reasoningEffort` 原样透传给上游的 `reasoning_effort`。
@@ -596,8 +611,10 @@ export class ClineAdapter extends LlmAdapter {
     // 且上游对**完全不认识**的档位也只是静默忽略 —— 实测
     // `reasoning_effort: 'banana'` 返回 HTTP 200、思考量为 0，**不报错**，
     // 故白名单既无必要也无收益。
-    if (options.reasoningEffort !== undefined) {
-      bodyObj.reasoning_effort = options.reasoningEffort
+    //
+    // ⚠️ 标题请求改走 `titlePlan.effort`（本家恒有 `none` 档，故就是它）。
+    if (titlePlan.effort !== undefined) {
+      bodyObj.reasoning_effort = titlePlan.effort
     }
 
     const body = JSON.stringify(bodyObj)

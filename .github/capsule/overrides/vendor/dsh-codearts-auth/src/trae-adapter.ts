@@ -19,7 +19,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ToolCallId as CallId } from '@deepseek-ai/dsh-llm'
 import { AccountPool, providerCatalogVisible } from './account-pool.js'
@@ -58,6 +58,7 @@ import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
 import { reportLedgerAccount } from './token-ledger.js'
+import { planSessionTitleThinking } from './session-title.js'
 
 /** 本适配器注册的 provider 路由名。 */
 export const PROVIDER = 'trae'
@@ -224,6 +225,44 @@ class TraeStreamErrorCause extends Error {
  */
 function isRotatableStreamError(code: number): boolean {
   return code === 1005 || code === 4008 || code === 4011
+}
+
+/**
+ * 流内错误码 `4006`：**请求体过大**（上游原文 `content is too large for AI to understand`）。
+ *
+ * ## 为什么必须单列（Gitee issue IKKX0T 的独立实测，2026-10-12 自上游 8f71268f 移植）
+ *
+ * 归类点原先是行内三元 `code === 1005 || code === 4008 ? 'QUOTA_EXCEEDED' : 'SERVER'`，
+ * 于是 4006 落到 **`SERVER`** —— 而 `SERVER` **在** harness 的
+ * `DEFAULT_RETRYABLE_CODES` 里 ⇒ 同一个巨型请求体会被**原样重发 5 次**
+ *（退避 500/1000/2000/4000/8000ms，约 15.5 秒），而它每次必然同样失败。
+ *
+ * ⚠️ **归错的代价是不对称的**：体积超限是**确定性**失败，重试毫无意义；
+ * 归成 `CONTEXT_WINDOW_EXCEEDED` 则 ① 不在可重试集合里（不白重试），
+ * ② 还能触发 `dsh-compaction-basic` 的溢出压缩（其 listener 第一行就是
+ * `if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE) return next()`）。
+ *
+ * ⚠️ **与 `4001` 的区别**：4001 是「模型不可调用」；4006 是「这一次的载荷太大」。
+ * 两者**不可合并**。只认 4006 一个码，**不做措辞匹配**（同族的 `502 + HTML`
+ * 与「上游真的崩了」无法区分，改了会让真 5xx 失去重试机会）。
+ */
+function isStreamPayloadTooLargeError(code: number): boolean {
+  return code === 4006
+}
+
+/**
+ * 流内 `event:error` → provider-neutral 错误码。
+ *
+ * 抽成函数而不是继续写在行内三元里：这张表要**逐格**可测。
+ * 顺序即优先级，且**不可重排**：
+ * 1. `4006` 体积超限 → `CONTEXT_WINDOW_EXCEEDED`（不重试 + 可压缩）；
+ * 2. `1005` / `4008` 额度类 → `QUOTA_EXCEEDED`（终态）；
+ * 3. 其余（含 `4001`）→ `SERVER`（多数是上游真 5xx/未知故障，该重试）。
+ */
+function streamErrorCode(code: number): string {
+  if (isStreamPayloadTooLargeError(code)) return CONTEXT_WINDOW_EXCEEDED_CODE
+  if (code === 1005 || code === 4008) return 'QUOTA_EXCEEDED'
+  return 'SERVER'
 }
 
 /**
@@ -563,6 +602,14 @@ function errorDetail(body: string): string {
  */
 function traeStreamErrorMessage(code: number, message: string, model: string): string {
   const base = `trae: ${message} (code=${code})`
+  if (code === 4006) {
+    // 上游原文 *"We're sorry, the content is too large for AI to understand."*
+    // 说的是**这一次请求的载荷**太大（实测：约 (21,24] 张 2560×1600 原图，
+    // 即请求体 ≈100 MiB 量级，Gitee issue IKKX0T）。原文不提「图片」也不提
+    // 「体积」，容易被读成模型能力问题，故补一句可操作的指向。
+    return `${base} —— 本次请求的内容过大：多为一次携带的图片过多/过大。`
+      + '请减少本轮的图片数量或改用更小的截图后重试。'
+  }
   if (code !== 4001) return base
   return `${base} —— 模型「${model}」不被上游接受：它通常是「仅可见但不可调用」的`
     + '自定义模型（需先在 TRAE IDE 内自行配置供应商），请改用模型列表中的其它模型'
@@ -1018,6 +1065,26 @@ export class TraeAdapter extends LlmAdapter {
       }
       imageUrls = new Map()
       for (const [id, ref] of imageRefs) {
+        /**
+         * ⚠️ **此处刻意走「原图」路径，未接 `readImageRequest` 缩放桥接**
+         * （Gitee issue IKKX0T，2026-10-12 自上游 8f71268f 移植复核）。
+         *
+         * 既有理由「原图边界从未探过，拿不到阈值就不定值」**已失效**：
+         * issue 的独立实测给出边界 **(21, 24] 张** 2560×1600 原图，形态是流内
+         * `code=4006 content is too large for AI to understand`（该码原先被归成可重试的
+         * `SERVER`，已于本次修掉 —— 见 `streamErrorCode`，所以现在失败是**快速且文案明确**的）。
+         *
+         * ⇒ **但当前仍不接**，理由只有一条：**边界未经本仓库复测**。
+         * issue 的 fixture 是 3.45 MiB/张、本仓库的是 2.87 MiB/张，
+         * 直接套用别家的 `imageMaxBytes` 等于写进一个没验证的猜测
+         *（本仓库规矩：拿不到阈值就不定值）。
+         *
+         * **复测入口**：`pnpm test:e2e:image-bisect`（二分到 ≤3 张）。
+         * 复测后：① 给 `TraeProduct.imageMaxBytes` 赋值；
+         * ② 这里改为 `projectRequestImage(ref, {...})` 并保留「拿不到就回退原图」；
+         * ③ 宿主侧 `index.ts` 补 `readImageRequest` 桥接；
+         * ④ 删掉 `tests/unit/image-budget.spec.ts` 里那条「loomy/trae 不误接」守卫。
+         */
         const image = await this.options.readImage(ref)
         if (image === undefined) continue
         imageUrls.set(id, `data:${image.mediaType};base64,${Buffer.from(image.data).toString('base64')}`)
@@ -1053,9 +1120,32 @@ export class TraeAdapter extends LlmAdapter {
       }))
     }
     if (options.temperature !== undefined) openaiBody.temperature = options.temperature
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策
+     *（issue IKKVDH，2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * 本模型的默认档注入进来。TRAE 的档位来自远端
+     * `reasoning_effort_config.options`（实测形如 `["light","high","extra_high"]`，
+     * **没有 `off`/`none`**）⇒ 本家在多数模型上**关不掉**思考，只能走抬预算兜底。
+     *
+     * ⚠️ `declaredEfforts` **必须与 `reasoningFor` 同源**：`reasoningFor` 在
+     * `supportThinking === false` 时**不声明任何档位**，而直接读
+     * `reasoningConfig.options` 会绕过该过滤 ⇒「resolveModel 声明 null，标题路径却
+     * 当真存在档位」。方向虽安全，但两份判据必须同源。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      // 与 `reasoningFor(options.model)` 同源：经它过滤 `supportThinking === false`。
+      declaredEfforts: this.reasoningFor(options.model)?.efforts.map((effort) => String(effort.id)) ?? [],
+      maxTokens: options.maxTokens,
+    })
     // 输出额度收敛到上游安全上限（默认 64000，见 clampTraeMaxTokens）。
     // 不收敛时客户端索要 131072 会把上游打成 4xx。
-    const maxTokens = clampTraeMaxTokens(options.maxTokens)
+    // ⚠️ 抬预算（`titlePlan.maxTokens`）必须走**同一个**钳制函数，
+    // 否则会被钳回原值、兜底静默失效。
+    const maxTokens = clampTraeMaxTokens(titlePlan.maxTokens)
     if (maxTokens !== undefined) openaiBody.max_tokens = maxTokens
     if (options.stop !== undefined && options.stop.length > 0) openaiBody.stop = options.stop
 
@@ -1064,8 +1154,12 @@ export class TraeAdapter extends LlmAdapter {
     // 取值来自 `resolveModel` 声明的 `reasoning.efforts`（即远端
     // `reasoning_effort_config.options` 的字符串），故这里不做白名单校验 ——
     // 校验只会把「远端新增档位」变成静默丢弃。
-    if (options.reasoningEffort !== undefined) {
-      openaiBody.reasoning_effort = options.reasoningEffort
+    //
+    // ⚠️ 标题请求改走 `titlePlan.effort`：该模型若声明了 `off`/`none` 就是它，
+    // 否则**保留原档位**（关不掉，靠上面的抬预算兜底）——
+    // 绝不能自作主张把档位删掉（那会让「关不掉」变成「静默降档」）。
+    if (titlePlan.effort !== undefined) {
+      openaiBody.reasoning_effort = titlePlan.effort
     }
 
     // Max 模式（1M 上下文）：成套覆盖 `max_tokens` / `prompt_max_tokens` /
@@ -1083,6 +1177,18 @@ export class TraeAdapter extends LlmAdapter {
           meta?.maxModeOutputTokens,
         ),
       )
+    }
+
+    // ⚠️⚠️ **标题请求的抬预算必须排在 Max 覆盖之后**（对抗审计实测的缺口）：
+    // `traeMaxModeFields` **无条件**写 `max_tokens`，若抬预算写在它之前就会被
+    // 覆盖掉。且远端 `__max` 明细只校验 `> 0`（`readDetailMaxTokens`），
+    // 一个异常小的值（实测 `100`、`1`）会把预算压到**低于兜底下限** ⇒ 思考又被
+    // 腰斩、本 issue 原样复发。故这里按「取两者较大」收敛，绝不让已抬高的值变小。
+    if (titlePlan.isTitle && maxTokens !== undefined) {
+      const current = openaiBody.max_tokens
+      openaiBody.max_tokens = typeof current === 'number' && Number.isFinite(current) && current > maxTokens
+        ? current
+        : maxTokens
     }
 
     // system 提示并入 messages 顶部（同样要在转换之前，以便 content 被规范化）。
@@ -1634,10 +1740,9 @@ export class TraeAdapter extends LlmAdapter {
                       })
                     }
                     // 4001（模型不可调用）不换号：换账号也是同一模型被拒。
-                    throw new LlmError(
-                      message,
-                      ev.errorCode === 1005 || ev.errorCode === 4008 ? 'QUOTA_EXCEEDED' : 'SERVER',
-                    )
+                    // ⚠️ 归类走 {@link streamErrorCode}（4006 体积超限**不能**落 SERVER，
+                    //    否则会被 harness 原样重发 5 次 —— 见该函数的说明）。
+                    throw new LlmError(message, streamErrorCode(ev.errorCode))
                   }
                   break
                 }

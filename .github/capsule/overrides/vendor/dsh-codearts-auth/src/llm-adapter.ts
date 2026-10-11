@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import {
   attributionHeaders, CONTEXT_WINDOW_EXCEEDED_CODE,
-  isQuotaExceededError, LlmAdapter, LlmError, QUOTA_EXCEEDED_CODE,
+  isQuotaExceededError, LlmAdapter, LlmError,
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ReasoningEffortId, ToolCallId as CallId } from '@deepseek-ai/dsh-llm'
@@ -15,6 +15,7 @@ import { isContextOverflowBody } from './openai-compat.js'
 import { normalizeHarnessMessages } from './message-shape.js'
 import { signRequestHuawei } from './sign.js'
 import { createBlankReasoningSuppressor, createReasoningLoopDetector, hasUsableToolName, isReasoningLoopGuardEnabled, isTruncatedArguments, normalizeToolArguments, readWithIdleTimeout, reasoningLoopFailure, resolveEmptyResponseReason, resolveToolPairing, stripCourseLeakFromHistoryContent, stripCourseLeakIfEnabled } from './sse.js'
+import { planSessionTitleThinking } from './session-title.js'
 import type { CodeArtsCredential } from './types.js'
 import {
   registerAdapterIdempotent,
@@ -552,6 +553,33 @@ export function isSseQuotaExhaustedErrorCode(code: string, message: string): boo
   return code.includes('4291') || /insufficient[\s_-]+quota/i.test(message)
 }
 
+/**
+ * 额度用尽时抛出的错误码 —— **字面量 `'QUOTA_EXCEEDED'`，不是 harness 常量**。
+ *
+ * ## ⚠️ 为什么不能用 `QUOTA_EXCEEDED_CODE`（真实缺陷，Gitee issue IKJVCW，
+ * 2026-10-12 自上游 c2546558 移植）
+ *
+ * harness 导出的 `QUOTA_EXCEEDED_CODE` 字面值是 **`'QUOTA'`**，而 DSH 客户端
+ * 对这三个码会**丢弃适配器精心写的 message、换成一句固定文案**
+ * （实测 `dsh-client-ui-chat/lib/client.js`）：
+ * ```js
+ * if (code === "QUOTA" || code === "ACCOUNT_QUOTA") return t("message.failure.quota");
+ * return code === "AUTH" ? t("message.failure.auth") : message;
+ * ```
+ * locale 表：`"message.failure.quota": "当前请求的额度已用尽"`。
+ * 于是额度用尽时那句**带解禁时间**的说明（「预计 5.5 小时后重置（按 UTC+8
+ * 自然日结算…）可改用其它模型…」）一个字都到不了用户眼前。
+ *
+ * ## 为什么取字面量
+ * ① 仓库里 buddy / cline / lobsterai / trae / zcode / minimax 等 **~20 处**
+ *    额度错误一律用字面量 `'QUOTA_EXCEEDED'`，且**都不被客户端替换**。
+ * ② 可重试性不变：`'QUOTA_EXCEEDED'` 与 `'QUOTA'` 同样**不在** harness 的
+ *    `DEFAULT_RETRYABLE_CODES` 里 ⇒ 仍是「确定性、不白退避」。
+ * ③ 下游判据已双认：`account-probe.isRateLimitFailure` 等同时接受两者。
+ * ⚠️ **不要改回 `QUOTA_EXCEEDED_CODE`**：那正是本缺陷的成因。
+ */
+const CODEARTS_QUOTA_EXHAUSTED_CODE = 'QUOTA_EXCEEDED'
+
 /** 从错误体提取可分类的 detail 文本（OpenAI 风格 error 或 CodeArts error_code/error_msg）。 */
 function errorDetail(body: string): string {
   try {
@@ -559,10 +587,14 @@ function errorDetail(body: string): string {
     const error = typeof data.error === 'object' && data.error !== null
       ? data.error as Record<string, unknown>
       : undefined
+    // 顶层 `error` 是**字符串**的形态（`openai-compat` 那份已覆盖，本份原先漏掉；
+    // 2026-10-12 自上游 c2546558 移植）。⚠️ 只加腿不减腿。
+    const errorText = typeof data.error === 'string' ? data.error : undefined
     const parts = [
       typeof error?.code === 'string' ? error.code : undefined,
       typeof error?.type === 'string' ? error.type : undefined,
       typeof error?.message === 'string' ? error.message : undefined,
+      errorText,
       typeof data.error_code === 'string' ? data.error_code : undefined,
       typeof data.error_msg === 'string' ? data.error_msg : undefined,
       typeof data.message === 'string' ? data.message : undefined,
@@ -597,7 +629,8 @@ function errorDetail(body: string): string {
 function httpErrorCode(status: number, body: string): string {
   if (status === 401 || status === 403) return 'AUTH'
   const detail = errorDetail(body)
-  if (isQuotaExceededError(detail)) return QUOTA_EXCEEDED_CODE
+  // 额度码用字面量（IKJVCW）：harness 常量 'QUOTA' 会被客户端替换成固定文案。
+  if (isQuotaExceededError(detail)) return CODEARTS_QUOTA_EXHAUSTED_CODE
   if (status === 429) return 'RATE_LIMIT'
   if (status === 400) {
     if (isContextOverflowBody(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
@@ -1129,6 +1162,25 @@ export class CodeArtsAdapter extends LlmAdapter {
       messages.splice(messages.findIndex(m => m.role === 'system') + 1, 0, { role: 'system', content: buildDsmlSystemPrompt(wireTools) })
       wireTools = undefined
     }
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * 本模型声明的默认档（本家恒为 `'on'`）注入进来
+     * （`effective = requested ?? reasoning.defaultEffort`）。照常开思考时实测
+     * 64 个 token 会被思考**全部吃满**、正文 0 字符、`finish_reason:'length'`
+     * ⇒ `dsh-session-title-llm` 直接拒绝，标题永远停在 fallback。
+     *
+     * 本家的档位表是**恒声明的两档**（`on`/`off`，见 `resolveModel`），
+     * 与具体模型无关 ⇒ 任何模型都**关得掉**，故这里必然走「关掉思考」分支，
+     * 不需要抬预算（抬预算是「花钱买通」，思考本身要计费）。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      declaredEfforts: ['on', 'off'],
+      maxTokens: options.maxTokens,
+    })
     const body = JSON.stringify({
       model: options.model,
       messages,
@@ -1145,7 +1197,13 @@ export class CodeArtsAdapter extends LlmAdapter {
       // （两者是不同网关的方言，混用会静默无效）。
       // 实测判据：`disabled` → reasoning_tokens 3/3 全为 0、正文仍正确；
       // `enabled` 与不传等价（服务端默认就开着），故「开启」档**不发**该字段。
-      ...options.reasoningEffort === 'off' ? { thinking: { type: 'disabled' } } : {},
+      //
+      // ⚠️ 标题请求走 `titlePlan`（上方），它会把档位定成 `'off'`，
+      // 于是这里同样发 `disabled` —— 两条判据**合并写**在一个表达式里，
+      // 避免「标题请求绕开了关闭」这类静默失效。
+      ...titlePlan.thinkingOff || options.reasoningEffort === 'off'
+        ? { thinking: { type: 'disabled' } }
+        : {},
       // 对齐 CodeArts Agent IDE 请求体（deveco-code 内核日志实证）：
       // tool_stream=true 让后端将超大工具调用参数（如大文件 file_write）
       // 分段流式传输，避免单次 SSE 事件过大导致连接被掐断
@@ -1166,7 +1224,10 @@ export class CodeArtsAdapter extends LlmAdapter {
       // 走网关的路径由 `openai-gateway/messages.ts` 的 `normalizeMaxTokens`
       // 预先收敛，但**不经过网关的直连路径完全绕过那道判据**。
       // ⇒ 这里是最后一道防线，必须自己收敛，不能依赖上游调用方守规矩。
-      max_tokens: clampCodeArtsMaxTokens(options.maxTokens) ?? CODEARTS_MAX_OUTPUT_TOKENS,
+      // ⚠️ 抬预算（`titlePlan.maxTokens`，关不掉思考时才有值）必须走**同一个**
+      // 钳制函数，否则会被钳回原值、兜底静默失效。标题请求的 512 远小于上限，
+      // 故实际不会被钳；这里统一走一遍是为了「预算只有一个出口」。
+      max_tokens: clampCodeArtsMaxTokens(titlePlan.maxTokens) ?? CODEARTS_MAX_OUTPUT_TOKENS,
       ...wireTools !== undefined && wireTools.length > 0 ? { tools: wireTools } : {},
     })
     const url = `${CHAT_API_BASE}/chat/completions`
@@ -1273,7 +1334,7 @@ export class CodeArtsAdapter extends LlmAdapter {
               }
             }
             // ③ 没有可用账号（或没有账号池）：如实抛出，带上解禁时间。
-            throw new LlmError(message, QUOTA_EXCEEDED_CODE, { status: 200 })
+            throw new LlmError(message, CODEARTS_QUOTA_EXHAUSTED_CODE, { status: 200 })
           }
           if (error instanceof SseQueueRetryError) {
             // 落入下方排队重试
@@ -1334,7 +1395,7 @@ export class CodeArtsAdapter extends LlmAdapter {
               continue
             }
           }
-          throw new LlmError(message, QUOTA_EXCEEDED_CODE, { status: response.status })
+          throw new LlmError(message, CODEARTS_QUOTA_EXHAUSTED_CODE, { status: response.status })
         }
         // 限流处理：记录当前账号在该模型上的重置时间，然后切换账号重试
         // （外层 for(;;) 会在拿到新凭据后重新签名发请求）。用 tried 集合

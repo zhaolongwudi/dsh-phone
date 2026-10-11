@@ -67,6 +67,7 @@ import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
 import { reportLedgerAccount } from './token-ledger.js'
+import { planSessionTitleThinking } from './session-title.js'
 
 /** 本适配器注册的 provider 路由名（历史常量，等价于 `LOBSTERAI.id`）。 */
 export const PROVIDER = 'lobsterai'
@@ -1027,13 +1028,33 @@ export class LobsteraiAdapter extends LlmAdapter {
     // 字段（见 dsh-llm 的 types.d.ts），所以 `tool_choice` 天然不会出现 ——
     // 目标状态（字段缺席）已经达成，无需再写一段无效的归一化代码。
     if (options.temperature !== undefined) bodyObj.temperature = options.temperature
-    if (options.maxTokens !== undefined) bodyObj.max_tokens = options.maxTokens
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * 本模型的默认档注入进来。本家档位来自远端 `thinkingConfig.options[]`
+     * （产品侧 `level` 含 `off`，wire 值见 `openclawLevel`）⇒ 声明了 `off`
+     * 的模型**关得掉**；没声明的（无 `thinkingConfig`）则只能抬预算兜底。
+     *
+     * ⚠️ 判据用 **wire 值**（`openclawLevel`），因为下发的是它 ——
+     * 与 `reasoningFor` 里 `id` 的取值同源。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      declaredEfforts: (this.remoteMeta.get(options.model)?.thinkingConfig?.options ?? [])
+        .map((option) => option.openclawLevel),
+      maxTokens: options.maxTokens,
+    })
+    if (titlePlan.maxTokens !== undefined) bodyObj.max_tokens = titlePlan.maxTokens
     if (options.stop !== undefined && options.stop.length > 0) bodyObj.stop = options.stop
     // 思考等级：仅在调用方显式传入时透传，不主动补档
     // （buddy 那套「deepseek 系必须补档否则不思考」是针对腾讯后端的实测，
     // 未在 LobsterAI 上验证，照搬会造成非法参数 400）。
-    if (options.reasoningEffort !== undefined) {
-      bodyObj.reasoning_effort = options.reasoningEffort
+    //
+    // ⚠️ 标题请求改走 `titlePlan.effort`（该模型声明了 `off` 时就是它）。
+    if (titlePlan.effort !== undefined) {
+      bodyObj.reasoning_effort = titlePlan.effort
     }
     // **不发 prompt_cache_key**：那是腾讯后端的前缀缓存机制，此处未实测支持。
     const body = JSON.stringify(bodyObj)

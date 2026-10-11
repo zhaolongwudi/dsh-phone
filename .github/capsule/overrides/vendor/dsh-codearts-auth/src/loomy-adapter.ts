@@ -33,6 +33,7 @@ import {
   type LoomyCredential,
 } from './loomy.js'
 import { LOOMY, type LoomyFallbackModel, type LoomyProduct } from './loomy-product.js'
+import { planSessionTitleThinking } from './session-title.js'
 import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
@@ -502,6 +503,26 @@ export class LoomyAdapter extends LlmAdapter {
       // 空 Map 仍会让 userContentParts 产出 [image unavailable] 占位符。
       imageUrls = new Map()
       for (const [id, ref] of imageRefs) {
+        /**
+         * ⚠️ **此处刻意走「原图」路径，未接 `readImageRequest` 缩放桥接**
+         * （Gitee issue IKKX0T，2026-10-12 自上游 8f71268f 移植复核）。
+         *
+         * 既有理由「loomy 实测 24 张全过、无证据说明它有约束」**已被推翻**：
+         * issue 的独立实测给出 `413 Request Entity Too Large` / `504`，
+         * 且本仓库那个「24 张」= **91.8 MiB** 恰落在 issue 的 87.4~96.6 MiB
+         * 区间**内部** —— 即当时是**侥幸通过**，不是没有约束。
+         *
+         * ⇒ **但当前仍不接**，理由只有一条：**边界未经本仓库复测**。
+         * 两家 fixture 量纲不同（issue 3.45 MiB/张 vs 本仓库 2.87 MiB/张），
+         * 直接套用别家的 `imageMaxBytes` 等于写进一个没验证的猜测
+         *（本仓库规矩：拿不到阈值就不定值）。
+         *
+         * **复测入口**：`pnpm test:e2e:image-bisect`（二分到 ≤3 张）。
+         * 复测后：① 给 `LoomyProduct.imageMaxBytes` 赋值；
+         * ② 这里改为 `projectRequestImage(ref, {...})` 并保留「拿不到就回退原图」；
+         * ③ 宿主侧 `index.ts` 补 `readImageRequest` 桥接；
+         * ④ 删掉 `tests/unit/image-budget.spec.ts` 里那条「loomy/trae 不误接」守卫。
+         */
         const image = await this.options.readImage(ref)
         if (image === undefined) continue
         imageUrls.set(id, `data:${image.mediaType};base64,${Buffer.from(image.data).toString('base64')}`)
@@ -564,10 +585,33 @@ export class LoomyAdapter extends LlmAdapter {
      */
     const effortsForModel = (await this.loadModels()).find((m) => m.id === options.model)?.efforts
       ?? this.fallbackIndex.get(options.model)?.efforts
-    const effort = options.reasoningEffort !== undefined
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH，
+     * 2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * 远端声明的默认档注入进来。本家远端 `reasoning_efforts` 实测形如
+     * `['none','low','medium','high','xhigh']`（**含 `none`**）⇒ 声明了它的
+     * 模型关得掉；远端未声明档位的模型只能抬预算兜底。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      declaredEfforts: effortsForModel ?? [],
+      maxTokens: options.maxTokens,
+    })
+    /**
+     * ⚠️ **仍须做档位白名单校验**（这是本家原有的判据，不能因为接入标题逻辑
+     * 而丢掉）：DSH 会把用户选的档位直接透传，给一个远端不认的值比不给更糟。
+     *
+     * 两种请求的取值来源不同，但**都要过这一关**：
+     * - 标题请求：`titlePlan.effort`（声明了 `none` 时就是它）；
+     * - 普通请求：调用方给的档位（与本次改动前**逐字节等价**）。
+     */
+    const effort = titlePlan.effort !== undefined
       && effortsForModel !== undefined
-      && effortsForModel.includes(options.reasoningEffort)
-      ? options.reasoningEffort
+      && effortsForModel.includes(titlePlan.effort)
+      ? titlePlan.effort
       : undefined
 
     /** 构造请求体。 */
@@ -575,7 +619,7 @@ export class LoomyAdapter extends LlmAdapter {
       model: options.model,
       messages: wireMessages,
       stream: true,
-      ...options.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {},
+      ...titlePlan.maxTokens !== undefined ? { max_tokens: titlePlan.maxTokens } : {},
       ...options.temperature !== undefined ? { temperature: options.temperature } : {},
       ...options.stop !== undefined && options.stop.length > 0 ? { stop: options.stop } : {},
       ...effort !== undefined ? { reasoning_effort: effort } : {},

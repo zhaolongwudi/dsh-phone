@@ -915,6 +915,27 @@ export interface RpcModelSetDisabledRequest {
 export interface RpcModelSetDisabledResponse {
   provider: string
   disabledModels: Record<string, boolean>
+  /**
+   * 「本次操作没有它看上去那么有效」的说明（Issue IKJW33，2026-10-12 自上游移植）。
+   *
+   * ⚠️ **缺省 = 无警告**，不是空数组 —— 与全仓「未知不编造」的约定一致，
+   * 也让既有调用方（只读 `disabledModels`）逐字节不受影响。
+   *
+   * ## 为什么需要它
+   *
+   * 对**已从上游目录消失**的模型 id 调开关时，旧实现返回「成功 1」却
+   * **什么都没发生、且没有任何警告**：脚本与 AI 助手据此以为开关生效了。
+   *
+   * ⚠️ **为什么是 warnings 而不是 `ok:false` + `not-found`**（issue 的原始建议
+   * 未被采纳，两个理由）：
+   * 1. **打开方向是幽灵条目的唯一清理路径**：`model.setAllDisabled` 的注释已立
+   *    此约定 ——「曾被关闭、后来从服务端目录下线」的历史死键**只能靠打开方向
+   *    清掉**。按目录拒绝会让这些键永远留在配置里。
+   * 2. **目录可能读不出来**（凭据过期 / 远端故障）：此时若按「不在目录」拒绝，
+   *    用户会连开关都动不了。
+   * ⇒ **照常写入**（既有语义逐字节不变），只在响应里说明真相。
+   */
+  warnings?: string[]
 }
 
 /**

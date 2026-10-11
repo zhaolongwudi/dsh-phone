@@ -1025,6 +1025,193 @@ function providerIdsOf(
 }
 
 /**
+ * 核对目录时的读取预算（毫秒）。
+ *
+ * 开关是**写操作**，不该被远端目录拉取拖住（见 `readableCatalogIds` 的注释）。
+ * 取 2 秒：缓存已热时是纯内存读、立即返回；冷缓存下的正常远端拉取也在秒级内
+ * 完成，超过它说明上游正卡着 —— 此时放弃核对、照常写入开关。
+ * ⚠️ 不要为了「多拿到几次核对」而调大：这条预算**直接加在用户点开关的等待上**。
+ */
+const CATALOG_READ_TIMEOUT_MS = 2000
+
+/**
+ * 给一个 Promise 加超时；超时即 reject（调用方按「读不到」处理）。
+ *
+ * ⚠️ **不取消底层请求**（`listModels` 不接受 signal）：只是不再等它。
+ * 这是刻意的 —— 底层那次拉取的结果仍会填进 `ModelCatalog` 的缓存，
+ * 对后续的 `model.list` 有用，取消反而浪费。
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`catalog read timed out after ${ms}ms`)), ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))) },
+    )
+  })
+}
+
+/**
+ * 核对一批 id 是否**真的在**当前模型目录里，为「静默空操作」生成 warnings。
+ *
+ * ## 解决的报障（Issue IKJW33，2026-10-08）
+ *
+ * 对**已从上游目录消失**的模型 id 调 `on`/`off`，旧实现返回「成功 1」却
+ * **什么都没发生、且没有任何警告**。用户实测两例：
+ * `cline/cline-free/deepseek-v4.1-flash` 与 `cline/stealth/space-bunny-alpha`
+ * 在 10-05 记录「上游 model not found」后已从 cline 目录消失（490 → 489）。
+ * 后果：① 脚本/AI 助手据「成功 1」误判开关已生效；② 黑名单里残留幽灵条目，
+ * 模型在 GUI 已看不见、关闭记录却还挂着，导入号池时还会被一起搬走。
+ *
+ * ## ⚠️⚠️ 判据必须是**两个目录来源的并集**（两个方向都已被实测证伪）
+ *
+ * 本仓库有两个「目录」来源，**它们并不总是同源**：
+ *
+ * | 来源 | 谁在用 | 形态 |
+ * |---|---|---|
+ * | `llm.listModels(provider)` | 对话框模型选择器 | **真实远端目录 − 黑名单** |
+ * | `modelAdapters[provider].listAllModels()` | **设置页**（`model.list`） | 不套黑名单；**冷缓存下是编译期兜底表** |
+ *
+ * 只取任一个都被实测证伪：
+ *
+ * - **只取 `listAllModels()`**（本修复第一版）⇒ 冷缓存下兜底表是**子集**：
+ *   实测 `cline` 冷缓存只返回 **3** 条（`fallbackModels`），远端却有 **460** 条
+ *   ⇒ 远端任意正常模型都被误报。而 issue 的复现路径**恰恰是冷缓存**
+ *   （脚本直接调 `on`，从未先跑 `list`）。
+ * - **只取 `listModels()`**（第二版）⇒ 在 `opencode` 上**反向**误报：它的
+ *   `listAllModels()` **恒返回**编译期兜底表（永不读远端），而 `listModels()`
+ *   在**只有匿名槽**时还会 `filter(isFree)` ⇒ 设置页看得见的付费模型在
+ *   `listModels()` 里**一个都没有**。审计实测：无付费账号时关闭 13 个设置页
+ *   可见的模型，**13/13 全部收到假警告**（「该模型可能已被上游下架」，
+ *   而它并没有下架，只是当前匿名身份看不到）。
+ *
+ * ⇒ 取**并集**。方向刻意是「宁漏勿误」：`known` 越大 ⇒ `missing` 越小 ⇒
+ * 误报越少。提示类信息的**误报比漏报糟得多**（用户会对整类提示脱敏），
+ * 故宁可漏报（少一条提示）也不能误报（把正常模型说成已下架）。
+ *
+ * ## ⚠️⚠️ `listModels()` 失败**必须整体放弃核对**，不得退化成「只用兜底表」
+ *
+ * `listModels()` 是**唯一**能反映远端真实目录的来源（`listAllModels()` 在
+ * 冷缓存与 opencode 上都可能是编译期快照）。它读不到（超时 / 抛错 / 空目录）时
+ * 若仍拿 `listAllModels()` 去核对，就**退化回第一版的误报形态**。
+ * ⇒ 直接返回 `undefined`（放弃核对），开关照常写入、不带任何警告。
+ *
+ * ⚠️ **这是刻意的取舍，不是漏写**：代价是「远端目录首次拉取就失败」时
+ *（凭据过期 / 上游抖动）连兜底表也不用来核对 ⇒ issue 的原始场景
+ *（脚本冷启动直调 `on`）恰好最可能命中这条**漏报**面。
+ * 接受它，因为反向（拿快照当权威）会把**正常模型**说成已下架。
+ *
+ * ## ⚠️ 黑名单必须在**本函数内部**、于 `await` **之后**读
+ *
+ * 下面把黑名单里 `true` 的 id **并回** `known`：那是「在目录里、但被用户关着」，
+ * 用户能重新打开它 ⇒ 不能判成「不在目录」。
+ *
+ * ⚠️⚠️ **这个读取刻意放在 `await listModels()` 之后**（真实缺陷，审计实测）：
+ * 若由调用方在 `await` **之前**取快照传进来，则「快照」与「实际写入」之间隔着
+ * 一次 `listModels`（冷缓存下最长 {@link CATALOG_READ_TIMEOUT_MS}）—— 期间
+ * 另一路 RPC 的写入会让快照失真，实测出现「**实际产生了变更却报『本次没有产生
+ * 任何变更』**」（与 issue 要消除的误导同型）。放在这里之后，从读黑名单到写入
+ * 全是**同步代码、无 await** ⇒ 窗口归零。
+ *
+ * ## ⚠️ `dead` 表里的 id 算「不在目录」，但文案必须可操作
+ *
+ * 失效模型被 `withDeadModelPruning` 从**两个来源**同时剔除（`llm.listModels`
+ * 与 `modelAdapters.listAllModels` 都是 pruned 代理），而 `model.list` 又把它们
+ * 补回设置页（带 `dead:true`）供用户点「重新显示」⇒ 它们天然落在判据的
+ * 「目录外」。issue 的两例正是这个形态。只说「不在目录」不够 ——
+ * 必须告诉用户去点「重新显示」（`model.clearDead`），否则他无从下手。
+ *
+ * ## ⚠️ 放弃核对（返回 undefined）的三种情况
+ *
+ * 1. **`listModels()` 读失败**（超时 / 抛错）—— 理由见上，这是**关键**一条；
+ * 2. **`listModels()` 返回空**：`createModelCatalog` 在「无已登录账号」时返回
+ *    `[]`（门控隐藏整个 provider）⇒ 空目录意味着「看不到」而非「全部下架」；
+ * 3. **`llm` 服务缺失**：拿不到远端目录，无从核对。
+ *
+ * ⚠️ **必须带超时**：`listModels()` 在**冷缓存**下会真的发一次远端拉取
+ *（`loadCatalog()`），于是「开关」这个原本纯本地的写操作多了一条网络依赖。
+ * 开关**绝不能**被远端拖住 —— 用户点一下开关却转圈几十秒，比少一条提示糟得多。
+ * 故核对是**尽力而为**：超时（{@link CATALOG_READ_TIMEOUT_MS}）即放弃核对。
+ * ⚠️ GUI 路径上缓存通常已热（用户先看到模型列表才会去点开关），此时是纯内存读、
+ * 无新增延迟；只有「脚本冷启动直接调开关」才可能等一次拉取。
+ *
+ * @param ctx - 取 `llm` 服务用。
+ * @param pool - 读黑名单（**在 await 之后**，理由见上）。
+ * @param modelAdapters - 设置页目录来源（并集的一半）。
+ * @param provider - 目标 provider。
+ * @returns 可核对的目录 id 集合；`undefined` = **放弃核对**（三种情况见上）。
+ */
+async function readableCatalogIds(
+  ctx: Context,
+  pool: AccountPool,
+  modelAdapters: Readonly<Record<string, ModelCatalogSource>> | undefined,
+  provider: string,
+): Promise<ReadonlySet<string> | undefined> {
+  const llm = llmServiceOf(ctx)
+  if (llm === undefined) return undefined
+  let listed: Array<{ id: string }>
+  try {
+    listed = await withTimeout(llm.listModels(provider), CATALOG_READ_TIMEOUT_MS)
+  } catch {
+    // ⚠️⚠️ **读不到就整体放弃**，不得退化成「只用 listAllModels 兜底表」——
+    // 那会退回第一版的大面积误报（见函数头）。
+    return undefined
+  }
+  // ⚠️ 空目录 = 「看不到」（无账号门控），不是「全部下架」。
+  if (listed.length === 0) return undefined
+  const known = new Set(listed.map((model) => model.id))
+  // ⚠️ 并上设置页目录（`listAllModels()`）：opencode 恒返回编译期兜底表，
+  // 而 `listModels()` 在只有匿名槽时只给免费模型 ⇒ 少了这一半，设置页可见的
+  // 付费模型会被误报成「已下架」（审计实测 13/13 假警告）。
+  // ⚠️ 它**不保证存在**（外部 / 旧适配器）⇒ 缺失时只是并集少一半，仍可核对。
+  // ⚠️ 读它**不产生网络请求**（契约要求同步）；⚠️ 它抛错也**不能**让开关失败
+  //（开关是主操作、核对只是提示层）⇒ 单独 try/catch，失败就只用另一半来源。
+  try {
+    for (const model of modelAdapters?.[provider]?.listAllModels() ?? []) known.add(model.id)
+  } catch {
+    /* 提示层的核对失败不得反噬开关本身 */
+  }
+  // ⚠️ 并回「被关着」的 id —— **必须在 await 之后读**（理由见函数头）。
+  for (const [id, disabled] of Object.entries(pool.listDisabledModels(provider))) {
+    if (disabled === true) known.add(id)
+  }
+  return known
+}
+
+/**
+ * 为「静默空操作」生成 warnings（纯函数，判据与取舍见 {@link readableCatalogIds}）。
+ *
+ * @param known - 可核对的目录 id 集合（**已含**黑名单里的 id）；`undefined` = 放弃核对。
+ * @param provider - 目标 provider（查 dead 表给可操作指引）。
+ * @param ids - 本次操作的模型 id（已去重）。
+ * @param disabled - 目标状态：true = 关闭，false = 打开。
+ * @returns 警告文案（无警告时为空数组）。
+ */
+function catalogWarnings(
+  known: ReadonlySet<string> | undefined,
+  provider: string,
+  ids: readonly string[],
+  disabled: boolean,
+): string[] {
+  if (known === undefined) return []
+  const missing = ids.filter((id) => !known.has(id))
+  if (missing.length === 0) return []
+
+  const dead = deadModelIdsFor(provider)
+  /** 失效模型的正确动作是「重新显示」，必须给出这条可操作指引。 */
+  const hint = (id: string): string => dead.has(id)
+    ? '（已被判为失效，可在模型列表里点「重新显示」恢复）'
+    : '（该模型可能已被上游下架）'
+
+  return missing.map((id) => disabled
+    // 关闭方向：写入生效了，但它本来也不在可选列表里，故不影响实际可选集合。
+    ? `${id} 不在当前模型目录，本次关闭不影响可选列表${hint(id)}。`
+    // 打开方向：黑名单里没有它（有的话已被 `readableCatalogIds` 并回 `known`）
+    // ⇒ 本次既没写也没删，是纯空操作。
+    : `${id} 不在当前模型目录，且黑名单里没有它 —— 本次没有产生任何变更${hint(id)}。`)
+}
+
+/**
  * 注册 Jet Hub 管理 API 端点。
  *
  * `connection` 服务只存在于 Web bundle；这里用**惰性注入**而非插件级静态
@@ -3824,15 +4011,29 @@ function registerJetHubEndpoints(
         if (typeof req.provider !== 'string' || typeof req.modelId !== 'string' || req.modelId.length === 0) {
           return { ok: false, error: { code: 'bad-request', message: 'provider 与 modelId 必填' } }
         }
+        // ⚠️ 目录必须在写入**之前**读：关闭一个目录内的模型后，它会被
+        // `listModels()` 过滤掉，写完再读就把它误判成「不在目录」。
+        // ⚠️ 黑名单**不在这里取** —— `readableCatalogIds` 会在 `await` 之后
+        //    自己读（理由见其注释：提前取会与写入时刻错开、导致误报「没有变更」）。
+        const known = await readableCatalogIds(ctx, pool, modelAdapters, req.provider)
         await pool.setModelDisabled(req.provider, req.modelId, req.disabled === true)
         ctx.logger.info(
           `[jet-hub] ${req.disabled === true ? '关闭' : '打开'}模型 ${req.provider}/${req.modelId}`,
         )
         // 必须广播：否则开关只写进磁盘、界面一直显示旧目录（成因见该函数注释）。
         broadcastCatalogChanged(ctx)
+        const disabledModels = pool.listDisabledModels(req.provider)
+        // ⚠️⚠️ **静默空操作必须留痕**（Issue IKJW33，2026-10-12 自上游移植）：
+        // 对已从上游目录消失的 id 开关时，旧实现返回「成功」却什么都没发生、
+        // 且零警告。写入语义不变，只在响应里补 warnings 说明真相。
+        const warnings = catalogWarnings(
+          known, req.provider, [req.modelId], req.disabled === true,
+        )
+        if (warnings.length > 0) ctx.logger.warn(`[jet-hub] ${warnings.join(' ')}`)
         const value: RpcModelSetDisabledResponse = {
           provider: req.provider,
-          disabledModels: pool.listDisabledModels(req.provider),
+          disabledModels,
+          ...warnings.length > 0 ? { warnings } : {},
         }
         return { ok: true, value }
       }
@@ -3908,6 +4109,9 @@ function registerJetHubEndpoints(
         if (ids.length === 0) {
           return { ok: false, error: { code: 'bad-request', message: 'modelIds 不能为空' } }
         }
+        // 同单条端点：目录必须在写入**之前**读（关闭方向会让 `listModels()`
+        // 过滤掉这些 id）；黑名单由 `readableCatalogIds` 在 `await` 之后自取。
+        const known = await readableCatalogIds(ctx, pool, modelAdapters, req.provider)
         if (req.disabled) await pool.setModelsDisabled(req.provider, ids)
         else await pool.clearModelsDisabled(req.provider, ids)
         ctx.logger.info(
@@ -3915,9 +4119,14 @@ function registerJetHubEndpoints(
         )
         // 与其它开关端点一致：必须广播，否则界面一直显示旧目录。
         broadcastCatalogChanged(ctx)
+        const disabledModels = pool.listDisabledModels(req.provider)
+        // 与单条端点同约定：目录外的 id 必须留痕（Issue IKJW33）。
+        const warnings = catalogWarnings(known, req.provider, ids, req.disabled)
+        if (warnings.length > 0) ctx.logger.warn(`[jet-hub] ${warnings.join(' ')}`)
         const value: RpcModelSetDisabledManyResponse = {
           provider: req.provider,
-          disabledModels: pool.listDisabledModels(req.provider),
+          disabledModels,
+          ...warnings.length > 0 ? { warnings } : {},
         }
         return { ok: true, value }
       }

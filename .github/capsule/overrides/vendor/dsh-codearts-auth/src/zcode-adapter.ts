@@ -122,6 +122,7 @@ import {
   noteZcodeRequestSent,
   readZcodeBusinessCodeFromBody,
 } from './zcode-diagnostics.js'
+import { planSessionTitleThinking } from './session-title.js'
 
 /** 本适配器注册的 provider 路由名（等价于 `ZCODE.id`）。 */
 export const PROVIDER = 'zcode'
@@ -870,13 +871,37 @@ export class ZcodeAdapter extends LlmAdapter {
      * 也不发默认值 —— 上游有自己的 `defaultLevel`，我们别去覆盖它。
      */
     const effort = options.reasoningEffort
-    if (effort !== undefined && effort.length > 0) {
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策
+     *（issue IKKVDH，2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * 本模型的默认档注入进来（`effective = requested ?? reasoning.defaultEffort`）。
+     * ZCode 的档位来自上游 `client/configs`（实测形如 `['low','high','max']`，
+     * **没有 `off`/`none`**）⇒ 本家**关不掉**思考，只能走抬预算兜底。
+     *
+     * ⚠️ `declaredEfforts` **必须与 `reasoningFor` 同源**（都取
+     * `entry.reasoningLevels`）—— 若这里另读一份，会出现「UI 声明了关闭档、
+     * 请求却把预算抬高」或反过来的分叉。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: effort === undefined ? undefined : String(effort),
+      declaredEfforts: (await this.loadModels()).find((item) => item.id === options.model)?.reasoningLevels ?? [],
+      maxTokens: options.maxTokens,
+    })
+    if (titlePlan.effort !== undefined && titlePlan.effort.length > 0) {
       const all = await this.loadModels()
       const entry = all.find((item) => item.id === options.model)
       const levels = entry?.reasoningLevels
-      if (levels !== undefined && levels.includes(effort)) {
-        body.output_config = { effort }
+      if (levels !== undefined && levels.includes(titlePlan.effort)) {
+        body.output_config = { effort: titlePlan.effort }
       }
+    }
+    // ⚠️ 抬预算必须在 `body` 构造**之后**覆盖（见上方的 `max_tokens` 初值）：
+    // 那里写的是 `options.maxTokens ?? 8192`，此处按决策结果覆盖。
+    if (titlePlan.maxTokens !== undefined) {
+      body.max_tokens = titlePlan.maxTokens
     }
 
     /**

@@ -25,16 +25,20 @@ git 仓库（main 分支）
 `sync-upstream.yml` 合并上游时**永远看不到胶囊改动** —— 胶囊不进 git 历史，
 所以既不会被覆盖，也不会破坏任何未来的上游更新。
 
-## 目录内容（2026-10-11 16:30 状态）
+## 目录内容（2026-10-12 07:00 状态）
 
 | 路径 | 说明 |
 |---|---|
-| `files/` | 胶囊/移植**全新增**路径：8 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ 5 个 spec |
-| `overrides/` | **31 个**「上游某版 + 我方改动」覆盖文件（src 24 个 + plugin-src/client 3 个 + spec 4 个）。每个的基线版本见 `PORTING-GITEE-HANDOFF.md` 各轮次记录 |
-| `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）；`DISABLED` 空文件 = 一键纯净构建 |
-| `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 9 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑** |
+| `files/` | 胶囊/移植**全新增**路径：10 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ spec（当前 28 个文件） |
+| `overrides/` | **44 个**「上游某版 + 我方改动」覆盖文件（src 34 个 + plugin-src/client 5 个 + spec 4 个）；另有 1 个 `lib/`（胶囊自带的 d.ts 源）。每个的基线版本见 `PORTING-GITEE-HANDOFF.md` 各轮次记录 |
+| `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）；`DISABLED` 空文件 = 一键纯净构建 |
+| `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 14 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑** |
 | `build-apk.yml` | 完整构建 workflow 模板（sync 后由 sync-upstream.yml 恢复到 .github/workflows/） |
 | `update-readme.py` | README 下载区块自动改写（[skip ci] 防循环） |
+
+⚠️ **落位判据**（2026-10-12 明确）：**main 的 vendor 镜像里已有该文件 ⇒ 进 `overrides/`**
+（要纳入基线漂移检查）；**main 完全没有 ⇒ 进 `files/`**。两者在 `apply.sh` 里落到
+同一处，但语义与维护纪律不同（`files/` 不会被上游"改回"）。
 
 样式（jet-hub-styles.js）已改为**完整 override 文件**（基线 = 上游 0.1.60 + 胶囊样式）。
 旧 `patches/` 目录（git apply 补丁）已于 2026-10-11 废弃删除——多 hunk 上下文漂移时
@@ -45,7 +49,7 @@ git 仓库（main 分支）
 - 上游**没改**被覆盖的文件：无事发生，胶囊照常。
 - 上游**改了**其中某个文件：`overrides` 的旧基线会**静默覆盖**掉上游新改动
   （tsc/测试仍会过——这正是 #15「zcode 增强丢失」事故的形态）。
-  ⇒ **每次 sync 后必做基线漂移检查**：31 个 override 逐个与上游同路径比对，
+  ⇒ **每次 sync 后必做基线漂移检查**：44 个 override 逐个与上游同路径比对，
   差异应全部为我方有意改动（脚本范例 `.scratch/port-gitee/drift-check.mjs`）。
   有漂移时按新版上游重定基线：**不要用 `patch` 命令**（toybox 对多 hunk 上下文
   漂移会整份静默跳过），用 node 脚本按精确锚点字符串逐块替换/拼接，

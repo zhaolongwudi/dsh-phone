@@ -32,7 +32,7 @@ import { zcodeSources } from './zcode-sources.js'
 import { AccountPool, allAccountsRateLimitedForModel } from './account-pool.js'
 import { MultiAccountRefreshScheduler } from './refresh-scheduler.js'
 import { hasLegacyNamespaceRegistration, settingsOf, suppressAutoSettingsPage } from './settings-compat.js'
-import type { ImageRequestTarget } from './image-budget.js'
+import { DEFAULT_BODY_LIMITED_IMAGE_MAX_BYTES, type ImageRequestTarget } from './image-budget.js'
 import { buildRaccoonNickname, registerJetHubRpc } from './jet-hub-rpc.js'
 import { CODEBUDDY, WORKBUDDY, type BuddyProduct } from './product.js'
 import { mountOpenAiGateway } from './openai-gateway/index.js'
@@ -1758,6 +1758,11 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   // 但 base64 后的截图很大（2560×1600 各约 3.9 MB），两张就接近常见网关
   // 的 10MB 门槛 —— 与 raccoon 的同因（issue !IKITT9 那一族）。
   readImageRequest: makeReadImageRequest(ctx),
+  // ⚠️ **字节目标必须显式传**（2026-10-12 自上游 8f71268f 移植，issue IKKX0T）：
+  // 适配器读 `options.imageMaxBytes`，缺省时 `requestImageTargetFor` 会回退到
+  // **2 MiB**（那是为腾讯系的图片 token 预算准备的），而 ZCode 撞的是**请求体体积**
+  //（见上面那条注释里的 10MB 门槛）。与四家 product 的同款缺陷/修法一致。
+  imageMaxBytes: DEFAULT_BODY_LIMITED_IMAGE_MAX_BYTES,
   // 模型目录用静态白名单（实测可用的两个）—— 上游模型池含
   // 实测返回空响应的两条（GLM-5-Turbo / GLM-5.2），故不枚举远端。
   fetchRemoteModels: () => zcode.fetchRemoteModelsOnly(),

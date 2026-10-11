@@ -29,7 +29,7 @@ import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelIn
 import { randomUUID } from 'node:crypto'
 import { AccountPool, providerCatalogVisible } from './account-pool.js'
 import { isQoderExpired, type QoderCredential } from './qoder.js'
-import { QoderEncryptedInfer, type QoderInferMessage, type QoderInferRequest, type QoderInferTool, type QoderInferToolCall } from './qoder-wasm.js'
+import { describeWasmFailure, QoderEncryptedInfer, type QoderInferMessage, type QoderInferRequest, type QoderInferTool, type QoderInferToolCall } from './qoder-wasm.js'
 import { unwrapQoderEnvelopeStream } from './qoder-envelope.js'
 import { QODER, type QoderFallbackModel, type QoderModelPromotion, type QoderProduct } from './qoder-product.js'
 import { projectRequestImage, type ImageRequestTarget } from './image-budget.js'
@@ -46,6 +46,7 @@ import {
   ModelQueuedError,
   serializeMessages,
 } from './openai-compat.js'
+import { planSessionTitleThinking } from './session-title.js'
 import {
   BILLING_BUSINESS_CODE,
   QUEUE_BUSINESS_CODE,
@@ -699,9 +700,37 @@ export class QoderAdapter extends LlmAdapter {
 
     const fallback = this.fallbackIndex.get(options.model)
 
+    /**
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策
+     *（issue IKKVDH，2026-10-12 自上游 0840ae0c 移植）。
+     *
+     * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
+     * `qoderEffortsFor` 声明的默认档注入进来。本家的关闭档是 `none`
+     *（由 `supportsDisable` 追加，见 `qoderEffortsFor`）⇒ 声明了它的模型
+     * 关得掉；未声明的模型只能抬预算兜底。
+     *
+     * ⚠️ 在 `buildRequest` **之外**算一次：它在 401 重试时会被再次调用，
+     * 每次重算虽无害但没必要（与 raccoon 的 `thinking` 同款理由）。
+     */
+    const titlePlan = planSessionTitleThinking({
+      purpose: options.purpose,
+      requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
+      declaredEfforts: fallback === undefined ? [] : qoderEffortsFor(fallback),
+      maxTokens: options.maxTokens,
+    })
+
     /** 用给定凭据构造一次加密请求（首次与 401 重试共用，避免两处漂移）。 */
     const buildRequest = async (c: QoderCredential): Promise<QoderInferRequest> => {
-      const client = await QoderEncryptedInfer.create({
+      // 🔴 `client` 持有 wasm `QoderContext`，**本次构造用完必须释放**：
+      // 该类每次请求都新建实例，不释放则进程级共享的 wasm 堆只增不减，
+      // 长上下文会话最终以裸 `RuntimeError: unreachable` 暴毙
+      // （8/8 历史命中都在 Qoder 路由上；见 `src/qoder-wasm.ts` 文件头）。
+      // 用 `try/finally` 而非顺序调用：`create` / `prepareInfer` 抛错时同样要
+      // 释放，否则**异常路径**反倒成了泄漏最多的那条路。
+      // （2026-10-12 自上游 173769dc + 8e5e39e6 移植。）
+      let client: QoderEncryptedInfer | undefined
+      try {
+        client = await QoderEncryptedInfer.create({
         user: {
           uid: c.uid!,
           securityOauthToken: c.security_oauth_token ?? c.access_token,
@@ -719,8 +748,10 @@ export class QoderAdapter extends LlmAdapter {
         // 工具定义：这是模型**唯一**能学到函数 schema 的通道，
         // 缺了它模型只能用正文 XML 臆造调用（真实缺陷）。
         tools,
-        ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-        ...(options.reasoningEffort !== undefined ? { reasoningEffort: options.reasoningEffort } : {}),
+        // ⚠️ 标题请求走 `titlePlan`（issue IKKVDH）：关得掉思考时用它的关闭档、
+        // 关不掉时由它抬预算；普通请求与改动前**逐字节等价**。
+        ...(titlePlan.maxTokens !== undefined ? { maxTokens: titlePlan.maxTokens } : {}),
+        ...(titlePlan.effort !== undefined ? { reasoningEffort: titlePlan.effort } : {}),
         ...(fallback?.supportsImage !== undefined ? { isVl: fallback.supportsImage } : {}),
         // 官方 `model_config` 的 display_name / max_input_tokens 必须带上。
         ...(fallback?.name !== undefined ? { displayName: fallback.name } : {}),
@@ -737,6 +768,25 @@ export class QoderAdapter extends LlmAdapter {
         // —— 服务端按 `business.type` 选路由池，缺字段会走异常分支。
         business: { type: 'agent' },
       })
+      } catch (error) {
+        // wasm trap（裸 `unreachable`）在 `qoder-wasm.ts` 的 glue 层已被改写；
+        // 这里再兜一次，覆盖 glue 之外的路径（如 `finally` 里的栈指针回退），
+        // 保证**任何**情况下都不会有裸 `unreachable` 冒到 UI。
+        // 非 trap 错误原样返回，行为逐字节不变。
+        throw describeWasmFailure(error)
+      } finally {
+        // ⚠️⚠️ **释放失败绝不能顶替 `try` 块里的原始错误**（真实缺陷，2026-10-12
+        // 上游审计实测，自 8e5e39e6 移植）：JS 语义上 `finally` 里的 `throw` 会
+        // **无条件覆盖** `try` 的 `throw`，而 `dispose()` → `freePointer()` 的
+        // catch 里确实会 rethrow（堆耗尽时它同样会 trap）⇒ 上游 401/AUTH 会被
+        // 改写成「WASM 堆耗尽」并丢掉可重试性判据。释放是**清理动作**，失败
+        // 不该改变本次请求的结论 ⇒ 刻意静默吞掉。
+        try {
+          client?.dispose()
+        } catch {
+          // 见上：清理失败不上抛、不改写本次请求的结论。
+        }
+      }
     }
 
     // 3. 发送（⚠️ 头必须原样透传：Authorization 是 WASM 生成的

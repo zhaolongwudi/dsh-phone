@@ -544,11 +544,15 @@ export class AutoAdapter extends LlmAdapter {
     try {
       expiryAt = await this.expiryOf(choice.provider, signal)
     } catch (error) {
-      // ⚠️ 先让中止原样逃逸（三条判据与 `hasUsableAccountFor` 同构）。
+      // ⚠️ 先让中止原样逃逸（四条判据与 `hasUsableAccountFor` 逐格同构 ——
+      //    含第四条「上游网关 499 口径」，2026-10-12 自上游 8e5e39e6 移植：
+      //    本处原先只有 name/code 两条，同一份 499 报文会被吞成「倒计时缺席」）。
       signal?.throwIfAborted()
       if (error !== null && typeof error === 'object') {
-        const candidate = error as { name?: unknown; code?: unknown }
+        const candidate = error as { name?: unknown; code?: unknown; message?: unknown }
         if (candidate.name === 'AbortError' || candidate.code === 'ABORTED') throw error
+        const message = typeof candidate.message === 'string' ? candidate.message : ''
+        if (/aborted request|HTTP_?499/i.test(message)) throw error
       }
       // 其余（余额接口抖动等）只让倒计时缺席，不阻断请求。
       expiryAt = undefined
@@ -908,7 +912,8 @@ export class AutoAdapter extends LlmAdapter {
    *   `disabledModelsFor`，判成不可用会让所有桩用例「零候选」。
    * - 查询抛错 ⇒ **视为可用**：一次池查询异常不该让渠道整体消失。
    * - ⚠️ **中止必须原样逃逸**：判据取三条 —— `signal.aborted` /
-   *   `name === 'AbortError'` / `code === 'ABORTED'`。不要只判 `name`：
+   *   `name === 'AbortError'` / `code === 'ABORTED'` / 🔴 `message` 含 `aborted request|HTTP_?499`（上游
+ *   网关 499 口径，2026-10-11 与 aggregate 侧同步补——同族判据必须逐格同构）。不要只判 `name`：
    *   别的调用方可能只设 `code`，只判 `name` 会把中止吞成「视为可用」并继续发请求。
    */
   private async hasUsableAccountFor(
@@ -926,10 +931,13 @@ export class AutoAdapter extends LlmAdapter {
       return available !== null && available !== undefined
     } catch (error) {
       signal?.throwIfAborted()
-      // 三条判据，与 `aggregate-adapter.ts` 的 `isAbortLike` 逐字同构。
+      // 四条判据，与 `aggregate-adapter.ts` 的 `isAbortLike` 逐字同构
+      //（第四条 = 上游网关 499 口径，2026-10-11 同步补，见该处注释）。
       if (error !== null && typeof error === 'object') {
-        const candidate = error as { name?: unknown; code?: unknown }
+        const candidate = error as { name?: unknown; code?: unknown; message?: unknown }
         if (candidate.name === 'AbortError' || candidate.code === 'ABORTED') throw error
+        const message = typeof candidate.message === 'string' ? candidate.message : ''
+        if (/aborted request|HTTP_?499/i.test(message)) throw error
       }
       return true
     }
