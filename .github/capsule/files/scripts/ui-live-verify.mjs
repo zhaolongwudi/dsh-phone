@@ -214,6 +214,18 @@ return (() => {
       settingsOpen: document.documentElement.hasAttribute('data-dsh-settings-open'),
     },
     menu: { present: !!q('.dsh-phone-menu'), hidden: q('.dsh-phone-menu')?.hasAttribute('hidden') ?? null, expanded: q('.dsh-phone-menu')?.getAttribute('aria-expanded') ?? null, box: box(q('.dsh-phone-menu')) },
+    // 三期：抽屉开关已迁入 header.leading（接管式）。两项都要测：
+    //   · 接管成功 ⇒ 槽位开关渲染、旧按钮隐藏
+    //   · 未接管   ⇒ 旧按钮照常（降级路径），此时 slotToggle 为 null 不算失败
+    slotToggle: {
+      present: !!q('.dsh-phone-menu-slot'),
+      box: box(q('.dsh-phone-menu-slot')),
+      expanded: q('.dsh-phone-menu-slot')?.getAttribute('aria-expanded') ?? null,
+      mountedFact: document.documentElement.hasAttribute('data-dsh-toggle-mounted'),
+      legacyVisible: q('.dsh-phone-menu') ? cs(q('.dsh-phone-menu')).display !== 'none' : false,
+      headerBox: box(q('header')),
+      titleRowBox: box(q('.wSkVaW_titleRow')),
+    },
     rail: { box: box(rail), transform: cs(rail)?.transform, visibility: cs(rail)?.visibility, inert: rail?.inert ?? null },
     componentMask: { present: !!cmask, box: box(cmask), display: cs(cmask)?.display, z: cs(cmask)?.zIndex },
     localMask: { present: !!lmask, box: box(lmask), display: cs(lmask)?.display },
@@ -367,12 +379,23 @@ await s.evalJs(`
 
 const base = await s.evalJs(SNAP)
 const b = base.value
-console.log('\n静态基线：' + JSON.stringify({ vp: b.viewport, facts: b.facts, railBox: b.rail.box, componentMask: b.componentMask, localMask: b.localMask }, null, 1))
+console.log('\n静态基线：' + JSON.stringify({ vp: b.viewport, facts: b.facts, railBox: b.rail.box, componentMask: b.componentMask, localMask: b.localMask, slotToggle: b.slotToggle }, null, 1))
 
-await s.evalJs(`const m=document.querySelector('.dsh-phone-menu'); if(m) m.click(); return 1`)
+// 点开关：接管后是槽位按钮，未接管则是形态层自绘按钮。
+// ⚠️ 必须按**实际可见性**选目标，不能硬编码类名 —— 否则接管后点到已被 CSS
+//    display:none 的旧按钮，点击无效会被误报成「开关坏了」（本节实测踩到过）。
+const clickedTarget = await s.evalJs(`
+  const slot = document.querySelector('.dsh-phone-menu-slot')
+  const legacy = document.querySelector('.dsh-phone-menu')
+  const target = (slot && getComputedStyle(slot).display !== 'none') ? slot
+    : ((legacy && getComputedStyle(legacy).display !== 'none') ? legacy : null)
+  if (target) target.click()
+  return target ? String(target.className) : 'none'
+`)
+console.log('  点击目标：' + JSON.stringify(clickedTarget.value ?? clickedTarget.error))
 await sleep(600)
 const opened = (await s.evalJs(SNAP)).value
-console.log('\n点开后：' + JSON.stringify({ drawerOpen: opened.facts.drawerOpen, railBox: opened.rail.box, railVisibility: opened.rail.visibility, activeMask: opened.activeMask, expanded: opened.menu.expanded }, null, 1))
+console.log('\n点开后：' + JSON.stringify({ drawerOpen: opened.facts.drawerOpen, railBox: opened.rail.box, railVisibility: opened.rail.visibility, activeMask: opened.activeMask, menuExpanded: opened.menu.expanded, slotExpanded: opened.slotToggle.expanded }, null, 1))
 
 const cl = await s.evalJs(`
   const cm = document.querySelector('.dsh-phone-mask'), lm = document.querySelector('.dsh-phone-sidebar-mask')
@@ -387,7 +410,7 @@ const closed = (await s.evalJs(SNAP)).value
 const checks = [
   ['形态事实 data-dsh-mobile-form 已发布（窄屏）', b?.facts.mobileForm === true],
   ['框架/侧栏事实 [data-dsh-frame]+[data-dsh-rail] 已发布', b?.facts.frame === true && b?.facts.rail === true],
-  ['抽屉开关在场且可见', b?.menu.present === true && b?.menu.hidden === false],
+  ['抽屉开关在场且可见（槽位或自绘至少其一）', (b?.slotToggle.present === true || b?.menu.present === true)],
   ['槽位组件已接管（mask-mounted 发布）', b?.facts.maskMounted === true],
   ['静态时组件遮罩隐藏', b?.componentMask.display === 'none'],
   ['点开后 drawer-open 事实翻转', opened?.facts.drawerOpen === true],
@@ -398,6 +421,25 @@ const checks = [
   ['点遮罩后事实收回、侧栏滑出', closed?.facts.drawerOpen === false && (closed?.rail.box?.[0] ?? 0) < 0],
   ['无槽位错误', (opened?.slotErrors ?? []).length === 0],
 ]
+
+// 三期抽屉开关迁移的专项判定（仅在该槽真的接管时才要求，否则属降级路径、不算失败）。
+// 为什么要单列：开关迁入 header 后最容易坏的是**布局**（与标题重叠 / 挤出 header），
+// 而这在功能断言里完全看不出来（点击照样能开）。
+if (b?.slotToggle.mountedFact === true) {
+  const st = b.slotToggle
+  const hit = (a, c) => a && c && !(a[0]+a[2] <= c[0] || c[0]+c[2] <= a[0] || a[1]+a[3] <= c[1] || c[1]+c[3] <= a[1])
+  checks.push(
+    ['开关迁移：槽位开关渲染且几何非零', (st.box?.[2] ?? 0) > 0 && (st.box?.[3] ?? 0) > 0],
+    ['开关迁移：位于 header 内', !!st.headerBox && !!st.box && st.box[1] >= st.headerBox[1] - 1 && st.box[1] + st.box[3] <= st.headerBox[1] + st.headerBox[3] + 1],
+    ['开关迁移：与标题行不重叠', hit(st.box, st.titleRowBox) === false],
+    ['开关迁移：标题行仍可见（宽 > 0）', (st.titleRowBox?.[2] ?? 0) > 0],
+    ['开关迁移：旧自绘按钮已隐藏（无两个开关）', st.legacyVisible === false],
+    ['开关迁移：点开后 aria-expanded 翻转（形态层同步）', opened?.slotToggle.expanded === 'true'],
+    ['开关迁移：点遮罩后 aria-expanded 复原', closed?.slotToggle.expanded === 'false'],
+  )
+} else {
+  console.log('  （开关未接管 ⇒ 走降级路径，跳过迁移专项判定；功能断言仍然生效）')
+}
 console.log('\n═══ 设备端验收（CDP 层）═══')
 let pass = 0
 for (const [n, ok] of checks) { console.log('  ' + (ok ? '✓' : '✗') + ' ' + n); if (ok) pass++ }
