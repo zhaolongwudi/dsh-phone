@@ -55,6 +55,9 @@ const CI_STEPS = [
   ['ui-semantic-anchors.mjs', ['--tree', '/nonexistent-engine-tree']],
   // 基线分叉搬运工具：无参数时必须**打印用法并正常退出**，不能崩（CI 会跑它）。
   ['ui-baseline-merge.mjs', []],
+  // 原生 token 接入方案：无参数时必须打印用法并正常退出（本机无 gradle，故本步是
+  // 该改动唯一可离线验证的关卡）。
+  ['ui-native-token-plan.mjs', []],
 ]
 
 console.log('无引擎树环境下，每个 CI 步骤都必须能正常退出')
