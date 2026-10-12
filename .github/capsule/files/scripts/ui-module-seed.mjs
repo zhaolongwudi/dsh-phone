@@ -89,8 +89,17 @@ export function checkSeed(root) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2)
   const ti = args.indexOf('--tree')
-  const tree = ti >= 0 ? args[ti + 1] : '/data/data/com.dshphone/files/tree'
-  if (!existsSync(tree)) { console.error('引擎树不存在：' + tree); process.exit(2) }
+  const tree = ti >= 0 ? args[ti + 1] : (process.env.DSH_TREE || '/data/data/com.dshphone/files/tree')
+  // ⚠️ 引擎树缺失必须**明确跳过**（exit 0），不能 exit 2。
+  //    本步在 apply.sh 里由 `if [ -n "${DSH_TREE:-}" ]` 守卫，但 CI 的 shell 里
+  //    DSH_TREE 未导出 ⇒ 守卫成立（非空判断用的是默认值）却传了手机路径 ⇒
+  //    CI 上必然「引擎树不存在」并以 exit 2 中断整个构建（2026-10-13 实测踩到）。
+  //    本层对外的契约是「无引擎树 ⇒ 跳过而非失败」（见 ui-tests/ci-compat.test.mjs）。
+  if (!existsSync(tree)) {
+    console.log('客户端模块表契约：跳过（本环境无引擎树：' + tree + '，CI 属预期）')
+    console.log('  说明：本步只在维护期（真机/本地有引擎树）可跑；缺树时不假装通过，也不阻断构建。')
+    process.exit(0)
+  }
   const r = checkSeed(tree)
 
   if (args.includes('--json')) console.log(JSON.stringify(r, null, 2))
