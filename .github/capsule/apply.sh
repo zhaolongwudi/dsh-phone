@@ -172,11 +172,19 @@ node scripts/ui-tests/slot-chain-e2e.test.mjs
 #     静态模块表（seed）决定——表里没有就解析失败，且失败形态是「组件静默不渲染」
 #     而非报错。故把这张表钉住：上游移除条目时构建期报红。
 #     注：表在前端产物里（dist/assets），胶囊工作区无引擎树时本步自行跳过。
+#
+#     ⚠️ 守卫必须判断**树实际存在**，不能用 `-n "${DSH_TREE:-}"`：
+#        第 6.8 步已给 DSH_TREE 赋了默认值（手机路径）⇒ `-n` 恒真 ⇒ CI 上必然带着
+#        不存在的路径进 ui-module-seed ⇒ exit 2 中断整个构建。
+#        2026-10-13 实测踩到（run 38318714316：apply.sh 步骤失败，日志末行
+#        「引擎树不存在：/data/user/0/com.dshphone/files/tree」）。
+#        ui-module-seed 本身也已改为「缺树即跳过」，此处再补一道守卫，双保险。
+SEED_TREE="${DSH_TREE:-/data/data/com.dshphone/files/tree}"
 if [ -d node_modules/@deepseek-ai/dsh-web-frontend/dist/assets ] ||
-   [ -n "${DSH_TREE:-}" ]; then
-  node scripts/ui-module-seed.mjs --tree "${DSH_TREE:-/data/data/com.dshphone/files/tree}"
+   [ -d "$SEED_TREE/node_modules/@deepseek-ai" ]; then
+  node scripts/ui-module-seed.mjs --tree "$SEED_TREE"
 else
-  echo "跳过模块表契约校验（本环境无引擎树产物）"
+  echo "跳过模块表契约校验（本环境无引擎树产物：$SEED_TREE）"
 fi
 
 # 11) CI 兼容性：本层多数检查依赖「引擎树」（本地有、CI 没有）。本步在缺引擎树的
