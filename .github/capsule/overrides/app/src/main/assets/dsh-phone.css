@@ -140,6 +140,21 @@
 @media (max-width:767px){
  .wSkVaW_header{position:relative;grid-template-columns:minmax(0,1fr)!important;padding:4px 8px 0!important}
  [data-conversation-header-leading],.wSkVaW_headerLeading{display:none!important}
+ /* 抽屉开关的座位：**默认让位**（上游 leading 在本项目无先例，先按原样隐藏）。
+    三期接管：槽位组件真实挂载后由 dsh-phone.js 发布 html[data-dsh-toggle-mounted]，
+    此时把 header 改两列、leading 显示出来、旧的固定定位按钮隐藏。
+    ⇒ 接管失败时页面回到上面那一行，不会出现「两个开关」或空白座位。
+    （本段规格经设备实测 10/10：开关 [8,5,22,34]、标题 [30,4,417,36]、不重叠、侧栏滑入。） */
+ html[data-dsh-toggle-mounted] .wSkVaW_header{grid-template-columns:auto minmax(0,1fr)!important}
+ html[data-dsh-toggle-mounted] [data-conversation-header-leading],
+ html[data-dsh-toggle-mounted] .wSkVaW_headerLeading{display:flex!important;grid-area:1/1!important;align-items:center;justify-content:flex-start}
+ /* 接管后：标题改从第 2 列起，左内边距收回 4px（原先 70px 是给固定按钮手工留位的魔法数字） */
+ html[data-dsh-toggle-mounted] .wSkVaW_titleRow{grid-column:2!important;padding-inline:4px 32px!important}
+ /* 接管后隐藏旧自绘按钮（否则两个开关并存，且其固定定位会压住新开关） */
+ html[data-dsh-toggle-mounted] .dsh-phone-menu{display:none!important}
+ /* 槽位开关本体：与旧按钮同规格，避免接管前后视觉漂移 */
+ .dsh-phone-menu-slot{min-height:34px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:10px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:14px system-ui}
+ html[data-dsh-drawer-open] .dsh-phone-menu-slot{background:var(--dsw-alias-bg-layer-2,#eef2f7)}
  .wSkVaW_titleRow{grid-column:1!important;box-sizing:border-box;min-width:0;min-height:36px!important;padding-inline:70px 32px!important;gap:4px!important}
  .wSkVaW_titleCluster{gap:4px!important;min-width:0}
  .wSkVaW_titleCluster>:first-child{min-width:0;max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
