@@ -53,6 +53,8 @@ const CI_STEPS = [
   //    以 exit 2 退出而整个构建失败（日志末行「引擎树不存在：/data/user/0/…」）。
   ['ui-module-seed.mjs', ['--tree', '/nonexistent-engine-tree']],
   ['ui-semantic-anchors.mjs', ['--tree', '/nonexistent-engine-tree']],
+  // 基线分叉搬运工具：无参数时必须**打印用法并正常退出**，不能崩（CI 会跑它）。
+  ['ui-baseline-merge.mjs', []],
 ]
 
 console.log('无引擎树环境下，每个 CI 步骤都必须能正常退出')
