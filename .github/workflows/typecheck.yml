@@ -58,3 +58,118 @@ jobs:
       # 上游自己从不跑 tsc，故移植引入的类型错误在这里显式失败。
       - name: vendor 验证（vitest + tsc + esbuild）
         run: bash .github/capsule/rebuild-vendor.sh
+
+      # UI 层验证（2026-10-12 新增）。
+      # 为什么单列一步而不是塞进 rebuild-vendor：UI 层是纯前端资产（assets/res），
+      # 与 vendor 的 tsc/esbuild 链无关；两者的失效形态也不同——vendor 坏了会编译报错，
+      # UI 层坏了（标记层被覆盖、上游哈希改名）**完全静默**，只有这两条检查能抓到。
+      - name: UI 形态标记层行为验证
+        run: node scripts/ui-tests/marker-layer.test.mjs
+
+      - name: UI 锚点门禁判别力自检
+        run: node scripts/ui-tests/check-ui-anchors.test.mjs
+
+      # 图层健康检查：拦「代码与样式对不上且不报错」——状态类无 CSS 消费、
+      # 死 CSS、未定义变量。含 10 例双向断言（能检出 + 三类误报防线）。
+      - name: UI 图层健康检查
+        run: node scripts/ui-layer-audit.mjs
+
+      - name: UI 图层检查判别力自检
+        run: node scripts/ui-tests/layer-audit.test.mjs
+
+      # CSS 结构校验：多轮机械替换后，花括号配平不足以证明结构合法
+      # （注释未闭合/声明体混入/空选择器都会让浏览器静默丢弃规则）。
+      - name: UI CSS 结构校验
+        run: node scripts/ui-css-validate.mjs
+
+      - name: UI CSS 校验判别力自检
+        run: node scripts/ui-tests/css-validate.test.mjs
+
+      # Android 资源校验：新增 res 文件格式不对会让 gradle 资源编译直接失败
+      # （硬阻断）。本机/CI 无 aapt2，故用等价的结构+格式检查提前拦住常见错法。
+      - name: UI Android 资源校验
+        run: node scripts/ui-res-validate.mjs
+
+      - name: UI 资源校验判别力自检
+        run: node scripts/ui-tests/res-validate.test.mjs
+
+      # WebView 兼容下限：compat.js 补 Chrome 97–119 的 API，说明目标内核可能很老。
+      # 本层引入越界特性会在设备上静默失效或抛错。
+      - name: UI WebView 兼容下限核查
+        run: node scripts/ui-compat-floor.mjs
+
+      - name: UI 兼容下限判别力自检
+        run: node scripts/ui-tests/compat-floor.test.mjs
+
+      # 离线层门禁：CSS 引用的上游哈希必须全部登记进映射表。
+      # 在线层（校验锚点在上游是否真实存在）需要 dsh 引擎树，CI 的 vendor 依赖
+      # 不含 UI 包，故此处只跑离线层；维护期本地用 --tree 跑完整版。
+      - name: UI 锚点门禁（离线一致性：CSS + JS 两个消费面）
+        run: node scripts/check-ui-anchors.mjs
+
+      # 三期（槽位化改造）的迁移表校验：确认每个迁移目标槽在当前引擎版本上存在。
+      # 槽位名写错或上游删槽时，注册代码不报错而是静默不渲染（本项目实测
+      # settings.dev.item 已消失），故必须在构建期把这份契约钉住。
+      - name: UI 槽位清单与三期迁移表校验
+        run: node scripts/ui-slot-inventory.mjs --check
+
+      - name: UI 槽位清单判别力自检
+        run: node scripts/ui-tests/slot-inventory.test.mjs
+
+      # 槽位注册审计：拦「两个都进 bundles 的包撞同 id」（keyed 槽先到者赢、
+      # 后者静默消失）。本项目 dsh-phone-qq 与 dsh-peer 由同一份源产出，天然同 id。
+      - name: UI 槽位注册审计
+        run: node scripts/ui-slot-register-audit.mjs
+
+      # 运行时装载验证：静态审计发现不了「bundle 跑不起来」（factory 抛错 /
+      # 漏 inject / register 形态不符契约）。本步按壳侧真实协议执行产物并断言。
+      - name: UI 槽位注册运行时验证
+        run: node scripts/ui-tests/slot-register-runtime.test.mjs
+
+      # 三期配方可执行性：把配方代码当源码跑，拦「引用了未定义组件」这类错误。
+      # 实测已抓出 2 条配方缺组件定义（照抄即 ReferenceError）。
+      - name: UI 三期配方可执行性验证
+        run: node scripts/ui-tests/recipe-executable.test.mjs
+
+      # 真实 SlotCore 契约：用上游实现验证「注册到未声明的槽会怎样」。
+      # 实测为硬失败（not declared）与同 id 冲突（already has a registration）。
+      # CI 无引擎树时该套件自行跳过并说明。
+      - name: UI 上游槽位契约验证
+        run: node scripts/ui-tests/slot-core-contract.test.mjs
+
+      # 端到端链路：真实 renderer + 真实 SlotCore + 真 React 串起
+      # 「加载 → 建槽 → 注册 → 查出 → 渲染」。三期最大未知的确证层。
+      # CI 无引擎树时该套件自行跳过并说明。
+      - name: UI 端到端链路验证
+        run: node scripts/ui-tests/slot-chain-e2e.test.mjs
+
+      # 模块表契约：三期组件的 react hooks / ctx.slots 只能从壳侧静态模块表解析。
+      # 表里没有 = 组件静默不渲染（不报错）。本套件含 5 个反例自证判别力。
+      - name: UI 客户端模块表契约自检
+        run: node scripts/ui-tests/module-seed.test.mjs
+
+      # CI 兼容性：本层多数检查依赖引擎树（本地有、CI 没有）。本步在缺引擎树时
+      # 逐个跑关键脚本，确保「跳过而非崩」——否则 CI 会红得像代码坏了。
+      - name: UI CI 兼容性自检
+        run: node scripts/ui-tests/ci-compat.test.mjs
+
+      # 上游垫片兼容性：本层产物会被复制成 phone-qq/presentation.js，而上游自带的
+      # presentation.test.js 用极简 document 垫片执行它。本层依赖垫片缺失的方法
+      # （实测踩过 toggleAttribute）会把上游测试打红 —— 跨包回归，须专测。
+      - name: UI 上游垫片兼容性
+        run: node scripts/ui-tests/host-test-compat.test.mjs
+
+      # 三期迁移自检：抽屉遮罩迁到 shell.overlay（挂载即接管 + 失败降级）。
+      # 覆盖接管机制、降级路径、产物同步、inject 前置条件。
+      - name: UI 三期迁移自检
+        run: node scripts/ui-tests/mask-takeover.test.mjs
+
+      # 产物装载：按真实 __ModuleLoader__ 协议装载生成的 bundle 并跑 factory/apply，
+      # 用上游真实 SlotCore 校验每条注册被接受。CI 无引擎树时跳过该子验证。
+      - name: UI 产物装载验证
+        run: node scripts/ui-tests/plugin-bundle-load.test.mjs
+
+      # 行为复核：执行 dsh-phone.js，验证接管事实在场时本地遮罩真的让位
+      # （静态断言只能看到代码里写了什么）。
+      - name: UI 接管行为复核
+        run: node scripts/ui-tests/mask-takeover-behavior.test.mjs
