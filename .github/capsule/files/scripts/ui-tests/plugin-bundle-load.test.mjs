@@ -125,9 +125,19 @@ console.log('真实 host 接受：产物注册喂给上游 SlotCore（有引擎�
       const req = createRequire(import.meta.url)
       const { SlotCore } = req(slotsLib)
       const core = new SlotCore()
-      // 按上游 layout 的声明形态建槽（实测：'shell.overlay': { kind: 'list', scope: 'root' }）
-      for (const k of ['shell.overlay', 'settings.section']) {
-        const r = core.record(k); r.spec = { kind: 'list', scope: 'root' }
+      // 按上游的声明形态建槽。三者都经引擎源码实测：
+      //   shell.overlay                → { kind: 'list',   scope: 'root' }（layout 声明）
+      //   settings.section             → { kind: 'list',   scope: 'root' }（settings-general 声明）
+      //   conversation.header.leading  → { kind: 'single', scope: 'root' }（conversation 声明）
+      // ⚠️ 第三个是本轮新增的抽屉开关座位。**必须按真实 kind 声明**：
+      //    用 list 建槽会让 single 的注册契约失真（single 槽不允许同 id 并存、
+      //    且 entriesOfSlot 只取 priority 最低者）——那样测出来的「接受」是假的。
+      for (const [k, spec] of [
+        ['shell.overlay', { kind: 'list', scope: 'root' }],
+        ['settings.section', { kind: 'list', scope: 'root' }],
+        ['conversation.header.leading', { kind: 'single', scope: 'root' }],
+      ]) {
+        const r = core.record(k); r.spec = spec
       }
       const errs = []
       if (mod) {
@@ -141,6 +151,11 @@ console.log('真实 host 接受：产物注册喂给上游 SlotCore（有引擎�
         String(core.entriesOfSlot('shell.overlay').length))
       check('settings.section 有 ≥8 条（既有入口未丢）', core.entriesOfSlot('settings.section').length >= 8,
         String(core.entriesOfSlot('settings.section').length))
+      // 三期新增：抽屉开关迁入 header.leading。single 槽 ⇒ 必须恰好 1 条，
+      // 且注册要带 id（single 槽虽不强制 id，但本层约定统一带，便于审计与替换）。
+      check('conversation.header.leading 有 1 条（抽屉开关）',
+        core.entriesOfSlot('conversation.header.leading').length === 1,
+        String(core.entriesOfSlot('conversation.header.leading').length))
     }
   }
   }
