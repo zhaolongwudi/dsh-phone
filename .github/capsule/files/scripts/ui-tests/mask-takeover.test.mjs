@@ -140,6 +140,45 @@ console.log('状态同步：组件写事实后 adapt 必须重跑（否则 a11y 
   check('adapt 主流程不调用 show(（无观察循环）', !loop)
 }
 
+console.log('三期抽屉开关（header.leading）：接管事实与两端让位')
+{
+  // 开关从「固定定位自绘按钮」迁到上游 header 的 leading 座位，同样是**接管式**：
+  //   组件挂载 → 发布 html[data-dsh-toggle-mounted] → CSS 换两列布局、隐藏旧按钮
+  //   组件没渲染 → 事实缺失 → 旧的固定按钮 + 让位规则照常工作（零回归）
+  //
+  // ⚠️ 与遮罩的差别（写断言前先想清「事实由谁消费」）：
+  //   遮罩的接管是**行为交接** —— 本地实现必须主动让位（不再创建/隐藏自己），
+  //     故 dsh-phone.js 必须读 `data-dsh-mask-mounted`；
+  //   开关的接管是**纯视觉交接** —— 旧按钮由 CSS display:none 收掉、布局由 CSS
+  //     改两列，JS 不需要读该事实（它只需同步槽位开关的 aria，见下一条）。
+  check('CSS 消费接管事实 data-dsh-toggle-mounted',
+    /html\[data-dsh-toggle-mounted\]/.test(cssText))
+  // CSS：默认让位必须保留（接管失败的降级路径）
+  check('CSS 默认让位 leading（display:none!important）',
+    /\[data-conversation-header-leading\][^{]*\{[^}]*display:\s*none!important/.test(cssText))
+  // CSS：接管后必须改两列（否则 leading 与 titleRow 同格重叠）
+  check('CSS 接管后 header 改两列（auto + 1fr）',
+    /html\[data-dsh-toggle-mounted\]\s+\.wSkVaW_header\s*\{[^}]*grid-template-columns\s*:\s*auto/.test(cssText))
+  // CSS：接管后必须隐藏旧按钮（否则两个开关并存）
+  check('CSS 接管后隐藏旧自绘按钮',
+    /html\[data-dsh-toggle-mounted\]\s+\.dsh-phone-menu\s*\{[^}]*display:\s*none!important/.test(cssText))
+  // CSS：接管后收窄 titleRow 左内边距（70px 是给固定按钮留位的魔法数字）
+  check('CSS 接管后 titleRow 左内边距收回',
+    /html\[data-dsh-toggle-mounted\]\s+\.wSkVaW_titleRow\s*\{[^}]*padding-inline\s*:\s*4px/.test(cssText))
+  // 状态唯一写入者契约：形态层同步槽位开关的 aria（否则点遮罩后 aria 不翻）
+  check('形态层同步槽位开关的 aria-expanded',
+    /slotToggle\.setAttribute\('aria-expanded'/.test(js))
+  // 开关只翻转事实，不持有自己的状态（无双状态源）
+  const src = resolvePlugin('source')
+  if (src && existsSync(src)) {
+    const s = readFileSync(src, 'utf8')
+    check('开关组件注册到 conversation.header.leading',
+      /inject\('conversation\.header\.leading'/.test(s))
+    check('开关点击只翻转共享事实（不持有本地 open 状态）',
+      /data-dsh-drawer-open/.test(s) && !/useState/.test(s))
+  } else console.log('  （跳过组件侧核查：本布局下未找到 client-source.js）')
+}
+
 console.log('符号契约：手写 element 的 $typeof 必须是双美元符')
 {
   // 实测踩过：DrawerMask 里写成 $typeof（单美元符）。React 靠该符号识别 element，
