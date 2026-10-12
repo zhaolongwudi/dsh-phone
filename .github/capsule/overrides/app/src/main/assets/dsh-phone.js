@@ -187,6 +187,15 @@
       const dialog = media.matches && document.documentElement.hasAttribute('data-dsh-settings-open');
       menu.hidden = !media.matches; rail.inert = media.matches && !open && !dialog;
       if (media.matches) rail.setAttribute('aria-hidden', String(!open && !dialog)); else { rail.removeAttribute('aria-hidden'); document.documentElement.removeAttribute('data-dsh-drawer-open'); }
+      // 三期：开关若已迁入槽位（header.leading），由**本层**统一同步它的 aria 状态。
+      // 为什么不让组件自己同步：开合可来自三处（旧按钮 / 遮罩 / Escape / 槽位按钮），
+      // 若每个写入者都各自更新自己的 aria，就会出现「点了遮罩、开关的 aria 没翻」
+      // 这类不一致。沿用既有契约——**状态的唯一写入者是形态层**，组件只翻转事实。
+      const slotToggle = document.querySelector('.dsh-phone-menu-slot');
+      if (slotToggle) {
+        slotToggle.setAttribute('aria-expanded', String(open));
+        slotToggle.setAttribute('aria-label', open ? '收起菜单' : '展开菜单');
+      }
     }
     document.querySelectorAll('[data-composer-card]').forEach(card => {
       const tools = card.querySelector('.uV2eYG_tools'), input = card.querySelector('textarea,[role=textbox][contenteditable]');
