@@ -61,6 +61,59 @@ function DrawerMask() {
     } };
 }
 
+/**
+ * 抽屉开关（三期：从 `dsh-phone.js` 的**固定定位自绘按钮**迁到上游 header 的
+ * `conversation.header.leading` 座位）。
+ *
+ * ## 为什么值得迁（本项是四条配方里唯一「减少脆弱面」的）
+ *
+ * 原实现是 `position:fixed; top:5px; left:8px`，用固定坐标压在 header 左上角，
+ * 同时本层 CSS 把上游的 leading 座位 `display:none` **刻意让位**。这带来两个问题：
+ *   · 坐标是硬编码的，header 高度/内边距变化即错位；
+ *   · titleRow 要靠 `padding-inline:70px` 手工避开那个按钮（魔法数字）。
+ * 迁入座位后布局由 grid 承担，不再需要这两处手工对齐。
+ *
+ * ## 状态契约（与 DrawerMask 完全同源）
+ *
+ * 开合的唯一真源仍是 `html[data-dsh-drawer-open]`（一期发布的 DOM 事实），
+ * 形态层与遮罩组件都读它。本组件**只翻转该属性**，不持有自己的开关状态。
+ *
+ * ## 接管式落地（与遮罩同一套理由）
+ *
+ * 本层无法在设备外确认该槽一定渲染（`conversation.header.leading` 在本项目
+ * 无先例）。故：组件**真正挂载**时发布 `html[data-dsh-toggle-mounted]`，
+ * CSS 据此把「让位规则」换成「两列布局 + 隐藏旧按钮」；组件没渲染则事实缺失，
+ * 旧的自绘按钮与让位规则照常工作。**两种结果都安全**，回退成本 = 删掉本段。
+ */
+function publishToggleMounted(node) {
+  try {
+    if (node) document.documentElement.setAttribute('data-dsh-toggle-mounted', '');
+    else document.documentElement.removeAttribute('data-dsh-toggle-mounted');
+  } catch (e) { /* 极简垫片下静默 */ }
+}
+
+function DrawerToggle() {
+  if (typeof document === 'undefined') return null;
+  return { $$typeof: Symbol.for('react.element'), type: 'button', key: null,
+    ref: publishToggleMounted,
+    _owner: null,
+    props: {
+      type: 'button',
+      className: 'dsh-phone-menu-slot',
+      'aria-label': '展开菜单',
+      'aria-expanded': 'false',
+      // 只写共享事实；形态层（dsh-phone.js）会据它同步 rail.inert / aria-hidden /
+      // aria-expanded —— 保持「状态只有一个写入者」的既有契约（见 issue：双状态源）。
+      onClick: () => {
+        try {
+          const el = document.documentElement;
+          if (el.hasAttribute('data-dsh-drawer-open')) el.removeAttribute('data-dsh-drawer-open');
+          else el.setAttribute('data-dsh-drawer-open', '');
+        } catch (e) { /* 极简垫片下静默 */ }
+      },
+    } };
+}
+
 function apply(ctx) {
   const theme = document.createElement('script'); theme.src = '/appearance/theme-client.js'; document.head.append(theme);
 
@@ -85,4 +138,13 @@ function apply(ctx) {
   ctx.slots.inject('shell.overlay', () => ctx.slots.register(
     { name: 'shell.overlay', id: 'dsh-drawer-mask', order: 10 },
     DrawerMask));
+
+  //    三期：抽屉开关迁入上游 header 的 leading 座位。
+  //    `conversation.header.leading` 是 **single / root scope** —— 实测只给 root 级
+  //    props（无 sessionId、无 toggleSidebar），故组件不依赖任何 props，
+  //    开合完全走 html[data-dsh-drawer-open] 共享事实（与遮罩同一条通道）。
+  //    同样放在最后：该槽在本项目亦无先例，失败不应拖垮前面的设置页入口。
+  ctx.slots.inject('conversation.header.leading', () => ctx.slots.register(
+    { name: 'conversation.header.leading', id: 'dsh-drawer-toggle', order: 10 },
+    DrawerToggle));
 }
