@@ -96,8 +96,15 @@ export function candidates(root, cssText) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2)
   const ti = args.indexOf('--tree')
-  const tree = ti >= 0 ? args[ti + 1] : '/data/user/0/com.dshphone/files/tree'
-  if (!existsSync(tree)) { console.error('引擎树不存在：' + tree); process.exit(2) }
+  const tree = ti >= 0 ? args[ti + 1] : (process.env.DSH_TREE || '/data/user/0/com.dshphone/files/tree')
+  // 本步是**信息性清单**（apply.sh 里恒 `|| true`），故缺树时明确跳过（exit 0），
+  // 不用 exit 2 —— 那是「硬失败」语义，会让调用方误以为门禁拦住了构建。
+  // 与 ui-module-seed 同一处修正（2026-10-13 CI 实测踩到）。
+  if (!existsSync(tree)) {
+    console.log('上游语义锚点清单：跳过（本环境无引擎树：' + tree + '）')
+    console.log('  说明：本步信息性、不阻断；只在维护期（有引擎树）时打印候选。')
+    process.exit(0)
+  }
   const locate = rel => {
     let d = HERE
     for (let i = 0; i < 10; i++) {
