@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 原生壳面设计 token（间距与圆角）。8pt 网格，含 4/8/12/16/20/24/32/40/48 档。
+     原先这些值以魔数形式散落在 MainActivity.kt 的 Kotlin 代码里（如 setPadding
+     的 16/12/8、setTextSize 的 13f/14f），改动面零散且无法统一调校。
+     本文件只**新增**资源，不改动任何现有行为；Kotlin 侧逐步改用后即可统一。 -->
+<resources>
+  <dimen name="ds_space_4">4dp</dimen>
+  <dimen name="ds_space_8">8dp</dimen>
+  <dimen name="ds_space_12">12dp</dimen>
+  <dimen name="ds_space_16">16dp</dimen>
+  <dimen name="ds_space_20">20dp</dimen>
+  <dimen name="ds_space_24">24dp</dimen>
+  <dimen name="ds_space_32">32dp</dimen>
+  <dimen name="ds_space_40">40dp</dimen>
+  <dimen name="ds_space_48">48dp</dimen>
+
+  <dimen name="ds_radius_sm">8dp</dimen>
+  <dimen name="ds_radius_md">16dp</dimen>
+  <dimen name="ds_radius_card">18dp</dimen>
+  <dimen name="ds_radius_pill">999dp</dimen>
+
+  <!-- 触控目标最小边：低于此值在窄屏/单手操作下容易点不中。
+       参考上游 Web UI 的 44px 惯例，同时满足 Android 48dp 无障碍建议的宽松档。 -->
+  <dimen name="ds_touch_min">44dp</dimen>
+  <dimen name="ds_topbar_height">44dp</dimen>
+</resources>
