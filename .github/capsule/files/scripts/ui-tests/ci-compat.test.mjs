@@ -45,6 +45,14 @@ const CI_STEPS = [
   // 设备端验收脚本：CI 无 WebView 调试通道 ⇒ 必须「显式跳过」而非崩溃。
   // 且它以**无参数**运行时只打印用法、不做任何点击（安全默认，见脚本内注释）。
   ['ui-live-verify.mjs', []],
+  // ⚠️ 显式带 --tree 指向不存在的树。
+  //    为什么单列：apply.sh 会**主动传** `--tree "$DSH_TREE"`（默认手机路径），
+  //    而 CI 上没有那棵树。仅靠上面「env 里 DSH_TREE 不存在」**覆盖不到**这条路径
+  //    —— 脚本读的是 argv 里的值，不是环境变量。
+  //    2026-10-13 实测踩到：run 38318714316 的 apply.sh 步骤因 ui-module-seed
+  //    以 exit 2 退出而整个构建失败（日志末行「引擎树不存在：/data/user/0/…」）。
+  ['ui-module-seed.mjs', ['--tree', '/nonexistent-engine-tree']],
+  ['ui-semantic-anchors.mjs', ['--tree', '/nonexistent-engine-tree']],
 ]
 
 console.log('无引擎树环境下，每个 CI 步骤都必须能正常退出')
