@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 原生壳面语义色 token（浅色）。与 values-night/ds_colors.xml 成对。
+     ⚠️ 当前状态：**预留 token，尚未被 Kotlin 消费**。MainActivity.kt 里的 8 处
+     Color.rgb(...) 硬编码仍在原处（该文件与上游逐字节相同，属上游文件，
+     改动它需要走 capsule overrides 并承担基线漂移检查成本）。
+     本文件的用途是先把语义词表定下来，待有实机验证条件时把 Kotlin 逐处接过来，
+     届时深色模式才能与 Web UI 一致（现状是硬编码近白底，系统深色下不跟随）。
+     新增独立文件而非改 colors.xml，是为了不触碰上游文件、零 override 漂移。 -->
+<resources>
+  <!-- 底与面 -->
+  <color name="ds_bg">#F8FAFC</color>
+  <color name="ds_surface">#FFFFFF</color>
+  <color name="ds_border">#E2E8F0</color>
+
+  <!-- 文字 -->
+  <color name="ds_text_primary">#0F172A</color>
+  <color name="ds_text_secondary">#475569</color>
+
+  <!-- 语义信号 -->
+  <color name="ds_accent">#2563EB</color>
+  <color name="ds_ok">#16A34A</color>
+  <color name="ds_warn">#D97706</color>
+  <color name="ds_danger">#DC2626</color>
+</resources>
