@@ -29,11 +29,18 @@
  * （`… > 1048576 maximum` / `maximum context length is 128000`），读不出才退化成
  * 「减半」逐步收敛。
  *
- * ## ⚠️ 为什么只记忆在**进程内**（用户选择，不落盘）
+ * ## 落盘策略（9.22 起；此前是「只记进程内」）
  *
- * 代价是每次重启后重新撞一次墙；换来的是**不会把一个学错的值永久固化**——
+ * 9.11 的决定是**只记进程内、不落盘**：代价是每次重启后重新撞一次墙（而撞墙的
+ * 表现是**回答被上游静默截断**），换来的是**不会把一个学错的值永久固化** ——
  * 而「固化错误值」正是 2026-10-11 那次「永远显示 200K」事故的形态
  * （见 `aggregate-adapter.ts` 里 `contextWindowFor` 的记忆化修正）。
+ *
+ * 9.22 起改为**落盘，但只落有硬证据的值**（见 `context-window-store.ts`）：
+ * ① 上游报文里读出来的真实上限；② 截断/超限时实测到的规模。「读不出 ⇒ 减半猜」
+ * 的值**仍只留内存**。另有 {@link noteContextWindowSuccess} 作**自愈**：整轮正常
+ * 结束时可用当轮实测规模把偏小的值放宽（该值必然 ≤ 真实上限，方向安全）。
+ * ⇒ 「重启不丢」与「不固化错值」同时成立，且用户**无需手动填任何上限**。
  *
  * ## ⚠️ 有意为之的边界
  *
@@ -43,6 +50,8 @@
  *
  * @module src/context-window-learn.ts
  */
+
+import type { ContextWindowStore } from './context-window-store.js'
 
 /** 拿不到供应商上限时的**起步声明**（用户口径：起步给大，撞墙再收窄）。 */
 export const DYNAMIC_CONTEXT_WINDOW_START = 1_000_000
@@ -56,8 +65,24 @@ export const DYNAMIC_CONTEXT_WINDOW_START = 1_000_000
  */
 export const DYNAMIC_CONTEXT_WINDOW_FLOOR = 32_768
 
-/** 进程内学习表（`provider` + 模型 → 已学到的窗口）。**不落盘**，重启即忘。 */
+/**
+ * 学习表（`provider` + 模型 → 已学到的窗口）。
+ *
+ * ⚠️ 本表是**权威读源**；落盘（9.22 起）只是它的备份 —— 每次读仍只查这里。
+ */
 const learned = new Map<string, number>()
+
+/**
+ * 已学窗口的持久化后端（由 `index.ts` 启动时挂载）。
+ *
+ * 未挂载时行为与 9.21 完全一致（纯内存），故 headless / 单测无需感知它。
+ *
+ * ⚠️ 所有权判据用**每次挂载新生成的令牌**，不用 `backend === owned`：同一个后端
+ * 对象可能被**重复挂载**（fiber 重启交错），那时两个 disposer 的判据都会命中，
+ * 先调用的那个会把后一次挂载误摘掉（`token-ledger.ts` 已确证的同型事故）。
+ */
+let backend: ContextWindowStore | undefined
+let backendToken: object | undefined
 
 /** `provider` + 模型 id → 学习表的键（NUL 分隔，避免 `a/b` 与 `a_b` 这类撞键）。 */
 export function contextWindowKey(provider: string, model: string): string {
@@ -77,6 +102,34 @@ export function dynamicContextWindowFor(key: string): number {
  */
 export function learnedContextWindow(key: string): number | undefined {
   return learned.get(key)
+}
+
+/**
+ * 挂载持久化后端，返回**该次挂载专属的 disposer**（9.22 要点 2）。
+ *
+ * 挂载时把盘上的值 hydrate 进内存。⚠️ 与内存里已有的值取**更小**的那个：盘上
+ * 那份是上一次运行学到的，而「更小」只会让压缩更早发生（**安全方向**）；取大会
+ * 让对外声明偏大 ⇒ 更晚压缩、更容易撞墙（用户口径「填小安全、填大危险」）。
+ *
+ * @param next - 后端实现；传 `undefined` = 卸载（测试隔离用）。
+ */
+export function attachContextWindowStore(next: ContextWindowStore | undefined): () => void {
+  backend = next
+  const token: object = {}
+  backendToken = token
+  if (next !== undefined) {
+    for (const [key, value] of next.load()) {
+      const current = learned.get(key)
+      if (current === undefined || value < current) learned.set(key, value)
+    }
+  }
+  return () => {
+    // ⚠️ 只摘自己的：令牌不匹配说明期间已被别的实例接管（见模块头挂载点注释）。
+    if (backendToken === token) {
+      backend = undefined
+      backendToken = undefined
+    }
+  }
 }
 
 /**
@@ -110,11 +163,16 @@ export function contextWindowFromFailureText(text: string): number | undefined {
  * 返回收窄后的值（调用方用于日志/诊断）。可重复调用：每次都在上一次的基础上继续收窄。
  */
 export function rememberContextWindowFailure(key: string, failureText: string): number {
-  const next = contextWindowFromFailureText(failureText) ?? Math.max(
+  const reported = contextWindowFromFailureText(failureText)
+  const next = reported ?? Math.max(
     DYNAMIC_CONTEXT_WINDOW_FLOOR,
     Math.floor(dynamicContextWindowFor(key) / 2),
   )
   learned.set(key, next)
+  // ⚠️ **只把「报文里读出来的真实上限」落盘**（9.22）：`reported` 是硬证据；而
+  //    「读不出 ⇒ 减半猜」那条没有证据、方向可能过小 ⇒ 落盘等于把一个猜的值
+  //    永久固化（正是 9.11「永远显示 200K」事故的形态）。
+  if (reported !== undefined) backend?.remember(key, reported)
   return next
 }
 
@@ -148,10 +206,49 @@ export function rememberContextWindowCeiling(key: string, observedTokens: number
   if (current !== undefined && current <= observedTokens) return undefined
   const next = Math.floor(observedTokens)
   learned.set(key, next)
+  // ⚠️ 截断观测是**下界证据**（那一轮确实装到了这么多）⇒ 可落盘（9.22）。
+  backend?.remember(key, next)
   return next
 }
 
-/** 清空学习表（单测用；本模块只有进程内状态，无持久化）。 */
+/**
+ * **成功一轮**后调用：把「实测装得下」的规模记为该键的**下限证据**（9.22 自愈）。
+ *
+ * ## 它修的是什么
+ *
+ * 落盘只收硬证据，但硬证据也可能来自**误读**（`contextWindowFromFailureText` 的
+ * 第二条形态较宽），或来自收敛途中的中间值 —— 那会把上限**永久**压小，从此每轮
+ * 都过早压缩（用户当初正是因此选择不落盘）。
+ * ⇒ 只要有一轮**整轮正常结束**、且当轮实测规模**超过**已学值，就证明那个值偏小，
+ * 把它放宽到实测值。
+ *
+ * ## 为什么方向安全
+ *
+ * 传入值必须来自**真正成功的请求**（调用点 = 流正常结束的提交点），故它必然
+ * **≤ 真实上限** ⇒ 放宽到它不会「填大」（不会让声明超过真实窗口）。
+ *
+ * ⚠️ 因此**不要**拿「历次观测的峰值」（`lastContextTokens` 那种跨轮累积值）来调本
+ * 函数：那个值可能来自**别的、窗口更宽的候选**（会话在 1M 候选上长到 90 万后又切到
+ * 26 万的候选），用它放宽窄候选就是**填大** —— 正是要避免的方向。
+ *
+ * @returns 放宽后的值；没放宽（无当前值 / 不比当前值大 / 观测无效）返回 `undefined`。
+ */
+export function noteContextWindowSuccess(key: string, observedTokens: number): number | undefined {
+  if (!Number.isFinite(observedTokens) || observedTokens < DYNAMIC_CONTEXT_WINDOW_FLOOR) return undefined
+  const current = learned.get(key)
+  if (current === undefined || observedTokens <= current) return undefined
+  const next = Math.floor(observedTokens)
+  learned.set(key, next)
+  backend?.remember(key, next)
+  return next
+}
+
+/**
+ * 清空**内存**学习表（单测用）。
+ *
+ * ⚠️ 不碰盘上的文档：盘上那份是「上次运行学到的事实」，清它属于用户级操作
+ *（删 `$DSH_HOME/jet-hub/context-windows.json` 即可手动重置）。
+ */
 export function resetLearnedContextWindows(): void {
   learned.clear()
 }

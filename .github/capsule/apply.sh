@@ -43,7 +43,11 @@ grep -q "activeRoutes.record(AGGREGATE_PROVIDER" vendor/dsh-codearts-auth/src/ag
 grep -q "activeRoutes.record(AUTO_PROVIDER" vendor/dsh-codearts-auth/src/auto-adapter.ts
 grep -q "router.activeRoute" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
 grep -q "RpcActiveRouteResponse" vendor/dsh-codearts-auth/src/types.ts
+# ⚠️ 已学窗口上限的**持久化接线**（9.22）：丢掉它不会报错，只会静默退回「重启即忘」
+#    （每次重启重新撞一次墙 ⇒ 回答被上游截断）—— 正是 9.22 要根治的形态，故显式自检。
+grep -q "attachContextWindowStore" vendor/dsh-codearts-auth/src/index.ts
 grep -q "ActiveModelPill" vendor/dsh-codearts-auth/plugin-src/client/index.js
 test -f vendor/dsh-codearts-auth/src/active-route.ts
+test -f vendor/dsh-codearts-auth/src/context-window-store.ts
 test -f vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js
 echo "胶囊外挂应用完成"

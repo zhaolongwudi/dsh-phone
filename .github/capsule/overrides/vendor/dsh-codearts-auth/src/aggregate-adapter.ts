@@ -85,6 +85,7 @@ import {
   contextWindowKey,
   dynamicContextWindowFor,
   learnedContextWindow,
+  noteContextWindowSuccess,
   rememberContextWindowCeiling,
   rememberContextWindowFailure,
 } from './context-window-learn.js'
@@ -1461,7 +1462,11 @@ export class AggregateAdapter extends LlmAdapter {
        *   否则取它声明的窗口；**两者都没有 ⇒ 不筛**（未知 ≠ 太窄）。
        * - 留 5% 余量：上游按「输入 + 输出」计总量，贴着上限派发必然失败。
        *
-       * ## ⚠️ 兜底：一个都不剩时**不过滤**（宁可去试，也不能凭空报「没有可用候选」）。
+       * ## ⚠️ 兜底：一个都不剩时**按成因分两路**（2026-10-12 起）
+       * - 全被**体积**筛掉（确定找不出装得下的候选）⇒ **主动报
+       *   `CONTEXT_WINDOW_EXCEEDED`**，交给 DSH 的压缩链压缩后重发
+       *   —— 硬发只会被上游静默截断（9.22 要点 5）。
+       * - 全在**零输出冷却**中（**瞬时针**，不构成「装不下」的证据）⇒ 照常逐个尝试。
        */
       let attemptTargets: readonly DispatchTarget[] = targets
       const observedTokens = self.lastContextTokens
@@ -1469,12 +1474,19 @@ export class AggregateAdapter extends LlmAdapter {
         const required = Math.ceil(observedTokens * 1.05)
         const kept: DispatchTarget[] = []
         const skipped: string[] = []
+        /**
+         * 因**零输出冷却**被跳过的候选（与体积无关的**瞬时针**）。
+         *
+         * ⚠️ 必须与体积原因分开记：冷却不构成「装不下」的证据，故它不能参与
+         * 下方「全被筛掉 ⇒ 主动压缩」的判据。
+         */
+        const cooling: string[] = []
         for (const candidate of targets) {
           const sep = String.fromCharCode(0)
           // ⚠️ 零输出冷却中的目标**优先跳过**（与体积无关的理由）：它上一轮刚吞掉
           //    一次请求、零输出（方案 F 记的冷却），再派给它只会重复一次失败。
           if (isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId, self.options.now?.() ?? Date.now())) {
-            skipped.push(`${candidate.provider}(${candidate.realId})=零输出冷却中`)
+            cooling.push(`${candidate.provider}(${candidate.realId})=零输出冷却中`)
             continue
           }
           const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))
@@ -1491,19 +1503,44 @@ export class AggregateAdapter extends LlmAdapter {
             `[jet-hub] 候选筛选 ${modelKey}: 本轮约 ${observedTokens} tokens（需 ${required}），`
             + `跳过 ${skipped.length} 个太窄候选 [${skipped.join(', ')}]`,
           )
+        } else if (kept.length === 0 && cooling.length === 0) {
+          // ⚠️⚠️ **全被体积筛掉 ⇒ 确定装不下**（每个候选都有已知上限，且都低于本轮体积）。
+          //    硬发出去正是用户 2026-10-12 实测的形态：上游收下请求、按自己的上限把输出
+          //    **静默截断**（`finish: max-tokens`），报错通道里什么都没有、学习器也收不到信号。
+          //    ⇒ 主动归成 CONTEXT_WINDOW_EXCEEDED —— DSH 的压缩恢复链**只认这个码**
+          //    （`dsh-compaction-basic` 的 request-error listener 第一行即本判据），
+          //    压缩后重发才是唯一出路（9.22 要点 5：不硬发被截断）。
+          //    代价刻意取**不对称**：误判最多白压缩一次；硬发的代价是**回答被截断**。
+          throw new LlmError(
+            `aggregate: 本轮约 ${observedTokens} tokens，已超出全部 ${targets.length} 个候选的`
+            + `已知上限 [${skipped.join(', ')}]，已在压缩上下文后重试。`,
+            CONTEXT_WINDOW_EXCEEDED_CODE,
+          )
         } else if (kept.length === 0) {
-          // ⚠️ 全被筛掉 ⇒ 不过滤：宁可去试一次（失败也是如实报错），
-          //    也不能让用户看到「没有任何可用候选」这种由本机制凭空造出的结论。
+          // 剩下的唯一成因是「候选全在零输出冷却中」（**瞬时针**，不是装不下）：
+          // 压缩对它毫无帮助 —— 照常逐个尝试，冷却目标会自己失败并切换。
           self.ctx.logger?.warn?.(
-            `[jet-hub] 候选筛选 ${modelKey}: 本轮 ${observedTokens} tokens 已超出全部 `
-            + `${targets.length} 个候选的已知上限，放弃筛选、照常逐个尝试`,
+            `[jet-hub] 候选筛选 ${modelKey}: ${cooling.length} 个候选全在零输出冷却中`
+            + `[${cooling.join(', ')}]，放弃筛选、照常逐个尝试`,
           )
         }
       }
       for (let index = 0; index < attemptTargets.length; index += 1) {
-        const target = targets[index]!
+        // ⚠️ 索引必须落在**筛选后**的 `attemptTargets` 上（2026-10-12 复核发现的错配）：
+        //    方案 C 的 `kept` 是**子集而非前缀**，读 `targets[index]` 会把刚被判定
+        //    「装不下」的候选重新派出去，而真正装得下的候选反而永远轮不到
+        //    —— 恰好在最需要筛选的场景（宽候选排在窄候选之后）里筛了个空。
+        const target = attemptTargets[index]!
         // 该候选是否已经产出过内容（决定失败时能否安全切换，见上方长注释）。
         let emitted = false
+        /**
+         * **本次尝试**实测到的规模（`usage.totalTokens`），成功时用于**自愈**（9.22）。
+         *
+         * ⚠️ 与 `self.lastContextTokens` 的区别是**关键**的：那个是跨候选、跨轮次的
+         * 累积峰值，可能来自一个窗口宽得多的候选；拿它去放宽窄候选就是「填大」
+         *（危险方向）。这里只记本次尝试真正收到的值。
+         */
+        let turnTokens: number | undefined
         /** 本候选的「零输出撞墙」探针（见下方方案 F 的接线）。 */
         let zeroProbe = emptyZeroOutputProbe()
         /** 本次尝试是否因「零输出撞墙」而改道（决定内层 break 后走 continue）。 */
@@ -1715,6 +1752,7 @@ export class AggregateAdapter extends LlmAdapter {
             if (chunk.type === 'usage') {
               const seen = contextTokensOfUsage(chunk.usage)
               if (seen !== undefined) {
+                turnTokens = seen
                 self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)
               }
             }
@@ -1780,6 +1818,26 @@ export class AggregateAdapter extends LlmAdapter {
           //    直接试下一个候选（与 auto-adapter 的 `yield* this.dispatch(next, ...)` 同语义）。
           if (reroute) continue
           // ⚠️ 走到这里 = 该候选的流**正常结束**（没有抛错、没有失败帧）⇒ 提交「实际选中」。
+          //
+          // ⚠️ **成功自愈**（9.22）：整轮正常结束 ⇒ **本次尝试**的实测规模证明「该键至少
+          //    能装这么多」。若此前学到的值比它小，说明那个值偏小（报文误读、或收敛途中
+          //    的中间值）⇒ 放宽它，避免「重启后仍按一个偏小的值过早压缩」。
+          //    方向安全：该值来自**真正成功**的请求，必然 ≤ 真实上限（不会「填大」）。
+          if (turnTokens !== undefined) {
+            const virtualHealed = noteContextWindowSuccess(
+              contextWindowKey(AGGREGATE_PROVIDER, modelKey), turnTokens,
+            )
+            const candidateHealed = noteContextWindowSuccess(
+              contextWindowKey(target.provider, target.realId), turnTokens,
+            )
+            if (virtualHealed !== undefined || candidateHealed !== undefined) {
+              self.ctx.logger?.info?.(
+                `[jet-hub] 窗口自愈 ${modelKey}: ${target.provider}（${target.realId}）`
+                + `本轮 ${turnTokens} tokens 成功 ⇒ 虚拟模型 ${virtualHealed ?? '未放宽'}`
+                + `、该候选 ${candidateHealed ?? '未放宽'}`,
+              )
+            }
+          }
           if (pendingProvider !== undefined) {
             // ⚠️ 是**实际发往**的 `target.provider`，不是候选序第一个（带图改道时可能不同）。
             // ⚠️ 同时更新「最近一次」指针：`Map` 的迭代顺序是**插入顺序**，
@@ -1873,7 +1931,10 @@ export class AggregateAdapter extends LlmAdapter {
             )
             throw error
           }
-          if (index + 1 < targets.length) {
+          // ⚠️ 判据必须用**筛选后**的 `attemptTargets`（2026-10-12 复核，与循环头同一处错配）：
+          //    用 `targets.length` 会在尾部候选被筛掉时谎报「切换下一个候选」，
+          //    而下一轮循环已结束（走到这里仍会如实抛出最后一个错误）。
+          if (index + 1 < attemptTargets.length) {
             // ⚠️ 显式点名「上下文超限」（手机版补充，2026-10-11）：此前日志只有泛化的
             //    失败文案，看不出这次切换是因为**请求超出该候选的窗口**。
             //    为什么这情形会真实发生：{@link contextWindowFor} 按候选**最大值**声明

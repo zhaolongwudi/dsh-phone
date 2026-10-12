@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import { AggregateAdapter, AGGREGATE_PROVIDER, maxAttemptsFor, registerAggregateLlm } from '../../src/aggregate-adapter.js'
 
 /** 造一个最小 ctx：llm.listModels 播报给定目录。 */
@@ -2624,5 +2625,125 @@ describe('★★ 上下文窗口：候选集的**最大值**（真实缺陷：�
     // 常量定义那一处是合法的；其余任何 `contextWindow: 200_000` / `200_000` 都不许。
     expect(code).not.toMatch(/contextWindow:\s*200_000/)
     expect(code).not.toMatch(/contextWindow:\s*AGGREGATE_FALLBACK_CONTEXT_WINDOW/)
+  })
+})
+
+/**
+ * ★★ 方案 C 的「筛选结果」必须与「派发索引」一致（2026-10-12 复核发现的错配）。
+ *
+ * ## 缺陷形态（真实）
+ *
+ * 筛选把太窄的候选丢掉后，派发循环仍按**原列表**取元素（`targets[index]`），
+ * 而保留集 `kept` 是**子集而非前缀** ⇒ 刚被判「装不下」的候选被重新派出去、
+ * 真正装得下的候选永远轮不到 —— 恰好在**最需要筛选**的场景里筛了个空。
+ *
+ * ## 为什么既有断言抓不到
+ *
+ * `context-window-learn.spec.ts` 对方案 C 只做**源码文本**断言（声明行 + 循环头
+ * 存在）：文本写对了、索引取错了，它照样绿 ⇒ 必须有**行为**断言。
+ *
+ * ## 目录建模
+ *
+ * **同一个模型 id 出现在每个渠道**（真实形态：同一模型跨渠道，声明窗口差两个
+ * 数量级）。⚠️ 不要给每个渠道一个**不同** id：那样每个虚拟模型只有 1 个候选，
+ * `maxAttemptsFor` 的尝试上限被压到 1，用例反而测不到多候选筛选。
+ */
+describe('★★ 方案 C：筛选结果与派发索引一致（行为）', () => {
+  const soon = Date.now() + 1_000
+
+  function makeWindowCtx(
+    windows: Record<string, number>,
+    sent: string[],
+    failProviders: readonly string[],
+  ) {
+    return {
+      logger: { warn: () => {}, info: () => {}, error: () => {} },
+      llm: {
+        listProviders: () => Object.keys(windows).map((id) => ({ id, name: id })),
+        listModels: async () => [{ id: 'm-shared', name: 'M-shared' }],
+        resolveModelInfo: async (provider: string, id: string) => ({
+          provider,
+          id,
+          context: { contextWindow: windows[provider] },
+        }),
+        stream: (options: { provider: string; model: string }) => {
+          sent.push(`${options.provider}/${options.model}`)
+          const fail = failProviders.includes(options.provider)
+          return (async function* () {
+            if (fail) throw new Error(`上游失败(${options.provider})`)
+            yield { type: 'text' as const, text: 'ok' }
+          })()
+        },
+      },
+    } as never
+  }
+
+  function makeWindowAdapter(
+    windows: Record<string, number>,
+    sent: string[],
+    lastContextTokens: number,
+    extras: { failProviders?: readonly string[]; expiry?: Record<string, number> } = {},
+  ) {
+    const adapter = new AggregateAdapter(makeWindowCtx(windows, sent, extras.failProviders ?? []), {
+      accountPool: makePool(),
+      expiryProbe: async (provider: string) => extras.expiry?.[provider] ?? soon,
+    })
+    // `lastContextTokens` 是 private；本用例用它模拟「长会话已经到这个规模」，
+    // 是**唯一**的写入口（真实路径由 dispatch 收到 `usage` 时自己更新）。
+    ;(adapter as unknown as { lastContextTokens: number }).lastContextTokens = lastContextTokens
+    return adapter
+  }
+
+  async function drive(adapter: AggregateAdapter) {
+    // ⚠️ 必须先播报一次目录：真实链路里 GUI 一定会先 `listModels`；
+    //    冷启动直接 `prepareCall` 时 `catalog` 仍为空 ⇒ 方案 C 静默不生效。
+    await adapter.listModels(AGGREGATE_PROVIDER)
+    const call = await adapter.prepareCall(AGGREGATE_PROVIDER, 'auto')
+    for await (const _chunk of call.stream({
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    } as never)) {
+      // 必须真正 drain，否则 stream 从未被调用
+    }
+  }
+
+  it('★ 窄候选排在**前面**时被跳过，只发装得下的那个（修复前会误发窄候选）', async () => {
+    const sent: string[] = []
+    await drive(makeWindowAdapter(
+      { buddy: 200_000, codearts: 1_000_000 },
+      sent,
+      500_000,
+      { expiry: { buddy: soon, codearts: soon + 8_000 } },
+    ))
+    // 修复前实际派发的是 `buddy/m-shared`（临期最早的那个窄候选）。
+    expect(sent).toEqual(['codearts/m-shared'])
+  })
+
+  it('★ 保留批次里第一个失败时，切到**保留批次**的下一个（不是原列表的下一个）', async () => {
+    const sent: string[] = []
+    await drive(makeWindowAdapter(
+      { buddy: 200_000, codearts: 1_000_000, loomy: 600_000 },
+      sent,
+      500_000,
+      {
+        failProviders: ['codearts'],
+        expiry: { buddy: soon, codearts: soon + 1_000, loomy: soon + 8_000 },
+      },
+    ))
+    expect(sent).toEqual(['codearts/m-shared', 'loomy/m-shared'])
+  })
+
+  it('★★ 所有候选都装不下 ⇒ 一次都不发，主动报 CONTEXT_WINDOW_EXCEEDED（交给 DSH 压缩）', async () => {
+    const sent: string[] = []
+    const adapter = makeWindowAdapter(
+      { buddy: 200_000, codearts: 300_000 },
+      sent,
+      900_000,
+      { expiry: { buddy: soon, codearts: soon + 8_000 } },
+    )
+    const error = await drive(adapter).then(() => undefined, (caught: unknown) => caught)
+    expect(error, '必须抛出：硬发只会被上游按自己的上限静默截断').toBeDefined()
+    expect((error as { failure?: { code?: string } }).failure?.code)
+      .toBe(CONTEXT_WINDOW_EXCEEDED_CODE)
+    expect(sent, '一次都不该发出去').toEqual([])
   })
 })

@@ -29,7 +29,7 @@ git 仓库（main 分支）
 
 | 路径 | 说明 |
 |---|---|
-| `files/` | 胶囊/移植**全新增**路径：10 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ spec（当前 28 个文件） |
+| `files/` | 胶囊/移植**全新增**路径：11 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、context-window-store、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ spec（当前 28 个文件） |
 | `overrides/` | **44 个**「上游某版 + 我方改动」覆盖文件（src 34 个 + plugin-src/client 5 个 + spec 4 个）；另有 1 个 `lib/`（胶囊自带的 d.ts 源）。每个的基线版本见 `PORTING-GITEE-HANDOFF.md` 各轮次记录 |
 | `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）；`DISABLED` 空文件 = 一键纯净构建 |
 | `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 14 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑** |

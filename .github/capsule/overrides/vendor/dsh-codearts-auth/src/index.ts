@@ -42,6 +42,8 @@ import {
   reportLedgerAccount,
 } from './token-ledger.js'
 import { createTokenLedgerStore } from './token-ledger-store.js'
+import { attachContextWindowStore } from './context-window-learn.js'
+import { createContextWindowStore } from './context-window-store.js'
 import { buddyExpiringWindowDays } from './buddy-balance-rank.js'
 import { buddyBalanceTier, buddyTierUsable } from './buddy-balance-rank.js'
 import { loomyBalanceTier, loomyTierUsable } from './loomy-balance-rank.js'
@@ -347,6 +349,27 @@ export function apply(ctx: Context): void {
       detachTokenLedger()
     }
   }, 'token-ledger-persistence')
+
+  // ===== 已学窗口上限的持久化（9.22 · 让「切换模型时自动知道」在重启后仍然成立）=====
+  //
+  // 背景：学习器原本只记进程内 ⇒ 每次重启都要重新撞一次墙，而撞墙的表现是
+  // **回答被上游静默截断**（用户 2026-10-12 报障的形态）。落盘后「重启不丢」，
+  // 且**无需用户手动填任何上限**。只落**有硬证据**的值（报文里的真实上限 /
+  // 截断实测规模），「减半猜」的值仍只留内存 —— 详见 `context-window-store.ts`。
+  //
+  // ⚠️ 挂载点在**任何适配器注册之前**：启动早期就有请求（标题生成等），那时学到的
+  //    值同样要能落盘。
+  // ⚠️ dispose 必须用返回的 disposer（与账本同因：fiber 重启时新旧 dispose 交错，
+  //    无条件摘会把**新实例刚挂上**的后端摘空）。`flush` 在前，确保最后一次写入落盘。
+  const contextWindowStore = createContextWindowStore(ctx)
+  const detachContextWindowStore = attachContextWindowStore(contextWindowStore)
+  ctx.effect(() => () => {
+    try {
+      contextWindowStore.flush()
+    } finally {
+      detachContextWindowStore()
+    }
+  }, 'context-window-persistence')
 
   // WorkBuddy provider 已从中国版（copilot.tencent.com）改造为国际版
   // （www.workbuddy.ai）。旧账号存的是中国版凭据，其 token.domain 指向旧端点，

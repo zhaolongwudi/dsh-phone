@@ -6,14 +6,17 @@ import { dirname, resolve } from 'node:path'
 import {
   DYNAMIC_CONTEXT_WINDOW_FLOOR,
   DYNAMIC_CONTEXT_WINDOW_START,
+  attachContextWindowStore,
   contextWindowFromFailureText,
   contextWindowKey,
   dynamicContextWindowFor,
   learnedContextWindow,
+  noteContextWindowSuccess,
   rememberContextWindowCeiling,
   rememberContextWindowFailure,
   resetLearnedContextWindows,
 } from '../../src/context-window-learn.js'
+import { createContextWindowStore } from '../../src/context-window-store.js'
 
 /**
  * 「拿不到供应商上限」的动态窗口学习器 + 它在**聚合层与 zcode** 的接线。
@@ -221,5 +224,118 @@ describe('zcode 接线（源码文本断言）', () => {
   it('撞墙处（且仅在归成溢出码时）记录学习', () => {
     expect(adapter).toContain('if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {')
     expect(adapter).toContain('rememberContextWindowFailure(')
+  })
+})
+
+/**
+ * ★ 已学窗口的**持久化**（9.22 要点 2）：只落硬证据、重启读回、成功自愈、disposer 所有权。
+ *
+ * ## 为什么「只落硬证据」必须被用例钉住
+ *
+ * 落盘**推翻了** 9.11「只记进程内」的决定，而那次决定防的是「把学错的值永久固化」。
+ * 能否安全落盘**完全取决于**「只落有证据的值」这一条 —— 一旦有人顺手把「减半猜」
+ * 的值也写下去，固化的风险立刻回来。故此处逐条钉死。
+ */
+describe('★ 已学窗口持久化（9.22）：只落硬证据 / 读回 / 自愈', () => {
+  /** 假后端：只记录 `remember` 调用，不碰文件系统（真文件的 round-trip 见最后一条）。 */
+  function makeFakeStore(initial: Array<[string, number]> = []) {
+    const windows = new Map<string, number>(initial)
+    const writes: Array<[string, number]> = []
+    return {
+      windows,
+      writes,
+      load: () => windows,
+      remember: (key: string, window: number) => {
+        writes.push([key, window])
+        windows.set(key, window)
+      },
+      flush: () => {},
+    }
+  }
+
+  it('只落「报文里读出来的真实上限」；「减半猜」的值不落盘（但内存仍要记）', () => {
+    const store = makeFakeStore()
+    const detach = attachContextWindowStore(store)
+    try {
+      const reported = contextWindowKey('loomy', 'spark-x')
+      const guessed = contextWindowKey('buddy', 'glm-4.6')
+      rememberContextWindowFailure(reported, "This model's maximum context length is 262144 tokens")
+      rememberContextWindowFailure(guessed, '上游返回了一个无法解析的错误')
+      expect(store.writes, '只有报文里读得出上限的那次才该落盘').toEqual([[reported, 262_144]])
+      expect(learnedContextWindow(guessed), '猜出来的值仍然要记在内存里').toBeDefined()
+    } finally {
+      detach()
+    }
+  })
+
+  it('挂载时从盘上 hydrate，且与内存已有值取**更小**的那个', () => {
+    const key = contextWindowKey('loomy', 'spark-x')
+    rememberContextWindowCeiling(key, 100_000) // 内存里先有更大的
+    const store = makeFakeStore([[key, 60_000]]) // 盘上是更小的
+    const detach = attachContextWindowStore(store)
+    try {
+      expect(learnedContextWindow(key), '取更小 ⇒ 更早压缩 ⇒ 安全方向').toBe(60_000)
+    } finally {
+      detach()
+    }
+  })
+
+  it('自愈：成功轮的实测规模可放宽偏小的值并落盘；实测更小则什么都不做', () => {
+    const store = makeFakeStore()
+    const detach = attachContextWindowStore(store)
+    try {
+      const key = contextWindowKey('loomy', 'spark-x')
+      rememberContextWindowFailure(key, 'maximum context length is 8192') // 被误读成很小的值
+      expect(noteContextWindowSuccess(key, 120_000), '实测装得下 12 万 ⇒ 放宽').toBe(120_000)
+      expect(learnedContextWindow(key)).toBe(120_000)
+      expect(store.windows.get(key), '放宽后的值也要落盘').toBe(120_000)
+      expect(noteContextWindowSuccess(key, 100_000), '只放大、不缩小').toBeUndefined()
+      expect(learnedContextWindow(key)).toBe(120_000)
+    } finally {
+      detach()
+    }
+  })
+
+  it('disposer 只摘自己：旧实例的 dispose 不会摘掉新挂载', () => {
+    const storeA = makeFakeStore()
+    const storeB = makeFakeStore()
+    const detachA = attachContextWindowStore(storeA)
+    const detachB = attachContextWindowStore(storeB)
+    detachA()
+    const key = contextWindowKey('loomy', 'spark-x')
+    rememberContextWindowFailure(key, 'maximum context length is 123456')
+    expect(storeB.writes, '写入应落到仍挂载的 B').toEqual([[key, 123_456]])
+    expect(storeA.writes, 'A 已被摘除，不该再收到写入').toEqual([])
+    detachB()
+  })
+
+  it('真文件 round-trip：写盘后由**新实例**读回（重启不丢）', async () => {
+    const { existsSync, mkdtempSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const home = mkdtempSync(join(tmpdir(), 'cw-spec-'))
+    const previous = process.env.DSH_JET_HUB_STATE_DIR
+    process.env.DSH_JET_HUB_STATE_DIR = home
+    try {
+      const key = contextWindowKey('loomy', 'spark-x')
+      const detach1 = attachContextWindowStore(createContextWindowStore({ logger: { warn: () => {} } } as never))
+      rememberContextWindowFailure(key, 'prompt is too long: 300000 tokens > 262144 maximum')
+      detach1()
+      expect(existsSync(join(home, 'jet-hub', 'context-windows.json')), '应真的写盘').toBe(true)
+      // 模拟重启：清内存 + 新实例挂同一份盘
+      resetLearnedContextWindows()
+      expect(learnedContextWindow(key)).toBeUndefined()
+      const detach2 = attachContextWindowStore(
+        createContextWindowStore({ logger: { warn: () => {} } } as never),
+      )
+      try {
+        expect(learnedContextWindow(key), '重启后仍然知道').toBe(262_144)
+      } finally {
+        detach2()
+      }
+    } finally {
+      if (previous === undefined) delete process.env.DSH_JET_HUB_STATE_DIR
+      else process.env.DSH_JET_HUB_STATE_DIR = previous
+    }
   })
 })
