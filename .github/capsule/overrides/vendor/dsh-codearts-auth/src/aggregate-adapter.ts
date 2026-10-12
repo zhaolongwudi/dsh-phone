@@ -1213,57 +1213,28 @@ export class AggregateAdapter extends LlmAdapter {
    * 只有一份，声明任何具体一家的窗口都会在切到别家时失真。取最大值 ⇒ 压缩阈值与
    * 占用指示器按最宽的候选计算，切换供应商时「实际可用 ≥ 已声明」恒成立。
    *
+   * ⚠️ **学习值不再收窄本值**（2026-10-12 修正，用户实测提出；原先有个
+   * `applyLearnedWindow` 在这里收窄）：学习值是按**虚拟模型**记的，于是「一个窄窗口
+   * 候选撞墙」会把整个虚拟模型的对外声明**粘性压低**，之后即使换回宽窗口的候选也
+   * **不恢复**（DSH 压缩阈值 = 声明 × 0.8 ⇒ 长期过早压缩，宽候选的能力被白白让掉）。
+   * 而且那层保护本就**多余**：池整体窄时这个「最大值」自然就窄、压缩自然早发生；
+   * 真正需要「这个候选装不下」这层信息的只有**筛选**（方案 C），它读的是**候选键**。
+   *
    * ## ⚠️ 只有当每一个候选都解析成功时才记忆化
    *
    * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进缓存，目录服务抖动一次就会把
    * 兜底值固化整个 TTL 周期。失败时返回值照给（调用方需要立即拿到可用值），但
    * 不写缓存，下一次调用重新尝试解析。
    */
-  /**
-   * 把「学到的窗口」套到声明值上 —— **学习值可以收窄声明值**（方案 A，2026-10-12）。
-   *
-   * ## 为什么必须能收窄（用户 2026-10-12 实测报障）
-   *
-   * 原实现是 `widest ?? dynamicContextWindowFor(...)`：**只要任一候选声明了窗口**，
-   * 学习表就再也查不到（`aggregate/auto` 的候选里 loomy/codearts 都声明 1M ⇒ `widest`
-   * 恒有值）。后果与用户实测完全一致：虚拟模型对外报 1M ⇒ DSH 压缩阈值 800K，
-   * 而**实际派发**到的候选真实上限只有 262K ⇒ 会话长到 20 万 token 时那一家开始截断，
-   * 而 DSH 永远不会提前压缩。
-   *
-   * ⚠️ 这与 **zcode 适配器**的既有规则**同构**（那里是
-   * `learned !== undefined && (contextWindow === undefined || learned < contextWindow)
-   *   ? learned : contextWindow`）—— 同一套「学到就收窄」的方案，两个接入点判据必须一致。
-   * 方向保守：收窄只会让压缩**更早**发生（浪费一点上下文，不致命），
-   * 而放着不管就是「撞墙 → 压缩 → 再撞墙」甚至反复截断。
-   *
-   * @param modelKey - 虚拟模型 id（`auto` 或规范键）。
-   * @param declared - 当前声明值（候选最大值；全无声明时是动态起步值/上次学习值）。
-   * @param declaredIsFallback - `declared` 是否来自「候选全无声明」的兜底路径。
-   */
-  private applyLearnedWindow(modelKey: string, declared: number, declaredIsFallback = false): number {
-    const key = contextWindowKey(AGGREGATE_PROVIDER, modelKey)
-    const learned = learnedContextWindow(key)
-    if (learned === undefined) return declared
-    // 兜底路径下 `declared` 本身就是学习值（`dynamicContextWindowFor` 会返回它），直接用它。
-    if (declaredIsFallback) return declared
-    if (learned < declared) {
-      this.ctx.logger?.info?.(
-        `[jet-hub] 窗口收窄 ${modelKey}: 学习值 ${learned} < 声明值 ${declared} ⇒ 采用 ${learned}`,
-      )
-      return learned
-    }
-    return declared
-  }
-
   private async contextWindowFor(
     modelKey: string,
     candidates: readonly { provider: string; realId: string }[],
     signal?: AbortSignal,
   ): Promise<number> {
-    // ⚠️ 缓存里存的是**纯声明值**（候选里的最大值），不是最终对外值 ——
-    //    因为学习值可以**收窄**它，而收窄必须「学过立刻生效」（见 applyLearnedWindow）。
+    // ⚠️ 缓存里存的就是**对外值**（候选里的最大值）—— 学习值**不再**收窄它
+    //    （理由见本函数 JSDoc 的「学习值不再收窄本值」）。
     const remembered = this.contextWindowCache.get(modelKey)
-    if (remembered !== undefined) return this.applyLearnedWindow(modelKey, remembered)
+    if (remembered !== undefined) return remembered
     let widest: number | undefined
     let allResolved = true
     // 手机版诊断（2026-10-11）：逐候选记录解析结果，定位「声明在哪一家丢失」。
@@ -1298,8 +1269,9 @@ export class AggregateAdapter extends LlmAdapter {
     // 模型永远只用到五分之一。学习值/起步值都来自 `context-window-learn.ts`，
     // 撞墙后由 `dispatch` 的失败路径收窄。
     // ⚠️ 它**不进** `contextWindowCache`（见下方记忆化条件）——学过之后要立刻生效。
+    // ⚠️ 候选全无声明时才用动态起步值（`dynamicContextWindowFor` = 学到的 ?? 起步值）。
     const declared = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))
-    const resolved = this.applyLearnedWindow(modelKey, declared, widest === undefined)
+    const resolved = declared
     // ⚠️ **手机版修正（2026-10-11，用户实测报障）**：记忆化必须同时要求
     // 「无抛错」**和**「真的解析到了声明」。原条件只看 `allResolved`（没抛错）——
     // 渠道目录未就绪时 `resolveModelInfo` 会**成功返回但不带窗口声明**（undefined），
@@ -1647,13 +1619,20 @@ export class AggregateAdapter extends LlmAdapter {
               //    ⚠️ 这里**不设**「该模型当前是否走兜底」的前置条件：记录本身无害，而
               //    `contextWindowFor` 只在**候选全无声明**时才查学习表 —— 某家一旦给了真值，
               //    真值仍然优先（约定 3）。反过来若声明与真实不符，这里记下的至少更接近真实。
-              //    ⚠️ 多候选时按**虚拟模型**记：某个窄窗口候选撞墙 ⇒ 整个虚拟模型收窄到它的
-              //    上限。方向保守（宁可早压缩），代价是宽窗口候选的那部分能力被让掉。
+              //    ⚠️⚠️ **按该候选记，不按虚拟模型记**（2026-10-12 修正，用户实测提出）：
+              //    原先记虚拟模型 ⇒ 一个窄候选撞墙就把**整个虚拟模型**的对外声明粘性
+              //    压低，之后即使换回宽窗口的候选也**不恢复**（DSH 压缩阈值 = 声明 × 0.8
+              //    ⇒ 长期过早压缩、宽候选的能力被让掉）。而且那层保护**多余**：虚拟声明
+              //    本就取候选最大值，池整体窄时声明自然窄；需要「这个候选装不下」这层
+              //    信息的只有**筛选**（方案 C），它读的正是候选键。
               if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {
                 const learned = rememberContextWindowFailure(
-                  contextWindowKey(AGGREGATE_PROVIDER, modelKey), message,
+                  contextWindowKey(target.provider, target.realId), message,
                 )
-                self.ctx.logger?.info?.(`[jet-hub] 窗口学习 ${modelKey}: 上游报超限 → 记 ${learned}`)
+                self.ctx.logger?.info?.(
+                  `[jet-hub] 窗口学习 ${target.provider}（${target.realId}）: `
+                  + `上游报超限 → 记该候选 ${learned}`,
+                )
               }
               // ⚠️⚠️ **逐字段独立回退**（不是整袋回退）。
               //
@@ -1759,16 +1738,14 @@ export class AggregateAdapter extends LlmAdapter {
             if (chunk.type === 'finish' && chunk.reason.kind === 'max-tokens') {
               const observed = self.lastContextTokens
               if (observed !== undefined) {
-                const virtual = rememberContextWindowCeiling(
-                  contextWindowKey(AGGREGATE_PROVIDER, modelKey), observed,
-                )
+                // ⚠️ **只记该候选**（2026-10-12 修正，与上面的失败路径同口径）：记虚拟模型
+                //    会把整个虚拟模型的对外声明粘性压低 ⇒ 换回宽候选也不恢复。
                 const perCandidate = rememberContextWindowCeiling(
                   contextWindowKey(target.provider, target.realId), observed,
                 )
                 self.ctx.logger?.warn?.(
                   `[jet-hub] 窗口学习(截断) ${modelKey}: ${target.provider}（${target.realId}）`
-                  + `以 max-tokens 收场，本轮 ${observed} tokens ⇒ 虚拟模型记 ${virtual ?? '未记'}`
-                  + `、该候选记 ${perCandidate ?? '未记'}`,
+                  + `以 max-tokens 收场，本轮 ${observed} tokens ⇒ 记该候选 ${perCandidate ?? '未记'}`,
                 )
               }
             }
@@ -1824,17 +1801,15 @@ export class AggregateAdapter extends LlmAdapter {
           //    的中间值）⇒ 放宽它，避免「重启后仍按一个偏小的值过早压缩」。
           //    方向安全：该值来自**真正成功**的请求，必然 ≤ 真实上限（不会「填大」）。
           if (turnTokens !== undefined) {
-            const virtualHealed = noteContextWindowSuccess(
-              contextWindowKey(AGGREGATE_PROVIDER, modelKey), turnTokens,
-            )
+            // ⚠️ 只对**该候选**自愈：虚拟模型那侧自 2026-10-12 起不再记学习值
+            //    （见 `dispatch` 的两处学习点与本文件 `contextWindowFor` 的注释）。
             const candidateHealed = noteContextWindowSuccess(
               contextWindowKey(target.provider, target.realId), turnTokens,
             )
-            if (virtualHealed !== undefined || candidateHealed !== undefined) {
+            if (candidateHealed !== undefined) {
               self.ctx.logger?.info?.(
-                `[jet-hub] 窗口自愈 ${modelKey}: ${target.provider}（${target.realId}）`
-                + `本轮 ${turnTokens} tokens 成功 ⇒ 虚拟模型 ${virtualHealed ?? '未放宽'}`
-                + `、该候选 ${candidateHealed ?? '未放宽'}`,
+                `[jet-hub] 窗口自愈 ${target.provider}（${target.realId}）: `
+                + `本轮 ${turnTokens} tokens 成功 ⇒ 放宽到 ${candidateHealed}`,
               )
             }
           }

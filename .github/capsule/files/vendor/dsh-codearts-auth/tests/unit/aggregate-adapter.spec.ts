@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import {
+  contextWindowKey,
+  rememberContextWindowCeiling,
+  resetLearnedContextWindows,
+} from '../../src/context-window-learn.js'
 import { AggregateAdapter, AGGREGATE_PROVIDER, maxAttemptsFor, registerAggregateLlm } from '../../src/aggregate-adapter.js'
 
 /** 造一个最小 ctx：llm.listModels 播报给定目录。 */
@@ -2745,5 +2750,50 @@ describe('★★ 方案 C：筛选结果与派发索引一致（行为）', () =
     expect((error as { failure?: { code?: string } }).failure?.code)
       .toBe(CONTEXT_WINDOW_EXCEEDED_CODE)
     expect(sent, '一次都不该发出去').toEqual([])
+  })
+})
+
+/**
+ * ★★ 换回宽窗口候选后，虚拟模型的对外声明必须**恢复**（2026-10-12 修正，用户实测提出）。
+ *
+ * ## 缺陷形态（真实）
+ *
+ * 学习值原先按**虚拟模型**记，并被 `applyLearnedWindow` 用来收窄对外声明 ⇒ 一个窄候选
+ * 撞墙就把整个虚拟模型**粘性**压低；之后即使池里有 100 万的候选，对外仍报那个小值
+ * ⇒ DSH 压缩阈值（声明 × 0.8）长期偏低 ⇒ 会话被过早压缩、宽候选的能力被白白让掉。
+ * 用户原话的形态：「换回 100 万的模型后，上限会不会从 25.6 万恢复到 100 万」。
+ *
+ * ## 反向验证
+ *
+ * 把 `contextWindowFor` 里的 `const resolved = declared` 换回收窄语义（`applyLearnedWindow`），
+ * 本用例即失败 —— 学习表里那个 10 万会盖住候选的 100 万。
+ */
+describe('★★ 虚拟模型的对外声明不被学习值粘性压低（2026-10-12 修正）', () => {
+  it('学习表里有虚拟模型级的小值时，声明仍是候选最大值', async () => {
+    const ctx = {
+      logger: { warn: () => {}, info: () => {}, error: () => {} },
+      llm: {
+        listProviders: () => [{ id: 'buddy', name: 'b' }, { id: 'codearts', name: 'c' }],
+        listModels: async () => [{ id: 'm-shared', name: 'M-shared' }],
+        resolveModelInfo: async (provider: string, id: string) => ({
+          provider,
+          id,
+          context: { contextWindow: provider === 'buddy' ? 200_000 : 1_000_000 },
+        }),
+        stream: () => { throw new Error('本用例不应调用 stream') },
+      },
+    } as never
+    const adapter = new AggregateAdapter(ctx, { accountPool: makePool() })
+    // 目录必须先就绪：否则候选池为空、声明会退化成兜底值（那会让本用例假通过）。
+    await adapter.listModels(AGGREGATE_PROVIDER)
+    // 模拟「旧版本 / 旧持久化文档留下的**虚拟模型级**学习值」。
+    rememberContextWindowCeiling(contextWindowKey(AGGREGATE_PROVIDER, 'auto'), 100_000)
+    try {
+      const resolved = await adapter.resolveModel(AGGREGATE_PROVIDER, 'auto')
+      expect(resolved.context?.contextWindow, '声明必须回到候选最大值，而不是被学习值压住')
+        .toBe(1_000_000)
+    } finally {
+      resetLearnedContextWindows()
+    }
   })
 })

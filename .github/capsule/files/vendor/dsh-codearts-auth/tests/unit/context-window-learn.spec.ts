@@ -104,31 +104,42 @@ describe('context-window-learn：解析不出时减半收敛', () => {
 describe('聚合层接线（源码文本断言）', () => {
   const source = read('src/aggregate-adapter.ts')
 
-  it('声明值仍是候选最大值（`widest`），但**学习值可以收窄它**（方案 A，2026-10-12）', () => {
-    // 旧形态是 `widest ?? dynamicContextWindowFor(...)`：只要有任一候选声明了窗口，
-    // 学习表就再也查不到（`aggregate/auto` 的候选声明 1M ⇒ 恒走真值分支）⇒
-    // 用户实测「声明 1M、实际候选只有 26 万，会话到 20 万就被反复截断」。
-    // ⇒ 现在声明值先算出来，再经 `applyLearnedWindow` 收窄。
+  it('声明值 = 候选最大值；**学习值不得再收窄它**（2026-10-12 修正）', () => {
+    // ⚠️ 这是**反向**断言。9.22 之前这里有个 `applyLearnedWindow`：它按**虚拟模型**收窄
+    //    声明值 ⇒ 一个窄候选撞墙就把整个虚拟模型压低，之后**换回宽窗口的候选也不恢复**
+    //    （用户 2026-10-12 实测提出：「换回 100 万的模型后上限还是 25.6 万」）。
+    //    而虚拟声明本就取候选最大值 ⇒ 池整体窄时它自然就窄 —— 那层收窄既多余又有害。
     expect(source).toContain('const declared = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))')
-    expect(source).toContain('const resolved = this.applyLearnedWindow(modelKey, declared, widest === undefined)')
-    // 反向：旧的「真值优先、动态值只做 fallback」一行式**不得回来**。
+    expect(source).toContain('const resolved = declared')
+    // 反向：任何「再把学习值套回声明值」的写法都不得回来。⚠️ 判据用**方法调用**形态，
+    // 因为 JSDoc 里正当地提到了这个名字（裸词断言会误判自己的注释）。
+    expect(source).not.toContain('this.applyLearnedWindow')
+    expect(source).not.toContain('if (learned < declared) {')
+    // 反向：旧的「真值优先、动态值只做 fallback」一行式也不得回来。
     expect(source).not.toContain('const resolved = widest ?? dynamicContextWindowFor(')
   })
 
-  it('收窄判据与 zcode 同构（只在学到的更小时覆盖）', () => {
-    expect(source).toContain('if (learned < declared) {')
-    expect(source).toContain('const learned = learnedContextWindow(key)')
+  it('学习值只用于**筛选候选**（按候选键）；zcode 的单渠道收窄口径不变', () => {
+    expect(source).toContain('const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))')
+    // zcode 的键**就是该渠道自己**（单渠道），不存在「一个候选压低整个池」的问题 ⇒ 判据不变。
+    expect(read('src/zcode-adapter.ts')).toContain(
+      'learned !== undefined && (contextWindow === undefined || learned < contextWindow)',
+    )
   })
 
-  it('缓存只存**纯声明值**，收窄值不得固化（否则后来学到的更小值被挡住）', () => {
+  it('缓存存的就是对外值（候选最大值），记忆化分支不再套学习值', () => {
     expect(source).toContain('this.contextWindowCache.set(modelKey, widest)')
     expect(source).not.toContain('this.contextWindowCache.set(modelKey, resolved)')
-    expect(source).toContain('return this.applyLearnedWindow(modelKey, remembered)')
+    expect(source).toContain('if (remembered !== undefined) return remembered')
   })
 
-  it('撞墙处（且仅在归成溢出码时）记录学习', () => {
+  it('撞墙处（且仅在归成溢出码时）**按该候选**记录学习', () => {
     expect(source).toContain('if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {')
     expect(source).toContain('rememberContextWindowFailure(')
+    // ⚠️ 必须记**候选键**：记虚拟模型会粘性压低整个虚拟模型的对外声明（见上一条）。
+    expect(source).toContain('contextWindowKey(target.provider, target.realId), message,')
+    // 反向：不得再把虚拟模型键喂给失败学习。
+    expect(source).not.toContain('contextWindowKey(AGGREGATE_PROVIDER, modelKey), message')
   })
 
   it('**截断也算证据**：`finish: max-tokens` 时用观测规模记上限（方案 B，2026-10-12）', () => {
@@ -137,6 +148,9 @@ describe('聚合层接线（源码文本断言）', () => {
     expect(source).toContain('rememberContextWindowCeiling(')
     expect(source).toContain('const seen = contextTokensOfUsage(chunk.usage)')
     expect(source).toContain('self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)')
+    // ⚠️ 同样只记**候选键**（2026-10-12 修正）：虚拟模型那侧自本次修正起不再记学习值。
+    expect(source).toContain('contextWindowKey(target.provider, target.realId), observed,')
+    expect(source).not.toContain('const virtual = rememberContextWindowCeiling(')
   })
 
   it('**派发前按本轮体积跳过太窄的候选**（方案 C，2026-10-12）', () => {
