@@ -2521,6 +2521,33 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
   }, [provider, rpcCall]);
 
   /**
+   * 静默重读账号列表：只更新数据，**不改变** `phase`（不切成「正在读取…」）。
+   *
+   * 存在的理由（issue IKKHL5 的客户端残留）：宿主侧 `credits.balances` 会对
+   * 已过期账号**先续期再查余额**并回写账号池的 `expiresAt`，而卡片红字读的是
+   * `account.list` 的快照 ⇒ 积分已经能读了、卡片却还红着。故余额查询成功后
+   * 需要补读一次账号列表。
+   *
+   * ⚠️ 必须与 `loadAccounts` **分开**：后者首行就 `setPhase('loading')`，
+   * 用它会在这个「顺带同步」的场景里让整块列表闪一下（自愈成功那一刻）。
+   *
+   * ⚠️ **失败静默**（与 `loadAccounts` 不同）：本函数只是配套同步，失败不该
+   * 把面板推进错误态 —— 余额已经拿到了，界面该继续可用。
+   */
+  const reloadAccountsQuietly = React.useCallback(async () => {
+    try {
+      const res = await rpcCall('account.list', { provider });
+      if (!mounted.current) return;
+      const list = res.accounts || [];
+      accountsRef.current = list;
+      setAccounts(list);
+    } catch (caught) {
+      // 静默：不 setError / 不 setPhase。留一条 console 便于排障。
+      console.error('[jet-hub] 静默重读账号列表失败（不影响积分显示）:', caught);
+    }
+  }, [provider, rpcCall]);
+
+  /**
    * 本 provider 是否支持积分余额查询。
    *
    * 判定依据是 `./credits-capabilities.js` 的能力矩阵（唯一真相源），
@@ -2572,6 +2599,15 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
       setCredits(next);
       // 窗口天数随余额一起回来（buddy 系 + TRAE 带）——积分行据此分「临时 / 长期」。
       setExpiryWindowDays(res?.windowDays ?? null);
+      // ⚠️ 自愈后补读账号列表（issue IKKHL5 客户端残留）：宿主侧 credits.balances
+      // 会对已过期账号先续期再查余额并回写 expiresAt，而卡片红字读的是 account.list
+      // 的快照 ⇒ 积分已经能读了、卡片却还红着。必须走 quiet 变体：普通 loadAccounts
+      // 首行 setPhase('loading') 会让列表在自愈成功那一刻闪一下。
+      // ⚠️ 无条件补读（不判「调用前快照里有没有已过期账号」）：挂载时 loadAccounts
+      // 与 loadCredits 同步先后发起，快照恒为空数组，判据恒为假 —— 初版修复对
+      // 主路径完全无效（上游对抗审计实测证伪）。代价：每次余额查询多一次
+      // account.list（读内存副本，无上游请求）。
+      await reloadAccountsQuietly();
     } catch (caught) {
       console.error('[jet-hub] load credits failed:', caught);
       if (!mounted.current) return;
@@ -2592,7 +2628,10 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
     } finally {
       if (mounted.current) setCreditsLoading(false);
     }
-  }, [provider, rpcCall, canLoadCredits]);
+    // ⚠️ reloadAccountsQuietly 必须进 deps：本函数现在会调它（余额成功后补读
+    // 账号列表），不进 deps 会让 React 持有旧闭包（陈旧 provider / rpcCall），
+    // 补读打到错误的面板上。
+  }, [provider, rpcCall, canLoadCredits, reloadAccountsQuietly]);
 
   React.useEffect(() => {
     mounted.current = true;

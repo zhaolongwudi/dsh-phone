@@ -47,6 +47,14 @@ grep -q "RpcActiveRouteResponse" vendor/dsh-codearts-auth/src/types.ts
 #    （每次重启重新撞一次墙 ⇒ 回答被上游截断）—— 正是 9.22 要根治的形态，故显式自检。
 grep -q "attachContextWindowStore" vendor/dsh-codearts-auth/src/index.ts
 grep -q "ActiveModelPill" vendor/dsh-codearts-auth/plugin-src/client/index.js
+# ⚠️ 移植 Gitee d14636e6（2026-10-12 第三轮）的两处**静默失效**接线：
+#    ① 积分端点入口的按需自愈（IKKHL5）—— 丢掉这一行不会报错，只会退回
+#       「睡眠恢复后卡片红着已过期、积分行报 HTTP 401」的缺陷态；
+#    ② `fullCatalogIds` 的并集 + `complete` 判据（IKJW33 相邻）—— 丢掉后
+#       冷缓存下「关闭全部」只关兜底子集却返回成功，用户以为关了整家。
+#    两者都属「抽出的函数正确 ≠ 被正确调用」，故由构建自检显式盯住调用点。
+grep -q "await healExpiredAccounts(accounts)" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
+grep -q "if (!catalog.complete)" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
 test -f vendor/dsh-codearts-auth/src/active-route.ts
 test -f vendor/dsh-codearts-auth/src/context-window-store.ts
 test -f vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js

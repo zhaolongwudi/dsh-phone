@@ -1147,30 +1147,21 @@ async function readableCatalogIds(
   modelAdapters: Readonly<Record<string, ModelCatalogSource>> | undefined,
   provider: string,
 ): Promise<ReadonlySet<string> | undefined> {
-  const llm = llmServiceOf(ctx)
-  if (llm === undefined) return undefined
-  let listed: Array<{ id: string }>
-  try {
-    listed = await withTimeout(llm.listModels(provider), CATALOG_READ_TIMEOUT_MS)
-  } catch {
-    // ⚠️⚠️ **读不到就整体放弃**，不得退化成「只用 listAllModels 兜底表」——
-    // 那会退回第一版的大面积误报（见函数头）。
-    return undefined
-  }
-  // ⚠️ 空目录 = 「看不到」（无账号门控），不是「全部下架」。
-  if (listed.length === 0) return undefined
-  const known = new Set(listed.map((model) => model.id))
-  // ⚠️ 并上设置页目录（`listAllModels()`）：opencode 恒返回编译期兜底表，
-  // 而 `listModels()` 在只有匿名槽时只给免费模型 ⇒ 少了这一半，设置页可见的
-  // 付费模型会被误报成「已下架」（审计实测 13/13 假警告）。
-  // ⚠️ 它**不保证存在**（外部 / 旧适配器）⇒ 缺失时只是并集少一半，仍可核对。
-  // ⚠️ 读它**不产生网络请求**（契约要求同步）；⚠️ 它抛错也**不能**让开关失败
-  //（开关是主操作、核对只是提示层）⇒ 单独 try/catch，失败就只用另一半来源。
-  try {
-    for (const model of modelAdapters?.[provider]?.listAllModels() ?? []) known.add(model.id)
-  } catch {
-    /* 提示层的核对失败不得反噬开关本身 */
-  }
+  // ⚠️ **目录来源取自 `fullCatalogIds`，本函数不自己再取一遍** ——
+  // 两处各写一份「哪个来源优先」的判据，就是本仓库踩过的
+  // 「一文件两套同义判据必然先腐坏一套」（IKJW33 修复时实测出内层判据在生产路径上**不可达**）。
+  // 这里只负责把它的**失败**翻译成「放弃核对」（提示层错了不如不说），
+  // 而两个关闭方向把同一个失败翻译成「拒绝操作」（写黑名单必须完整）。
+  const catalog = await fullCatalogIds(ctx, modelAdapters, provider)
+  // ⚠️⚠️ **目录不可用 ⇒ 整体放弃核对**（判 `complete`，它同时覆盖
+  // 「远端读失败」与「远端读到但为空」两种形态）。
+  // 不得退化成「只用 listAllModels 兜底表」：那会退回第一版的大面积误报。
+  if (!catalog.complete) return undefined
+  const known = new Set(catalog.ids)
+  // ⚠️ 并回「被关着」的 id —— **必须在 await 之后读**（理由见函数头）。
+  // ⚠️ `fullCatalogIds` 的并集**已含**适配器目录里那些被关闭的 id，
+  // 但**不含**「既不在适配器目录、也不在远端目录」的历史死键（那些只存在于
+  // 黑名单里）。它们必须并回来：打开方向正是清理它们的唯一路径。
   // ⚠️ 并回「被关着」的 id —— **必须在 await 之后读**（理由见函数头）。
   for (const [id, disabled] of Object.entries(pool.listDisabledModels(provider))) {
     if (disabled === true) known.add(id)
@@ -1369,34 +1360,123 @@ export interface ModelCatalogSource {
  */
 
 /**
- * 取某 provider 的**全量模型 id**（不套黑名单），供「关闭全部」与「关闭供应商」共用。
+ * `fullCatalogIds` 的返回值。
  *
- * 两条路径的优先级（与 `model.list` 保持一致的取舍，但**不需要展示名**：
- * 这里只要 id 来写黑名单，故不走 `model.list` 那套回填 disabled 的复杂逻辑）：
- * 1. 优先 `modelAdapters[provider].listAllModels()` —— **同步**，不触发远端拉取；
- * 2. 缺失时退化 `llm.listModels(provider)` —— 异步，且**结果已被黑名单过滤**。
+ * ⚠️ **刻意是「部分成功」的形状**，因为三个调用点对目录的**完整度要求不同**
+ *（这是本函数不能再返回单一 `{ ids } | { error }` 的原因）：
  *
- * ⚠️ 第 2 条路径拿不到「已关闭」的模型（它们不在 `listModels` 返回值里），
- * 故它写出的黑名单是**不完整**的。这对「关闭全部」无影响（已关闭的本就无需再关），
- * 但意味着**不能用它判断「是否全部已关闭」** —— 状态判定必须用
- * `listAllModels()` 的全量目录（见 `provider.status`）。
+ * | 调用点 | 需求 | 对「远端那一半缺失」的动作 |
+ * |---|---|---|
+ * | `model.setAllDisabled` / `provider.setEnabled` | **必须完整**（要写黑名单） | **拒绝且不落盘** |
+ * | `account.test` | **尽力而为**（只要一个 id 就能测） | 用拿到的那些照常测 |
+ */
+interface FullCatalogResult {
+  /** **并集**（适配器目录 ∪ 远端目录），已去重。 */
+  ids: string[]
+  /**
+   * **目录是否可用于「写黑名单」类操作**（远端读到且**非空**）。
+   *
+   * ⚠️⚠️ 写黑名单的调用方**必须判这个字段**，不要自己判「`ids` 是否为空」——
+   * 冷缓存下适配器兜底表会让 `ids` 看起来非空，而它只是**子集**。
+   *
+   * ⚠️ 它刻意**合并了两种**「目录不可用」形态（它们对调用方的动作相同，
+   * 都是「不能拿兜底子集当权威」）：
+   *
+   * 1. **远端读失败**（超时 / 抛错 / 无 llm 服务）⇒ 见 `remoteError`；
+   * 2. **远端读到但为空** —— 目录在「无已登录账号」时门控返回 `[]`，含义是
+   *    「**看不到**」而**不是**「该 provider 一个模型都没有」。
+   *    ⚠️ 此时适配器兜底表**仍可能有内容**，照它写黑名单就是**同一个缺陷的
+   *    另一个入口**（实测：远端 `[]` + 兜底表 1 条 ⇒ 「关闭全部」只关那 1 条
+   *    并返回成功）。⚠️ 这一种**没有** `remoteError`（它不是错误）。
+   *
+   * ⇒ 让调用方各自写一遍这个复合判据，就是本仓库踩过的
+   * 「一文件两套同义判据必然先腐坏一套」⇒ 收敛成这一个字段。
+   */
+  complete: boolean
+  /**
+   * 目录不可用的**原因**；仅当是「远端读失败」时有值。
+   *
+   * ⚠️ 为 `undefined` 而 `complete === false` ⇒ 就是上面第 2 种形态
+   *（远端读到但为空），调用方据此给不同的文案。
+   */
+  remoteError?: string
+}
+
+/**
+ * 取某 provider 的**模型 id**（两个目录来源的并集），供「关闭全部」「关闭供应商」
+ * 与「测试账号选模型」共用。
  *
- * @returns `{ ids }` 成功；`{ error }` 失败原因（调用方据此拒绝且**不落盘**）。
+ * ## ⚠️⚠️ 并集是必须的，不能「优先 `listAllModels()`」（真实缺陷，Issue IKJW33 相邻）
+ *
+ * 本仓库有两个「目录」来源，**并不总是同源**：
+ *
+ * | 来源 | 形态 |
+ * |---|---|
+ * | `modelAdapters[provider].listAllModels()` | 不套黑名单；**冷缓存下是编译期兜底表（子集）** |
+ * | `llm.listModels(provider)` | **真实远端目录 − 黑名单**；异步、可能失败 |
+ *
+ * 原实现是「**优先** `listAllModels()`，只要它存在就短路、根本不看 `listModels()`」，
+ * 而冷缓存下兜底表是**子集**（实测 `cline` 冷缓存只有 **3** 条，远端有 **460** 条）
+ * ⇒ 两个关闭方向都会写出**只含兜底表条目**的黑名单，而端点返回「成功」：
+ *
+ * - `model.setAllDisabled`：用户以为整个供应商已关闭，而**几百个模型仍可选**；
+ * - `provider.setEnabled`：更重 —— `provider.status` 的 `closed` 判据是
+ *   `total > 0 && disabled === total`，而 `total` 也取自 `listAllModels()`
+ *   ⇒ 界面**显示为已关闭**，对话框里那几百条却**仍能选中**。
+ *
+ * 用户报障路径**恰恰是冷缓存**（脚本/设置页首次打开就点「关闭全部」）。
+ * ⚠️ 既有注释其实早已立下约定「失败时**不落盘**」，但 `listAllModels()` 冷缓存
+ * 返回子集时它**不算失败**，于是绕过了那条守卫。并集把那个缺口补上。
+ *
+ * ## ⚠️ 适配器那一半**不能丢**（即使远端成功）
+ *
+ * `listModels()` 会把**已被用户关闭**的模型过滤掉，而适配器目录带着它们。
+ * 漏掉会让 `provider.setEnabled` 的 `ids.length === 0` 判据在「全部已关闭」时
+ * 误判成「没有可关闭的模型」而拒绝操作。
+ *
+ * ## ⚠️ 与 `readableCatalogIds` 的分工：**目录来源只此一处**
+ *
+ * 两者共用本函数取目录，区别只在**失败时的动作**：写黑名单的调用方**拒绝操作**，
+ * 提示层（`readableCatalogIds`）**放弃核对**。
+ *
+ * ⚠️ **远端读取带超时**（`CATALOG_READ_TIMEOUT_MS`）：这是写操作的前置读取，
+ * 不能把用户点开关的等待无限拉长。
  */
 async function fullCatalogIds(
   ctx: Context,
   modelAdapters: Readonly<Record<string, ModelCatalogSource>> | undefined,
   provider: string,
-): Promise<{ ids: string[] } | { error: string }> {
-  const all = modelAdapters?.[provider]?.listAllModels()
-  if (all !== undefined) return { ids: all.map((model) => model.id) }
-  const llm = llmServiceOf(ctx)
-  if (llm === undefined) return { error: 'llm 服务不可用' }
+): Promise<FullCatalogResult> {
+  // ── 来源一：适配器目录（同步；但**冷缓存下是兜底子集**）──
+  // ⚠️ 它抛错**不独自决定成败**：远端那一半仍可能成功，故单独吞掉。
+  const adapterIds: string[] = []
   try {
-    return { ids: (await llm.listModels(provider)).map((model) => model.id) }
+    for (const model of modelAdapters?.[provider]?.listAllModels() ?? []) adapterIds.push(model.id)
+  } catch {
+    /* 适配器异常不该让整个读取失败：远端目录仍可用 */
+  }
+
+  // ── 来源二：远端真实目录（权威；冷缓存下会真发一次拉取）──
+  const llm = llmServiceOf(ctx)
+  if (llm === undefined) {
+    // ⚠️ 远端拿不到 ⇒ 只剩兜底子集 ⇒ **不可用于写黑名单**（`complete: false`）。
+    return { ids: adapterIds, complete: false, remoteError: 'llm 服务不可用' }
+  }
+  let remoteIds: string[]
+  try {
+    remoteIds = (await withTimeout(llm.listModels(provider), CATALOG_READ_TIMEOUT_MS))
+      .map((model) => model.id)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    return { error: `读取模型列表失败：${reason}` }
+    return { ids: adapterIds, complete: false, remoteError: `读取模型列表失败：${reason}` }
+  }
+
+  // ⚠️⚠️ **远端读到但为空 ⇒ 同样不可用于写黑名单**（`complete: false`，且**无**
+  // `remoteError` —— 它不是错误）。含义是「看不到」（无账号门控），不是
+  // 「该 provider 一个模型都没有」。
+  return {
+    ids: [...new Set([...adapterIds, ...remoteIds])],
+    complete: remoteIds.length > 0,
   }
 }
 
@@ -1462,6 +1542,238 @@ function registerJetHubEndpoints(
     return member
   }
 
+  /**
+   * **真正支持按需续期**的 provider 集合（有 refresh 端点的）。
+   *
+   * ⚠️ 这是「跳过」与「报错」的分界线，两者的区别是**本质的**：
+   * - **不在**本集合里（loomy / zcode / opencode）＝ 该渠道**设计上**没有续期能力，
+   *   自愈应当**静默跳过**（不发请求、不记日志）—— 它不是失败，是「无需处理」。
+   * - 在集合里但查表失败/续期抛错 ＝ 真失败，必须记 warn。
+   *
+   * ⚠️ **不能用 `throw` 来表达「不支持」**（对抗审计实测到的真实缺陷）：
+   * heal 的 catch 会把异常记成 `自愈续期失败：loomy 不支持…`
+   * —— 一条**每次刷新面板都会重复**的误导性告警（loomy 的池内 `expiresAt` 是
+   * 本地按 14 天推算的固定值、14 天后必然过期 ⇒ 确定可达），
+   * 而它其实什么都没失败。AGENTS.md 已记「重复同一行会把有用信息埋掉」。
+   *
+   * - loomy / zcode：没有 refresh 端点，其 `refreshAccountCredential` 做的是
+   *   **有效性探测**，拿来当续期用只会白发请求；
+   * - opencode：匿名通道，无凭据可续。
+   *
+   * ⚠️ 手机版形态：**没有** `authOf` 查表（上游 provider 抽象重构属 Phase 6），
+   * 分派走与 `account.refresh` 端点**同一份** else-if 链的键 ——
+   * 键集合与 `JetHubAuths` 的键一致（去掉 loomy / zcode）。
+   */
+  const SELF_HEAL_REFRESHABLE_PROVIDERS: ReadonlySet<string> = new Set([
+    'codearts',
+    'buddy',
+    'workbuddy',
+    LOBSTERAI.id,
+    QODER.id,
+    QODER_CN.id,
+    TRAE.id,
+    CLINE.id,
+    RACCOON.id,
+    MINIMAX.id,
+    GEMINI.id,
+  ])
+
+  /**
+   * 自愈的**在飞去重**表（key = 账号 id）—— 同一账号的并发自愈共享同一次续期。
+   *
+   * ⚠️ **必须有**（对抗审计实测证实的真实缺陷）：积分端点是**用户可反复触发**的
+   * （客户端 `loadCredits` 有四个调用点：面板挂载、签到成功后、领取成功后、
+   * 「刷新积分」按钮，且**没有重入闸门**；用量徽标每 60 秒轮询
+   * `usageBadge.read` 也走同一个 `handleMethod('credits.balances')`）。
+   *
+   * 而**续期会轮换 refresh_token**（AGENTS.md 记过 codearts 那次「三条续期入口
+   * 并发消费同一份 refresh_token，1 个成功、其余 invalid_grant」的事故），
+   * 并发自愈存在「后写的把先写的新 token 覆盖成已失效旧 token」的风险。
+   *
+   * ⚠️ 本表只防**进程内、本入口**的并发。跨入口（定时器 `refreshAll`、按需续期）
+   * 与跨进程的互斥由各家自己兜（codearts / gemini 有 per-ref `SerialQueue`）。
+   */
+  const balanceHealInFlight = new Map<string, Promise<void>>()
+
+  /**
+   * 自愈的续期分派：**与 `account.refresh` 端点同一份键集合**。
+   *
+   * ⚠️ 手机版形态：上游走 `authOf(auths, provider)` 查表，手机版仍是逐实例
+   * 形参 —— 与其新建一张平行表（两份分派必然先腐坏一套），不如直接引用
+   * `account.refresh` case 里那份 switch 的同一批实例。键集合必须与
+   * `SELF_HEAL_REFRESHABLE_PROVIDERS` 一致。
+   *
+   * ⚠️ 仍然**不含 `enabled` 判据**（AGENTS.md 铁律）：停用只影响自动选号。
+   */
+  const refreshAccountByProvider = async (
+    provider: string,
+    credentialRefName: string,
+    accountId: string,
+  ): Promise<void> => {
+    switch (provider) {
+      case 'codearts':
+        return await codearts.refreshAccountCredential(credentialRefName, pool, accountId)
+      case 'buddy':
+        return await buddy.refreshAccountCredential(credentialRefName, pool, accountId)
+      case 'workbuddy':
+        return await workbuddy.refreshAccountCredential(credentialRefName, pool, accountId)
+      case LOBSTERAI.id:
+        return await lobsterai.refreshAccountCredential(credentialRefName, pool, accountId)
+      case QODER.id:
+      case QODER_CN.id:
+        // 同协议族：按 provider 找到对应实例（与 account.refresh 同判据，
+        // **不要**图省事写 `qoder.refresh...` —— CN 账号会去刷国际版凭据）。
+        return await requireQoderFamily(provider).auth.refreshAccountCredential(credentialRefName, pool, accountId)
+      case TRAE.id:
+        return await trae.refreshAccountCredential(credentialRefName, pool, accountId)
+      case CLINE.id:
+        return await cline.refreshAccountCredential(credentialRefName, pool, accountId)
+      case RACCOON.id:
+        return await raccoon.refreshAccountCredential(credentialRefName, pool, accountId)
+      case MINIMAX.id:
+        return await minimax.refreshAccountCredential(credentialRefName, pool, accountId)
+      case GEMINI.id:
+        return await gemini.refreshAccountCredential(credentialRefName, pool, accountId)
+      default:
+        // SELF_HEAL_REFRESHABLE_PROVIDERS 已过滤；走到这里说明「名单说可续、
+        // 实际没注册」—— 真异常，必须留痕。
+        throw new Error(`Unknown provider: ${provider}`)
+    }
+  }
+
+  /**
+   * 积分查询前的**按需自愈**（Gitee issue IKKHL5 建议 C）。
+   *
+   * ## 缺陷
+   *
+   * 系统睡眠/挂起数小时后恢复，**宿主进程全程没退出**，于是
+   * `state.json` 里的 `expiresAt`（= 上次续期时刻 + 令牌寿命）落在过去，
+   * 而客户端判据只有一次本地比较 ⇒ 卡片显示红色「已过期 · 自动续期」；
+   * `credits.balances` 又只 resolve 凭据后直连上游、**全程不续期**
+   * ⇒ 积分行报「账户信息查询失败：HTTP 401」。该窗口内**没有任何手动
+   * 自救手段**（「重测」的 refresh 是刻意 no-op）。
+   *
+   * ## 为什么这一层是对症的
+   *
+   * 实测：libuv 定时器基于**单调时钟**，睡眠时长 > interval 时**恢复瞬间就补触发**
+   * 一轮；所以「睡几小时」并不需要墙钟检测来抢救。真正的缺口是**恢复后的第一轮
+   * 要等最多一个 interval**，而短寿命 provider（minimax 1h / codearts 2h /
+   * raccoon 3h）在这个窗口里必然显示「已过期」。
+   *
+   * 本函数让**积分查询这个用户主动发起的动作**自带续期：不必等定时器，
+   * 一次刷新面板就同时消灭「已过期」显示与 401。
+   */
+  const healExpiredAccountBeforeBalance = async (
+    entry: ProviderAccountEntry,
+    /** 「现在」的注入点（只供测试；见 healExpiredAccounts 的说明）。 */
+    now: () => number = Date.now,
+  ): Promise<void> => {
+    // ⚠️ 判据与客户端**逐字一致**（同一个表达式），否则会出现「面板说没过期、
+    // 这里却发续期请求」或反之的无谓请求。
+    // ⚠️ **`typeof` 检查不是冗余**：`expiresAt` 可从**用户可编辑的备份文件**导入，
+    // 池里若是数字字符串 `'1791559805000'`：保留 `typeof` → 不续期
+    // （与客户端判据一致）；删掉则被 JS 强制转换判为过期 → 宿主与 UI **行为分叉**。
+    const expired = typeof entry.expiresAt === 'number'
+      && entry.expiresAt > 0
+      && entry.expiresAt <= now()
+    // ⚠️ **不判 `entry.refreshable`**：那个布尔是**凭据材料的镜像**、可能被误标，
+    // 误标过一次就永不自愈。各家 `refreshAccountCredential` 内部自己按凭据材料
+    // 判断能否续期（缺 refresh_token 时抛「请重新登录」），由它给出真终态。
+    if (!expired) return
+    // ⚠️ **设计上没有续期能力的渠道静默跳过**（不抛错、不记日志）：
+    // 用异常表达「跳过」会让每次刷新面板都留下一条误导性告警。
+    if (!SELF_HEAL_REFRESHABLE_PROVIDERS.has(entry.provider)) return
+
+    // ⚠️ **在飞去重**：同一账号的并发自愈共享同一次续期请求（见 balanceHealInFlight）。
+    const existing = balanceHealInFlight.get(entry.id)
+    if (existing !== undefined) {
+      await existing
+      return
+    }
+
+    const task = (async (): Promise<void> => {
+      try {
+        await refreshAccountByProvider(entry.provider, entry.credentialRef, entry.id)
+      } catch (error) {
+        // ⚠️ **绝不上抛**：续期失败不是「余额/领取失败」——凭据本来就已过期，
+        // 直连上游必然 401，让整条积分行报「续期失败：…」反而比原来的
+        // 「账户信息查询失败：HTTP 401」更难懂。照常往下走、由上游给出真原因。
+        // ⚠️ 文案**刻意不写「余额」**：本函数已同时服务 `credits.balances`
+        // 与 `credits.claimAll` 两个端点。
+        ctx.logger?.warn?.(
+          `[jet-hub] 积分操作前的自愈续期失败（账号 ${entry.id}，照常继续）：`
+          + `${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    })()
+
+    balanceHealInFlight.set(entry.id, task)
+    try {
+      // ⚠️ **必须 `await`**：本函数的存在意义就是「**先续期、再查余额**」——
+      // 不 await 就等于没修（对抗审计实测：改成 void task 后测试全绿，
+      // 说明该顺序语义原先没有任何守护）。
+      await task
+    } finally {
+      // ⚠️ 必须在 `finally` 里删除：续期失败时也要放行下一次自愈。
+      // ⚠️ 只删自己这一条（值比较），避免把「后来者刚建的新 task」误删。
+      if (balanceHealInFlight.get(entry.id) === task) {
+        balanceHealInFlight.delete(entry.id)
+      }
+    }
+  }
+
+  /**
+   * 自愈的**整轮预算**（毫秒）。
+   *
+   * ⚠️ **必须有**：本自愈是**逐账号顺序 await，每个账号一个真实 HTTP 续期**，
+   * 而各家 `AbortSignal.timeout` 是 20~60 秒。池里 39 个账号全过期且全部超时时，
+   * 最坏 **39 × 60s ≈ 39 分钟**，而这发生在**用户点一下就等**的
+   * `credits.balances` / `credits.claimAll` 入口上（徽标还会每 60 秒轮询）。
+   * 若不设闸门，症状会从「积分行报 HTTP 401」**恶化成「整个端点超时、
+   * 余额与领取结果一起丢」** —— 比原缺陷更糟。
+   *
+   * ⚠️ 语义与 `collectClaimResults` 的 `roundBudgetMs` 保持一致：
+   * 到点后**停止继续自愈、但不失败**（余下账号留给下一轮/定时器）。
+   */
+  const SELF_HEAL_ROUND_BUDGET_MS = 60_000
+
+  /**
+   * 逐账号**顺序**执行自愈（供 `credits.balances` 与 `credits.claimAll` 共用）。
+   *
+   * ⚠️ **必须串行、不得改 `Promise.all`**：「顺序执行避免并发触发风控」是
+   * 本端点的既有约定（见 `collectCreditBalances` 的注释）；并发续期还有
+   * 轮换 token 的覆盖风险。
+   * ⚠️ **受 `SELF_HEAL_ROUND_BUDGET_MS` 约束**：到点即停，余下账号交给下一轮。
+   * ⚠️ 预算判据在**每个账号之前**检查：已经开始的续期不打断
+   * （它有自己的 20~60 秒超时兜底）。
+   */
+  const healExpiredAccounts = async (
+    accounts: readonly ProviderAccountEntry[],
+    /**
+     * 「现在」的注入点。⚠️ **只供测试**注入确定时刻 —— 生产不传即用 `Date.now()`。
+     *
+     * 存在的理由：`<=` 边界用例若在自己体内取 `Date.now()`，而 heal 内部
+     * **再调一次**，两者跨毫秒才检出 ⇒ 实测单文件 20 次只有 10 次变红、
+     * 全量 CI 下 0 检出。注入 now 后边界判定变得确定。
+     */
+    now: () => number = Date.now,
+  ): Promise<void> => {
+    const deadlineAt = now() + SELF_HEAL_ROUND_BUDGET_MS
+    for (const entry of accounts) {
+      // ⚠️ 到点即停、**不失败**：已开始的续期不打断（见函数注释）。
+      if (now() >= deadlineAt) {
+        ctx.logger?.warn?.(
+          `[jet-hub] 自愈续期已达整轮预算（${SELF_HEAL_ROUND_BUDGET_MS}ms），`
+          + `本轮停止继续续期（余下账号交给下一轮/定时器）`,
+        )
+        return
+      }
+      await healExpiredAccountBeforeBalance(entry, now)
+    }
+  }
+
+  /**
+   * Loomy 短信登录的中间状态（账号 id → { phone, msgid }）。
   /**
    * Loomy 短信登录的中间状态（账号 id → { phone, msgid }）。
    *
@@ -2955,22 +3267,29 @@ function registerJetHubEndpoints(
         }
 
         // 模型推断：显式指定 > 已有的限流标记（用户最可能想看的就是它）> 全量目录第一个。
-        // ⚠️ 只有前两者都拿不到时才去读目录 —— `fullCatalogIds` 在读不到时返回
-        // `{ error }`，若无条件先读它，一个「明明有标记可测」的账号会因为目录服务
-        // 暂时不可用而被拒，属于自造的失败。
+        // ⚠️ 只有前两者都拿不到时才去读目录 —— 若无条件先读它，一个「明明有标记可测」
+        // 的账号会因为目录服务暂时不可用而被拒，属于自造的失败。
+        //
+        // ⚠️⚠️ **本调用点对目录是「尽力而为」，与两个关闭方向刻意不同**：
+        // 它只要**一个** id 就能测，故远端读失败时**不拒绝**，用拿到的（适配器兜底表
+        // 或空）照常继续。⚠️ 这与 `model.setAllDisabled` 的「必须完整 ⇒ 拒绝」是
+        // **两种不同的完整度要求**，不是同一条判据的两个写法（实测：若这里也拒绝，
+        // 「适配器有目录 + llm 临时故障」会从「能测」退化成 bad-request）。
         //
         // 目录也读不出来时如实报错，**不**猜一个模型名发出去（猜错会得到与账号
         // 无关的 404，把「账号不可用」和「模型名不对」两件事混成一条报错）。
         let modelId = pickTestModel(entry, [], req.modelId)
         if (modelId === '') {
           const catalog = await fullCatalogIds(ctx, modelAdapters, entry.provider)
-          if ('error' in catalog) {
+          modelId = pickTestModel(entry, catalog.ids, req.modelId)
+          // ⚠️ 一个 id 都挑不出来**且远端也读失败**时才报「无法确定」并带上原因；
+          // 远端成功但目录为空 ⇒ 落到下面那句「没有可测试的模型」（两件事不同）。
+          if (modelId === '' && catalog.remoteError !== undefined) {
             return {
               ok: false,
-              error: { code: 'bad-request', message: `无法确定要测试的模型：${catalog.error}` },
+              error: { code: 'bad-request', message: `无法确定要测试的模型：${catalog.remoteError}` },
             }
           }
-          modelId = pickTestModel(entry, catalog.ids, req.modelId)
         }
         if (modelId === '') {
           return {
@@ -3110,6 +3429,18 @@ function registerJetHubEndpoints(
       case 'credits.claimAll': {
         const req = payload as RpcCreditsClaimAllRequest
         const accounts = await pool.listAccounts(req.provider)
+        // ⚠⚠ **领取前也要按需自愈**（issue IKKHL5，与 `credits.balances` 同一层）。
+        //
+        // 用户报障的场景里，「积分行报 HTTP 401」旁边**就挂着「一键领取积分」
+        // 按钮** —— 睡眠/挂起恢复后点它，撞的是**同一个** 401：凭据已过期，
+        // 而领取流程同样只 resolve 凭据后直连上游、全程不续期。
+        // 若只修余额查询，「用户点刷新能看到余额了、点领取却还是 401」，
+        // 症状会变得自相矛盾、更难排查。
+        //
+        // ⚠️ 放在**端点入口**（与余额端点同因）：本 case 下有十几家 provider
+        // 分支，逐分支加必漏。
+        // ⚠️ 顺序执行、失败不上抛，见 `healExpiredAccounts`。
+        await healExpiredAccounts(accounts)
         if (isQoderFamily(req.provider)) {
           const { product } = requireQoderFamily(req.provider)
           // Qoder 的领取流程**自带活动列表查询**（loadCampaigns → 逐个 claim），
@@ -3377,6 +3708,22 @@ function registerJetHubEndpoints(
       case 'credits.balances': {
         const req = payload as RpcCreditsBalancesRequest
         const accounts = await pool.listAccounts(req.provider)
+        // ⚠⚠ **先按需自愈、再查余额**（Gitee issue IKKHL5 建议 C）。
+        //
+        // 缺陷：系统睡眠/挂起数小时后恢复，**宿主进程全程没退出** ⇒
+        // `state.json` 的 `expiresAt`（上次续期时刻 + 令牌寿命）落在过去，
+        // 卡片显示红色「已过期 · 自动续期」，而本端点 resolve 凭据后
+        // **直连上游、全程不续期** ⇒ 积分行报「HTTP 401」。该窗口内没有任何
+        // 手动自救手段（「重测」的 refresh 是刻意 no-op）。
+        //
+        // 为什么要放在**端点入口**而不是每个 provider 分支里：本端点上有
+        // 「特例短路 + 查表分派」两段，在入口加**一处**就覆盖全部，逐分支加必漏
+        //（仓库在 `workbuddy` 上漏过一次：`account.refresh` 端点对它一直报
+        // `Unknown provider`）。
+        //
+        // ⚠️ **顺序执行**且失败不上抛（见该函数）：积分查询是逐账号顺序
+        // 查询（避免并发触发风控），这里保持同一形状。
+        await healExpiredAccounts(accounts)
         if (req.provider === 'codearts') {
           // 余额来自 `statistics/plugin`（与账户类型检测同一个响应），
           // 故用带原因的钩子：非积分账户要显示「Token 计费账户」而不是
@@ -4161,12 +4508,24 @@ function registerJetHubEndpoints(
         }
         if (req.disabled) {
           // 关闭全部：先取全量目录，再一次性写入黑名单。
-          // 目录读取的三条分支（适配器 → llm → 失败即拒绝）与「关闭供应商」
-          // 完全一致，故共用 fullCatalogIds；⚠️ 失败时**不落盘** ——
-          // 否则会写入一个不完整的黑名单，用户看到「关了一半」且无从判断原因。
+          // ⚠️⚠️ **目录不可用 ⇒ 拒绝且不落盘**（既有约定：宁可明确失败，也不要
+          // 静默关一半）。判据是 `catalog.complete`（同时覆盖「远端读失败」与
+          // 「远端读到但为空」）而**不是**「`ids` 是否为空」—— 冷缓存下适配器
+          // 兜底表会让 `ids` 看起来非空，而它只是**子集**，据此写黑名单正是
+          // 本 issue 修的缺陷（用户看到「关闭成功」，而几百个远端模型仍可选）。
           const catalog = await fullCatalogIds(ctx, modelAdapters, req.provider)
-          if ('error' in catalog) {
-            return { ok: false, error: { code: 'bad-request', message: catalog.error } }
+          if (!catalog.complete) {
+            // ⚠️ 文案与 `provider.setEnabled` **逐字同构**（`remoteError` 有值 =
+            // 「**读不到**」（可重试）；无值 = 「**没账号**」（去登录））。
+            return {
+              ok: false,
+              error: {
+                code: 'bad-request',
+                message: catalog.remoteError === undefined
+                  ? '该供应商没有可关闭的模型，未做任何变更'
+                  : `没有可关闭的模型：${catalog.remoteError}`,
+              },
+            }
           }
           await pool.setModelsDisabled(req.provider, catalog.ids)
           ctx.logger.info(`[jet-hub] 关闭 ${req.provider} 的全部 ${catalog.ids.length} 个模型`)
@@ -4211,7 +4570,7 @@ function registerJetHubEndpoints(
           // 无意义的键（前端按 PROVIDERS 取，多出来的键会被忽略，但脏数据不该产生）。
           if (provider.length === 0) continue
           const catalog = modelAdapters?.[provider]?.listAllModels()
-          const total = catalog?.length ?? 0
+          let total = catalog?.length ?? 0
           // ⚠️ `listAllModels()` **不带 disabled 字段**，故必须另取黑名单再按 id 计数。
           const disabledMap = pool.listDisabledModels(provider)
           let disabled = 0
@@ -4219,6 +4578,28 @@ function registerJetHubEndpoints(
             for (const model of catalog) {
               // 与 `disabledModelsFor` 的判定对齐：只有显式 true 才算已关闭。
               if (disabledMap[model.id] === true) disabled++
+            }
+          }
+          // ⚠️⚠️ `closed` 必须只走「安全方向」，故「即将报已关闭」时**核实一次**
+          //（Issue IKJW33 相邻缺陷）：`listAllModels()` 冷缓存返回**兜底表（子集）**，
+          // 而子集可能**误报已关闭**（兜底表 [hy3] + 黑名单 {hy3:true} ⇒ closed:true，
+          // 而远端还有几百个可选）。危险方向**只有 `closed: true` 这一个**：
+          // 报 false 是安全的（用户可点开关、点了会得到明确错误）⇒ 只在子集判据
+          // 说「已关闭」时才用 `fullCatalogIds` 核实；核实不了（远端读失败）⇒
+          // **保守报未关闭**。⚠️ 常见路径零网络：未关闭的供应商不触发核实。
+          // ⚠️ 判「远端读成功」用 `remoteError === undefined` 而**不是** `complete`：
+          // 「全部模型都已关闭」时 `listModels()` 被黑名单过滤成 `[]`，
+          // 恰是本端点要正确回答的状态；若用 `complete`（要求远端非空），
+          // 一关全就永远核实不了、`closed` 恒为 false（上游第一版踩过）。
+          let closed = total > 0 && disabled === total
+          if (closed) {
+            const full = await fullCatalogIds(ctx, modelAdapters, provider)
+            if (full.remoteError === undefined) {
+              total = full.ids.length
+              disabled = full.ids.filter((id) => disabledMap[id] === true).length
+              closed = total > 0 && disabled === total
+            } else {
+              closed = false
             }
           }
           const entries = pool.listAccountsByProvider(provider)
@@ -4230,7 +4611,7 @@ function registerJetHubEndpoints(
               //（老文档可能缺该字段，缺省语义等同启用）。
               enabled: entries.filter((entry) => entry.enabled !== false).length,
             },
-            closed: total > 0 && disabled === total,
+            closed,
           }
         }
         const value: RpcProviderStatusResponse = { statuses }
@@ -4284,15 +4665,24 @@ function registerJetHubEndpoints(
           modelCount = Object.keys(cleared).length
         } else {
           const catalog = await fullCatalogIds(ctx, modelAdapters, req.provider)
-          if ('error' in catalog) {
-            // 目录读不出来 → 整个关闭操作失败，**不落盘、不广播**。
-            return { ok: false, error: { code: 'bad-request', message: catalog.error } }
-          }
-          if (catalog.ids.length === 0) {
-            // 「不关闭模型就不关闭供应商」的落点。
+          if (!catalog.complete) {
+            // 目录不可用 → 整个关闭操作失败，**不落盘、不广播**。
+            // ⚠️ 与 `model.setAllDisabled` 同判据（`complete`）：兜底子集不算
+            // 「完整目录」，据此关闭会让供应商**显示已关闭而模型仍可选**。
+            // ⚠️ 文案按 `remoteError` 分流（读不到=可重试 / 没账号=去登录）；
+            // 不要写 `没有可关闭的模型：${catalog.remoteError}` 一刀切 ——
+            // 「远端读到但为空」时它是 undefined，会向用户打印字面量 undefined。
+            // ⚠️⚠️ **这里不需要单独的「目录为空」分支**：`complete === true`
+            // ⟹ 并集 `ids` 必非空，原先那句 `ids.length === 0` 在数学上不可达
+            // （与空目录分支同义的两套判据，按仓库既有处置删除）。
             return {
               ok: false,
-              error: { code: 'bad-request', message: '该供应商没有可关闭的模型，未做任何变更' },
+              error: {
+                code: 'bad-request',
+                message: catalog.remoteError === undefined
+                  ? '该供应商没有可关闭的模型，未做任何变更'
+                  : `没有可关闭的模型：${catalog.remoteError}`,
+              },
             }
           }
           await pool.setModelsDisabled(req.provider, catalog.ids)

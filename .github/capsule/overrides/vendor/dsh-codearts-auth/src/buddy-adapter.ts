@@ -45,6 +45,13 @@ import {
 } from './llm-register-compat.js'
 import { reportLedgerAccount } from './token-ledger.js'
 import { planSessionTitleThinking } from './session-title.js'
+// ⚠️ 腾讯系内容级风控的指纹改写 —— 与 **OpenAI 网关**共用同一份真相源
+// （`src/openai-gateway/tencent-fingerprint.ts`）。该模块**零 import**，
+// 故从 `src/` 反向引它不构成环。
+// 直连路径**必须**也走它：会话历史里的 `assistant` 正文实测会被拦
+// （400/11128），而「排查这个风控问题的会话」必然会把那句复述进正文 ——
+// 只在网关补 = 换一个入口又被拦。依据见那个文件的头。
+import { rewriteTencentContentFingerprints } from './openai-gateway/tencent-fingerprint.js'
 
 /**
  * CodeBuddy（中国版）的 chat completions 基址。
@@ -276,9 +283,25 @@ function contentToText(content: unknown): string {
 /** 工具结果内嵌图片的载体文本（与官方 deepseek 适配器同名同义）。 */
 const TOOL_RESULT_IMAGE_TEXT = 'Attached image(s) from tool result:'
 
+/**
+ * 「wire 首条不是 system」时补在首位的最小 system 文本。
+ *
+ * 判据本身有**两个**来源（WorkBuddy 网关的 11128 硬要求 + space-bunny 的 11148），
+ * 依据写在 `stream()` 里那段注释。此处只说这条文本自身的两条约束：
+ *
+ * - 刻意取**中性且极短**：它只为满足上游对首条角色的要求，不该影响模型行为；
+ * - **必须不含任何腾讯风控指纹字面量** —— 否则这条兜底自己就会把会话送进 11128，
+ *   与 `openai-gateway/tencent-fingerprint.ts` 那层改写互相抵消。
+ *
+ * ⚠️ 与 `account-probe.ts` 的 `PROBE_SYSTEM` **同值但语义独立**（那里是探测用的
+ * system，这里是首条兜底）。两处各写各的，改一处不要顺手改另一处。
+ */
+const LEADING_SYSTEM_PLACEHOLDER = 'You are a helpful assistant.'
+
 function serializeMessages(
   messages: readonly { role: string; content: unknown }[],
-  imageUrls?: ReadonlyMap<string, string>,
+  imageUrls: ReadonlyMap<string, string> | undefined,
+  provider: string,
 ): Array<Record<string, unknown>> {
   const wire: Array<Record<string, unknown>> = []
 
@@ -339,7 +362,13 @@ function serializeMessages(
           typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'reasoning')
         .map((block) => String(block.text))
         .join('')
-      const text = contentToText(content)
+      // ⚠️ assistant **正文**要过腾讯系风控指纹改写（实测该位置 400/11128，
+      // 依据见 `openai-gateway/tencent-fingerprint.ts` 的表）。这是**存量自愈**：
+      // 坏的那句一旦进了历史就每轮原样重放，整个会话从此报废（换任何腾讯系模型
+      // 都一样）——2026-10-12 用户报 `step-5-preview` / `space-bunny` 同错即此。
+      // 与之相对，`reasoning_content` 与 `tool_calls.arguments` 实测**不拦**，
+      // 故下面两条**刻意不**改写（改了既换不来放行，又破坏回读证据）。
+      const text = rewriteTencentContentFingerprints(contentToText(content), provider)
       // 挂起的工具结果图片必须在 assistant 之前发出（对齐官方适配器）：
       // 否则它们会漂到这条 assistant 之后，与产生它们的工具调用脱节。
       flushToolImages()
@@ -354,7 +383,8 @@ function serializeMessages(
     }
     if (message.role === 'system') {
       flushToolImages()
-      wire.push({ role: 'system', content: contentToText(message.content) })
+      // system 是这条风控的**已知**位置（IKJNA1），与网关路径同一判据、同一份表。
+      wire.push({ role: 'system', content: rewriteTencentContentFingerprints(contentToText(message.content), provider) })
       continue
     }
     // user 角色：工具结果搭载在 harness 用户消息中；展开为独立的 role:'tool' 消息。
@@ -1538,9 +1568,38 @@ export class BuddyAdapter extends LlmAdapter {
         imageUrls.set(id, `data:${image.mediaType};base64,${Buffer.from(image.data).toString('base64')}`)
       }
     }
-    const messages = serializeMessages(options.messages, imageUrls)
+    const messages = serializeMessages(options.messages, imageUrls, this.product.id)
     if (options.system !== undefined && options.system.length > 0) {
-      messages.unshift({ role: 'system', content: options.system })
+      // ⚠️ 这条是 `serializeMessages` 之外的**第四个**产出点：`options.system`
+      // 不经过那个函数，漏掉它等于「走 messages 的会话被救了、走 system 的会话照样被拦」。
+      messages.unshift({
+        role: 'system',
+        content: rewriteTencentContentFingerprints(options.system, this.product.id),
+      })
+    }
+    // ⚠️ wire 的**首条必须是 system**（2026-10-12 补测 + 本仓库既有约束）。
+    //
+    // 两个**独立**来源指向同一条要求，必须同时满足：
+    //
+    // ① WorkBuddy 网关**硬性要求** `messages[0]` 是 system，否则 400 + 11128
+    //    `first message is not system prompt`，且 `displayMsg` 把它伪装成「安全
+    //    策略拦截」（见 `account-probe.ts` 的 `PROBE_SYSTEM` 注释，内含
+    //    2026-09-25 双端点对照实测：WorkBuddy 无 system → 400/11128、有 system
+    //    → 200；CodeBuddy 两种都 200）。
+    // ② space-bunny 的 11148：仅当「首条是**带 tool_calls 的 assistant**」时报
+    //    `tool calls and tool results do not match`（`displayMsg.zh`=「工具记录不
+    //    完整，请新建任务」），step-5-preview 则宽容；把 system 补到前面两个都 200。
+    //
+    // ⚠️ 判据因此是 `!== 'system'`，**不是** `=== 'assistant'` —— 后者漏掉
+    // **user-first / tool-first** 的历史（实测存在：历史被压缩削头；以及 DSH 的
+    // 一次性调用只带 user 而不带 system，见 `GenerateOptions.system` 的注释），
+    // 那些在 WorkBuddy 上仍是同一个 11128。判据依赖「另一个产品碰巧不校验」同样是
+    // 错的 —— 与 `PROBE_SYSTEM` 那段「无条件给所有 provider 都带 system」的取舍一致。
+    //
+    // ⚠️ 补在 `options.system` unshift **之后**：真实 system 优先，只有连它都没有
+    // 时才需要这条兜底 ⇒ 不会重复插入。
+    if (messages.length > 0 && (messages[0] as { role?: unknown }).role !== 'system') {
+      messages.unshift({ role: 'system', content: LEADING_SYSTEM_PLACEHOLDER })
     }
     const tools = options.tools?.map((tool) => ({
       type: 'function' as const,
