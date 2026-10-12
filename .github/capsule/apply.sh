@@ -97,6 +97,13 @@ test -f scripts/ui-baseline-merge.mjs
 # ⚠️ 形态层 JS **刻意不读**该事实（纯视觉交接，与遮罩的行为交接不同）——故只查这两处。
 grep -qE "data-dsh-toggle-mounted" phone-qq/cards-client.js
 grep -qE "html\[data-dsh-toggle-mounted\]" app/src/main/assets/dsh-phone.css
+test -f scripts/ui-native-token-plan.mjs
+# 原生 token 的双态**必须成对**：深色缺同名 token 时，运行期会静默取不到值。
+# （实测 9 个 token 全部浅深不同 —— 正是接入的目的；缺一个就少一处跟随系统深色。）
+for tok in ds_bg ds_surface ds_border ds_text_primary ds_text_secondary ds_accent ds_ok ds_warn ds_danger; do
+  grep -q "name=\"$tok\"" app/src/main/res/values/ds_colors.xml || { echo "::error::浅色缺 token $tok"; exit 1; }
+  grep -q "name=\"$tok\"" app/src/main/res/values-night/ds_colors.xml || { echo "::error::深色缺 token $tok（双态必须成对）"; exit 1; }
+done
 
 # 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
 #    这是「上游升级导致样式/逻辑静默失效」的第一道防线，CI 无引擎树也能跑。
