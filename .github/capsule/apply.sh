@@ -92,6 +92,11 @@ test -f scripts/check-ui-anchors.mjs
 test -f scripts/ui-anchor-scan.mjs
 test -f scripts/ui-slot-inventory.mjs
 test -f scripts/ui-slot-register-audit.mjs
+test -f scripts/ui-baseline-merge.mjs
+# 三期抽屉开关的接管事实：组件发布、CSS 消费，两处缺一即静默失效。
+# ⚠️ 形态层 JS **刻意不读**该事实（纯视觉交接，与遮罩的行为交接不同）——故只查这两处。
+grep -qE "data-dsh-toggle-mounted" phone-qq/cards-client.js
+grep -qE "html\[data-dsh-toggle-mounted\]" app/src/main/assets/dsh-phone.css
 
 # 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
 #    这是「上游升级导致样式/逻辑静默失效」的第一道防线，CI 无引擎树也能跑。
