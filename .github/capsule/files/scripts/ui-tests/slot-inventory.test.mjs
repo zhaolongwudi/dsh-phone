@@ -36,8 +36,21 @@ console.log('recipe 完整性：每个候选都必须带可执行配方')
   check('每个 recipe 有注册代码片段', MIGRATION.every(m => Array.isArray(m.recipe?.code) && m.recipe.code.length > 0))
   check('每个 recipe 有接线点清单', MIGRATION.every(m => Array.isArray(m.recipe?.wiring) && m.recipe.wiring.length > 0))
   check('每个 recipe 有验证方法', MIGRATION.every(m => Array.isArray(m.recipe?.verify) && m.recipe.verify.length > 0))
-  check('风险最高的候选已标注放弃条件（composer-upload）',
-    MIGRATION.find(m => m.id === 'composer-upload')?.recipe.code.some(l => l.includes('放弃迁移')))
+  // 这条原先断言 composer-upload 的代码里含「放弃迁移」字样 —— 那是「配方里写个
+  // 提醒」的形态。2026-10-13 该配方**真的被否决**（实测收益不成立 + 会丢指令入口），
+  // 故断言升级为更本质的东西：**已否决的候选必须写明理由**，且其 recipe 必须
+  // 明确标注「不要照抄」（否则后人照抄会得到坏结果或假红）。
+  {
+    const rejected = MIGRATION.filter(m => typeof m.status === 'string' && /否决|暂不做/.test(m.status))
+    check('已否决的候选都写明了理由', rejected.every(m => Array.isArray(m.rejectReason) && m.rejectReason.length > 0),
+      rejected.filter(m => !Array.isArray(m.rejectReason) || m.rejectReason.length === 0).map(m => m.id).join(', '))
+    const cu = MIGRATION.find(m => m.id === 'composer-upload')
+    check('composer-upload 已标注否决（含理由与「不要照抄」）',
+      typeof cu?.status === 'string' && /否决/.test(cu.status) &&
+      Array.isArray(cu.rejectReason) && cu.rejectReason.length >= 3 &&
+      cu.recipe.code.some(l => l.includes('不要照抄')),
+      'status=' + String(cu?.status) + ' reasons=' + (cu?.rejectReason?.length ?? 0))
+  }
 }
 
 console.log('通道验证度：从实际在跑的 bundle 反推哪些槽被验证过')
