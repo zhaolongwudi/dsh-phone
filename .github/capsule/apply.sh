@@ -58,4 +58,153 @@ grep -q "if (!catalog.complete)" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
 test -f vendor/dsh-codearts-auth/src/active-route.ts
 test -f vendor/dsh-codearts-auth/src/context-window-store.ts
 test -f vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js
+
+# 5) UI 形态标记层接线自检（2026-10-12 新增）
+# ⚠️ 为什么必须盯住：本层发布的 data-dsh-* 事实被 dsh-phone.css 消费。若 JS 里
+#    的发布代码被上游覆盖或被人删掉，CSS 里的 [data-dsh-*] 选择器**不会报错**，
+#    只会静默不命中 —— 表现是「抽屉/设置面板在窄屏下排版错乱」，而构建、
+#    类型检查、单测全绿。这与胶囊既有各条自检防的是同一类形态。
+#
+# ⚠️ 匹配**代码形态**而非裸字符串（2026-10-12 实测踩到）：文件头注释里也列了这
+#    5 个属性名，若只 `grep -q "data-dsh-mobile-form"`，把那几段实现整体删空、
+#    只留注释，自检照样通过 —— 正是「假绿」。故一律锚定真实调用/赋值形态：
+#    syncFlag(document.documentElement, 'data-dsh-…') 与 const X_TAG = 'data-dsh-…'。
+#    ⚠️ 实现改用 syncFlag 而非 toggleAttribute 是为兼容上游极简测试垫片 ——
+#    改实现时必须同步本段，否则自检失配会让构建直接中断（实测踩过）。
+grep -qE "syncFlag\(document\.documentElement, 'data-dsh-mobile-form'" app/src/main/assets/dsh-phone.js
+grep -qE "FRAME_TAG = 'data-dsh-frame'" app/src/main/assets/dsh-phone.js
+grep -qE "SETTINGS_TAG = 'data-dsh-settings-dialog'" app/src/main/assets/dsh-phone.js
+grep -qE "syncFlag\(document\.documentElement, 'data-dsh-modal-open'" app/src/main/assets/dsh-phone.js
+grep -qE "syncFlag\(document\.documentElement, 'data-dsh-settings-open'" app/src/main/assets/dsh-phone.js
+# 抽屉开合状态（三期的共享通道：槽位组件与 dsh-phone.js 都读这一份）
+grep -qE "syncFlag\(document\.documentElement, 'data-dsh-drawer-open'" app/src/main/assets/dsh-phone.js
+# 侧栏实体标签（4 条规则优先用它，抽掉则退回哈希依赖）
+grep -qE "RAIL_TAG = 'data-dsh-rail'" app/src/main/assets/dsh-phone.js
+# 断点必须与 CSS 一致（JS 767 而 CSS 700 会造成 701-767px 区间的半态）
+grep -qE "MOBILE_FORM_MAX_WIDTH = 767" app/src/main/assets/dsh-phone.js
+# CSS 侧必须真的消费标记层（否则标记发布了也没人用，等于白做）
+grep -qF "[data-dsh-frame]" app/src/main/assets/dsh-phone.css
+# 标记识别必须与覆盖层过滤解耦（设置面板若渲染进 [data-shell-overlay]，前者被
+# 连带过滤掉就会静默永不发布 settings-open；实测该形态无任何报错）
+grep -qE "querySelector\('\[data-shortcut-modal=" app/src/main/assets/dsh-phone.js
+test -f app/src/main/assets/ui-anchors.json
+test -f scripts/check-ui-anchors.mjs
+test -f scripts/ui-anchor-scan.mjs
+test -f scripts/ui-slot-inventory.mjs
+test -f scripts/ui-slot-register-audit.mjs
+
+# 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
+#    这是「上游升级导致样式/逻辑静默失效」的第一道防线，CI 无引擎树也能跑。
+#    ⚠️ 两个消费面都要查：只查 CSS 会漏掉仅 JS 使用的锚点（如 .hHd-Xa_toggle
+#    用来展开抽屉、.uV2eYG_add 用来点开上传菜单）——那类失效表现为「少了个功能」
+#    而不报错，因为 querySelector 返回 null 后被 ?. / if(!x) 静默跳过。
+node scripts/check-ui-anchors.mjs
+
+# 6.5) UI 图层健康检查：拦「代码与样式对不上且不报错」的三类腐化 ——
+#      状态类无 CSS 消费（切换是死代码）、死 CSS、未定义变量。
+#      实测这套判据在开发中先后误报过 5+2+3 项（创建标记/外部契约/拼接设置被
+#      当成问题），修正后才只剩真问题；故 test 里对「能检出」与「不误报」双向断言。
+node scripts/ui-layer-audit.mjs
+node scripts/ui-tests/layer-audit.test.mjs
+
+# 6.7) CSS 结构校验：本轮对 dsh-phone.css 做了多轮机械替换，花括号配平不足以
+#      证明结构合法（注释未闭合/声明体混入文字/空选择器都会让浏览器**静默丢弃规则**）。
+node scripts/ui-css-validate.mjs
+node scripts/ui-tests/css-validate.test.mjs
+
+# 6.75) Android 资源校验：本层新增 3 个 res 文件（语义色双态 + 尺寸）。格式不对会让
+#       gradle 资源编译**直接失败**（硬阻断，非静默）。本机无 gradle/java 跑不了
+#       aapt2，故用等价的结构+格式检查提前拦住常见错法。
+node scripts/ui-res-validate.mjs
+node scripts/ui-tests/res-validate.test.mjs
+
+# 6.85) WebView 兼容下限：本项目 compat.js 在运行时补 Chrome 97–119 的新 API，说明
+#       目标内核可能相当老。本层若引入更老的越界特性，设备上会静默失效或抛错。
+node scripts/ui-compat-floor.mjs
+node scripts/ui-tests/compat-floor.test.mjs
+
+# 6.8) 上游语义锚点清单（**信息性，不阻断**）：找出本层仍在裸用 hash、但上游同元素
+#      发布了稳定语义属性的位置（如 [data-rightbar-col] ↔ .pI_x6G_rightbarCol）。
+#      替换是渐进的，故本步恒 exit 0，只打印候选项供维护者继续降低脆弱面。
+DSH_TREE="${DSH_TREE:-/data/user/0/com.dshphone/files/tree}"
+if [ -d "$DSH_TREE/node_modules/@deepseek-ai" ]; then
+  node scripts/ui-semantic-anchors.mjs --tree "$DSH_TREE" || true
+else
+  echo "跳过语义锚点清单（本环境无引擎树）"
+fi
+
+# 7) 槽位契约校验（方案 B 三期的前置）：三期的迁移目标是「把硬塞 DOM 的控件
+#    改注册到上游槽位」。槽位名写错或上游删槽时，注册代码**不报错**——slots.inject
+#    永远等服务、控件静默不出现（本项目实测：settings.dev.item 在 0.2.1-alpha.1
+#    已不存在，而参考项目恰是按它写的）。故把这份契约钉在构建期。
+node scripts/ui-slot-inventory.mjs --check
+
+# 8) 槽位注册审计：dsh-phone-qq 与 dsh-peer 由同一份 client-source.js 产出，天然
+#    同 id。只要两者都进 profile bundles，keyed 槽就「先到者赢、后者静默消失」
+#    （用户只看到面板没了，无任何报错）。本步在「真实冲突」出现时构建失败；
+#    「潜在冲突」（生成关系 / 未装包）只登记不阻断。
+node scripts/ui-slot-register-audit.mjs
+
+# 9) 槽位注册**运行时**验证：静态审计只能发现「表里的冲突」，发现不了
+#    「bundle 根本跑不起来」（factory 抛错 / 漏声明 inject / register 形态不符上游
+#    契约）。本步按壳侧真实装载协议（window.__ModuleLoader__.load）执行产物并断言
+#    注册行为——这正是三期迁移时最需要的那层保险。
+#    注：被审产物属上游文件，胶囊工作区不含；无输入时该测试自行跳过（不算失败）。
+node scripts/ui-tests/slot-register-runtime.test.mjs
+
+# 9.5) 三期配方的**可执行性**：把 MIGRATION[].recipe.code 当源码真正跑一遍。配方若
+#       引用了未定义的组件或错误的 ctx API，设备上才发现就太晚了（那时已改完一堆
+#       文件）。本步实测已抓出 2 条配方缺组件定义（照抄即 ReferenceError）。
+node scripts/ui-tests/recipe-executable.test.mjs
+
+# 9.7) 真实 SlotCore 契约：用上游实现验证「注册到未声明的槽会怎样」。实测：
+#       未声明 → 直接 throw「slot "X" is not declared」；同 id 二次注册 → 也 throw。
+#       ⇒ 「host 未声明该槽」是硬失败（先前据注释推断为「只是到达顺序」是错的）。
+#       无引擎树时本步自行跳过（不假装通过）。
+node scripts/ui-tests/slot-core-contract.test.mjs
+
+# 9.8) 端到端链路（**三期最大未知的确证**）：真实 renderer + 真实 SlotCore + 真 React，
+#       串起「加载 renderer → 建槽 → 注册 → 查出 → 渲染」完整链路。此前各层只能分别
+#       证明局部，这是唯一把三者串起来的验证。无引擎树时自行跳过。
+node scripts/ui-tests/slot-chain-e2e.test.mjs
+
+# 10) 客户端模块表契约：三期槽位组件能否用 react hooks / ctx.slots，完全由壳侧
+#     静态模块表（seed）决定——表里没有就解析失败，且失败形态是「组件静默不渲染」
+#     而非报错。故把这张表钉住：上游移除条目时构建期报红。
+#     注：表在前端产物里（dist/assets），胶囊工作区无引擎树时本步自行跳过。
+if [ -d node_modules/@deepseek-ai/dsh-web-frontend/dist/assets ] ||
+   [ -n "${DSH_TREE:-}" ]; then
+  node scripts/ui-module-seed.mjs --tree "${DSH_TREE:-/data/data/com.dshphone/files/tree}"
+else
+  echo "跳过模块表契约校验（本环境无引擎树产物）"
+fi
+
+# 11) CI 兼容性：本层多数检查依赖「引擎树」（本地有、CI 没有）。本步在缺引擎树的
+#     前提下逐个跑关键脚本，确保它们「跳过而非崩」—— 否则 CI 会红得像代码坏了。
+#     实测踩过：ui-slot-register-audit 早期找不到上游文件时 exit=2，而 CI 恰好没有；
+#     slot-inventory 的占用断言在 DSH_TREE 指向不存在路径时假红。
+node scripts/ui-tests/ci-compat.test.mjs
+
+# 12) 上游垫片兼容性：本层产物会被 build-assets.py 复制成 phone-qq/presentation.js，
+#     而上游自带的 presentation.test.js 会用**极简 document 垫片**执行它。
+#     本层若依赖垫片缺失的 DOM 方法（实测踩过 toggleAttribute），上游测试会直接抛错 ——
+#     这是「本层把上游测试打红」的跨包回归，不在本层测试视野里。
+node scripts/ui-tests/host-test-compat.test.mjs
+
+# 13) 三期迁移自检：抽屉遮罩已迁到 shell.overlay 座位，采用「挂载即接管 + 失败降级」。
+#     本步核查三件事：
+#       · 接管机制完整（JS 读事实让位、CSS 能压过原显示规则 —— 否则两遮罩重叠）
+#       · 降级路径保留（组件未渲染时本地实现照常工作，不会「遮罩彻底消失」）
+#       · 产物已重新生成（源改了而产物没同步 ⇒ 设备上跑的还是旧代码）
+#     另核查 inject 前置条件：shell.overlay 由 dsh-client-ui-layout 声明，上游所有
+#     同槽注册者都声明了它；未声明则无法保证 layout 先到达 —— 而注册未声明的槽会 throw。
+node scripts/ui-tests/mask-takeover.test.mjs
+grep -q '"@deepseek-ai/dsh-client-ui-layout"' phone-qq/package.json
+# 14) 产物装载：按真实 __ModuleLoader__ 协议装载本层**生成的** bundle，
+#     调用它的 factory 与 apply，并用**上游真实 SlotCore** 校验每条注册被接受。
+#     静态断言保证「该有什么」，本步保证「真的能被装载并被 host 接受」。
+node scripts/ui-tests/plugin-bundle-load.test.mjs
+# 行为复核（不只看代码形态）：真的执行 dsh-phone.js，检查「接管事实在场时
+# 本地遮罩是否让位」。静态断言只看得到代码里写了什么。
+node scripts/ui-tests/mask-takeover-behavior.test.mjs
 echo "胶囊外挂应用完成"
