@@ -49,8 +49,23 @@ export function makeReactStub() {
 }
 
 console.log('配方可执行性：逐条把 recipe.code 当源码跑')
-const executable = MIGRATION.filter(m => Array.isArray(m.recipe?.code) && m.recipe.code.length > 0)
+// ⚠️ 只跑**仍在推进中**的配方（有可执行代码的）。
+//    已否决 / 暂不做的配方，其 recipe.code 是「不要照抄」的注释与替代通道说明
+//    （见 ui-slot-inventory.mjs 各条的 rejectReason 字段）——把它们当源码执行
+//    必然是「注册不到目标槽」，那是**语义变化**而非缺陷。
+//    故按 status 字段显式排除，并把排除结果打印出来（避免静默不跑）。
+const REJECTED = MIGRATION.filter(m => typeof m.status === 'string' && /否决|暂不做/.test(m.status))
+const executable = MIGRATION
+  .filter(m => !REJECTED.includes(m))
+  .filter(m => Array.isArray(m.recipe?.code) && m.recipe.code.length > 0)
 check('存在带代码的配方', executable.length > 0, String(executable.length))
+if (REJECTED.length) {
+  console.log('  ⊘ 跳过已否决/暂不做的配方（' + REJECTED.length + ' 条）：' + REJECTED.map(m => m.id).join(', '))
+  // 这些配方的价值转为「决策留档」：必须写明否决理由，否则将来会被重新误做。
+  check('已否决的配方都写明了理由',
+    REJECTED.every(m => Array.isArray(m.rejectReason) && m.rejectReason.length > 0),
+    REJECTED.filter(m => !Array.isArray(m.rejectReason) || m.rejectReason.length === 0).map(m => m.id).join(', '))
+}
 
 for (const m of executable) {
   console.log(`\n  [${m.id}] → ${m.target}`)
