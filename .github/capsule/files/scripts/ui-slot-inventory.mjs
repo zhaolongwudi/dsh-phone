@@ -142,25 +142,47 @@ export function scanSlotKinds(root) {
 export const MIGRATION = [
   {
     id: 'drawer-toggle',
+    // ✅ 2026-10-13 已落地（设备端验收 17/17）。真实代码在
+    //    overrides/peer/agent-cards/client-source.js 的 DrawerToggle，
+    //    配套 CSS 见 overrides/app/src/main/assets/dsh-phone.css 的
+    //    html[data-dsh-toggle-mounted] 一组规则。
+    status: '已落地（设备验收 17/17）',
     current: 'JS 创建 <button class="dsh-phone-menu"> + CSS position:fixed',
     target: 'conversation.header.leading',
-    why: '上游 header 自带 leading 座位（本项目 CSS 目前把它 display:none 让位给自绘按钮）；迁入后可去掉 .wSkVaW_headerLeading 的 display:none 与 .dsh-phone-menu 的 fixed 定位，是**真正能减少哈希依赖**的一项（另见 mask 项对收益类型的说明）',
-    risk: '中高：既改布局上下文，目标槽 conversation.header.leading 在本项目也无先例。',
+    why: '上游 header 自带 leading 座位（本项目 CSS 原把它 display:none 让位给自绘按钮）；迁入后布局由 grid 承担，去掉 fixed 定位与 titleRow 那个「给按钮手工留 70px」的魔法数字。**这是四条里唯一真正减少脆弱面的**。',
+    risk: '中高：既改布局上下文，目标槽 conversation.header.leading 在本项目也无先例。已用**接管式**落地消化该风险：组件没渲染则事实缺失，旧的固定按钮 + 让位规则照常工作。',
+    // 实测订正（原配方与实测不符，照抄会写出跑不通的代码）：
+    //   · 原配方写 `function DrawerToggle({ toggleSidebar })` 并 onClick: toggleSidebar
+    //     —— 实测 conversation.header.leading 是 **single / root scope**，只给 root 级
+    //     props（useResource/useSessions/… ），**没有 toggleSidebar，也没有 sessionId**。
+    //   · 实测 `ctx.layout.toggleSidebar()` 存在但驱动的是**上游折叠态**
+    //     （data-sidebar-collapsed），与形态层的抽屉事实（data-dsh-drawer-open）
+    //     不是同一个状态；直接用它不会开抽屉。
+    //   ⇒ 正确做法：只翻转 html[data-dsh-drawer-open]（与遮罩同一条通道）。
     recipe: {
+          "prerequisite": "已实测（真实引擎，非推断）：该槽可渲染；组件拿到的 props 仅 root 级，无 toggleSidebar/sessionId。故开合必须走 html[data-dsh-drawer-open]。",
           "file": "peer/agent-cards/client-source.js",
           "code": [
-                "// 抽屉开关：迁入上游 header 的 leading 座位（本项目 CSS 目前把它 display:none 让位）",
-                "function DrawerToggle({ toggleSidebar }) {",
-                "  return h('button', { type: 'button', className: 'dsh-phone-menu',",
-                "    'aria-label': '展开菜单', onClick: toggleSidebar }, '☰')",
+                "// 抽屉开关：迁入上游 header 的 leading 座位。",
+                "// ⚠️ 该槽是 single/root scope，实测**不提供** toggleSidebar/sessionId，",
+                "//    故只翻转共享事实（与 DrawerMask 同一条通道）。",
+                "function DrawerToggle() {",
+                "  return { $$typeof: Symbol.for('react.element'), type: 'button', key: null,",
+                "    ref: publishToggleMounted,   // 挂载即发布 data-dsh-toggle-mounted",
+                "    _owner: null,",
+                "    props: { type: 'button', className: 'dsh-phone-menu-slot',",
+                "      'aria-label': '展开菜单', 'aria-expanded': 'false',",
+                "      onClick: () => { const el = document.documentElement;",
+                "        if (el.hasAttribute('data-dsh-drawer-open')) el.removeAttribute('data-dsh-drawer-open');",
+                "        else el.setAttribute('data-dsh-drawer-open', ''); } } };",
                 "}",
                 "ctx.slots.inject('conversation.header.leading', () => ctx.slots.register(",
                 "  { name: 'conversation.header.leading', id: 'dsh-drawer-toggle', order: 10 }, DrawerToggle))"
           ],
           "wiring": [
-                "删除 dsh-phone.css 里 .wSkVaW_headerLeading{display:none!important}（腾位给真开关）",
-                "删除 .dsh-phone-menu 的 position:fixed 定位（改由 header 流式布局承载）",
-                "dsh-phone.js 不再自建按钮，只保留开合状态与 Escape 收起"
+                "保留 [data-conversation-header-leading]{display:none!important} 作为**降级路径**（接管失败的默认）",
+                "新增 html[data-dsh-toggle-mounted] 一组规则：header 改两列、leading 显示、隐藏旧按钮、titleRow 左内边距收回 4px",
+                "dsh-phone.js 在 adapt() 里同步槽位开关的 aria-expanded（状态唯一写入者仍是形态层）"
           ],
           "verify": [
                 "代码层：--check + 判别力测试",
@@ -218,32 +240,31 @@ export const MIGRATION = [
   },
   {
     id: 'composer-upload',
+    // ❌ 2026-10-13 否决（用户确认）。原判「高风险」方向对，但真因与配方写的不一样：
+    //    实测发现**收益根本不成立**，且迁移会丢功能。
+    status: '已否决（实测收益不成立 + 会丢指令入口）',
     current: 'JS 注入 <button class="dsh-phone-upload"> 到 .uV2eYG_tools（依赖哈希）',
     target: 'conversation.input.left',
-    why: '输入区左侧座位，语义相符；摆脱 .uV2eYG_tools 哈希',
-    risk: '高：上传链路与 DOM 位置强耦合（可能断链），且 conversation.input.left 无通道先例。双重不确定，建议最后做。',
+    why: '（原写）输入区左侧座位，语义相符；摆脱 .uV2eYG_tools 哈希。',
+    rejectReason: [
+      '① 收益不成立：实测 [data-slot="conversation.input.left"] 的父元素就是 uV2eYG_tools（leftParent 实测 = "uV2eYG_tools"）—— 槽位组件与旧按钮同处一个容器，迁过去并不消除该哈希依赖。',
+      '② 会丢功能：旧「上传」按钮的实现是 card.querySelector(".uV2eYG_add")?.click()（见 dsh-phone.js:247），即打开上游「添加文件或调用指令」菜单（实测该菜单含 添加文件 / goal / plan / feedback / compact）。配方给的 pickFiles 是直接开文件框、不经过该菜单 ⇒ 照抄会让这些指令入口在手机端消失。',
+      '③ 通道本身是通的（已实测）：ctx.conversation.input.canPickFiles(sessionId)=true；pickFiles() 确实触发了隐藏 file input 的 click；组件 props 自带的 inputActions 8 个方法（setDraft/insertText/captureInsertion/…）均真实生效。故否决理由不是「做不到」，而是「做了更差」。',
+    ],
+    risk: '（已否决，保留供将来参考）',
     recipe: {
           "file": "peer/agent-cards/client-source.js",
           "code": [
-                "// ⚠️ 高风险：上传链路（隐藏 input / DataTransfer / 草稿注入）与 DOM 位置强耦合。",
-                "// 迁移前必须先确认：槽位组件内能否拿到 composer 的 input 引用与 draft 写入面。",
-                "// 若拿不到，本项应放弃迁移（保留现有 .uV2eYG_tools 注入 + 锚点门禁兜底）。",
-                "const React = require('react')",
-                "function UploadButton() {",
-                "  // 上传的真身仍是隐藏 input + DataTransfer 注入草稿；本组件只提供入口。",
-                "  // ⚠️ 草稿写入面需经上游 composer 的公开通道获取 —— 这是本候选的前置阻塞，",
-                "  //    未解决前不应合并本组件（否则按钮点了无效，比不改更糟）。",
-                "  const pick = () => {",
-                "    const el = document.querySelector('.dsh-phone-upload-picker')",
-                "    if (el) el.click()",
-                "  }",
-                "  return React.createElement('button', { type: 'button', className: 'dsh-phone-upload', onClick: pick }, '上传')",
-                "}",
-                "ctx.slots.inject('conversation.input.left', () => ctx.slots.register(",
-                "  { name: 'conversation.input.left', id: 'dsh-upload', order: 20 }, UploadButton))"
+                "// ❌ 本配方不要照抄（2026-10-13 实测否决，理由见该项 rejectReason）。",
+                "// 若将来确要迁（例如上游把 add 菜单拆掉），正确通道是：",
+                "//   const hub = ctx.get('conversation').input   // 需在 inject 里声明 'conversation'",
+                "//   hub.canPickFiles(sessionId)  // 能否选文件（含 locked/busy 判定）",
+                "//   hub.pickFiles(sessionId)     // 打开系统文件框",
+                "// 以及组件 props 自带的 inputActions（实测 8 个方法全部真实生效）：",
+                "//   setDraft / insertText / captureInsertion / addAttachments / pruneAttachments / …"
           ],
           "wiring": [
-                "input 引用获取方式需重做（现依赖 card.querySelector(\"textarea,[role=textbox]\")）",
+                "（否决）若迁移，必须同时保留 .uV2eYG_add 菜单入口，否则 goal/plan/feedback/compact 无入口",
                 "DataTransfer 粘贴路径不受位置影响，可保留"
           ],
           "verify": [
@@ -253,16 +274,34 @@ export const MIGRATION = [
   },
   {
     id: 'model-picker-notice',
+    // ❌ 2026-10-13 否决（用户确认）。原「换座位」结论本身对（input.plan 是死代码），
+    //    但**新座位的成立前提不成立**：拿不到「当前是否用会员模型」这个事实。
+    status: '已否决（新座位的前提事实拿不到）',
     current: 'JS 注入 <small class="dsh-phone-chatgpt-plan"> 到 [data-composer-card]',
     target: 'conversation.input.left',
-    why: '**换座位**：原目标 conversation.input.plan 是 single 槽且被核心包 dsh-client-ui-plan 以 priority 0 独占 —— 实测 single 槽只渲染 priority 最低者，挂 1 上去永不显示。故改挂可共存的 list 槽 input.left。',
-    risk: '中：input.left 是 list 槽（可与上游并存，无占位冲突），但同样无通道先例，需设备确认渲染时机与 composer 重挂行为。',
+    why: '（原写）换座位：原目标 conversation.input.plan 是 single 槽且被核心包 dsh-client-ui-plan 以 priority 0 独占 —— 实测 single 槽只渲染 priority 最低者，挂 1 上去永不显示。故改挂可共存的 list 槽 input.left。',
+    rejectReason: [
+      '① 原 why 的结论仍然成立（input.plan 是死代码，这一点实测无误）。',
+      '② 但迁到 input.left 需要「当前模型是否来自 ChatGPT 会员」这一事实，而实测**拿不到**：组件 props 有 useProjection，但 useProjection("modelSelection") 在**模型已选中**的情况下仍返回 { next: null, lastUsed: null }（同一时刻 DOM 的 ._7KE1Ra_trigger title 是 "DeepSeek V4.1 Flash · …"，证明页面确实知道模型）。',
+      '③ 该事实的上游 schema 是有的（dsh-api-remotes 的 zod 里 modelSelection.lastUsed/next 含 provider+model 字段），但当前会话的 projection 面没有填充它。',
+      '④ 唯一现成可读的来源是本层自己的 provider 表（dsh-codearts-auth 的 PROVIDERS 含 { id: "chatgpt-plan", label: "ChatGPT 会员" }），但它没有暴露到前端可读面；自己接一条数据通路的成本远超本项收益。',
+      '⇒ 结论：现有实现（读 ._7KE1Ra_trigger 的 title）虽然锚了哈希，但**能工作**；换成拿不到事实的新座位会更糟。故保留现状，并把该哈希纳入锚点门禁（已有）。',
+    ],
+    risk: '（已否决，保留供将来参考）',
     recipe: {
           "file": "peer/agent-cards/client-source.js",
           "code": [
-                "// 计划提示：挂在 conversation.input.left（list 槽）。",
-                "// ⚠️ 不用 conversation.input.plan：那是 single 槽且被核心包以 priority 0 独占，",
-                "//    实测只渲染 priority 最低者 ⇒ 挂上去永不显示（详见本项 why 字段）。",
+                "// ❌ 本配方不要照抄（2026-10-13 实测否决，理由见该项 rejectReason）。",
+                "// 若要重启本项，先解决「会员事实」的可读来源，二选一：",
+                "//   ① 让上游把 modelSelection projection 填充起来（改 vendor，代价高）",
+                "//   ② 让 dsh-codearts-auth 把当前 provider id 发布成 DOM 事实",
+                "//      （与一期 data-dsh-* 同构，例如 html[data-dsh-plan-provider=\"chatgpt-plan\"]）",
+                "// 有了事实之后，组件侧只需：",
+                "//   const onPlan = document.documentElement.getAttribute('data-dsh-plan-provider') === 'chatgpt-plan'",
+                "//   return onPlan ? h('small', { className: 'dsh-phone-chatgpt-plan' }, '…') : null"
+          ],
+          "wiring": [
+                "（否决）原实现读 ._7KE1Ra_trigger 的 title（含「· ChatGPT 会员」）——保留现状，该哈希已在 ui-anchors.json 登记并受门禁保护",
                 "const React = require('react')",
                 "function PlanNotice() {",
                 "  // ⚠️ 显示条件原来读 ._7KE1Ra_trigger 的 title（含「· ChatGPT 会员」）—— 那是",
@@ -290,10 +329,18 @@ export const MIGRATION = [
   },
   {
     id: 'settings-dev-section',
+    // ⏸ 2026-10-13 暂不做（用户确认）。通道没问题，缺的是**被嵌入的页面本身**。
+    status: '暂不做（缺被嵌入的页面，且超出 UI 移植范围）',
     current: '（参考项目用 settings.dev.item；本引擎无此槽）',
     target: 'settings.section',
-    why: '本项目已有 6 个 settings.section 注册且实测生效，沿用同一座位即可',
-    risk: '低（唯一真正低的一项）：settings.section 是本项目唯一验证过的槽（6 处注册在跑），通道风险为零，只剩组件本身。',
+    why: '（原写）本项目已有 6 个 settings.section 注册且实测生效，沿用同一座位即可',
+    risk: '低（通道风险为零）：settings.section 是本项目唯一验证过的槽。',
+    rejectReason: [
+      '① 槽位通道没有问题：settings.section 是本项目唯一充分验证的槽（现有 8 处注册在跑，plugin-bundle-load 测试也用真实 SlotCore 验过）。',
+      '② 缺的是被嵌入的页面：配方里的 src: "/dev-options" 是示例路由，仓库中不存在该页面（实测：引擎树与 capsule 里都搜不到 /dev-options 的提供者；而既有 8 个入口对应的 /agent-cards、/phone-tools 等都各有服务端路由）。照抄会得到一个点开即 404 的分区。',
+      '③ 建一个真实的开发者选项页面需要同时写服务端路由 + 页面 + 权限面，属新功能开发，超出「壳 UI 移植」的目标范围。',
+      '④ order 占用已查清（供将来要做时参考）：上游 5 个（open-document 0 / models 10 / plugins 15 / agent-presets 20 / account 无），本层 8 个（appearance 20 / agent-persona-cards 25 / memory-isolation 26 / chat-history 27 / workflow-hub 40 / hermes-remote 42 / mcp-manager 43 / phone-cloud-tools 43 / plugin-center 44）⇒ order 20 已被上游与本层同时占用，新入口应取 30-39 或 46+。',
+    ],
     recipe: {
           "file": "peer/agent-cards/client-source.js",
           "code": [
