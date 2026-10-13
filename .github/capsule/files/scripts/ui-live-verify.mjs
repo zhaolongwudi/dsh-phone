@@ -50,7 +50,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import net from 'node:net'
 import crypto from 'node:crypto'
-import { resolveAssets } from './ui-tests/paths.mjs'
+import { dirname, join } from 'node:path'
+import { resolveAssets, resolvePhoneJs, resolvePlugin } from './ui-tests/paths.mjs'
 
 const NUL = String.fromCharCode(0)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -398,6 +399,79 @@ if (args.includes('--realapp')) {
     console.log('   注：设备 CSS 无 `min-width:44px` ⇒ 跑的是**修复前**的包（修复需重装 APK）')
   }
 
+  // ── `--preview`：把**即将发布**的产物投到真实引擎上预演（而非验设备自带的）──
+  //   用途：设备落后于产物时（如刚修完还没重装），回答「新包能不能过」。
+  //   与默认 `--realapp` 的区别必须说清：
+  //     · 默认      ：验**设备实际装载**的那份（权威，但受设备版本限制）
+  //     · --preview ：验**将要发布**的那份（预演，**不证明设备已装**）
+  //   两者互补，且共用同一套判据（故结果可直接对比）。
+  const PREVIEW = args.includes('--preview')
+  if (PREVIEW) {
+    const a = resolveAssets()
+    const cssText = readFileSync(a.css, 'utf8')
+    let jsText = readFileSync(resolvePhoneJs(), 'utf8')
+    const bundleText = readFileSync(resolvePlugin('qqBundle'), 'utf8')
+    // 剥掉形态层守卫（改由文档创建期接管标志位，避免与设备原生脚本并存互改状态）
+    const guardRe = /^\s*if \(window\.__dshPhonePresentation\) return;\s*\n\s*window\.__dshPhonePresentation = true;\s*\n/m
+    if (!guardRe.test(jsText)) { console.log('  ✗ 形态层未找到守卫行，无法安全剥离'); s.close(); process.exit(2) }
+    jsText = jsText.replace(guardRe, '')
+    console.log('\nⓅ 预演模式：投入**即将发布**的产物 ' + JSON.stringify({ css: cssText.length, js: jsText.length, bundle: bundleText.length }))
+    // 让设备原生脚本短路
+    await s.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `Object.defineProperty(window, '__dshPhonePresentation', { configurable: true, get() { return true }, set() {} })`,
+    })
+    await s.send('Page.reload', { ignoreCache: true })
+    await sleep(4000)
+    // 无损替换 combo 中的 dsh-phone-qq 段
+    const combo = await s.evalJs(`
+      const url = performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('dsh-phone-qq') && n.includes('plugins/'))
+      if (!url) return { error: 'no combo' }
+      const r = await fetch(url, { cache: 'no-store' })
+      return { body: await r.text() }
+    `)
+    if (!combo.value?.body) { console.log('  ✗ 取 combo 失败：' + JSON.stringify(combo.value)); s.close(); process.exit(2) }
+    const cbText = combo.value.body
+    const segs = [...cbText.matchAll(/window\.__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/g)].map(m => ({ id: m[1], at: m.index }))
+    const qi = segs.findIndex(x => x.id === 'dsh-phone-qq')
+    if (qi < 0) { console.log('  ✗ combo 内无 dsh-phone-qq'); s.close(); process.exit(2) }
+    const s0 = segs[qi].at, s1 = qi + 1 < segs.length ? segs[qi + 1].at : cbText.length
+    const patched = cbText.slice(0, s0) + bundleText + '\n' + cbText.slice(s1)
+    console.log(`     combo ${cbText.length}B → ${patched.length}B（${segs.length} 模块，无损替换第 ${qi} 段）`)
+    await s.send('Fetch.enable', { patterns: [{ urlPattern: '*plugins/*', requestStage: 'Request' }] })
+    s.on('Fetch.requestPaused', async p => {
+      if (/dsh-phone-qq/.test(p.request.url) && /plugins\//.test(p.request.url)) {
+        try {
+          await s.send('Fetch.fulfillRequest', { requestId: p.requestId, responseCode: 200,
+            responseHeaders: [{ name: 'content-type', value: 'application/javascript; charset=utf-8' }, { name: 'cache-control', value: 'no-store' }],
+            body: Buffer.from(patched, 'utf8').toString('base64') })
+          return
+        } catch { /* 落到 continue */ }
+      }
+      try { await s.send('Fetch.continueRequest', { requestId: p.requestId }) } catch { /* 已失联 */ }
+    })
+    await s.send('Page.reload', { ignoreCache: true })
+    await sleep(7000)
+    // 注入形态层产物（等价于装新 APK）
+    // compat.js 是**上游文件**（本层未覆盖它），故 capsule 工作区里通常没有。
+    // 它是「WebView 兼容垫片」，设备上已由 APK assets 注入且**与本层无关** ——
+    // 故缺失时跳过注入即可（不注入不会影响本层判据；强行要求会误报环境问题）。
+    const compatPath = join(dirname(a.css), 'dsh-phone.compat.js')
+    const compatSrc = existsSync(compatPath) ? readFileSync(compatPath, 'utf8') : ''
+    if (!compatSrc) console.log('     注：capsule 内无 dsh-phone.compat.js（上游文件），跳过其注入')
+    const injRes = await s.evalJs(`
+      document.querySelectorAll('.dsh-phone-menu,.dsh-phone-sidebar-mask').forEach(e => e.remove())
+      document.documentElement.removeAttribute('data-dsh-drawer-open')
+      let st = document.getElementById('dsh-phone-presentation')
+      if (!st) { st = document.createElement('style'); st.id = 'dsh-phone-presentation'; document.head.appendChild(st) }
+      st.textContent = ${JSON.stringify(cssText)}
+      try { ${compatSrc} } catch (e) { return { compatErr: String(e && e.message || e) } }
+      try { ${jsText}; return { ok: true } } catch (e) { return { ok: false, err: String(e && e.message || e) } }
+    `)
+    console.log('     形态层注入：' + JSON.stringify(injRes.value ?? injRes.error))
+    await sleep(900)
+    await s.send('Fetch.disable')
+  }
+
   const pre = (await s.evalJs(SNAP)).value
   console.log('\n① 仿真前（设备当前视口）：' + JSON.stringify({ vp: pre.viewport, bp: pre.breakpoints, facts: pre.facts, menu: pre.menu, slotToggle: pre.slotToggle }, null, 1))
   if (!pre.slotToggle.mountedFact && !pre.facts.maskMounted) {
@@ -575,12 +649,16 @@ if (args.includes('--realapp')) {
     }
   }
 
-  console.log('\n═══ 真实 App 验收（窄屏仿真，可逆' + (USE_TOUCH ? '；交互=真实触摸事件' : '') + '）═══')
+  console.log('\n═══ ' + (PREVIEW ? '发布前预演' : '真实 App 验收') + '（窄屏仿真，可逆' + (USE_TOUCH ? '；交互=真实触摸事件' : '') + '）═══')
   let pass = 0
   for (const [n, ok] of checks) { console.log('  ' + (ok ? '✓' : '✗') + ' ' + n); if (ok) pass++ }
   console.log(`\n通过 ${pass}/${checks.length}`)
   if (outPath) writeFileSync(outPath, JSON.stringify({ mode: 'realapp', pre, narrow, opened, closed, restored, checks }, null, 2))
-  console.log('\n注：本步只改渲染视口（可逆），未改代码/资源 —— 验的是设备实际装载的那份。')
+  // 提示语必须区分两种模式 —— 否则预演结果会被误读成「设备已通过」。
+  console.log(PREVIEW
+    ? '\n注：**预演模式** —— 验的是「即将发布」的产物（已投入运行中的引擎），' +
+      '\n    **不证明设备已装**。设备是否已装请跑 ui-verify-installed.mjs 判定。'
+    : '\n注：本步只改渲染视口（可逆），未改代码/资源 —— 验的是设备实际装载的那份。')
   s.close()
   process.exit(pass === checks.length ? 0 : 1)
 }
