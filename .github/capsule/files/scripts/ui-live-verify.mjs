@@ -381,7 +381,7 @@ if (args.includes('--realapp')) {
   // 关过渡（无焦点面里动画帧不推进，会读到过渡中间态 —— 此坑此前踩过）
   await s.evalJs(`
     const st = document.createElement('style'); st.id = 'probe-notrans'
-    st.textContent = '[data-dsh-rail],.pI_x6G_sidebarCol{transition:none!important}'
+    st.textContent = '[data-dsh-rail],.pI_x6G_sidebarCol,.dsh-phone-mask,.dsh-phone-sidebar-mask{transition:none!important}'
     document.head.appendChild(st); return 1
   `)
   await s.send('Emulation.setDeviceMetricsOverride', { width, height: 655, deviceScaleFactor: 1, mobile: true, screenWidth: width, screenHeight: 655 })
@@ -390,21 +390,63 @@ if (args.includes('--realapp')) {
   const overlapFn = (a, b) => a && b && !(a[0]+a[2] <= b[0] || b[0]+b[2] <= a[0] || a[1]+a[3] <= b[1] || b[1]+b[3] <= a[1])
   console.log(`\n② 仿真窄屏（width=${width}）：` + JSON.stringify({ vp: narrow.viewport, bp: narrow.breakpoints, facts: narrow.facts, slotToggle: narrow.slotToggle, overlap: overlapFn(narrow.slotToggle.box, narrow.slotToggle.titleRowBox), rail: narrow.rail }, null, 1))
 
+  // ── 交互方式：`--touch` 用**真实触摸事件**，否则用合成 click ─────────────
+  //   `.click()` 只派发最后一步 click，绕过 touchstart→touchend 事件链，
+  //   因此**测不出**遮挡、可点区过小、pointer-events:none、touchstart 被吞。
+  //   `Input.dispatchTouchEvent` 从浏览器输入层注入，走完整链 —— 这是不启用
+  //   无障碍/adb 时最接近真机的验证（详见下方「触控层」说明）。
+  const USE_TOUCH = args.includes('--touch')
+  /** 在元素中心做一次真实触摸（按下 60ms 后抬起）。 */
+  const touchTap = async (cx, cy) => {
+    const pt = [{ x: Math.round(cx), y: Math.round(cy), radiusX: 6, radiusY: 6, force: 1 }]
+    await s.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pt })
+    await sleep(60)
+    await s.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  }
+
+  let touchDiag = null
+  if (USE_TOUCH) {
+    // 遮挡检查：开关中心点上，最顶层元素是否就是开关自己。
+    // 这是 `.click()` 永远测不到的一类真实缺陷（视觉可见但点不到）。
+    touchDiag = (await s.evalJs(`
+      const slot = document.querySelector('.dsh-phone-menu-slot')
+      if (!slot) return null
+      const b = slot.getBoundingClientRect()
+      const cx = b.x + b.width / 2, cy = b.y + b.height / 2
+      const top = document.elementFromPoint(cx, cy)
+      return {
+        cx, cy, w: b.width, h: b.height,
+        topTag: top ? top.tagName : null, topCls: top ? String(top.className).slice(0, 60) : null,
+        isSelfOrChild: !!(top && (top === slot || slot.contains(top))),
+        inViewport: b.x >= 0 && b.y >= 0 && b.x + b.width <= innerWidth && b.y + b.height <= innerHeight,
+        bigEnough: b.width >= 24 && b.height >= 24,
+      }
+    `)).value
+    console.log('\n  触摸目标诊断：' + JSON.stringify(touchDiag, null, 1))
+  }
+
   const clickInfo = await s.evalJs(`
     const slot = document.querySelector('.dsh-phone-menu-slot')
     const legacy = document.querySelector('.dsh-phone-menu')
     const t = (slot && getComputedStyle(slot).display !== 'none') ? slot : ((legacy && getComputedStyle(legacy).display !== 'none') ? legacy : null)
-    if (t) t.click()
-    return t ? String(t.className) : 'none'
+    if (!t) return 'none'
+    ${USE_TOUCH ? 'return \'touch:\' + String(t.className)' : 't.click(); return String(t.className)'}
   `)
-  console.log('\n③ 点击目标：' + JSON.stringify(clickInfo.value ?? clickInfo.error))
+  if (USE_TOUCH && touchDiag) await touchTap(touchDiag.cx, touchDiag.cy)
+  console.log('\n③ 交互目标（' + (USE_TOUCH ? '真实触摸' : '合成 click') + '）：' + JSON.stringify(clickInfo.value ?? clickInfo.error))
   await sleep(700)
   const opened = (await s.evalJs(SNAP)).value
+  // 关闭：优先触摸遮罩的**右侧空白区**（避开侧栏，侧栏占 x<280）
   const cl = await s.evalJs(`
     const cm = document.querySelector('.dsh-phone-mask'), lm = document.querySelector('.dsh-phone-sidebar-mask')
     const t = (cm && getComputedStyle(cm).display !== 'none') ? cm : ((lm && getComputedStyle(lm).display !== 'none') ? lm : null)
-    if (t) t.click(); return 1
+    if (!t) return { clicked: null }
+    const b = t.getBoundingClientRect()
+    ${USE_TOUCH
+      ? "return { clicked: String(t.className), tx: Math.min(b.x + b.width - 30, b.x + 340), ty: b.y + b.height / 2 }"
+      : 't.click(); return { clicked: String(t.className) }'}
   `)
+  if (USE_TOUCH && cl.value?.tx != null) await touchTap(cl.value.tx, cl.value.ty)
   await sleep(700)
   const closed = (await s.evalJs(SNAP)).value
   await s.send('Emulation.clearDeviceMetricsOverride')
@@ -416,9 +458,10 @@ if (args.includes('--realapp')) {
     ['真实 App 上槽位开关已接管（toggle-mounted）', narrow?.slotToggle.mountedFact === true],
     ['真实 App 上遮罩组件已接管（mask-mounted）', narrow?.facts.maskMounted === true],
     ['开关渲染且几何非零', (narrow?.slotToggle.box?.[2] ?? 0) > 0 && (narrow?.slotToggle.box?.[3] ?? 0) > 0],
-    ['开关位于 header 内', !!(narrow?.slotToggle.headerBox) && !!narrow?.slotToggle.box &&
-      narrow.slotToggle.box[1] >= narrow.slotToggle.box[1] - 1 &&
-      narrow.slotToggle.box[1] + narrow.slotToggle.box[3] <= narrow.slotToggle.box[1] + narrow.slotToggle.box[3] + 1],
+    ['开关位于 header 内', !!narrow?.slotToggle.headerBox && !!narrow?.slotToggle.box &&
+      // ⚠️ 必须比 headerBox 与 box —— 曾误写成 box 与 box 自比（恒真 ⇒ 假绿）。
+      narrow.slotToggle.box[1] >= narrow.slotToggle.headerBox[1] - 1 &&
+      narrow.slotToggle.box[1] + narrow.slotToggle.box[3] <= narrow.slotToggle.headerBox[1] + narrow.slotToggle.headerBox[3] + 1],
     ['开关与标题行不重叠', !overlapFn(narrow?.slotToggle.box, narrow?.slotToggle.titleRowBox)],
     ['标题行仍可见（宽 > 0）', (narrow?.slotToggle.titleRowBox?.[2] ?? 0) > 0],
     ['旧自绘按钮已被隐藏（无两个开关）', narrow?.slotToggle.legacyVisible === false],
@@ -434,7 +477,26 @@ if (args.includes('--realapp')) {
     ['无槽位错误', (narrow?.slotErrors ?? []).length === 0],
     ['仿真已复原（视口回到原值）', JSON.stringify(pre.viewport) === JSON.stringify(restored?.viewport)],
   ]
-  console.log('\n═══ 真实 App 验收（窄屏仿真，可逆）═══')
+
+  // ── 触控层专项判据（仅 --touch 时）──────────────────────────────────────
+  //   这些是 `.click()` **测不到**的一类真实缺陷：
+  //     · 元素被别的层遮住（视觉可见、点不到像素）
+  //     · 触摸目标过小 / 出视口
+  //     · pointer-events:none 让它收不到事件
+  if (USE_TOUCH && touchDiag) {
+    checks.push(
+      ['触控：开关在视口内（点得到像素）', touchDiag.inViewport === true],
+      // elementFromPoint 命中的最顶层元素必须是开关自己或其子元素。
+      // 否则说明有别的元素压在它上面 —— 真实手指会点到那个元素。
+      ['触控：开关中心无遮挡（最顶层就是它）', touchDiag.isSelfOrChild === true],
+      ['触控：可点区不过小（≥24px 两边）', touchDiag.bigEnough === true],
+      ['触控：遮罩可接收触摸（pointer-events 非 none）', opened?.activeMask != null],
+      ['触控：真实触摸后抽屉打开', opened?.facts.drawerOpen === true],
+      ['触控：真实触摸遮罩后关闭', closed?.facts.drawerOpen === false],
+    )
+  }
+
+  console.log('\n═══ 真实 App 验收（窄屏仿真，可逆' + (USE_TOUCH ? '；交互=真实触摸事件' : '') + '）═══')
   let pass = 0
   for (const [n, ok] of checks) { console.log('  ' + (ok ? '✓' : '✗') + ' ' + n); if (ok) pass++ }
   console.log(`\n通过 ${pass}/${checks.length}`)
