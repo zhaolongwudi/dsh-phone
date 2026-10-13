@@ -371,6 +371,33 @@ if (args.includes('--restore')) {
 //    横屏 1212px）：只改渲染视口，不改代码/资源，结束立即 clear 并复核恢复。
 if (args.includes('--realapp')) {
   const width = Number(arg('--width', '400'))
+
+  // ⚠️ **强制重载到设备自身的真实状态**（默认行为，不可跳过）。
+  //    为什么必须：`--realapp` 的意义是「验设备实际装载的那份代码」，但若同一会话里
+  //    先前跑过**注入式**实验（Fetch 替换 combo / 写 #dsh-phone-presentation），
+  //    页面里跑的就是**注入产物**而非设备自身的 —— 此时验收会**假绿**。
+  //    本轮实测踩到：先跑注入实验验证修复，再跑 `--realapp` 得 23/23 全绿；
+  //    而重载后真实设备是 `slotText:""`（修复根本未生效）。
+  //    故每次 `--realapp` 都先清缓存 + 硬重载，并**报告设备实测指纹**供比对。
+  await s.send('Page.enable')
+  await s.send('Network.enable')
+  await s.send('Network.setCacheDisabled', { cacheDisabled: true })
+  await s.send('Page.reload', { ignoreCache: true })
+  await sleep(6000)
+  const fp = (await s.evalJs(`
+    const st = document.getElementById('dsh-phone-presentation')
+    const slot = document.querySelector('.dsh-phone-menu-slot')
+    return {
+      cssLen: st ? st.textContent.length : null,
+      slotText: slot ? (slot.textContent || '').trim() : null,
+      hasMinWidth44: st ? st.textContent.includes('min-width:44px') : null,
+    }
+  `)).value
+  console.log('\n⓪ 已强制重载（清注入污染）· 设备实测指纹：' + JSON.stringify(fp))
+  if (fp && fp.cssLen != null && !fp.hasMinWidth44) {
+    console.log('   注：设备 CSS 无 `min-width:44px` ⇒ 跑的是**修复前**的包（修复需重装 APK）')
+  }
+
   const pre = (await s.evalJs(SNAP)).value
   console.log('\n① 仿真前（设备当前视口）：' + JSON.stringify({ vp: pre.viewport, bp: pre.breakpoints, facts: pre.facts, menu: pre.menu, slotToggle: pre.slotToggle }, null, 1))
   if (!pre.slotToggle.mountedFact && !pre.facts.maskMounted) {
