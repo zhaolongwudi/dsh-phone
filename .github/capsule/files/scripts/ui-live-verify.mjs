@@ -441,15 +441,37 @@ if (args.includes('--realapp')) {
       const b = slot.getBoundingClientRect()
       const cx = b.x + b.width / 2, cy = b.y + b.height / 2
       const top = document.elementFromPoint(cx, cy)
+      const cs = getComputedStyle(slot)
       return {
         cx, cy, w: b.width, h: b.height,
         topTag: top ? top.tagName : null, topCls: top ? String(top.className).slice(0, 60) : null,
         isSelfOrChild: !!(top && (top === slot || slot.contains(top))),
         inViewport: b.x >= 0 && b.y >= 0 && b.x + b.width <= innerWidth && b.y + b.height <= innerHeight,
         bigEnough: b.width >= 24 && b.height >= 24,
+        // 触控相关 CSS：touch-action:none 会让点击失效；pointer-events:none 收不到事件
+        touchAction: cs.touchAction, pointerEvents: cs.pointerEvents,
+        text: (slot.textContent || '').trim(),
       }
     `)).value
     console.log('\n  触摸目标诊断：' + JSON.stringify(touchDiag, null, 1))
+
+    // **事件链探针**：记录真实触摸时实际到达的事件序列（passive 监听，不改行为）。
+    //  为什么值得单独验：结果对（drawerOpen 翻转）不代表链路健康 ——
+    //  若某层在 touchstart 上 preventDefault，触摸反馈会丢失（按住无视觉响应），
+    //  而 `.click()` 类断言完全看不出来。
+    await s.evalJs(`
+      window.__evt = []
+      const slot = document.querySelector('.dsh-phone-menu-slot')
+      if (!slot) return 1
+      const rec = n => e => window.__evt.push({
+        type: n, defaultPrevented: e.defaultPrevented,
+        target: e.target ? (e.target.tagName + '.' + String(e.target.className).slice(0, 24)) : null,
+      })
+      for (const n of ['touchstart','touchend','pointerdown','pointerup','click']) {
+        slot.addEventListener(n, rec(n), { passive: true, capture: true })
+      }
+      return 1
+    `)
   }
 
   const clickInfo = await s.evalJs(`
@@ -463,6 +485,12 @@ if (args.includes('--realapp')) {
   console.log('\n③ 交互目标（' + (USE_TOUCH ? '真实触摸' : '合成 click') + '）：' + JSON.stringify(clickInfo.value ?? clickInfo.error))
   await sleep(700)
   const opened = (await s.evalJs(SNAP)).value
+  // 事件链：真实触摸时读取探针记录（供判据用）
+  const evtChain = USE_TOUCH ? (await s.evalJs(`return { events: window.__evt || [] }`)).value : null
+  if (USE_TOUCH && evtChain) {
+    const ts = evtChain.events.map(e => e.type)
+    console.log('   事件链：' + (ts.length ? ts.join(' → ') : '(空 —— 未捕获到任何事件)'))
+  }
   // 关闭：优先触摸遮罩的**右侧空白区**（避开侧栏，侧栏占 x<280）
   const cl = await s.evalJs(`
     const cm = document.querySelector('.dsh-phone-mask'), lm = document.querySelector('.dsh-phone-sidebar-mask')
@@ -509,7 +537,8 @@ if (args.includes('--realapp')) {
   //   这些是 `.click()` **测不到**的一类真实缺陷：
   //     · 元素被别的层遮住（视觉可见、点不到像素）
   //     · 触摸目标过小 / 出视口
-  //     · pointer-events:none 让它收不到事件
+  //     · 开关无可见内容（宽度只靠 padding 撑起，实测过 22px）
+  //     · pointer-events / touch-action 让它收不到事件
   if (USE_TOUCH && touchDiag) {
     checks.push(
       ['触控：开关在视口内（点得到像素）', touchDiag.inViewport === true],
@@ -517,10 +546,33 @@ if (args.includes('--realapp')) {
       // 否则说明有别的元素压在它上面 —— 真实手指会点到那个元素。
       ['触控：开关中心无遮挡（最顶层就是它）', touchDiag.isSelfOrChild === true],
       ['触控：可点区不过小（≥24px 两边）', touchDiag.bigEnough === true],
+      // 开关必须有**可见内容**：无内容时宽度只由 padding 撑起（实测 22px），
+      // 且用户看不出这是开关 —— 两个后果都由该判据兜住。
+      ['触控：开关有可见文本（非空按钮）', (touchDiag.text ?? '').length > 0],
+      ['触控：touch-action 未禁用点击', touchDiag.touchAction !== 'none'],
+      ['触控：pointer-events 可接收事件', touchDiag.pointerEvents !== 'none'],
       ['触控：遮罩可接收触摸（pointer-events 非 none）', opened?.activeMask != null],
       ['触控：真实触摸后抽屉打开', opened?.facts.drawerOpen === true],
       ['触控：真实触摸遮罩后关闭', closed?.facts.drawerOpen === false],
     )
+    // **事件链判据**：结果对（drawerOpen 翻转）不代表链路健康 ——
+    //   若某层在 touchstart 上 preventDefault，触摸反馈会丢失（按住无视觉响应），
+    //   而结果仍可能正确。故验「实际到达了哪些事件」与「有没有被吞」。
+    if (evtChain) {
+      const ts = evtChain.events.map(e => e.type)
+      checks.push(
+        ['触控链：收到 touchstart', ts.includes('touchstart')],
+        ['触控链：收到 touchend', ts.includes('touchend')],
+        // 浏览器合成的 click 是「触摸被当成点击」的证据；缺失说明被吞或位移过大。
+        ['触控链：浏览器合成了 click', ts.includes('click')],
+        // touchstart 被 preventDefault ⇒ 触摸反馈丢失（真实可用性缺陷）。
+        ['触控链：touchstart 未被 preventDefault',
+          evtChain.events.filter(e => e.type === 'touchstart').every(e => e.defaultPrevented === false)],
+        // 所有事件都应落在开关自身上（落在别处说明被上层截走）。
+        ['触控链：事件 target 均为开关自身',
+          evtChain.events.length > 0 && evtChain.events.every(e => String(e.target).includes('dsh-phone-menu-slot'))],
+      )
+    }
   }
 
   console.log('\n═══ 真实 App 验收（窄屏仿真，可逆' + (USE_TOUCH ? '；交互=真实触摸事件' : '') + '）═══')
