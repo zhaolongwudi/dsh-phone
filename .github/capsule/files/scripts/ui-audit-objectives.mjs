@@ -33,11 +33,38 @@ console.log('【目标 1】设备端三层验收')
 {
   const v = run([join(HERE, 'ui-verify-installed.mjs')])
   console.log('  设备版本判定：' + grab(v.out, /代次判定：[\w-]+/))
-  const t = run([join(HERE, 'ui-live-verify.mjs'), '--realapp', '--touch'])
-  console.log('  CDP 层（设备实际装载）：' + grab(t.out, /通过 \d+\/\d+/))
-  const p = run([join(HERE, 'ui-live-verify.mjs'), '--realapp', '--preview', '--touch'])
-  console.log('  CDP 层（发布前预演）  ：' + grab(p.out, /通过 \d+\/\d+/))
-  if (/跳过|没有满足/.test(t.out)) console.log('    （注：无 CDP 通道或视口不满足时该层自行跳过）')
+  // ⚠️ CDP 层会因**环境瞬时状态**（App 重载 / GC / 高负载）偶发假红。
+  //    2026-10-13 实测：审计报 24/35，而紧接着单独重跑 6 次全 35/35（代次仍 current）。
+  //    假红同样危险（会让人以为设备坏了），故：**非满分时自动重试一次**，
+  //    两次都不满分才打印失败项明细；输出标明「首次异常已重试」，不掩盖。
+  const score = (out) => {
+    const m = out.match(/通过 (\d+)\/(\d+)/)
+    return m ? { pass: Number(m[1]), total: Number(m[2]) } : null
+  }
+  const failedLines = (out) => out.split('\n').filter(l => l.includes('✗')).map(l => l.trim())
+  const runCdp = (args, label) => {
+    let out = run([join(HERE, 'ui-live-verify.mjs'), ...args]).out
+    const s1 = score(out)
+    if (s1 && s1.pass < s1.total) {
+      const out2 = run([join(HERE, 'ui-live-verify.mjs'), ...args]).out
+      const s2 = score(out2)
+      if (s2 && s2.pass > s1.pass) {
+        console.log('  ' + label + '：' + grab(out2, /通过 \d+\/\d+/) +
+          '  （首次 ' + s1.pass + '/' + s1.total + ' 异常，已重试）')
+        out = out2
+      } else {
+        console.log('  ' + label + '：' + grab(out, /通过 \d+\/\d+/) +
+          (s2 ? '  （重试后仍 ' + s2.pass + '/' + s2.total + '）' : ''))
+        for (const l of failedLines(out).slice(0, 8)) console.log('      ' + l)
+      }
+    } else {
+      console.log('  ' + label + '：' + grab(out, /通过 \d+\/\d+/))
+    }
+    return out
+  }
+  const t = runCdp(['--realapp', '--touch'], 'CDP 层（设备实际装载）')
+  runCdp(['--realapp', '--preview', '--touch'], 'CDP 层（发布前预演）  ')
+  if (/跳过|没有满足/.test(t)) console.log('    （注：无 CDP 通道或视口不满足时该层自行跳过）')
   console.log('  ADB 层（系统级触控）：需人类消息恢复手机工具后执行；方案见 ui-adb-layer-plan.md')
 }
 
