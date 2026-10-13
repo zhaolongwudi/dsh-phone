@@ -150,6 +150,49 @@ console.log(missingInC.length === 0
   : `  ⚠️ 有 ${missingInC.length} 项在 C 中缺失：` + missingInC.map(r => r.name).join(', ') +
     '\n     ⇒ 若这些能力是你想要的，本轮搬运应把它们**搬进来**（而不是"防止被覆盖"）')
 
+// ── 2.5 上游相对基线的**新增行**（通用信号，不依赖预定义指纹）─────────────
+//   ⚠️ 为什么必须补：上面的指纹表只能发现**已知**能力。上游若新增一个表里没有的
+//      功能，工具会说「需要搬运」却不告诉你新增了什么，维护者仍要肉眼 diff。
+//      实测：构造上游新增一行 `UPSTREAM_NEW_FEATURE`，工具完全没提它。
+//   本段给出「线索」而非「判定」—— 是否该搬由人决定。
+console.log('\n── 上游相对基线的新增行（通用线索，非判定）──')
+{
+  const setB = new Set(b.map(l => l.trim()).filter(Boolean))
+  // 只取「有实质内容」的行：非空白、非纯注释
+  const isSubstantive = (s) => {
+    const x = s.trim()
+    if (!x) return false
+    if (x.startsWith('//') || x.startsWith('/*') || x.startsWith('*') || x.startsWith('*/')) return false
+    return true
+  }
+  const blocks = []
+  let cur = null
+  for (let i = 0; i < a.length; i++) {
+    const line = a[i]
+    const fresh = isSubstantive(line) && !setB.has(line.trim())
+    if (fresh) {
+      if (!cur) { cur = { from: i + 1, to: i + 1, lines: [line.trim()] } }
+      else { cur.to = i + 1; if (cur.lines.length < 3) cur.lines.push(line.trim()) }
+    } else if (cur) { blocks.push(cur); cur = null }
+  }
+  if (cur) blocks.push(cur)
+
+  if (blocks.length === 0) {
+    console.log('  （无：上游相对基线没有实质新增行）')
+  } else {
+    const total = blocks.reduce((n, blk) => n + (blk.to - blk.from + 1), 0)
+    console.log(`  共 ${blocks.length} 个新增块（约 ${total} 行）：`)
+    for (const blk of blocks.slice(0, 12)) {
+      const span = blk.from === blk.to ? `L${blk.from}` : `L${blk.from}-${blk.to}`
+      console.log(`    ${span.padEnd(12)} ${blk.lines[0].slice(0, 88)}`)
+      for (const extra of blk.lines.slice(1)) console.log(`    ${''.padEnd(12)} ${extra.slice(0, 88)}`)
+    }
+    if (blocks.length > 12) console.log(`    … 另有 ${blocks.length - 12} 块`)
+    console.log('  ⇒ 这些是**线索**：逐块判断是否属于你要的上游能力；要就搬进来，')
+    console.log('    不要就显式记录「有意不搬」（否则下次还会被重新提出）。')
+  }
+}
+
 // ── 3. 可搬运性判定 ──────────────────────────────────────────────────────
 console.log('\n── 结论 ──')
 const aDiffersFromB = A_ !== B_
