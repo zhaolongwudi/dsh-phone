@@ -174,6 +174,46 @@ const result = {
 //      而实际设备跑的是**较旧**的一版（实测踩到：设备 JS 32988 与产物一致，
 //      但 CSS 19156 ≠ 产物 19190 ⇒ 属「有本层成果但不是最新」）。
 //      这种状态最危险：验收会通过，但验的不是将要发布的那份。
+// ── 语义指纹：不依赖字节，回答「设备是第几代本层版本」──────────────────────
+//  为什么加：本层产物一改（哪怕只改注释），字节比对就会落到「都不匹配」，
+//  而设备上那份可能**含本层成果、只是旧了一代**。语义指纹能把这种情况说清楚。
+const jsText = jsEnt?.buf ? jsEnt.buf.toString('utf8') : ''
+const cssText = cssEnt?.buf ? cssEnt.buf.toString('utf8') : ''
+// ⚠️ 每条指纹必须查**它真正的载体**，不能混起来查 —— 实测踩到过：
+//    「开关文本」原查 jsText+cssText，而 CSS 里也有 `☰ 菜单`（写规格时的注释），
+//    于是设备 CSS 一含该串就误判「有修复」，而设备真实 slotText 是空。
+// 载体归属：js=形态层 / css=样式 / bundle=槽位组件（在 dsh-tree.tar 内，本步读不到）
+const FEATURES = [
+  ['一期·形态标记层', /data-dsh-mobile-form/, 'js'],
+  ['一期·断点常量', /MOBILE_FORM_MAX_WIDTH\s*=\s*767/, 'js'],
+  ['三期·遮罩接管', /data-dsh-mask-mounted/, 'js'],
+  // ⚠️ 该事实由**槽位组件**（cards-client.js 的 DrawerToggle）发布，不在 dsh-phone.js 里。
+  //    实测：设备 APK 内 dsh-phone.js 搜该串 = 0 次，但 WebView 实测 toggleMounted = true。
+  //    标 false 会**低估**设备能力 ⇒ 改为 bundle（本步不判）。
+  ['三期·开关接管', /data-dsh-toggle-mounted/, 'bundle'],
+  ['三期·开关类名', /dsh-phone-menu-slot/, 'css'],
+  ['修复·最小宽度', /min-width:\s*44px/, 'css'],
+  // 开关文本住在**槽位组件**（cards-client.js → dsh-tree.tar），不在 APK assets 里。
+  // 故本步**不判**该指纹，显式标 null 而不是拿 CSS 注释冒充。
+  ['修复·开关文本', /☰ 菜单/, 'bundle'],
+]
+result.features = {}
+result.featuresNote = {}
+for (const [name, re, where] of FEATURES) {
+  if (where === 'bundle') {
+    result.features[name] = null
+    result.featuresNote[name] = '住在槽位组件（dsh-tree.tar 内），APK assets 读不到 ⇒ 本步不判'
+    continue
+  }
+  const hay = where === 'css' ? cssText : jsText
+  result.features[name] = re.test(hay)
+}
+// 只统计**可判**的指纹（null 表示本步读不到，不参与代次判定）
+const judged = Object.values(result.features).filter(v => v !== null)
+const hasAny = judged.some(Boolean)
+const hasAll = judged.every(Boolean)
+result.generation = hasAll ? 'current' : (hasAny ? 'older-capsule' : 'pre-capsule')
+
 const jsSame = !!(jsEnt && jsEnt.usize === localJs.length && Buffer.compare(jsEnt.buf, localJs) === 0)
 const cssSame = !!(cssEnt && cssEnt.usize === localCss.length && Buffer.compare(cssEnt.buf, localCss) === 0)
 result.match = { js: jsSame, css: cssSame }
@@ -184,8 +224,11 @@ if (jsSame && cssSame) {
   result.version = 'stale'        // 部分一致 ⇒ 有成果但不是最新（须明确报出）
 } else if (jsEnt && jsEnt.usize === 25521) {
   result.version = 'baseline'     // 已知旧基线
+} else if (result.generation === 'older-capsule') {
+  // 含本层能力标记但字节不同 ⇒ 是**较旧的一代本层版本**（不是"不认识"）
+  result.version = 'older-capsule'
 } else if (jsEnt) {
-  result.version = 'other'        // 都不匹配
+  result.version = 'other'        // 真的都不匹配
 }
 
 const VERDICT = {
@@ -193,7 +236,9 @@ const VERDICT = {
   stale: ['⚠️ 设备版本**落后于当前产物**（部分文件一致）',
     '仍可做真实 App 验收，但**验的不是将要发布的那份** ⇒ 建议先重装最新包再验收'],
   baseline: ['⚠️ 设备仍是旧基线版（无本层成果）', '只能做**注入式验收**（把产物投到运行中的引擎上）'],
-  other: ['❓ 设备版本与本层已知的两档都不匹配', '不猜：请确认 APK 来源，或把该版本的 dsh-phone.js 加入基准'],
+  'older-capsule': ['⚠️ 设备是**较旧的一代本层版本**（含本层能力，但字节与当前产物不同）',
+    '仍可做真实 App 验收，但验的是旧一代 ⇒ 建议重装最新包；可用 --preview 验新包'],
+  other: ['❓ 设备版本与本层已知的各档都不匹配（连本层能力标记都没有）', '不猜：请确认 APK 来源，或把该版本的 dsh-phone.js 加入基准'],
   unknown: ['❓ 读不到 APK 内的 dsh-phone.js', '检查 APK 路径与读取权限'],
 }[result.version]
 
@@ -208,8 +253,60 @@ const row = (label, ent, local) => {
 console.log(row('dsh-phone.js', jsEnt, localJs))
 console.log(row('dsh-phone.css', cssEnt, localCss))
 console.log('')
+console.log('  本层能力指纹（设备内实际含有的）：')
+for (const [name, ok] of Object.entries(result.features)) {
+  const mark = ok === null ? '⊘' : (ok ? '✓' : '—')
+  const note = ok === null && result.featuresNote?.[name] ? '（' + result.featuresNote[name] + '）' : ''
+  console.log('    ' + mark + ' ' + name + note)
+}
+console.log('  ⇒ 代次判定：' + result.generation)
+console.log('')
 console.log('  ' + VERDICT[0])
 console.log('  ⇒ ' + VERDICT[1])
+
+// ── 交叉校验：APK 判定 vs WebView 实测（含污染检测）──────────────────────
+//  为什么需要：APK 读的是**文件**（权威），WebView 读的是**运行时**（可能被注入污染）。
+//  两者若不一致，必须说清哪一侧可信。
+//  实测案例：APK 说「旧一代」，WebView 说「有 ☰ 菜单」—— 后者是注入污染，
+//  硬重载后与 APK 一致。
+//
+//  ⚠️ 实现方式：**复用 ui-live-verify.mjs**（它自带完整 CDP 客户端与硬重载逻辑），
+//     以子进程调用并解析其指纹输出。不在此处重复实现 CDP —— 那会引入
+//     「两个 CDP 实现行为不一致」的新风险（本方案已多次踩到同类问题）。
+if (args.includes('--cross-check')) {
+  console.log('\n── 交叉校验：WebView 实测（由 ui-live-verify 执行，含硬重载清污染）──')
+  try {
+    const { spawnSync } = await import('node:child_process')
+    const runner = join(HERE, 'ui-live-verify.mjs')
+    if (!existsSync(runner)) {
+      console.log('  ⊘ 未找到 ui-live-verify.mjs ⇒ 跳过')
+    } else {
+      const r = spawnSync(process.execPath, [runner, '--realapp', '--snapshot'], {
+        encoding: 'utf8', timeout: 90000,
+        env: { ...process.env, DSH_TREE: process.env.DSH_TREE || '' },
+      })
+      const out = (r.stdout ?? '') + (r.stderr ?? '')
+      // 从输出里抓「设备实测指纹」那一行（ui-live-verify 的 --realapp 会打印）
+      const m = out.match(/设备实测指纹：(\{[^}]*\})/)
+      if (m) {
+        const fp = JSON.parse(m[1])
+        console.log('  WebView 实测：' + JSON.stringify(fp))
+        const wvFixed = fp.hasMinWidth44 === true
+        const apkFixed = result.features?.['修复·最小宽度'] === true
+        console.log('  APK 判定含「修复·最小宽度」：' + apkFixed)
+        console.log('  WebView 实测含 min-width:44px：' + wvFixed)
+        console.log('  ' + (wvFixed === apkFixed
+          ? '✓ 两侧一致'
+          : '⚠️ 两侧不一致 ⇒ **以 APK 判定为准**（读文件，不受注入影响）'))
+      } else {
+        console.log('  ⊘ 未能从 ui-live-verify 输出解析指纹（可能无 CDP 通道，CI 属预期）')
+        if (/跳过/.test(out)) console.log('     其输出含「跳过」⇒ 环境无设备，属预期')
+      }
+    }
+  } catch (e) {
+    console.log('  ⊘ 交叉校验跳过：' + String(e && e.message || e).slice(0, 90))
+  }
+}
 
 if (AS_JSON) console.log('\n' + JSON.stringify(result, null, 2))
 
