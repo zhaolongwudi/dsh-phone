@@ -64,7 +64,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { ToolCallId as CallId } from '@deepseek-ai/dsh-llm'
 import { normalizeHarnessMessages, type NormalizedHarnessMessage } from './message-shape.js'
-import { resolveToolPairing } from './sse.js'
+import { createDsmlMarkerNormalizer, fixDsmlMarkers, resolveToolPairing } from './sse.js'
 
 /**
  * 构造 Anthropic Messages 请求体。
@@ -474,6 +474,8 @@ export async function* consumeMinimaxSse(
   let stopReason: unknown
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
   let sawAnyChunk = false
+  /** DSML 标记归一化器（见 sse.ts）；每个 SSE 消费一个实例。 */
+  const dsmlFix = createDsmlMarkerNormalizer()
   /**
    * 响应原文样本（前 500 字符）。
    *
@@ -591,8 +593,12 @@ export async function* consumeMinimaxSse(
       const d = delta as Record<string, unknown>
       const state = blocks.get(index)
       if (d.type === 'text_delta' && typeof d.text === 'string') {
-        if (state !== undefined) state.text += d.text
-        yield { type: 'text-delta', index, text: d.text }
+        // ⚠️ **先归一化再累积**（2026-10-13，见 sse.ts 注释）。
+        const fixedText = dsmlFix.push(d.text)
+        if (state !== undefined) state.text += fixedText
+        if (fixedText.length > 0) {
+          yield { type: 'text-delta', index, text: fixedText }
+        }
       } else if (d.type === 'thinking_delta' && typeof d.thinking === 'string') {
         if (state !== undefined) state.text += d.thinking
         yield { type: 'reasoning-delta', index, text: d.thinking }
@@ -615,7 +621,13 @@ export async function* consumeMinimaxSse(
       if (state === undefined) return
       let block: ContentBlock
       if (state.type === 'text') {
-        block = { type: 'text', text: state.text }
+        // ⚠️ 收尾下发待定缓冲 + **整串兜底**归一化（幂等，见 sse.ts）。
+        const tail = dsmlFix.flush()
+        if (tail.length > 0) {
+          state.text += tail
+          yield { type: 'text-delta', index, text: tail }
+        }
+        block = { type: 'text', text: fixDsmlMarkers(state.text) }
       } else if (state.type === 'reasoning') {
         block = { type: 'reasoning', text: state.text }
       } else {

@@ -57,6 +57,8 @@ import {
   stripBareThinkCloseTagIfEnabled,
   stripCourseLeakFromHistoryContent,
   stripCourseLeakIfEnabled,
+  createDsmlMarkerNormalizer,
+  fixDsmlMarkers,
 } from './sse.js'
 import { normalizeHarnessMessages } from './message-shape.js'
 import { isBillingBusinessCode, looksLikeBillingError, parseQueueError, queueDelayMs } from './model-queue.js'
@@ -474,6 +476,15 @@ export interface ConsumeOpenAiSseOptions {
  */
 const RAW_SNIPPET_LIMIT = 400
 
+// ────────────────────────── DSML 标记归一化 ──────────────────────────
+//
+// ⚠️ 实现在 **./sse.js**（buddy 等自解析适配器也从那里导入）—— 这里
+// re-export 只为既有调用方路径稳定。为什么需要、规则是什么，见 sse.ts
+// 的 fixDsmlMarkers 注释（2026-10-13 实测：deepseek-v4.1-flash /
+// step-5-preview 把标记写坏成双竖线，宿主解析不了）。
+
+export { fixDsmlMarkers, createDsmlMarkerNormalizer } from './sse.js'
+
 /**
  * 消费 OpenAI 兼容的 SSE 响应并产出 `StreamChunk`。
  *
@@ -547,6 +558,13 @@ export async function* consumeOpenAiSse(
    * 就不发任何 chunk（与「空名字 tool_call」同型修法）。
    */
   const suppressor = createBlankReasoningSuppressor()
+  /**
+   * DSML 标记归一化器（见 createDsmlMarkerNormalizer）。
+   *
+   * ⚠️ **每个 stream() 调用一个实例**（与 loopGuard 同生命周期）：
+   * 待定缓冲是跨帧状态，共用会串流。
+   */
+  const dsmlFix = createDsmlMarkerNormalizer()
   const toolCalls = new Map<number, {
     index: number
     text: string
@@ -852,8 +870,16 @@ export async function* consumeOpenAiSse(
           // 它无闭标签时返回 `undefined`，调用方走原路径，
           // 故普通响应仍**逐字节不变**（功能等价，只是多一次字符串扫描）。
           if (!proseLoopDetected) {
-            block.text += textDelta
-            yield { type: 'text-delta', index: block.index, text: textDelta }
+            // ⚠️ **先归一化再累积**（2026-10-13）：坏标记 若原样
+            //    累积，宿主解析器不认，工具调用整段当正文 —— 模型「停住不动」
+            //    （实测 deepseek-v4.1-flash / step-5-preview）。push() 是流式
+            //    安全的：跨帧的模式由待定缓冲拼齐（见该函数注释）。
+            const fixedDelta = dsmlFix.push(textDelta)
+            block.text += fixedDelta
+            // 归一化可能把整帧都扣进缓冲（fixedDelta 为空）—— 空帧不发。
+            if (fixedDelta.length > 0) {
+              yield { type: 'text-delta', index: block.index, text: fixedDelta }
+            }
           }
         }
         // 同样必须用 `typeof === 'string'`：reasoning_content 也会显式返回 null。
@@ -1048,6 +1074,19 @@ export async function* consumeOpenAiSse(
       },
     }
   }
+  // ── DSML 归一化收尾：下发待定缓冲 ──
+  // 扣住的尾部（可能是模式前缀）在流结束时必须放行，否则最后几个字符
+  // 永远不到达宿主。顺序：先 flush 进累积文本，block-end 才能带上它。
+  {
+    const tail = dsmlFix.flush()
+    if (tail.length > 0 && !proseLoopDetected) {
+      const tailBlock = blocks.find(candidate => candidate.kind === 'text')
+      if (tailBlock !== undefined) {
+        tailBlock.text += tail
+        yield { type: 'text-delta', index: tailBlock.index, text: tail }
+      }
+    }
+  }
   if (textBlock !== undefined) {
     // ── think 标签归位（见 `splitThinkTaggedContent`）──
     //
@@ -1104,14 +1143,20 @@ export async function* consumeOpenAiSse(
       : textOut
     // 行首 `course` / `课` 泄漏 token 清洗（见 `stripCourseLeak`）。
     const cleanedText = stripCourseLeakIfEnabled(truncatedText)
+    // ⚠️ DSML 归一化**整串兜底**（幂等）：增量路径已逐帧修过，这里再过一遍
+    //    是防御 —— 万一有跨缓冲边界漏网的组合（理论不可达），权威覆盖也干净。
+    const dsmlCleaned = fixDsmlMarkers(cleanedText)
     // ⚠️ 归位后正文可能为空串（实测 seq=34768 形态：标签前 8845 字符、
     // 标签后仅 13 字符）。此时**不发射空 text 块** —— 空块会污染会话，
     // 且 DSH 的 `EMPTY_RESPONSE` 契约禁止产出空内容块。
     // 但**思考段已归位**，故本响应仍有内容产出，不会被误判为零块。
-    if (cleanedText !== '') {
+    //
+    // ⚠️ 发的是 **dsmlCleaned**（归一化后）：block-end 是权威覆盖，若这里
+    //    回吐未归一化的原文，会把增量路径修好的标记又改回去。
+    if (dsmlCleaned !== '') {
       blockCount += 1
-      emittedProse = cleanedText
-      yield { type: 'block-end', index: textBlock.index, block: { type: 'text', text: cleanedText } }
+      emittedProse = dsmlCleaned
+      yield { type: 'block-end', index: textBlock.index, block: { type: 'text', text: dsmlCleaned } }
     }
   }
   const reasoningBlock = blocks.find(block => block.kind === 'reasoning')
