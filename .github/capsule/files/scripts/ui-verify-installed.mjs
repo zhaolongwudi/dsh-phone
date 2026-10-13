@@ -108,10 +108,19 @@ function findInstalledApk() {
   try {
     for (const pid of readdirSync('/proc')) {
       if (!/^\d+$/.test(pid)) continue
+      // ⚠️ 必须**先确认该进程就是 com.dshphone**，再读它的 maps。
+      //    实测踩到：不校验时命中的是**别的 App**（本轮读到 my.maya.android「多闪」的
+      //    base.apk）—— 因为同一 UID 下多个 App 的 /proc 都可读，而遍历顺序不定。
+      //    后果很隐蔽：脚本会「读到一个 APK」并据此判定版本，判的是**别的 App**。
+      let cmdline = ''
+      try { cmdline = readFileSync('/proc/' + pid + '/cmdline', 'utf8') } catch { continue }
+      if (!cmdline.includes('com.dshphone')) continue
       let maps = ''
       try { maps = readFileSync('/proc/' + pid + '/maps', 'utf8') } catch { continue }
-      const m = maps.match(/\/data\/app\/[^\s]*\/base\.apk/)
-      if (m && existsSync(m[0])) return m[0]
+      // 在该进程的 maps 里找 **com.dshphone 自己的** base.apk（进程可能同时映射别的包）
+      const all = maps.match(/\/data\/app\/[^\s]*\/base\.apk/g) ?? []
+      const own = all.find(p => p.includes('com.dshphone'))
+      if (own && existsSync(own)) return own
     }
   } catch { /* /proc 不可读 */ }
 
