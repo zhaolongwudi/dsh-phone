@@ -130,6 +130,20 @@ test -f scripts/ui-baseline-merge.mjs
 # ⚠️ 形态层 JS **刻意不读**该事实（纯视觉交接，与遮罩的行为交接不同）——故只查这两处。
 grep -qE "data-dsh-toggle-mounted" phone-qq/cards-client.js
 grep -qE "html\[data-dsh-toggle-mounted\]" app/src/main/assets/dsh-phone.css
+# 抽屉打开期间必须**禁用上游侧栏自带的折叠开关**（2026-10-13 用户报障「菜单与侧边栏
+# 小按钮冲突」的修复）。三层证据链见 dsh-phone.css 内注释，这里锁住的是「规则在场」
+# 这一最低条件 —— 选择器写错/被误删都属同一类静默失效（CSS 规则不报错，只是不命中，
+# 表现是抽屉里点一下小按钮就折叠出 224px 空白）。
+# ⚠️ 形态判据必须同时含 **drawer-open 事实**与**上游 toggle 哈希**：只查后者会与
+#    「宽屏常驻列的折叠开关」混为一谈（那条必须保留，不能一刀切禁用）。
+# ⚠️ 选择器边界必须收紧到逗号/花括号（2026-10-13 反向验证实测）：`[^{]*toggle`
+#    这种写法分不出哈希被拼错（.hHd-Xa_toggleX 也匹配前缀）——自检若无区分力，
+#    等于没有。故加 `[,{]` 边界，并用第三条排掉「toggle 后跟单词字符」的变体。
+grep -qE "html\[data-dsh-drawer-open\][^{]*\.hHd-Xa_toggle[,{]" app/src/main/assets/dsh-phone.css \
+  || { echo "::error::抽屉打开态未禁用上游侧栏折叠开关（hHd-Xa_toggle）——用户报障的空白将复现"; exit 1; }
+if grep -qE "\.hHd-Xa_toggle[A-Za-z0-9_-]" app/src/main/assets/dsh-phone.css; then
+  echo "::error::上游 toggle 哈希被拼成变体（规则永不命中）"; exit 1
+fi
 test -f scripts/ui-native-token-plan.mjs
 # 原生 token 的双态**必须成对**：深色缺同名 token 时，运行期会静默取不到值。
 # （实测 9 个 token 全部浅深不同 —— 正是接入的目的；缺一个就少一处跟随系统深色。）

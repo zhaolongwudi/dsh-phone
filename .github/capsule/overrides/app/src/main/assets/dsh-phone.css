@@ -119,7 +119,30 @@
     取值依据（实测全局层级版图）：根上下文里该覆盖层=20 是最高常规层，
     真正的模态在 900/1000/1001/1100 ⇒ 取 21 既压过遮罩、又不碰任何模态。 */
  html[data-dsh-drawer-open] [data-dsh-rail],html[data-dsh-drawer-open] .pI_x6G_sidebarCol{visibility:visible;transform:translateX(0);pointer-events:auto;z-index:21;box-shadow:8px 0 24px #0002}
- html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6G_sidebarCol{visibility:visible;transform:none;pointer-events:auto;transition:none}
+  /* ⚠️⚠️ 抽屉打开期间**隐藏上游侧栏自带的折叠开关**（2026-10-13 用户报障「菜单与侧边栏
+     小按钮冲突」）。
+     冲突全貌（三层证据链，全部代码层可查）：
+       · 上游侧栏顶部**总是**渲染该开关（ui-sidebar 的 logoRow 里
+         「非 darwin 桌面即渲染 toggle」分支；安卓不是 darwin ⇒ 恒渲染），折叠态呈
+         36px 圆形小按钮 —— 即用户说的「侧边栏小按钮」；
+       · 本层把侧栏容器宽度强制为 min(280px,86vw)（上面那条），而上游折叠态只渲染
+         **56px 图标列**（layout 的 collapsedWidth=56，安卓）⇒ 用户在抽屉里点一下
+         小按钮，侧栏折叠 ⇒ 容器 280px、内容 56px，差额 224px 就是那片空白
+         —— 与上轮「点一次菜单不出完整菜单」是**同一个空白**，只是换了触发路径
+         （那次是上升沿没接上，这次是用户手动折叠后无人再展开）；
+       · 更糟的是语义打架：抽屉开着（共享事实仍在）时菜单按钮显示「收起菜单」，
+         而侧栏实际是折叠的 ⇒ 两个控件对同一事物给出矛盾陈述。
+     修法（取最小改动）：抽屉是**临时抽屉**，其存在期间侧栏没有「折叠」可言 ——
+     关抽屉即隐藏整个侧栏。故打开态直接禁用它，用户想折叠可以关抽屉（宽屏下
+     侧栏是常驻列，折叠开关照常工作，不受影响）。
+     ⚠️ 用 !important：上游折叠态规则会为该按钮设 28/36px 尺寸与 display，不用
+     !important 压不住（同仓库既有先例：遮罩接管那条同法）。
+     ⚠️ 不删 JS 里「点小按钮不关抽屉」的排除判据 —— 那里的匹配防的是
+        「点小按钮误关抽屉」，与这里的隐藏是两道独立防线（隐藏失效时它仍兜底）。 */
+  html[data-dsh-drawer-open] [data-dsh-rail] .hHd-Xa_toggle,
+  html[data-dsh-drawer-open] .pI_x6G_sidebarCol .hHd-Xa_toggle{display:none!important}
+
+html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6G_sidebarCol{visibility:visible;transform:none;pointer-events:auto;transition:none}
  .dsh-phone-menu{display:block;position:fixed;top:5px;left:8px;z-index:15;min-height:34px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:10px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:14px system-ui}
  /* 有页面级模态（设置面板等）在场时隐藏自绘菜单按钮。
     真因：上游设置遮罩是 inset:var(--dsh-frame-chrome-top,0px) 0 0 —— 顶部那条
