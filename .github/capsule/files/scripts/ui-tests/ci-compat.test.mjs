@@ -65,6 +65,8 @@ const CI_STEPS = [
   ['ui-verify-preview-equivalence.mjs', []],
   // 四项目标审计：CI 无设备时各层自行跳过，必须正常退出。
   ['ui-audit-objectives.mjs', []],
+  // 原生壳面深色资源校验：无 APK 路径时必须打印用法并正常退出（CI 无设备）。
+  ['ui-verify-night-resources.mjs', []],
 ]
 
 console.log('无引擎树环境下，每个 CI 步骤都必须能正常退出')
