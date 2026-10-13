@@ -94,6 +94,7 @@ import {
 import {
   ZcodeCaptchaBrowser,
   ZCODE_CAPTCHA_FALLBACK,
+  requiresCaptchaUpfront,
   type ZcodeCaptchaConfig,
 } from './zcode-captcha.js'
 import { GateAbortedError, ModelGate } from './model-gate.js'
@@ -108,10 +109,12 @@ import {
   noteCaptchaRequired,
   noteKnownRequiredHit,
   noteProbeFirst,
+  noteUpfrontCaptcha,
 } from './captcha-requirement.js'
 import type { CarrierOutcome } from './captcha-carrier.js'
 import {
   describeZcodeRequestShape,
+  extractZcodeLogId,
   formatZcodeDiagnostic,
   formatZcodeEdgePageHint,
   formatZcodeUnusualActivityMessage,
@@ -989,6 +992,26 @@ export class ZcodeAdapter extends LlmAdapter {
         const requirementKey = captchaRequirementKey(activeAccountId, options.model)
         const knownRequired = isCaptchaKnownRequired(requirementKey, this.nowImpl())
         /**
+         * ★★ 上游**明确要求**验证 ⇒ 首发直接带，不再走那条**必然**被 `3007` 拒的先探
+         * （2026-10-12，依据见 {@link requiresCaptchaUpfront} 与
+         * `ZcodeCaptchaConfig.skipModelRequest`）。
+         *
+         * ## 为什么这是一处真实收益（不是「少发一发」的微优化）
+         *
+         * 官方 3.14.5 起，`skip_model_request` 是**服务端**下发的开关：
+         * - `true`（**当前实测值**）⇒ 推理不校验，我们的先探必然成功、零成本 ⇒ **保持先探**（不改）；
+         * - `false` ⇒ 上游**每一次**模型请求都要 captcha，先探那一发**必然**
+         *   回 `400 / 3007`，我们再在适配器内部补产重发 ⇒ **每个用户请求
+         *   恒多一次往返**（且每次都要走到 `noteCaptchaRequired` 那条日志）。
+         *
+         * ⚠ 判据本身**不发网络、不碰浏览器**（只读已缓存的 `this.captchaConfig`），
+         *   故放在热路径上无成本。
+         * ⚠ **只在 `attempt === 0`**：后续 attempt 由既有的
+         *   `knownRequired || probeRejected` 驱动 —— 那时 `probeRejected`
+         *   已经为真，本判据加进去只会让语义变模糊。
+         */
+        const upfrontCaptcha = attempt === 0 && requiresCaptchaUpfront(this.captchaConfig)
+        /**
          * 计数**只在每个请求的开局那一发**记（`attempt === 0`）：两个计数因此互斥，
          * `probeFirstCount + knownRequiredCount` 恒等于**内层循环的入口数**，
          * 面板上才有意义。
@@ -1006,6 +1029,7 @@ export class ZcodeAdapter extends LlmAdapter {
          */
         if (attempt === 0) {
           if (knownRequired) noteKnownRequiredHit()
+          else if (upfrontCaptcha) noteUpfrontCaptcha()
           else noteProbeFirst()
         }
 
@@ -1033,7 +1057,7 @@ export class ZcodeAdapter extends LlmAdapter {
          *   在推理路径置位会让 client 在上游根本不索要验证的窗口里空转产出、
          *   白耗**设备级**验证配额（阿里云同设备每小时 150 次，见 `src/captcha-backoff.ts`）。
          */
-        if (knownRequired || probeRejected) {
+        if (knownRequired || probeRejected || upfrontCaptcha) {
           // ⚠ 每轮重新产：captcha **一次性**，复用会让上游回 `3007`。
           //   也必须吃 signal：captcha 侧存在**无超时的等待**（见 `zcode-captcha.ts`），
           //   一旦命中就是无输出的永久挂起 —— 与流式读取那条通道同型。
@@ -1300,6 +1324,15 @@ export class ZcodeAdapter extends LlmAdapter {
             sentAt: upstreamStartedAt,
             status: response.status,
             shape: describeZcodeRequestShape(body.system, body.messages),
+            /**
+             * ★ `logid` —— 上游侧排障的**唯一凭据**（2026-10-12 新增）。
+             *
+             * ⚠ **双来源**：体优先、头兜底。边缘 HTML 页的体里没有 `logid`，
+             *   但头里仍有 `x-request-id`（实测两者值相同，见
+             *   {@link extractZcodeLogId}）。
+             * ⚠ 取不到时该项整段省略 —— 不编造、也不留空壳。
+             */
+            logId: extractZcodeLogId(text, response.headers),
             now: Date.now(),
           })
           : undefined

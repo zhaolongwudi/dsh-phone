@@ -50,6 +50,8 @@ import {
   groupGatewayEntries,
   groupGatewayModels,
   gatewayStatusLines,
+  gatewayLoopbackOnly,
+  gatewayFootnote,
   gatewaySwitchDisabled,
   gatewayToggleNotice,
   modelCapabilityBadge,
@@ -4991,8 +4993,14 @@ function GatewayPanel({ status, busy, notice, onToggle, onReload, onClose }) {
           // ⚠️ 用户 2026-10-04 要求这句只留「在 127.0.0.1 监听，供客户端调用」——
           // 原先列了 Pi / Continue / Cline / OpenCode 四个客户端名，在窄面板下折成两行
           // 且把「打开/关闭」那个动作词挤到很后面。客户端列举属于 README 的内容。
+          // ⚠️ **地址必须是动态的**（issue IKL7UN）：host 现在可配（容器化部署下
+          // 就是容器桥接 IP），写死 127.0.0.1 会让用户照着抄一个从容器外连不上的
+          // 地址 —— 而那正是 issue 报告者踩的坑。未在监听时退回「本机」这一定性
+          // 说法（与 gatewayEndpoint 返回 '' 的既有取舍同源：不编造具体地址）。
           React.createElement('code', { className: 'dim-jh-modelId' },
-            '在 127.0.0.1 监听，供客户端调用')),
+            status?.address
+              ? `在 ${status.address.host} 监听，供客户端调用`
+              : '在本机监听，供客户端调用')),
         React.createElement('input', {
           type: 'checkbox',
           className: 'dim-jh-switch',
@@ -5230,12 +5238,12 @@ function GatewayPanel({ status, busy, notice, onToggle, onReload, onClose }) {
               copyNoun: '个模型的档位对照',
             }))
         : null),
-    // ⚠️ 用户 2026-10-04 要求**删掉两段 curl 命令**（模型目录与对照表各一条）。
-    // 它们已被 README 的「拿到地址与密钥」/「思考档位」两节完整收录，
-    // 而弹窗里那两段是「命令行查看同一份…」的重复说明 —— 正是用户说的「三坨字混在一起」。
+    // ── 网关弹窗脚注 ──
+    // ⚠️ 这段是**安全声明**，随着 host 可配（issue IKL7UN）它必须跟着实际监听
+    // 地址变化 —— 写死「只绑定 127.0.0.1」在容器部署下是错误陈述（详见
+    // `gatewayFootnote` 的注释）。
     React.createElement('p', { className: 'dim-jh-modalHint dim-jh-gatewayFootnote' },
-      '网关只绑定 127.0.0.1，但这挡不住同机的其它用户或进程 —— 真正的隔离靠密钥，'
-      + '不要把它配置进任何浏览器端工具或扩展。'),
+      gatewayFootnote(status)),
     notice
       ? React.createElement('div', {
         className: 'dim-jh-probeNotice',

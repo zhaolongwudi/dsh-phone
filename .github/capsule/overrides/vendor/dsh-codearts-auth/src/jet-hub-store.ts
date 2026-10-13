@@ -193,6 +193,46 @@ export function sanitizeProviderOrder(raw: unknown): string[] {
 }
 
 /**
+ * 判定一个「限流解禁时刻」是否为**可用的毫秒时间戳**。
+ *
+ * ## ⚠️⚠️ 这是读写两侧**共用的唯一谓词**（真实缺陷，独立审计实测证伪）
+ *
+ * 原先读取侧（{@link sanitizeAccounts} 的 `sanitizeModelRateLimits`）判据是
+ * 「有限正数」，而写入侧（`AccountPool.updateModelRateLimit`）只拒 `!Number.isFinite`
+ * —— 两处**并不同源**，且读取侧的上界**不够严**：
+ *
+ * `1e308` 是「有限正数」，能穿过过滤落进池；而它**超出 `Date` 的合法范围**
+ * （上界 ±8.64e15）。后果是下次该 (账号, 模型) 真撞限流时，
+ * `updateModelRateLimit` 里 `new Date(current).toISOString()` 抛
+ * **`RangeError: Invalid time value`** —— 而 17 个 `updateModelRateLimit` 调用点里
+ * **16 个没有 try**（llm-adapter ×3、各 adapter、account-probe ×3），异常直接冒到
+ * 推理路径与「重测」路径。
+ *
+ * 可达输入是**手工编辑过的备份文件**（正是本模块要防的那类输入）：
+ * `modelRateLimits: {"glm-5.2": 1e308}`。
+ *
+ * ⇒ 判据收敛到本函数一处，读写两侧都调它。**不要再各写一份**。
+ *
+ * 上界取 `8.64e15`（`Date` 的最大毫秒值，`8640000000000000`）：
+ * 超过它的值 `new Date(v).getTime()` 为 `NaN`，任何 `toISOString()` 都会抛。
+ *
+ * @param value 待判定的值（任意类型，非数字一律 false）。
+ * @returns 是否是「可安全交给 `new Date()` 的毫秒时间戳」。
+ */
+export function isValidResetAtMs(value: unknown): value is number {
+  // 只认有限数字：`NaN` / `Infinity` / 字符串 / `null` 一律 false。
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false
+  // ⚠️ 必须 > 0：`0` 与负数在选号判据里等价于「不受限」（见 sanitizeModelRateLimits
+  // 的注释），且 UI 的 `hasAnyLimit` 只看键是否存在 —— 详见 D2 的取舍说明。
+  if (value <= 0) return false
+  // ⚠️ 上界：超出 Date 范围的有限数会让 `new Date(v).toISOString()` 抛 RangeError。
+  return value <= MAX_DATE_MS
+}
+
+/** `Date` 可表示的最大毫秒值（±8.64e15）。 */
+export const MAX_DATE_MS = 8_640_000_000_000_000
+
+/**
  * 归一化「锁定永久积分」开关表。
  *
  * 与 `sanitizeDisabledModels` 同款口径：**只保留显式 `true`**，其余值（`false` /

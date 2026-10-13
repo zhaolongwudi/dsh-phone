@@ -3,10 +3,12 @@ import { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { BuddyCredential } from './buddy.js'
 import type { BuddyProduct } from './product.js'
-import { createJetHubStore, mergeLegacyLoomyLock, sanitizeAccounts, sanitizeAggregateRejections, sanitizeDisabledModels, sanitizePermanentLocks } from './jet-hub-store.js'
+import { createJetHubStore, isValidResetAtMs, MAX_DATE_MS, mergeLegacyLoomyLock, sanitizeAccounts, sanitizeAggregateRejections, sanitizeDisabledModels, sanitizePermanentLocks } from './jet-hub-store.js'
 import type { AggregateRejectionMap, JetHubStore, JetHubState, ModelDisableMap, PermanentLockMap } from './jet-hub-store.js'
 import { createPermanentLockStore } from './permanent-lock-store.js'
 import type { PermanentLockStore } from './permanent-lock-store.js'
+// ⚠️ `model-queue.ts` **零 import**（纯函数模块，见其模块头）⇒ 不引入环。
+import { nextUtc8DayStartMs } from './model-queue.js'
 import type {
   CodeArtsCredential,
   ProviderAccountEntry,
@@ -80,6 +82,18 @@ export function allAccountsRateLimitedForModel(
 }
 
 /**
+ * `expiryMarkedKeys` 的复合键。
+ *
+ * ⚠️ 用 `\u0000` 作分隔符（与仓库既有约定的另外半句由 `targetKey` 之类承担）：
+ * accountId 形如 `zcode-a1b2c3d4`，**不含** NUL；模型 id 也不会。
+ * 用 `:` 之类的可见分隔符在「模型 id 含同名分隔符」时会串键
+ *（`aggregate-adapter.ts` 的拒绝表已经因这个原因选了 `\u0000`）。
+ */
+function exhaustedKey(accountId: string, modelId: string): string {
+  return `${accountId}\u0000${modelId}`
+}
+
+/**
  * AccountPool —— 多账号管理核心
  *
  * 职责：
@@ -150,6 +164,46 @@ export class AccountPool {
    * 数组语义见 `jet-hub-store.ts` 的 `JetHubState.providerOrder`。
    */
   private providerOrderCache: string[] = []
+  /**
+   * ★ **由折算观测写下的** `modelRateLimits` 标记集合（键 = `accountId\u0000modelId`）。
+   *
+   * ## ⚠️⚠️ 为什么必须有它（真实缺陷，两个独立审计共同命中 2026-10-12）
+   *
+   * `modelRateLimits` 这一张表承载了**两种语义**、且两者写的**值与键完全相同**
+   *（都是「该账号 + 该模型」+ UTC+8 次日 0 点）：
+   *
+   * | 来源 | 语义 | 依据 |
+   * |---|---|---|
+   * | `updateModelRateLimit`（各适配器） | **撞墙**：上游真的拒绝了 | **线上事实**（一次真实失败的请求） |
+   * | `markModelsExhaustedForExpiry` | **观测**：余额接口说这个模型没额度了 | 可能**滞后 / 口径不同**的计数器 |
+   *
+   * 而折算**每轮选型都跑**：只要余额接口报该模型 `> 0`，`clearModelsExhaustedForExpiry`
+   * 就会把适配器刚写的标记**无条件删掉** ⇒
+   *
+   * ```
+   * round0: pick=zcode-A 适配器写标记=true 折算后仍在=false   ← 被擦了
+   * round1: pick=zcode-A 适配器写标记=true 折算后仍在=false   ← 又被擦
+   * round2: pick=zcode-A ...                                  ← 死循环
+   * ```
+   *
+   * ⇒ 同一个号被**反复选中、反复撞墙**，每次**真烧一发请求**。
+   * 实测（关掉折算缓存后 `3/3` 轮全中）：`scripts/verify-zcode-fight-single.mjs`。
+   *
+   * ## 判据：**谁的证据更强**
+   *
+   * 「上游真的拒绝了一次请求」强于「余额接口说还有额度」（后者可能滞后）。
+   * ⇒ 清除只允许作用于**本机制写下的**标记：
+   * - `markModelsExhaustedForExpiry` 写成功后**登记**来源；
+   * - `updateModelRateLimit`（适配器）一旦为该键写过，就**认领**它
+   *  （从本集合移除）⇒ 观测路径再也擦不掉它；
+   * - `clearModelsExhaustedForExpiry` **只删登记过的**键。
+   *
+   * ⚠️ **纯内存、不落盘**：丢失它的后果是「既有标记变成来源不明 ⇒ 清不掉」
+   * —— 那是**保守方向**（与「只写不清」的单向门同向，但危害小得多：
+   * 标记本来就会在次日 0 点自然过期）。刻意不落盘，避免给
+   * `JetHubState` 加一份需要迁移与对账的新结构。
+   */
+  private readonly expiryMarkedKeys = new Set<string>()
   /** 是否已完成首次载入。 */
   private loaded = false
   /** 顺位仅在真实请求选号后推进；不写入账号凭据。 */
@@ -1418,6 +1472,16 @@ export class AccountPool {
     }
     modelId = this.rateLimitKey(accounts[idx]!, modelId)
     const current = accounts[idx]!.modelRateLimits?.[modelId]
+    /**
+     * ★ **认领该键**（见 {@link expiryMarkedKeys} 的长注释）：适配器为某
+     * (账号, 模型) 写过标记 ⇒ 这份证据来自**一次真实失败的请求**，
+     * 强于可能滞后的余额计数器 ⇒ 观测路径（`clearModelsExhaustedForExpiry`）
+     * **不得**再把它擦掉。
+     *
+     * ⚠️ 放在有效性校验**之后**：无效时刻会被上面拒绝（不写盘），
+     * 那种情况下不该认领任何东西。
+     */
+    this.expiryMarkedKeys.delete(exhaustedKey(accountId, modelId))
     // ⚠️ 判据用 `>=`：相等时无需写盘（省一次 IO），语义上也无差别。
     // 现值非有限（旧数据损坏）时**允许**被新值修掉 —— 那正是写它的机会。
     if (Number.isFinite(current) && current! >= resetAtMs) {
@@ -1435,6 +1499,186 @@ export class AccountPool {
 
     this.ctx.logger?.info?.(
       `[jet-hub] 已记录限流: 账号 ${accountId} 模型 ${modelId} 重置于 ${new Date(resetAtMs).toISOString()}`,
+    )
+  }
+
+  /**
+   * ★ **批量**写入「该账号在这些模型上已无额度」的标记（zcode 专用，2026-10-12）。
+   *
+   * ## 与 {@link updateModelRateLimit} 的分工（⚠️ 别把它实现成循环调用它）
+   *
+   * | | `updateModelRateLimit` | 本方法 |
+   * |---|---|---|
+   * | 语义 | 「**撞到**限额了」（事后，来自上游错误） | 「**查到**该模型已无额度」（事前，来自余额接口） |
+   * | 副作用 | 标记（撞限额）+ **视图层沉底** | **只写标记**，视图不沉底 |
+   * | 调用方 | 各适配器（收到 429/额度错误） | `zcodeExpiry` 的折算（每次选型） |
+   *
+   * ## ⚠️⚠️ 为什么本方法**不沉底**（这是它单列的唯一理由）
+   *
+   * ⚠️ **手机版与上游在此不同**（移植时订正，勿照抄上游注释）：
+   * 上游有 `sinkAccountToProviderEnd()`，会**落盘**把撞限额的账号挪到 provider 末尾；
+   * **手机版没有该函数** —— 落盘顺序是「用户拖拽意图」的成文契约，系统不改写
+   *（详见 {@link listAccounts} 的视图排序说明：「写时挪位」方案已被废弃）。
+   * 手机版的沉底只发生在 `listAccounts()` 的**视图层**。
+   *
+   * 而本方法的调用场景是**每次选型折算**：它只是个**观测**动作。若它也让视图沉底
+   *（或若将来有人给它加上落盘挪位），那么「GLM-5.3 专属桶烧光、但 Flash 桶还有
+   * 5M」的账号会在**每一次** auto 选型时被挪到末尾 —— 用户会发现账号顺序
+   * **莫名反复变化**，而那个账号在 Flash 上明明完全可用。这属于跨面板的意外副作用。
+   *
+   * ## ⚠️ 为什么是「批量」
+   *
+   * zcode 一次余额查询就能算出**所有**已尽的模型（见 `zcode-entitlements.ts`
+   * 的 `exhaustedModelsOf`）。逐个调 `updateModelRateLimit` 会**每次整体重写
+   * 账号列表**（那个方法末尾是 `writeAccounts(next)`）—— N 个模型就是 N 次全量落盘。
+   * 批量写只落一次盘。
+   *
+   * ## 标记的时长与语义
+   *
+   * 取 `nextUtc8DayStartMs()`（UTC+8 次日 0 点），与 zcode 的免费额度
+   * **按自然日结算**一致（`zcode-adapter.ts` 的 `switchAccountOnQuota` 同口径）。
+   * ⚠️ 到点后由 {@link sweepExpiredRateLimits} 清掉 ⇒ 自愈，不会永久固化。
+   *
+   * ⚠️ 单个模型写失败**不中断其余**？——不，本实现是**整体一次写**：
+   * 要么全写、要么全不写（`writeAccounts` 是整体替换）。这是刻意的：
+   * 部分成功会让「哪些模型被标了」变得不可预测，而重试的代价只是一次余额查询。
+   *
+   * @param accountId - 目标账号。
+   * @param modelIds - 要标记的模型 id（**必须是目录形态** —— 两侧大小写不同，
+   *   写错形态会让池的 `modelRateLimits[modelId]` 精确匹配**静默不命中**；
+   *   形态由 `zcode-entitlements.ts` 的 `exhaustedModelsOf` 保证）。
+   *   空数组时**直接返回**（不写盘）。
+   */
+  async markModelsExhaustedForExpiry(
+    accountId: string,
+    modelIds: readonly string[],
+  ): Promise<void> {
+    // ⚠️ 空数组直接返回：调用方可能在「没有模型已尽」时也调进来
+    //    （那是最常见的一格），别让每次选型都白落一次盘。
+    if (modelIds.length === 0) return
+    const accounts = this.readAccounts()
+    const idx = accounts.findIndex(a => a.id === accountId)
+    if (idx === -1) {
+      this.ctx.logger?.warn?.(
+        `[jet-hub] markModelsExhaustedForExpiry: 账号 ${accountId} 不在账号列表中（已知: ${accounts.map(a => a.id).join(', ') || '空'}）`,
+      )
+      return
+    }
+    const resetAtMs = nextUtc8DayStartMs()
+    // ⚠️ 与 `updateModelRateLimit` 同一约定：**只接受比现值更大**的解禁时刻
+    //    （那里的注释解释了原因：各家的兜底值可能比真值短，后写的会覆盖真值）。
+    //    这里同因：一次余额查询的结论不该把一个更晚的既有标记**提前**。
+    const current = accounts[idx]!.modelRateLimits ?? {}
+    const toWrite: Record<string, number> = {}
+    for (const modelId of modelIds) {
+      if (modelId.length === 0) continue
+      const existing = current[modelId]
+      if (isValidResetAtMs(existing) && existing >= resetAtMs) continue
+      toWrite[modelId] = resetAtMs
+    }
+    if (Object.keys(toWrite).length === 0) return
+
+    const entry = { ...accounts[idx]!, modelRateLimits: { ...current, ...toWrite } }
+    const next = [...accounts]
+    next[idx] = entry
+    await this.writeAccounts(next)
+    /**
+     * ★ **登记来源**（见 {@link expiryMarkedKeys} 的长注释）：
+     * 只有登记过的键才允许被 `clearModelsExhaustedForExpiry` 清除 ——
+     * 否则观测路径会擦掉适配器用「真实失败」写下的标记（死循环）。
+     */
+    for (const modelId of Object.keys(toWrite)) this.expiryMarkedKeys.add(exhaustedKey(accountId, modelId))
+    this.ctx.logger?.info?.(
+      `[jet-hub] 已按余额接口标记额度用尽（**不沉底**）: 账号 ${accountId} 模型 `
+      + `${Object.keys(toWrite).join(', ')} 重置于 ${new Date(resetAtMs).toISOString()}`,
+    )
+  }
+
+  /**
+   * ★ **批量**清除「该账号在这些模型上已无额度」的标记（zcode 专用，2026-10-12）。
+   *
+   * ## ⚠️⚠️ 为什么必须与 {@link markModelsExhaustedForExpiry} 成对（单向门）
+   *
+   * 只写不清会让标记变成**单向门**：zcode 的免费额度按自然日结算，用户**当天**
+   * 烧光后去面板签到、又领到额度时，标记仍挂在池里到 UTC+8 次日 0 点 ⇒
+   * 「签到成功了，但这个模型当天还是用不了」。本仓库对此有明确事故史
+   * （`refreshable` 被当过滤条件用，一次瞬时失败把账号永久标死）。
+   *
+   * ⚠️ **光靠签到路径救不回来**（实测 `scripts/verify-zcode-mark-after-claim.mjs`）：
+   * `credits.claimAll` 成功只清**折算缓存**（`clearExpiryCache`），
+   * **不清 `modelRateLimits`** ⇒ 自愈必须发生在**下一次折算**
+   * （那时已经拿到新的余额报文，判据是 `recoveredModelsOf`）。
+   *
+   * ## 与 {@link clearModelRateLimits} 的分工（别合并）
+   *
+   * | | `clearModelRateLimits` | 本方法 |
+   * |---|---|---|
+   * | 语义 | 用户主动「重测 / 重置」 | 折算时**发现额度已恢复** |
+   * | 传 `undefined` | 清**全部**标记 | —— 不接受省略（必须给具体模型） |
+   * | 调用频率 | 低（用户点击） | 高（每次折算），故**空数组直接返回** |
+   *
+   * ⚠️ 之所以不直接复用 `clearModelRateLimits`：那个方法没有「只清这些、别动
+   * 其余」的判据保证（传 `undefined` 会清全部），而本方法的调用方**只**知道
+   * 「这些模型有额度」，对别的模型一无所知 —— 误清会让一个真已尽的模型被反复选中。
+   *
+   * ## ⚠️⚠️ **只清「本机制写下的」标记**（真实缺陷，两个独立审计共同命中 2026-10-12）
+   *
+   * `modelRateLimits` 是**两种语义共用**的一张表，且两者写的键与值完全相同：
+   * ① 本机制（余额接口的观测）；② 各适配器的 `updateModelRateLimit`（**真的撞墙了**）。
+   *
+   * 而折算**每轮选型都跑** ⇒ 若本方法无条件删键，就会把适配器刚写下的事后证据擦掉：
+   *
+   * ```
+   * round0: pick=zcode-A 适配器写标记=true 折算后仍在=false   ← 被擦了
+   * round1: pick=zcode-A 适配器写标记=true 折算后仍在=false
+   * round2: pick=zcode-A ...                                  ← 死循环，每次真烧一发请求
+   * ```
+   *
+   * 实测（关掉折算缓存后 `3/3` 轮全中）：`scripts/verify-zcode-fight-single.mjs`。
+   * ⇒ 判据取「**谁的证据更强**」：一次**真实失败**的请求强于可能滞后的余额计数器。
+   * 故只删 {@link expiryMarkedKeys} 登记过的键（适配器为该键写过就会被「认领」）。
+   *
+   * @param accountId - 目标账号。
+   * @param modelIds - 要清除的模型 id（**目录形态**）；空数组时**直接返回**。
+   */
+  async clearModelsExhaustedForExpiry(
+    accountId: string,
+    modelIds: readonly string[],
+  ): Promise<void> {
+    if (modelIds.length === 0) return
+    const accounts = this.readAccounts()
+    const idx = accounts.findIndex(a => a.id === accountId)
+    if (idx === -1) {
+      this.ctx.logger?.warn?.(
+        `[jet-hub] clearModelsExhaustedForExpiry: 账号 ${accountId} 不在账号列表中`,
+      )
+      return
+    }
+    const current = accounts[idx]!.modelRateLimits
+    if (current === undefined) return
+    /**
+     * 只删**本机制写下、且确实还在**的那些
+     *（见上方长注释：适配器写的标记**不许**被观测路径擦掉）。
+     */
+    const removed: string[] = []
+    for (const modelId of modelIds) {
+      if (!Object.prototype.hasOwnProperty.call(current, modelId)) continue
+      if (!this.expiryMarkedKeys.has(exhaustedKey(accountId, modelId))) continue
+      removed.push(modelId)
+    }
+    if (removed.length === 0) return
+
+    const limits = { ...current }
+    for (const modelId of removed) {
+      delete limits[modelId]
+      this.expiryMarkedKeys.delete(exhaustedKey(accountId, modelId))
+    }
+    const entry = { ...accounts[idx]!, modelRateLimits: limits }
+    const next = [...accounts]
+    next[idx] = entry
+    await this.writeAccounts(next)
+    this.ctx.logger?.info?.(
+      `[jet-hub] 额度已恢复，已清除标记: 账号 ${accountId} 模型 ${removed.join(', ')}`,
     )
   }
 

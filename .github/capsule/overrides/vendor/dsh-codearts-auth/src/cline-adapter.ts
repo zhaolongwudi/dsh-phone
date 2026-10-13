@@ -71,6 +71,7 @@ import {
   serializeMessages,
 } from './openai-compat.js'
 import { planSessionTitleThinking } from './session-title.js'
+import type { CatalogHealth } from './types.js'
 
 /** 本适配器注册的 provider 路由名（等价于 `CLINE.id`）。 */
 export const PROVIDER = 'cline'
@@ -238,8 +239,17 @@ export interface ClineAdapterOptions {
 export class ClineAdapter extends LlmAdapter {
   private readonly product: ClineProduct
   private readonly fetchImpl: typeof fetch
-  /** 远端模型目录缓存（首次成功后填充）。 */
+  /** 远端模型目录缓存（**残缺目录也会填充**，展示需要 —— 见 ensureRemoteModels）。 */
   private remoteModels: ClineModel[] | undefined
+  /**
+   * 目录是否**已完整**（两个 Cline 端点**且** models.dev 都已就绪）。
+   *
+   * ⚠️⚠️ **短路判据必须是它，不是 `remoteModels !== undefined`**（issue IKKZUG）：
+   * 残缺目录也会落 `remoteModels`，若按「已定义」短路，models.dev 一次失败就会被
+   * **永久固化** —— 闸门的 30 秒冷却再也读不到，`cline-pass/*` 的模型与图片能力
+   * 「明确不支持」到进程结束，**只能重启才能恢复**（上游实测 23:02→次日 00:30）。
+   */
+  private remoteComplete = false
   /** 正在进行中的目录加载（避免并发重复请求）。 */
   private loading: Promise<void> | undefined
   /**
@@ -254,6 +264,24 @@ export class ClineAdapter extends LlmAdapter {
   private modelsDevLoading: Promise<void> | undefined
   /** models.dev 加载器。 */
   private readonly loadModelsDev: () => Promise<Map<string, ClineModelsDevEntry>>
+  /**
+   * 兜底目录缓存（issue IKL3YH 的热点）：`fallbackCatalog()` 在
+   * `inputModalitiesFor` / `listAllModels` 等热路径上被反复调用，
+   * 每次重建整份数组纯属浪费（原实现 O(N²) 的一半来源）。
+   */
+  private fallbackModelsCache: ClineModel[] | undefined
+  /**
+   * 模型 id → 条目的索引缓存。
+   *
+   * ⚠️ 原实现在 `inputModalitiesFor` 里对 `remoteModels` 做
+   * `find()` 线性扫描 ⇒ 宿主对每个模型调一次 `resolveModel`/`stream`
+   * ⇒ 整表 O(N²)（issue IKL3YH 实测全仓只有这一处）。
+   * ⚠️ 判据必须是「来源数组**身份**变了」（`===`）而**不是**长度变了：
+   * 目录补齐会换上条数可能相同的新数组，只看长度会读到陈旧索引。
+   */
+  private catalogIndexCache:
+    | { source: readonly ClineModel[]; index: Map<string, ClineModel> }
+    | undefined
 
   /**
    * 目录加载闸门：并发去重 + 失败/空结果冷却。
@@ -301,9 +329,63 @@ export class ClineAdapter extends LlmAdapter {
    * ⚠️ 没有结论时保守报 `text`（宁可少报能力，也不要报一个服务端不认的模态）
    * —— 注意这与「明确读到不支持」是两回事，但外部行为一致。
    */
-  private inputModalitiesFor(model: string): readonly ('text' | 'image')[] {
-    const entry = this.remoteModels?.find((candidate) => candidate.id === model)
-    return entry?.supportsImage === true ? ['text', 'image'] : ['text']
+  private inputModalitiesFor(model: string): readonly ('text' | 'image')[] | undefined {
+    const source = this.remoteModels ?? this.fallbackCatalog()
+    const entry = this.catalogIndexFor(source).get(model)
+    // ⚠️⚠️ 必须判 `=== undefined`（**字段缺席**）而不是 `!== true`（issue IKKZUG）：
+    // 后者把「明确 false」与「没这条记录」压成同一结果 —— 而 cline 的「未知」
+    // 是**高频**而非理论边界：`cline-pass/*` 的条目只由 models.dev 提供，
+    // 那是 5.39 MB 的外部站点、经常拉不到。把它当「不支持」会让 DSH 把图片
+    // **静默**投影成占位文本，用户以为模型看不了图。
+    if (entry?.supportsImage === undefined) return undefined
+    return entry.supportsImage ? ['text', 'image'] : ['text']
+  }
+
+  /**
+   * 模型 id → 条目的索引（带缓存，见 {@link catalogIndexCache} 的 O(N²) 说明）。
+   */
+  private catalogIndexFor(source: readonly ClineModel[]): Map<string, ClineModel> {
+    if (this.catalogIndexCache !== undefined && this.catalogIndexCache.source === source) {
+      return this.catalogIndexCache.index
+    }
+    const index = new Map(source.map((model) => [model.id, model]))
+    this.catalogIndexCache = { source, index }
+    return index
+  }
+
+  /**
+   * 目录健康快照（issue IKKZUG 第 5 点：可观测性）。
+   *
+   * ## 为什么需要（排障困境）
+   *
+   * 本家目录有**三个来源**，其中 models.dev 是外部站点、**经常拉不到**。
+   * 而失败时只有一行 `console.warn`，**宿主不落盘** ⇒ 用户与排障者看到的
+   * 只是「贴不了图」，**无从判断**是「这个模型不支持图片」还是「目录还没拉到」。
+   * 用户正是靠手工推演才定位到这一层 —— 那不该是排障的常规成本。
+   *
+   * ## 三条纪律（与 `jet-hub-rpc` 的钩子约定一致）
+   *
+   * 1. ⚠️ **零 IO**：设置页挂载时对每个供应商都会调它，一旦触发网络请求
+   *    就会拖慢首屏 —— 故只读内存字段。
+   * 2. ⚠️ `note` **只在异常时给**：完整时不写该字段（一句「一切正常」
+   *    对排障毫无价值，也省掉前端一处渲染分支）。
+   * 3. ⚠️ `complete: false` **不等于故障**：插件会按闸门冷却**自动重试**，
+   *    用户无需做任何事 —— 故文案必须写明这一点，否则用户以为要自己去修。
+   *
+   * ⚠️ 手机版**没有**上游的 `createModelCatalog` 骨架，故 `complete` 不能照抄
+   * `remoteComplete` 字段；此处按手机版的真实语义判定：
+   * 「已拿到远端目录」且「已读到 models.dev」才算完整。
+   */
+  describeCatalogHealth(): CatalogHealth {
+    const source = this.remoteModels ?? this.fallbackCatalog()
+    if (this.remoteComplete) return { total: source.length, complete: true }
+    return {
+      total: source.length,
+      complete: false,
+      note: this.modelsDev === undefined
+        ? 'models.dev 未就绪 —— cline-pass/* 的模型与图片能力只由它提供（会自动重试）'
+        : 'Cline 模型目录来源未取全（会自动重试）',
+    }
   }
 
   /**
@@ -316,7 +398,13 @@ export class ClineAdapter extends LlmAdapter {
    * 不去重会打出多份重复的远端请求（两个端点各一次，乘以并发数）。
    */
   private async ensureRemoteModels(): Promise<void> {
-    if (this.remoteModels !== undefined) return
+    // ⚠️⚠️ **短路判据是「已完整」，不是「已定义」**（issue IKKZUG 的核心修复点）。
+    //
+    // 残缺目录**也**会落 `remoteModels`（展示需要），若这里只判 `!== undefined`
+    // 就再也不进闸门 ⇒ 闸门的冷却（`retryAt` / `cooling()`）**永远读不到**
+    // ⇒ 残缺目录永久固化，`cline-pass/*` 的模型与图片能力只能靠**重启 DSH** 才能回来。
+    // 放行到闸门后，由闸门的 30 秒冷却控制重试节奏（不会打风暴）。
+    if (this.remoteComplete) return
     await this.catalogGate.run(async () => {
       try {
         // 目录加载路径**没有**目标模型（它要一次列出全部模型），故不传 modelId：
@@ -351,9 +439,14 @@ export class ClineAdapter extends LlmAdapter {
           console.warn(`[cline] 模型目录来源失败：${warning}`)
         }
         if (!gotRemote) return false
+        // ⚠️ 残缺目录也落缓存（否则每次 `listModels` 都重拉两个端点），
+        // 但 `remoteComplete` 保持 false ⇒ 下次仍进闸门，由冷却控制重试。
         this.remoteModels = merged
-        return true
-        return true
+        // ⚠️⚠️ 并上「models.dev 已读到」（issue IKKZUG）：判据是 `modelsDev !== undefined`
+        // （**读到过**，含读到空表），与「merged 里有没有补进条目」无关 ——
+        // 上游确实没有 cline-pass 块时读到的是空表，那同样属于「已就绪」，不该无限重试。
+        this.remoteComplete = this.modelsDev !== undefined
+        return this.remoteComplete
       } catch (error) {
         // 拉取失败保持未定义，后续 listModels/resolveModel 仍回退静态兜底表。
         // eslint-disable-next-line no-console
@@ -394,7 +487,8 @@ export class ClineAdapter extends LlmAdapter {
 
   /** 兜底目录（远端不可用时的静态表，含 5 个免费模型）。 */
   private fallbackCatalog(): ClineModel[] {
-    return this.product.fallbackModels.map((model) => ({
+    if (this.fallbackModelsCache !== undefined) return this.fallbackModelsCache
+    this.fallbackModelsCache = this.product.fallbackModels.map((model) => ({
       id: model.id,
       name: model.name,
       isFree: model.isFree === true,
@@ -403,6 +497,7 @@ export class ClineAdapter extends LlmAdapter {
       ...model.supportsImage === undefined ? {} : { supportsImage: model.supportsImage },
       ...model.description === undefined ? {} : { description: model.description },
     }))
+    return this.fallbackModelsCache
   }
 
   /**
@@ -449,15 +544,23 @@ export class ClineAdapter extends LlmAdapter {
     const listed = disabled === undefined || disabled.size === 0
       ? source
       : source.filter((model) => !disabled.has(model.id))
-    return listed.map((model) => ({
-      provider: this.product.id,
-      id: model.id,
-      // 免费标记拼进 `name`（**不是** `description`）：composer 的模型切换菜单
-      // 只渲染 name，description 仅用于 /model 弹窗。
-      name: clineDisplayName(model),
-      ...model.description === undefined ? {} : { description: model.description },
-      inputModalities: this.inputModalitiesFor(model.id),
-    }))
+    return listed.map((model) => {
+      // ⚠️⚠️ 三态（issue IKKZUG）：`supportsImage` **缺席** = 未知 ⇒ 必须
+      // **省略** `inputModalities` 字段（宿主契约 `absent means unknown`）；
+      // 报 `['text']` 会让 DSH 把图片**静默**投影成占位文本。
+      // ⚠️ 只调一次并存入局部量：调两次既浪费，也可能在目录热更新窗口里
+      //    两次读到不同结果（判据与赋值不同源）。
+      const modalities = this.inputModalitiesFor(model.id)
+      return {
+        provider: this.product.id,
+        id: model.id,
+        // 免费标记拼进 `name`（**不是** `description`）：composer 的模型切换菜单
+        // 只渲染 name，description 仅用于 /model 弹窗。
+        name: clineDisplayName(model),
+        ...model.description === undefined ? {} : { description: model.description },
+        ...modalities === undefined ? {} : { inputModalities: modalities },
+      }
+    })
   }
 
   async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
@@ -472,8 +575,10 @@ export class ClineAdapter extends LlmAdapter {
       // ⚠️ `resolveModel` 的 `name` **不带**免费标记（与 Qoder/TRAE 一致）：
       // 标记只属于「选择列表」语境；会话记录里带上它会污染历史展示。
       name: entry?.name ?? model,
-      inputModalities: this.inputModalitiesFor(model),
     }
+    // ⚠️⚠️ 三态（issue IKKZUG）：未知时**省略**该字段（宿主契约 absent = unknown）。
+    const modalities = this.inputModalitiesFor(model)
+    if (modalities !== undefined) resolved.inputModalities = modalities
     // 上下文窗口：远端/兜底表已知时才声明（未知时不编造，让 DSH 用默认值）。
     if (entry?.contextWindow !== undefined) resolved.context = { contextWindow: entry.contextWindow }
     // 单次输出上限：必须声明为 `defaultMaxTokens`，否则 DSH 只在调用方显式
@@ -528,7 +633,22 @@ export class ClineAdapter extends LlmAdapter {
       // `resolveModel`，缺了这一步会把支持图片的模型误判成纯文本
       // —— 那正是「支持图片的模型发不了图」的形态。
       await this.ensureRemoteModels()
-      if (!this.inputModalitiesFor(options.model).includes('image')) {
+      // ⚠️⚠️ **三态门禁**（issue IKKZUG）：未知**仍然拒绝**，但**不得**说成
+      // 「不支持」—— 那会把「目录还没拉到」误导成「这个模型看不了图」，
+      // 用户会去换模型、查文档，而解法只是等目录就绪。
+      //
+      // ⚠️ 错误码用 `INVALID_REQUEST`（**不在** harness 的可重试集合里）：
+      // 这类「等一会儿就好」的错误**不该由 harness 自动重试** ——
+      // 自动重试会让用户在 15 秒里看到 6 次闪动（500/1000/2000/4000/8000 ms）。
+      // ⚠️ **不要**用 `TRANSPORT`：实测它在 `DEFAULT_RETRYABLE_CODES` 里。
+      const modalities = this.inputModalitiesFor(options.model)
+      if (modalities === undefined) {
+        throw new LlmError(
+          `cline: 模型 "${options.model}" 的能力列表尚未加载完成，暂时无法判断是否支持图片；请稍后重试。`,
+          'INVALID_REQUEST',
+        )
+      }
+      if (!modalities.includes('image')) {
         throw new LlmError(
           `cline: 模型 "${options.model}" 不支持图片输入`,
           'UNSUPPORTED_CONTENT',

@@ -99,7 +99,7 @@ export function createProviderExpiry(): Readonly<Record<string, ProviderExpiry>>
     workbuddy: buddyFamilyExpiry(WORKBUDDY),
     loomy: { credentialExpiry: (c) => loomyExpiry(c as LoomyCredential) },
     codearts: { credentialExpiry: (c) => codeArtsExpiry(c as CodeArtsCredential) },
-    zcode: { credentialExpiry: (c) => zcodeExpiry(c as ZcodeCredential) },
+    zcode: { credentialExpiry: (c, context) => zcodeExpiry(c as ZcodeCredential, context) },
     lobsterai: { credentialExpiry: (c) => lobsteraiExpiry(c as LobsteraiCredential, LOBSTERAI) },
     trae: { credentialExpiry: (c) => traeExpiry(c as TraeCredential, TRAE) },
   }

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { GenerateOptions, LlmModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { loadOrCreateApiKey, type ApiKeySource } from './auth.js'
-import { resolveGatewayConfig, type OpenAiGatewayConfig } from './config.js'
+import { gatewayHttpUrl, resolveGatewayConfig, type OpenAiGatewayConfig } from './config.js'
 import { markGatewayChannel } from './channel.js'
 import { toGenerateOptions, OpenAiGatewayError, parseModelRoute, normalizeReasoningEffort, normalizeMaxTokens, type OpenAiChatRequest, type ReasoningEffortNotice } from './messages.js'
 import type { AttachmentBridge, ImageLimits } from './images.js'
@@ -517,7 +517,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): OpenAiGatewa
         logger.error(`[openai-gateway] 启动失败 ${config.host}:${config.port}：${error instanceof Error ? error.message : String(error)}`)
         throw error
       })
-      logger.info(`[openai-gateway] 已监听 http://${config.host}:${boundPort}/v1`)
+      logger.info(`[openai-gateway] 已监听 ${gatewayHttpUrl(config.host, boundPort, '/v1')}`)
     },
     async close(): Promise<void> {
       for (const controller of active) controller.abort()

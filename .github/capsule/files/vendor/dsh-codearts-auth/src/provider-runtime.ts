@@ -98,6 +98,66 @@ export interface ProviderCallContext {
 }
 
 /**
+ * 临期折算的**可选上下文**（`ProviderRuntime.expiry.credentialExpiry` 的第二参）。
+ *
+ * ## ⚠️ 为什么把它命名导出（而不是在签名里内联一个匿名对象类型）
+ *
+ * 真实缺陷（本机自查，2026-10-12）：这个形状原先被**抄写了三份** ——
+ * 本文件一份、`aggregate-expiry.ts` 的 `credentialExpiry` 与 `zcodeExpiry`
+ * 各一份。三份必须逐字段一致，而**没有任何机制保证**：
+ * 给某一处加字段（或改某字段的可选性/类型）时，另一处不会报错，
+ * 只会让「传进去的字段被静默忽略」或「实现方看不到新字段」。
+ *
+ * ⇒ 收敛成**一个命名类型**，三处共用。这是本仓库首条红线
+ *（「同一语义两套判据」）在类型层的同一手法。
+ *
+ * ## 为什么全部字段可选
+ *
+ * 只有 zcode 用得上它们（另 6 家的折算与账号 id 无关）。全部可选 ⇒
+ * 另外 6 家的实现忽略第二参即可，**一行都不用改**（G3「零行为变化」）。
+ * ⚠️ 实现方**不得**因为 `context` 缺席就改变返回值：缺席只意味着
+ *「写不了标记」（副作用做不了），**不是**「不知道该模型可不可用」。
+ */
+export interface ProviderExpiryContext {
+  /** 该凭据所属的**账号池条目 id**（写 `modelRateLimits` 用）。 */
+  readonly accountId?: string
+  /**
+   * 该渠道的**全部目录模型 id**（惰性求值 —— 只有真的调它才会读目录）。
+   *
+   * ⚠️ **必须是函数**：另外 6 家的实现**完全不碰它**，若传一个已求值的数组，
+   * 每轮折算都会为它们白读一次目录（本仓库反复记录的成本）。
+   *
+   * ⚠️ 渠道目录读不到时由调用方降级为「只有第一个模型」的数组（可能为空）。
+   */
+  readonly catalogIds?: () => Promise<readonly string[]>
+  /**
+   * 把「某账号在这些模型上确定已无额度」写成**持久标记**。
+   *
+   * ⚠️ 由调用方（`aggregate-expiry.ts`）注入，**实现方不自己 import 账号池**
+   * —— 那条依赖会让本模块反向依赖上层（见模块头的层次约束）。
+   * ⚠️ 缺席时实现方**照常返回折算值**，只是不写标记。
+   * ⚠️ 传入的模型 id 必须是**目录形态**（见 `zcode-entitlements.ts`
+   * 的 `exhaustedModelsOf`：上游小写 vs 目录大写的**成败点**）。
+   */
+  readonly markModelsExhausted?: (accountId: string, modelIds: readonly string[]) => Promise<void>
+  /**
+   * **清除**「某账号在这些模型上已无额度」的标记（额度恢复时用）。
+   *
+   * ## ⚠️⚠️ 为什么必须与 `markModelsExhausted` 成对（真实缺陷 —— 单向门）
+   *
+   * 只写不清会把标记变成**单向门**：zcode 的免费额度按自然日结算，用户
+   * **当天**烧光后去签到又领到额度（或上游调整）时，标记仍挂到次日 0 点 ⇒
+   * 「签到成功了但当天用不了」。本仓库对单向门有事故史（`refreshable`）。
+   *
+   * ⚠️ 实测确认光靠**签到路径**救不回来：`credits.claimAll` 成功只清折算缓存、
+   * 不清 `modelRateLimits`（`scripts/verify-zcode-mark-after-claim.mjs`）。
+   * ⇒ 自愈必须发生在**下一次折算**（那时已经拿到新的余额报文）。
+   * ⚠️ 缺席时实现方照常返回折算值，只是清不掉旧标记。
+   */
+  readonly clearModelsExhausted?: (accountId: string, modelIds: readonly string[]) => Promise<void>
+}
+
+/**
  * 一个 provider 的能力实现。
  *
  * ⚠️ **每个域都可选**：provider 只实现自己有的能力，`undefined` 即「不支持」。
@@ -218,7 +278,6 @@ export interface ProviderRuntime {
    * 此时用 `fetchBalanceDetailed`，原因由实现自己给。
    */
   readonly credits?: ProviderCredits
-
   /**
    * 临期折算（供聚合 / auto 的候选排序）。
    *
@@ -253,7 +312,6 @@ export interface ProviderRuntime {
      *
      * @returns 毫秒时间戳（越小越早作废）／`NEVER`（长期：排最后但**不剔除**）
      *   ／`UNUSABLE`（查不到：**剔除**）
-     *
      * ⚠️ 「**有余额但无到期时间**」必须是 `NEVER` 而**不是** `UNUSABLE`：
      * 实测 lobsterai 的 `expiresAt` 可为**空串**、buddy 的永久积分包也可能不下发
      * `DeductionEndTime`。这类包**确实有额度**（`remaining > 0`），
@@ -267,8 +325,24 @@ export interface ProviderRuntime {
      *
      * ⚠️ `credential` 是 `unknown`：各渠道凭据形状不同，由各实现自己收窄
      *（各家原语的入参类型即各自的凭据类型）。
+     *
+     * ## ⚠️⚠️ `context` 是**可选**的，且**只有 zcode 用**（2026-10-12）
+     *
+     * 加它的原因是 zcode 的**按模型**额度（8M = GLM-5.3 3M + GLM-5.3-Flash 5M
+     * 两个**专属桶**）。要写出「这个账号在这个模型上已尽」的持久标记，
+     * 就需要知道**是哪个账号**（`accountId`）—— 而 `credential` 里没有它
+     *（`ZcodeCredential` 没有账号 id 字段，且**绝不能**用 `device_mid` 顶替：
+     * 那是我们每次登录随机生成的，判据见 `zcode.ts` 的字段注释）。
+     *
+     * ⚠️ **必须是可选参数**：另外 6 家（buddy / workbuddy / loomy / codearts /
+     * lobsterai / trae）的折算**与账号 id 无关**（它们只看凭据本身），
+     * 加必填参数会让 6 个实现、`provider-expiry.ts` 与几十处测试桩一起改，
+     * 而它们**一行行为都不需要变** —— 这正是 G3「零行为变化」要避免的噪音。
+     *
+     * ⚠️ 实现方**不得**因为 `context` 缺席就改变返回值：它缺席时只意味着
+     *「写不了标记」（副作用做不了），**不是**「不知道该模型可不可用」。
      */
-    credentialExpiry(credential: unknown): Promise<number>
+    credentialExpiry(credential: unknown, context?: ProviderExpiryContext): Promise<number>
   }
 
   /**

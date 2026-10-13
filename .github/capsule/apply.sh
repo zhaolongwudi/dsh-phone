@@ -55,9 +55,31 @@ grep -q "ActiveModelPill" vendor/dsh-codearts-auth/plugin-src/client/index.js
 #    两者都属「抽出的函数正确 ≠ 被正确调用」，故由构建自检显式盯住调用点。
 grep -q "await healExpiredAccounts(accounts)" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
 grep -q "if (!catalog.complete)" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
+# ⚠️ 移植 Gitee master（2026-10-13 第四轮，d14636e6→30e718d3，20 提交）的**静默失效**接线。
+#    共同形态同样是「抽出的函数正确 ≠ 被正确调用」，而丢掉它们的后果都是**用户可见**
+#    却**不报错**：
+#    ① zcode 额度按模型判定（issue：8M = 3M(GLM-5.3) + 5M(GLM-5.3-Flash)）——
+#       丢掉 `exhaustedModelsOf` 接线后，专属桶烧光仍判「账号没用完」⇒ **不换号**；
+#    ② cline 图片能力三态（IKKZUG）—— 丢掉 `undefined` 分支后，目录未就绪被谎报成
+#       「不支持图片」⇒ DSH 把图片**静默**投影成占位文本；
+#    ③ cline 目录健康快照（IKKZUG 第 5 点）—— 丢掉后「没拉到」不可观测，排障只能靠推演；
+#    ④ 网关 host 可配 + 通配拒绝（IKL7UN）—— 丢掉 fail-closed 白名单后，一个
+#       `0。0。0。0` 形态就能让网关**绑全部网卡**（审计实测局域网 4/4 可反连）。
+grep -q "exhaustedModelsOf" vendor/dsh-codearts-auth/src/aggregate-expiry.ts
+grep -q "describeCatalogHealth" vendor/dsh-codearts-auth/src/jet-hub-rpc.ts
+grep -qE "if \(entry\?\.supportsImage === undefined\) return undefined" vendor/dsh-codearts-auth/src/cline-adapter.ts
+grep -q "isLegalHostText" vendor/dsh-codearts-auth/src/openai-gateway/config.ts
+grep -q "DSH_OPENAI_GATEWAY_HOST" vendor/dsh-codearts-auth/src/openai-gateway/config.ts
+# trae 缓存命中率恒为 0 的修复（用户报障直指）：丢掉 `cacheReadTokens` 后
+# DSH 作 `cacheReadTokens ?? 0` ⇒ 界面显示「缓存命中 0%」而非「—」。
+grep -q "traeUsageFromTokenUsage" vendor/dsh-codearts-auth/src/trae.ts
+grep -q "traeUsageFromTokenUsage" vendor/dsh-codearts-auth/src/trae-adapter.ts
+# zcode captcha 首发主动带（读上游 skip_model_request 开关，省一发必然 3007 的先探）。
+grep -q "noteUpfrontCaptcha" vendor/dsh-codearts-auth/src/captcha-requirement.ts
 test -f vendor/dsh-codearts-auth/src/active-route.ts
 test -f vendor/dsh-codearts-auth/src/context-window-store.ts
 test -f vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js
+test -f vendor/dsh-codearts-auth/src/zcode-entitlements.ts
 
 # 5) UI 形态标记层接线自检（2026-10-12 新增）
 # ⚠️ 为什么必须盯住：本层发布的 data-dsh-* 事实被 dsh-phone.css 消费。若 JS 里

@@ -45,6 +45,7 @@ import type { CodeArtsCredential } from './types.js'
 import type { ZcodeCredential } from './zcode.js'
 import { fetchZcodeBalance } from './zcode-upstream.js'
 import { nextUtc8DayStartMs } from './model-queue.js'
+import { exhaustedModelsOf, recoveredModelsOf } from './zcode-entitlements.js'
 import type { CreditBalance } from './credits.js'
 import type { LobsteraiProduct } from './lobsterai-product.js'
 import type { LobsteraiCredential } from './lobsterai.js'
@@ -52,7 +53,7 @@ import { fetchLobsteraiCreditBalance } from './lobsterai-credits.js'
 import type { TraeProduct } from './trae-product.js'
 import type { TraeCredential } from './trae.js'
 import { fetchTraeCreditBalance } from './trae-credits.js'
-import { runtimeOf } from './provider-runtime.js'
+import { runtimeOf, type ProviderExpiryContext } from './provider-runtime.js'
 
 /**
  * 真实临期探针：**每个渠道折算成一个「最早失效时刻」**。
@@ -195,6 +196,31 @@ export type ExpiryProbeWithCache = ExpiryProbe & { clear: () => void }
   now?: () => number
   /** 缓存时长（毫秒）；默认 {@link EXPIRY_CACHE_TTL_MS}。 */
   ttlMs?: number
+  /**
+   * 该渠道的**全部目录模型 id**（可选的加强依赖，2026-10-12 加入）。
+   *
+   * ## 为什么需要它（zcode 的按模型额度）
+   *
+   * zcode 的余额是**按模型分桶**的（实测 8M = GLM-5.3 的 3M + GLM-5.3-Flash 的 5M），
+   * 要把「某模型在这个账号上已尽」写成 `modelRateLimits` 标记，就必须知道
+   * **该渠道的目录模型 id 有哪些、且大小写是什么**。
+   *
+   * ⚠️ **两侧大小写不同**（实测 `scripts/probe-zcode-model-id-casing.mjs`）：
+   *
+   * | 来源 | 形态 |
+   * |---|---|
+   * | 上游 `capabilities` | `model:glm-5.3`（**小写**） |
+   * | DSH 目录 `modelId`（= 池过滤用的键） | `GLM-5.3`（**大写**） |
+   *
+   * 而池的过滤是 `a.modelRateLimits[modelId]` **精确匹配** ⇒ 拿小写去写
+   * **永远不命中**，且没有任何报错（静默失效）。⇒ 必须传**目录那一套形态**的 id
+   * （由 `zcode-entitlements.ts` 的 `exhaustedModelsOf` 保证：它直接回传进来
+   * 的目录元素，而内部比对是大小写不敏感的）。
+   *
+   * ⚠️ **省略时的降级**：用 `firstModelIdOf` 那一个 id 当作全集（只覆盖第一个模型）。
+   * 这让既有装配与几十处测试桩**零改动**即可工作 —— 见下方调用点。
+   */
+  catalogIdsOf?: (provider: string) => Promise<readonly string[]>
 }
 
 export function createExpiryProbe(
@@ -292,7 +318,19 @@ export function createExpiryProbe(
     const startedAt = generation
 
     // ⚠️ 类型是 `unknown[]`（各渠道凭据形状不同，由 `credentialExpiry` 分派时收窄）。
-    let credentials: unknown[]
+    //
+    // ★ 2026-10-12：改为保留**账号条目 id**（`entry.id`）—— zcode 的按模型额度
+    //   标记必须写到**具体账号**上（`modelRateLimits` 是账号级字段），
+    //   而 `credential` 里没有账号 id（`device_mid` 是我们每次随机生成的，不可用）。
+    //   ⚠️ 旧回退路径（`legacySingleCredential`）拿不到 id，故那里显式填 `undefined`
+    //   —— 后果只是「那条路径下 zcode 写不了标记」，不影响折算值。
+    let credentials: Array<{ entry: { id?: string }; credential: unknown }>
+    /**
+     * 该渠道目录的第一个模型 id（空串 = 目录读不到）。
+     *
+     * ⚠️ **必须提到 `try` 外面**：`catalogIds` 的降级分支要用它（2026-10-12）。
+     */
+    let probeModel = ''
     try {
       // ⚠️ `?? ''` 是**有意的**降级（注释随搬移丢失，Task 7 复审 M3 指出，现补回）：
       // 目录不可读 / 无可用模型时退回空串 —— 此时「有没有账号」这个判据**仍然成立**，
@@ -300,7 +338,7 @@ export function createExpiryProbe(
       // 过滤）。取舍方向：宁可少筛一层，也不可把整池判成不可用。
       // ⚠️ 反之**不要**在这里因为拿不到 modelId 就 return UNUSABLE —— 那会让
       // 「目录暂时读不到」被误报成「这个渠道没账号」。
-      const probeModel = await firstModelIdOf(provider) ?? ''
+      probeModel = await firstModelIdOf(provider) ?? ''
       // ⚠️⚠️ **取全部启用账号，而不是一个代表账号**（真实缺陷，用户报障 2026-10-07）。
       //
       // 用户质疑：「workbuddy 中一个号是 1 天到期，为什么我们统计是 2000 多天，
@@ -320,9 +358,53 @@ export function createExpiryProbe(
       //    `auto-adapter.spec.ts` —— 那份 spec 是**硬约束：必须零改动且全绿**
       //   （它是两处「搬移而非复制」重构的安全网）。
       //    ⚠️ 回退路径的语义是**降级**（少看几个账号），不是错误。
+      //
+      // ⚠️⚠️ **取号必须传空 `modelId`（跳过「按模型」过滤）** ——
+      //    真实缺陷（本机实测 2026-10-12）：原先传的是 `probeModel`，
+      //    而那会让本函数陷入**死锁**、且**整个渠道**从候选里消失：
+      //
+      // | 步骤 | 发生了什么 |
+      // |---|---|
+      // | ① | `probeModel = firstModelIdOf(provider)` = 目录**第一个**模型 |
+      // | ② | 某次折算把「该模型已尽」写进 `modelRateLimits[probeModel]` |
+      // | ③ | 下次折算取号 `listAvailableCredentials(provider, probeModel)` **按模型过滤** ⇒ 账号被筛空 |
+      // | ④ | `credentials.length === 0` ⇒ 返回 `UNUSABLE` ⇒ **折算根本没跑** |
+      // | ⑤ | 于是既清不掉标记、也写不了新标记 ⇒ 标记挂到次日 0 点 |
+      // | ⑥ | **整个 zcode 渠道**在这期间对 auto / aggregate 不可见 |
+      //
+      // ⚠️ 实测（`scripts/verify-zcode-mark-self-heal.mjs`）：
+      //    zcode 兜底目录顺序为 `[GLM-5.3-Flash, GLM-5.3]` ⇒ 只要
+      //    **被标记的是 `GLM-5.3-Flash`**（用户实际一直在用的那个模型，
+      //    真实会话日志 1359 次）就命中死锁。不是边角情形。
+      //
+      // ⇒ **折算问的是「这个渠道整体最早何时作废」，与「哪个模型」无关**
+      //   （判据只看各账号的资源包 / 余额到期时刻）。按模型过滤在这里
+      //   既**多余**（2026-10-07 起，派发前已由 `hasUsableAccountFor` /
+      //   `filterByModelAvailability` 按**真实模型**复核），又**有害**（上面的死锁）。
+      //   ⇒ 空串正是本仓库「不按模型过滤」的既有语义
+      //   （`getAvailableAccount` / `listAvailableCredentials` 对空 `modelId`
+      //    都有专门注释：跳过限流过滤、保持候选不变）。
+      //
+      // ⚠️ 这条也修正了**代码与注释的矛盾**：上面那句「取**全部**账号」
+      //    在原实现里并没有真的做到（被 `probeModel` 过滤掉了一部分）。
       credentials = typeof pool.listAvailableCredentials === 'function'
-        ? (await pool.listAvailableCredentials(provider, probeModel)).map((item) => item.credential)
-        : await legacySingleCredential(pool, provider, probeModel)
+        ? await pool.listAvailableCredentials(provider, '')
+        : // ⚠️ **回退路径刻意保留 `probeModel`**（与本函数主路径不同，理由如下）：
+          //    ① 它只对**测试桩**可达（生产装配的 `AccountPool` 永远有
+          //       `listAvailableCredentials`）；
+          //    ② `auto-adapter.spec.ts` 有一条**明确禁止空 modelId** 的用例
+          //       （「取代表账号时不得用空 modelId（会让限流过滤整体短路）」）——
+          //       它守的是**另一个真实缺陷**（空 modelId 让账号池的限流过滤整体失效，
+          //       于是 auto 会把请求发给一个正在限流的账号）。
+          //    ⚠️ 残余风险**如实登记**：这条路径同样具备上面的死锁形态
+          //       （`getAvailableAccount` 也按模型过滤）。它当前不可达，
+          //       故不改它 —— 改它会与那条既有用例冲突，而那条用例守的缺陷
+          //       在生产上是**可达**的（主路径传空串不影响它，因为主路径
+          //       取的是全部账号、不经 `getAvailableAccount`）。
+          (await legacySingleCredential(pool, provider, probeModel)).map((credential) => ({
+            entry: { id: undefined as string | undefined },
+            credential,
+          }))
     } catch (error) {
       // ⚠️⚠️ **中止不得被吞成 `UNUSABLE`**（Global Constraints 的硬要求）。
       //
@@ -367,11 +449,55 @@ export function createExpiryProbe(
     // 旧实现让该渠道进入排序，请求被发到一个额度未知（可能已用尽）的渠道。
     // 且该错误值还会被缓存 60 秒。
     let anyConverted = false
-    for (const credential of credentials) {
+    /**
+     * ★ 该渠道的**全部目录模型 id**（zcode 的按模型判定用，2026-10-12）。
+     *
+     * ⚠️ **惰性求值**：只在实现方真的声明需要它时才去读目录
+     * （省下其余 6 家每轮一次多余的目录读取）。
+     * ⚠️ 未注入 `catalogIdsOf` 时退回「只有 probeModel 一个」——
+     * 让既有装配与几十处测试桩零改动即可工作（只是判定范围窄一个模型）。
+     */
+    let catalogIdsCache: readonly string[] | undefined
+    const catalogIds = async (): Promise<readonly string[]> => {
+      if (catalogIdsCache !== undefined) return catalogIdsCache
+      try {
+        const ids = await options.catalogIdsOf?.(provider)
+        catalogIdsCache = ids !== undefined && ids.length > 0
+          ? ids
+          // ⚠️ 未注入 `catalogIdsOf`（既有装配 / 几十处测试桩）时退回
+          //    「只有 probeModel 一个」—— 判定范围窄一个模型，但**零改动可用**。
+          //    ⚠️ `probeModel` 为空串时给**空数组**：空数组会让 zcode 的
+          //    `exhaustedModelsOf` 一个模型都不判（**保守方向**：不写任何标记），
+          //    而填 `['']` 会写一个键为空串的垃圾标记。
+          : (probeModel.length > 0 ? [probeModel] : [])
+      } catch {
+        // ⚠️ 目录读失败**不得**让折算失败：退回 probeModel 一个（判定范围变窄，
+        //    但折算值本身照常）。与 `firstModelIdOf` 的降级同一取向。
+        catalogIdsCache = probeModel.length > 0 ? [probeModel] : []
+      }
+      return catalogIdsCache
+    }
+    const markModelsExhausted = pool.markModelsExhaustedForExpiry?.bind(pool)
+    const clearModelsExhausted = pool.clearModelsExhaustedForExpiry?.bind(pool)
+    for (const item of credentials) {
       signal?.throwIfAborted()
+      const credential = item.credential
       let value
       try {
-        value = await credentialExpiry(provider, credential)
+        /**
+         * ⚠️ `context` 对**另外 6 家**是纯粹的多余参数（它们忽略第二参）——
+         * 这不是「只为 zcode 开洞」，而是本仓库既有的「可选能力由实现自己声明」
+         * 模式（同 `ExpiryAccessors.refreshableOf` 的可选语义）。
+         *
+         * ⚠️ `catalogIds` 在这里**不求值**（传的是个函数）：只有 zcode 会调它，
+         * 其余 6 家每轮因此**零额外目录读取**（那是本仓库反复强调的成本）。
+         */
+        value = await credentialExpiry(provider, credential, {
+          ...item.entry.id === undefined ? {} : { accountId: item.entry.id },
+          catalogIds,
+          ...markModelsExhausted === undefined ? {} : { markModelsExhausted },
+          ...clearModelsExhausted === undefined ? {} : { clearModelsExhausted },
+        })
       } catch (error) {
         // 中止仍必须逃逸（与上面的 `try` 同一口径）。
         signal?.throwIfAborted()
@@ -448,7 +574,11 @@ async function legacySingleCredential(
  *
  * @returns 毫秒时间戳（越小越早作废）／`NEVER`（长期）／`UNUSABLE`（查不到）
  */
-async function credentialExpiry(provider: string, credential: unknown): Promise<number> {
+async function credentialExpiry(
+  provider: string,
+  credential: unknown,
+  context?: ProviderExpiryContext,
+): Promise<number> {
   const runtime = runtimeOf(provider)
   if (runtime?.expiry === undefined) {
     // ⚠️ 未接入 ⇒ `UNUSABLE`（**不是** NEVER）：返回 NEVER 会让一个我们对其
@@ -473,7 +603,7 @@ async function credentialExpiry(provider: string, credential: unknown): Promise<
     //    以及 `src/index.ts` 注册失败时已有的 info 日志。
     return UNUSABLE
   }
-  return runtime.expiry.credentialExpiry(credential)
+  return runtime.expiry.credentialExpiry(credential, context)
 }
 
 /**
@@ -783,7 +913,10 @@ export async function codeArtsExpiry(credential: CodeArtsCredential): Promise<nu
  * 的严格区分）。故判据是 **`balance.remaining > 0`**（有余额）而不是
  * 「有任何一个桶带有效到期时间」。
  */
-export async function zcodeExpiry(credential: ZcodeCredential): Promise<number> {
+export async function zcodeExpiry(
+  credential: ZcodeCredential,
+  context?: ProviderExpiryContext,
+): Promise<number> {
   let balance
   try {
     balance = await fetchZcodeBalance(credential)
@@ -809,7 +942,109 @@ export async function zcodeExpiry(credential: ZcodeCredential): Promise<number> 
   // ⇒ 判据必须**先**看 `enterprise` 标记（那是「不知道额度」的诚实标记），
   //   再谈余额。语义是「可用、但无临期额度可算」= `NEVER`（排最后但不剔除）——
   //   与 `codeArtsExpiry` 对「查到了但没有到期概念」的处理同一条原则。
+  //
+  // ⚠️ 企业版**没有桶** ⇒ 按模型判定那一段（下面）也没有任何可写的标记，
+  //    故这里的提前返回不影响按模型标记（那是「额度数字都不知道」的形态）。
   if (balance.enterprise === true) return NEVER
+
+  /**
+   * ★★ **按模型写出「该模型在这个账号上已无额度」的持久标记**（2026-10-12）。
+   *
+   * ## 为什么在这里做（而不是在适配器里发请求前查一次）
+   *
+   * 这里是**唯一**已经拿到 `balance` 全部桶的地方，且它本来就在每次选型时跑
+   * （判定「这个渠道还能不能用」）。把判定挂在这里 ⇒ **零额外请求**
+   *（直接复用这次余额查询的结果），且 auto / aggregate 的**选型**阶段
+   * 立刻就能通过 `getAvailableAccount(provider, model)` 看到结论
+   * —— 不必等到真的发出那一发、被上游拒绝才知道。
+   *
+   * ## 判据表
+   *
+   * | 情形 | 折算值 | 写标记 |
+   * |---|---|---|
+   * | GLM-5.3 的 3M 烧光、Flash 的 5M 还在 | `remaining = 5M > 0` ⇒ **可用** | `['GLM-5.3']` |
+   * | 两个专属桶都烧光 | `UNUSABLE` | 两个都写 |
+   * | 专属桶烧光、但**通用赠送桶**还有余额 | **可用** | **不写**（通用桶覆盖它，上游仍能承接） |
+   * | 某模型没有任何桶覆盖（如 GLM-5.2） | 照常 | **不写**（证据不足，不本地判死） |
+   *
+   * ⚠️ **两侧大小写不同**（实测）：上游 `capabilities` 是 `glm-5.3`（小写），
+   * 而池过滤用的键是 DSH 目录的 `GLM-5.3`（大写）⇒ 把**目录那一套 id** 交给
+   * `exhaustedModelsOf`（它内部大小写不敏感地比对、并原样回传目录 id），
+   * 否则标记**永远不命中**且无任何报错。
+   *
+   * ⚠️ 写标记**绝不能**影响折算值：这是「观测 + 记账」，不是「折算依据」。
+   * 故它在 `try/catch` 里，失败**静默吞掉**（下面那条 catch）。
+   *
+   * ## ⚠️ 为什么是**静默**而不是「记日志」（别照着直觉改成打日志）
+   *
+   * 本模块是**纯底座**：`createExpiryProbe` 只收 `pool` / `firstModelIdOf` / `options`，
+   * **没有 `ctx`、也没有 logger**（同文件上方「刻意不打日志」那条注释记着同一约束）。
+   * 为一条失败路径去穿一条 logger 通道，会把日志出口变成这个纯底座模块的新依赖 ——
+   * 而那正是模块头禁止的层次方向。
+   *
+   * ⚠️ 代价是**如实承认**的：标记写失败（磁盘满 / 权限）在日志里**无痕**。
+   * 可观测性由**调用方**兜：`AccountPool.markModelsExhaustedForExpiry` 自己
+   * 在成功与账号不存在时都有 `ctx.logger`（那里拿得到 ctx），
+   * 且它落盘失败会向上抛 —— 被本 catch 静默的那一刻确实丢信息，
+   * 但**不影响正确性**（下一轮折算会重试写）。
+   */
+  if (
+    context?.accountId !== undefined
+    && context.accountId.length > 0
+    && (context.markModelsExhausted !== undefined || context.clearModelsExhausted !== undefined)
+    && context.catalogIds !== undefined
+  ) {
+    try {
+      const catalogIds = await context.catalogIds()
+      /**
+       * ⚠️⚠️ **写与清必须成对**（真实缺陷 —— 单向门，2026-10-12）。
+       *
+       * 只写不清的话，用户**当天**烧光后去签到领到额度时，标记仍挂到次日 0 点
+       * ⇒「签到成功了但当天用不了」。实测确认签到路径**救不回来**
+       * （`credits.claimAll` 只清折算缓存、不清 `modelRateLimits`，
+       * 见 `scripts/verify-zcode-mark-after-claim.mjs`）⇒ 自愈只能在这里做：
+       * 本次折算**已经拿到新的余额报文**，正好能判「哪些模型恢复了」。
+       *
+       * ⚠️ 两个列表由 `exhaustedModelsOf` / `recoveredModelsOf` 给出，
+       * 它们**逐格互补**（同一个模型不会同时出现在两边），故两个调用无顺序依赖 ——
+       * 但仍按「先清后写」排列：万一将来判据漂移导致重叠，
+       * 先清后写的结果是「标记存在」（保守方向），反过来则是「标记消失」（危险方向）。
+       */
+      const recovered = recoveredModelsOf(balance.buckets, catalogIds)
+      if (recovered.length > 0 && context.clearModelsExhausted !== undefined) {
+        await context.clearModelsExhausted(context.accountId, recovered)
+      }
+      const exhausted = exhaustedModelsOf(balance.buckets, catalogIds)
+      if (exhausted.length > 0 && context.markModelsExhausted !== undefined) {
+        await context.markModelsExhausted(context.accountId, exhausted)
+      }
+    } catch (error) {
+      /**
+       * ⚠️⚠️ **中止必须原样逃逸**（全局硬约束，对抗审计实测证伪 2026-10-12）。
+       *
+       * 初版这里是**裸的 `catch {}`** ⇒ `catalogIds()` 或 `markModelsExhausted`
+       * 抛出的 `AbortError` 被静默吞掉、折算照常返回一个值 ——
+       * 而本模块的铁律是「**abort 立刻抛 `AbortError`，绝不折算**」
+       *（同文件上方两处、以及 `credentials` 分支的 catch 都守这条）。
+       *
+       * ⚠️ 实测：`AbortError` 从 `catalogIds()` 抛出时探针**返回了值**而非抛出
+       *（审计的 `scratch` 探查复现；修后应改为抛出）。
+       *
+       * ⚠️ 判据只取 `isAbortError(error)`（**不是**两条）——
+       * `zcodeExpiry` 的签名里**没有 `signal`**（它只收 `credential` + `context`），
+       * 故 `signal?.throwIfAborted()` 在这里不可用；中止的**另一条**防线
+       *（「signal 已标记」）由调用方 `createExpiryProbe` 的循环负责
+       *（它每轮开头就 `signal?.throwIfAborted()`）。
+       * ⚠️ 如实登记：这是**唯一**一处判据少于同文件其它 catch 的地方，
+       * 原因是签名差异，不是遗漏。
+       */
+      if (isAbortError(error)) throw error
+      // ⚠️ 其余失败**静默是刻意的**（本模块无 logger，见上方长注释）：
+      //    标记失败不得影响折算。别在这里补 `console`/logger ——
+      //    那会引入新依赖，或不一致的第二日志出口。
+    }
+  }
+
   let earliest = NEVER
   for (const bucket of balance.buckets) {
     const remaining = bucket.availableUnits ?? bucket.remainingUnits ?? 0

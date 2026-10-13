@@ -24,7 +24,7 @@ import { RACCOON } from './raccoon-product.js'
 import { ZcodeAuth } from './zcode-auth.js'
 import { registerZcodeLlm } from './zcode-adapter.js'
 import { ZCODE } from './zcode-product.js'
-import { ZCODE_CAPTCHA_FALLBACK } from './zcode-captcha.js'
+import { ZCODE_CAPTCHA_FALLBACK, type ZcodeCaptchaConfig } from './zcode-captcha.js'
 import type { CarrierOutcome } from './captcha-carrier.js'
 import type { ZcodeCredential } from './zcode.js'
 import { registerAutoclaw } from './autoclaw.js'
@@ -1632,7 +1632,7 @@ const zcode = new ZcodeAuth(ctx, {
  * 那个能力已下沉到 `ZcodeAuth.fetchCaptchaConfig()`
  *（见其 `captchaConfigCacheInstance`），故这里只做「拿 → 回退」的编排。
  */
-const resolveZcodeCaptchaConfig = async (): Promise<{ region: string; prefix: string; sceneId: string }> => {
+const resolveZcodeCaptchaConfig = async (): Promise<ZcodeCaptchaConfig> => {
   const remote = await zcode.fetchCaptchaConfig().catch(() => undefined)
   if (remote !== undefined) {
     zcodeAdapter.setCaptchaConfig(remote)
@@ -2245,6 +2245,32 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   const sharedExpiryProbe = createExpiryProbe(pool, async (provider) => {
     const models = await ctx.llm.listModels(provider)
     return models[0]?.id
+  }, {
+    /**
+     * ★ zcode 的**按模型额度**判定需要全部目录模型 id（2026-10-12）。
+     *
+     * 上游 `capabilities` 是**小写**（`glm-5.3`），而池过滤的键是目录形态的
+     * **大写**（`GLM-5.3`）⇒ 必须用这张目录去比对，否则标记写进去永远不命中
+     * （静默失效，见 `zcode-entitlements.ts` 的 `exhaustedModelsOf`）。
+     *
+     * ⚠️ **只对 zcode 求值**：其余 6 家不调这个函数（探针里是惰性的），
+     *    故它们每轮**零额外目录读取**。这里仍加 `provider === ZCODE.id` 判断，
+     *    是为了让「谁需要它」在装配层一眼可见。
+     *
+     * ⚠️⚠️ **本段接线此前零测试守卫**（2026-10-12 对抗审计实测）：
+     *    把它整段删掉，4 个相关 spec **158 条全绿**，而生产行为会退化 ——
+     *    判定范围只剩 `probeModel` 一个模型 ⇒ 「两个专属桶都烧光」时
+     *    **第二个模型不被标记**，直选它仍会拿到已尽的账号。
+     *    ⇒ 违反的是**需求 (C) 的规模**（判据对，范围错）。
+     *    `tests/unit/zcode-model-entitlements.spec.ts` 的
+     *    「真实装配」段现在驱动**这一段真代码**（从 `index.ts` 里取值，
+     *    不手写 `[...CATALOG]` 桩）—— 删掉本段即红。
+     */
+    catalogIdsOf: async (provider) => {
+      if (provider !== ZCODE.id) return []
+      const models = await ctx.llm.listModels(provider)
+      return models.map((model) => model.id)
+    },
   })
   // ⚠️ 赋给上面的可变引用 ⇒ 账号入库时清空折算缓存（见那里的注释）。
   sharedExpiryProbeRef = sharedExpiryProbe
