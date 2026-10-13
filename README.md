@@ -2,10 +2,10 @@
 <!-- APK-LINK:BEGIN -->
 ## 📱 下载
 
-- 国内加速直连：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261013-0054/app-debug.apk
-- GitHub 直连：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261013-0054/app-debug.apk
+- 国内加速直连：https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261013-0103/app-debug.apk
+- GitHub 直连：https://github.com/zhaolongwudi/dsh-phone/releases/download/build-20261013-0103/app-debug.apk
 
-- 构建版本：`build-20261013-0054`
+- 构建版本：`build-20261013-0103`
 
 <!-- APK-LINK:END -->
 
