@@ -60,6 +60,9 @@ const CI_STEPS = [
   ['ui-native-token-plan.mjs', []],
   // 设备版本判定：CI 无设备时应**明确跳过**而非崩；它决定用哪种验收模式。
   ['ui-verify-installed.mjs', []],
+  // 预演等价性验证：CI 无 GH_TOKEN 时应**明确跳过**而非崩。
+  // （它需要网络比对仓库，属维护期工具；无 token 时打印说明并退出 0）
+  ['ui-verify-preview-equivalence.mjs', []],
 ]
 
 console.log('无引擎树环境下，每个 CI 步骤都必须能正常退出')
