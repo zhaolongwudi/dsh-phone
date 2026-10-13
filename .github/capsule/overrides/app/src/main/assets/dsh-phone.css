@@ -105,7 +105,20 @@
  .pI_x6G_centerCol{grid-column:2;padding-top:0}
  [data-dsh-rail],.pI_x6G_sidebarCol{position:fixed;left:0;top:var(--dsh-phone-topbar,44px);bottom:0;width:min(280px,86vw)!important;z-index:14;visibility:hidden;transform:translateX(-100%);pointer-events:none;transition:transform .16s ease}
  [data-dsh-rail]>.hHd-Xa_root,.pI_x6G_sidebarCol>.hHd-Xa_root{width:100%!important;height:100%}
- html[data-dsh-drawer-open] [data-dsh-rail],html[data-dsh-drawer-open] .pI_x6G_sidebarCol{visibility:visible;transform:translateX(0);pointer-events:auto;box-shadow:8px 0 24px #0002}
+ /* ⚠️⚠️ z-index:21 **必须是打开态才抬**，且必须高于上游的 overlayLayer(20)。
+    真因（设备实测，2026-10-13）：三期把遮罩迁到槽位 `shell.overlay` 后，上游
+    `AppFrame` 把该槽渲染进它的覆盖层（`z-index:20;position:absolute`）——
+    于是遮罩被**困在那个 z=20 的堆叠上下文**里，它自身的 z-index:13 只在上下文内有效；
+    而侧栏本规则原来的 z-index:14 在**根**上下文。跨堆叠上下文时 z-index 不可比较
+    ⇒ 20 > 14，**遮罩整体盖住侧栏**：视觉上是半透明黑（#0004）压出一层「灰色」，
+    交互上遮罩吃掉点击 ⇒ 菜单弹出后**完全点不动**。
+    ⚠️ 这解释了「平板/横屏正常」：本节全部规则都在 `max-width:767px` 内，宽屏不生效。
+    ⚠️ 也解释了「迁移前没这问题」：本地遮罩那时挂在 body 上（z=13 与侧栏 14 同上下文）。
+    （该覆盖层的类名是上游哈希，按本仓库约定**不写进注释** —— 写了会被
+     锚点扫描当成「CSS 消费了未登记哈希」而误报，实测踩到过。）
+    取值依据（实测全局层级版图）：根上下文里该覆盖层=20 是最高常规层，
+    真正的模态在 900/1000/1001/1100 ⇒ 取 21 既压过遮罩、又不碰任何模态。 */
+ html[data-dsh-drawer-open] [data-dsh-rail],html[data-dsh-drawer-open] .pI_x6G_sidebarCol{visibility:visible;transform:translateX(0);pointer-events:auto;z-index:21;box-shadow:8px 0 24px #0002}
  html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6G_sidebarCol{visibility:visible;transform:none;pointer-events:auto;transition:none}
  .dsh-phone-menu{display:block;position:fixed;top:5px;left:8px;z-index:15;min-height:34px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:10px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:14px system-ui}
  /* 有页面级模态（设置面板等）在场时隐藏自绘菜单按钮。
