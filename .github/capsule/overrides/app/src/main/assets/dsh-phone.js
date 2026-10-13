@@ -2,9 +2,19 @@
 (() => {
   if (window.__dshPhonePresentation) return;
   window.__dshPhonePresentation = true;
-  // 手机形态断点：对齐上游框架自己的阈值（右栏在 768px 以下转全屏滑入）。
-  // 原先写死 700px，会在 701-767px 区间出现「上游已按手机排、本层没按」的半态
-  // （横屏手机、小尺寸平板）。此值需与 dsh-phone.css 的 @media 保持一致。
+  // 手机形态断点：**本层自己的形态阈值**，与 dsh-phone.css 的 @media 必须一致。
+  // 原先写死 700px，会在 701-767px 区间出现「本层 JS 已按手机排、但其它消费方没按」
+  // 的半态（横屏手机、小尺寸平板）。
+  //
+  // ⚠️ 2026-10-13 订正：原注释称「对齐上游框架自己的阈值（右栏在 768px 以下转全屏滑入）」，
+  //    实测**该依据不成立**：
+  //      · 上游布局层的唯一宽度阈值是 SIDEBAR_AUTO_COLLAPSE = **1024**，语义是
+  //        「侧栏自动折叠」，不是「手机形态」；
+  //      · 上游的 rightbarFullscreen 是 openRightbar(track, fullscreen) 的**入参**，
+  //        不按视口宽度自动判断；
+  //      · 上游前端 CSS 的 max-width 断点是 170/320/360/480，**没有 767/768**。
+  //    故 767 是**本层自定**的形态阈值（取 768-1 以落在常见 768 桌面断点内侧），
+  //    与上游无对齐关系。保留该值：它在实测中 JS 与 CSS 两侧行为完全一致（见 §9.18）。
   const MOBILE_FORM_MAX_WIDTH = 767;
   const media = window.matchMedia(`(max-width: ${MOBILE_FORM_MAX_WIDTH}px)`);
   // These two same-origin settings documents have a natural-height body.
