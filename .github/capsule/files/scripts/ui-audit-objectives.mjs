@@ -62,8 +62,10 @@ console.log('【目标 1】设备端三层验收')
     }
     return out
   }
-  const t = runCdp(['--realapp', '--touch'], 'CDP 层（设备实际装载）')
-  runCdp(['--realapp', '--preview', '--touch'], 'CDP 层（发布前预演）  ')
+  const t = runCdp(['--realapp', '--touch', '--dark'], 'CDP 层（设备实际装载）')
+  // 上面带 --dark：多验 6 条深色判据（上游主题机制是属性选择器，非媒体查询）
+  // 预演同样带 --dark：验「即将发布的那份」在深色下是否也正确
+  runCdp(['--realapp', '--preview', '--touch', '--dark'], 'CDP 层（发布前预演）  ')
   if (/跳过|没有满足/.test(t)) console.log('    （注：无 CDP 通道或视口不满足时该层自行跳过）')
   console.log('  ADB 层（系统级触控）：需人类消息恢复手机工具后执行；方案见 ui-adb-layer-plan.md')
 }
