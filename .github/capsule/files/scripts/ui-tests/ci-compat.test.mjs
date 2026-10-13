@@ -63,6 +63,8 @@ const CI_STEPS = [
   // 预演等价性验证：CI 无 GH_TOKEN 时应**明确跳过**而非崩。
   // （它需要网络比对仓库，属维护期工具；无 token 时打印说明并退出 0）
   ['ui-verify-preview-equivalence.mjs', []],
+  // 四项目标审计：CI 无设备时各层自行跳过，必须正常退出。
+  ['ui-audit-objectives.mjs', []],
 ]
 
 console.log('无引擎树环境下，每个 CI 步骤都必须能正常退出')
