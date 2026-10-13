@@ -463,6 +463,31 @@ if (args.includes('--realapp')) {
     const compatPath = join(dirname(a.css), 'dsh-phone.compat.js')
     const compatSrc = existsSync(compatPath) ? readFileSync(compatPath, 'utf8') : ''
     if (!compatSrc) console.log('     注：capsule 内无 dsh-phone.compat.js（上游文件），跳过其注入')
+    // ⚠️ 先清掉**另一条注入路径**留下的节点。
+    //    设备上有两条路径注入同一份 dsh-phone.js/css：
+    //      ① MainActivity（写 #dsh-phone-presentation + evaluateJavascript）
+    //      ② phone-qq/index.js 的 tapIndex（往 HTML 插无 id 的 style 与内联 script）
+    //    预演只重放 ①，若不清 ②，页面里会同时存在**两份不同版本**的形态层，
+    //    预演结果就不是新包的真实行为（「验的是谁」问题的新变体）。
+    //    实测证据：stylesWithTopbar 里同时有 (no-id, 16834) 与 (dsh-phone-presentation, 16868)。
+    const cleared = await s.evalJs(`
+      let n = 0
+      // 清 ② 注入的 style：无 id 且含本层特征（--dsh-phone-topbar 或 dsh-phone-menu）
+      for (const st of [...document.querySelectorAll('style')]) {
+        if (st.id === 'dsh-phone-presentation') continue
+        const txt = st.textContent || ''
+        if (txt.includes('--dsh-phone-topbar') || txt.includes('dsh-phone-menu') || txt.includes('dsh-phone-sidebar-mask')) {
+          st.remove(); n++
+        }
+      }
+      // 清 ② 注入的内联 script（含本层守卫标志）
+      for (const sc of [...document.querySelectorAll('script')]) {
+        if (sc.src) continue
+        if ((sc.textContent || '').includes('__dshPhonePresentation')) { sc.remove(); n++ }
+      }
+      return n
+    `)
+    console.log('     已清除 tapIndex 注入的节点数：' + JSON.stringify(cleared.value ?? cleared.error))
     const injRes = await s.evalJs(`
       document.querySelectorAll('.dsh-phone-menu,.dsh-phone-sidebar-mask').forEach(e => e.remove())
       document.documentElement.removeAttribute('data-dsh-drawer-open')
