@@ -415,7 +415,12 @@ if (args.includes('--realapp')) {
     const guardRe = /^\s*if \(window\.__dshPhonePresentation\) return;\s*\n\s*window\.__dshPhonePresentation = true;\s*\n/m
     if (!guardRe.test(jsText)) { console.log('  ✗ 形态层未找到守卫行，无法安全剥离'); s.close(); process.exit(2) }
     jsText = jsText.replace(guardRe, '')
-    console.log('\nⓅ 预演模式：投入**即将发布**的产物 ' + JSON.stringify({ css: cssText.length, js: jsText.length, bundle: bundleText.length }))
+    // ⚠️ 报**字节数**而非字符数：版本判定（ui-verify-installed）用的是字节数，
+    //    两处口径不一致会让数字对不上（本层 CSS 含大量中文注释，字符数 16868 vs
+    //    字节数 19190，差 2300+ —— 曾让人误以为「预演的 CSS 变小了」）。
+    console.log('\nⓅ 预演模式：投入**即将发布**的产物 ' + JSON.stringify({
+      cssBytes: Buffer.byteLength(cssText), jsBytes: Buffer.byteLength(jsText), bundleBytes: Buffer.byteLength(bundleText),
+    }))
     // 让设备原生脚本短路
     await s.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `Object.defineProperty(window, '__dshPhonePresentation', { configurable: true, get() { return true }, set() {} })`,
