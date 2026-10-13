@@ -114,6 +114,10 @@
   const SETTINGS_TAG = 'data-dsh-settings-dialog';
   const RAIL_TAG = 'data-dsh-rail';
   let markedFrame = null, markedDialog = null, markedRail = null;
+  // 抽屉「上一轮的打开状态」。adapt() 会被 MutationObserver 高频重入，只有跨调用
+  // 记住上一态才能识别**上升沿**（刚被打开），从而只在那一次展开折叠侧栏 ——
+  // 否则用户手动折叠侧栏后会被立刻弹回来（见 adapt() 内注释）。
+  let drawerWasOpen = false;
   const markForm = () => syncFlag(document.documentElement, 'data-dsh-mobile-form', media.matches);
   const markDom = () => {
     // 框架根：上游只给右栏稳定的 data-rightbar-col，框架根自身没有钩子，
@@ -181,8 +185,6 @@
           const dialog = document.documentElement.hasAttribute('data-dsh-settings-open');
           rail.inert = !open && !dialog; rail.setAttribute('aria-hidden', String(!open && !dialog));
           menu.setAttribute('aria-expanded', String(open)); menu.setAttribute('aria-label', open ? '收起菜单' : '展开菜单');
-          const collapsed = frame.hasAttribute('data-sidebar-collapsed');
-          if (open && collapsed) rail.querySelector('.hHd-Xa_toggle')?.click();
         };
         menu.onclick = () => show(!document.documentElement.hasAttribute('data-dsh-drawer-open'));
         mask.onclick = () => show(false);
@@ -197,14 +199,67 @@
       const dialog = media.matches && document.documentElement.hasAttribute('data-dsh-settings-open');
       menu.hidden = !media.matches; rail.inert = media.matches && !open && !dialog;
       if (media.matches) rail.setAttribute('aria-hidden', String(!open && !dialog)); else { rail.removeAttribute('aria-hidden'); document.documentElement.removeAttribute('data-dsh-drawer-open'); }
+
+      // ⚠️ 打开抽屉时，必须一并**展开**上游那个处于折叠态的侧栏。
+      //
+      // 症状（用户报障）：窄屏点「菜单」后，抽屉确实打开了（背景已灰化、图标列出现），
+      // 但内容停在**折叠态** —— 左边只有图标条，右边一大片空白，得再点一次侧栏里那个
+      // 小图标才出完整菜单。
+      //
+      // 真因：本层 CSS 把侧栏宽度强制成 min(280px,86vw)，而上游折叠态只渲染 ~56px 的
+      // 图标列 ⇒ 容器 280px、内容 56px，差额就是那片空白。
+      // 而「展开」这段原先只写在**旧自绘按钮专属**的开合函数里；三期把开关迁进槽位后，
+      // 槽位组件只翻转 data-dsh-drawer-open 事实、不碰上游折叠状态 ⇒ 走新开关时
+      // 这段永不执行。
+      //
+      // 修法：挂到「抽屉刚被打开」这个**边沿**上（而非某个按钮的点击），两种开关与
+      // 后续任何写入者都自动覆盖 —— 符合本层既有契约（状态只有一个写入者，副作用
+      // 按状态统一施加）。
+      // 用**上升沿**而非「open && collapsed」持续条件：后者会在用户手动折叠侧栏时
+      // 立刻把它弹回来，形成「点了没反应」的新死按钮（同一个坑，不再踩第二次）。
+      // 判据用上游成文属性 data-sidebar-collapsed，而非容器的折叠类名
+      // （后者是 CSS Module 构建期哈希，随上游改名即失效 —— 且按本仓库约定，
+      //   哈希类名不写进注释：写了会被 check-ui-anchors 当成「未登记哈希」而误报）。
+      if (open && !drawerWasOpen && frame.hasAttribute('data-sidebar-collapsed')) {
+        const railToggle = rail.querySelector('.hHd-Xa_toggle');
+        if (railToggle && typeof railToggle.click === 'function') railToggle.click();
+      }
+      drawerWasOpen = open;
+
       // 三期：开关若已迁入槽位（header.leading），由**本层**统一同步它的 aria 状态。
       // 为什么不让组件自己同步：开合可来自三处（旧按钮 / 遮罩 / Escape / 槽位按钮），
       // 若每个写入者都各自更新自己的 aria，就会出现「点了遮罩、开关的 aria 没翻」
       // 这类不一致。沿用既有契约——**状态的唯一写入者是形态层**，组件只翻转事实。
       const slotToggle = document.querySelector('.dsh-phone-menu-slot');
       if (slotToggle) {
-        slotToggle.setAttribute('aria-expanded', String(open));
-        slotToggle.setAttribute('aria-label', open ? '收起菜单' : '展开菜单');
+        // ⚠️ 宽屏下这枚开关原本是**死按钮**（用户报障：「全屏以后，菜单按键完全是
+        //    不好使的」）。真因：它的 onClick 只翻转 data-dsh-drawer-open（见
+        //    client-source.js 的 DrawerToggle），而上面那行在非窄屏会立即把该属性
+        //    清掉（「抽屉」这个概念只存在于窄屏）⇒ 翻转被**当场撤销**，视觉上毫无
+        //    反应。设备实测：点击后属性日志为「(无)→有 ×2 →(有)→无 ×2」，确证。
+        //    上游在宽屏把侧栏当**常驻列**，并自带 .hHd-Xa_toggle 负责折叠/展开
+        //    （设备实测可点、有效）。故宽屏下把这枚按钮**代理**给上游开关，
+        //    语义统一为「切换侧栏显隐」——两种宽度下都名副其实，而不是删掉了事。
+        // 只在宽屏代理：窄屏必须走 data-dsh-drawer-open 事实通道，不能被劫持。
+        // 捕获阶段 + stopPropagation：免得槽位组件的 onClick 再翻一次属性
+        // （宽屏下那次翻转纯属噪声，且违背「状态只有一个写入者」的契约）。
+        if (!media.matches && !slotToggle.__dshWideProxy) {
+          slotToggle.__dshWideProxy = true;
+          slotToggle.addEventListener('click', event => {
+            if (media.matches) return;
+            event.stopPropagation();
+            const railToggle = rail.querySelector('.hHd-Xa_toggle');
+            if (railToggle && typeof railToggle.click === 'function') railToggle.click();
+          }, true);
+        }
+        // aria 必须如实描述**当前**行为：窄屏管抽屉、宽屏管侧栏显隐。
+        // 若沿用旧的「只按 open 判断」，宽屏下会恒为「展开菜单」——侧栏明明是展开的，
+        // 屏幕阅读器读到的却是「展开」，等于说谎。
+        const slotExpanded = media.matches ? open : !frame.hasAttribute('data-sidebar-collapsed');
+        slotToggle.setAttribute('aria-expanded', String(slotExpanded));
+        slotToggle.setAttribute('aria-label', media.matches
+          ? (slotExpanded ? '收起菜单' : '展开菜单')
+          : (slotExpanded ? '收起侧边栏' : '展开侧边栏'));
       }
     }
     document.querySelectorAll('[data-composer-card]').forEach(card => {
