@@ -637,6 +637,64 @@ if (args.includes('--realapp')) {
     ['仿真已复原（视口回到原值）', JSON.stringify(pre.viewport) === JSON.stringify(restored?.viewport)],
   ]
 
+  // ── 深色模式判据（仅 --dark 时）─────────────────────────────────────────
+  //  上游深色机制是**属性选择器**（body[data-ds-dark-theme]）+ JS 把主题变量**内联写在 body**，
+  //  不是 prefers-color-scheme 媒体查询 —— 故只能这样模拟，也正因如此值得单列判据。
+  if (args.includes('--dark')) {
+    const darkSnap = async () => {
+      await s.evalJs(`document.body.setAttribute('data-ds-dark-theme',''); return 1`)
+      await s.send('Emulation.setDeviceMetricsOverride', { width, height: 655, deviceScaleFactor: 1, mobile: true, screenWidth: width, screenHeight: 655 })
+      await sleep(700)
+      return (await s.evalJs(SNAP)).value
+    }
+    const darkInfo = async () => (await s.evalJs(`
+      const b = document.body, cs = getComputedStyle(b)
+      const g = n => cs.getPropertyValue(n).trim()
+      const lum = c => { const m = String(c).match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/); return m ? 0.2126*(+m[1]) + 0.7152*(+m[2]) + 0.0722*(+m[3]) : null }
+      return {
+        dark: b.hasAttribute('data-ds-dark-theme'),
+        bgBase: g('--dsw-alias-bg-base'), labelPrimary: g('--dsw-alias-label-primary'),
+        borderDefault: g('--dsw-alias-border-default') || '(未定义)',
+        bodyBg: cs.backgroundColor, bodyColor: cs.color,
+        bgLum: lum(cs.backgroundColor), fgLum: lum(cs.color),
+      }
+    `)).value
+
+    const lightInfo = (await s.evalJs(`
+      const b = document.body, cs = getComputedStyle(b)
+      const g = n => cs.getPropertyValue(n).trim()
+      const lum = c => { const m = String(c).match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/); return m ? 0.2126*(+m[1]) + 0.7152*(+m[2]) + 0.0722*(+m[3]) : null }
+      return { dark: b.hasAttribute('data-ds-dark-theme'), bgBase: g('--dsw-alias-bg-base'),
+        labelPrimary: g('--dsw-alias-label-primary'), borderDefault: g('--dsw-alias-border-default') || '(未定义)',
+        bodyBg: cs.backgroundColor, bodyColor: cs.color, bgLum: lum(cs.backgroundColor), fgLum: lum(cs.color) }
+    `)).value
+    const dkSnap = await darkSnap()
+    const dk = await darkInfo()
+    console.log('\n  深色模式探测：')
+    console.log('    浅色: ' + JSON.stringify(lightInfo))
+    console.log('    深色: ' + JSON.stringify(dk))
+    checks.push(
+      ['深色：上游变量确实改变（bg-base 与 label-primary）',
+        lightInfo.bgBase !== dk.bgBase && lightInfo.labelPrimary !== dk.labelPrimary],
+      ['深色：body 背景确实变暗', (dk.bgLum ?? 255) < (lightInfo.bgLum ?? 0)],
+      ['深色：body 文字确实变亮', (dk.fgLum ?? 0) > (lightInfo.fgLum ?? 255)],
+      ['深色：形态层仍激活', dkSnap?.facts.mobileForm === true],
+      ['深色：开关仍接管且有可见文本',
+        dkSnap?.slotToggle.mountedFact === true && ((dkSnap?.slotToggle.box?.[2] ?? 0) >= 24)],
+      // 关键：主题切换**不得**改变布局（改了说明本层样式与主题耦合）
+      ['深色：开关几何与浅色一致', JSON.stringify(dkSnap?.slotToggle.box) === JSON.stringify(narrow?.slotToggle.box)],
+    )
+    // 隐患清单：兜底值不会跟随主题
+    const risks = []
+    if (dk.borderDefault === '(未定义)' && lightInfo.borderDefault === '(未定义)') {
+      risks.push('--dsw-alias-border-default：上游未定义（正确名为 -l1）⇒ 两态都用兜底 #ddd；深色下是亮色线条')
+    }
+    if (risks.length) { console.log('    深色隐患：'); for (const r of risks) console.log('      ⚠ ' + r) }
+    // 复原
+    await s.evalJs(`document.body.removeAttribute('data-ds-dark-theme'); return 1`)
+    await sleep(400)
+  }
+
   // ── 触控层专项判据（仅 --touch 时）──────────────────────────────────────
   //   这些是 `.click()` **测不到**的一类真实缺陷：
   //     · 元素被别的层遮住（视觉可见、点不到像素）
