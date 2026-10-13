@@ -153,7 +153,7 @@
  /* 接管后隐藏旧自绘按钮（否则两个开关并存，且其固定定位会压住新开关） */
  html[data-dsh-toggle-mounted] .dsh-phone-menu{display:none!important}
  /* 槽位开关本体：与旧按钮同规格，避免接管前后视觉漂移 */
- .dsh-phone-menu-slot{min-height:34px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:10px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:14px system-ui}
+ .dsh-phone-menu-slot{min-height:34px;min-width:44px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:10px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:14px system-ui;white-space:nowrap}
  html[data-dsh-drawer-open] .dsh-phone-menu-slot{background:var(--dsw-alias-bg-layer-2,#eef2f7)}
  .wSkVaW_titleRow{grid-column:1!important;box-sizing:border-box;min-width:0;min-height:36px!important;padding-inline:70px 32px!important;gap:4px!important}
  .wSkVaW_titleCluster{gap:4px!important;min-width:0}
