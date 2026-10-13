@@ -173,7 +173,13 @@ if (APPLY_TO) {
 }
 
 console.log('\n注：本脚本**不直接改 MainActivity.kt**。理由是改它会让该文件成为 capsule override，')
-console.log('    从此承担基线漂移成本；而当前无 gradle 环境，改完仍无法编译验证。')
-console.log('    先出清单与判据、由人工决定何时接入，比自动改更稳。')
+console.log('    从此承担基线漂移成本；故先出清单与判据、由人决定时机，而不是自动改。')
+console.log('')
+console.log('⚠️ 2026-10-13 更新：CI 已具备编译能力（build-apk.yml 跑 ./gradlew :app:assembleDebug），')
+console.log('   故「改完无法验证编译」这一前提**不再成立**。若决定接入，路径是：')
+console.log('     1) 把改好的 MainActivity.kt 放进 .github/capsule/overrides/app/src/main/java/com/dshphone/')
+console.log('     2) apply.sh 会把它铺到仓库，CI 编译即验证（编译失败会让 CI 变红）')
+console.log('     3) 同时在 apply.sh 加自检：grep -q "R.color.ds_" app/src/main/java/com/dshphone/MainActivity.kt')
+console.log('        （防「文件铺了但没人用 token」这种静默退化）')
 
 process.exit(badRefs.length === 0 ? 0 : 1)
