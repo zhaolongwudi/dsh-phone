@@ -193,6 +193,9 @@ export const MIGRATION = [
   },
   {
     id: 'drawer-mask',
+    // ✅ 2026-10-13 已落地（设备端验收 13/13 + 真实触摸事件通过）。
+    //    真实代码在 overrides/peer/agent-cards/client-source.js 的 DrawerMask。
+    status: '已落地（设备验收 13/13）',
     current: 'JS 创建 <button class="dsh-phone-sidebar-mask"> + CSS',
     target: 'shell.overlay',
     why: '上游框架自有覆盖层座位，语义就是「盖在框架上的浮层」。收益是**架构一致性**（不再往 body 末尾塞浮层、开合状态走显式契约），而非减少上游哈希依赖 —— 实测遮罩规则只用自有 class，真正锚哈希的是抽屉容器本身（.pI_x6G_sidebarCol/.hHd-Xa_root）。若要减哈希，应先做 drawer-toggle/抽屉容器那一项。',
