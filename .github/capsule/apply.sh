@@ -100,6 +100,17 @@ grep -qE "syncFlag\(document\.documentElement, 'data-dsh-modal-open'" app/src/ma
 grep -qE "syncFlag\(document\.documentElement, 'data-dsh-settings-open'" app/src/main/assets/dsh-phone.js
 # 抽屉开合状态（三期的共享通道：槽位组件与 dsh-phone.js 都读这一份）
 grep -qE "syncFlag\(document\.documentElement, 'data-dsh-drawer-open'" app/src/main/assets/dsh-phone.js
+# 抽屉打开时必须**展开**被折叠的侧栏（2026-10-13 用户报障修复的接线）。
+# ⚠️ 这一条防的正是「逻辑存在但没被调用」：展开代码原先只写在旧自绘按钮专属的
+#    开合函数里，三期把开关迁进槽位后就走不到了 ⇒ 抽屉弹出却只有图标列 + 大片空白。
+#    那种失效构建/类型/单测**全绿**，只有真机点一下才看得见，与本节其它条同类。
+# 锚定「上升沿」形态：若哪天被改成持续条件（open && collapsed），用户手动折叠侧栏
+# 会被立刻弹回 —— 那是把旧 bug 换成新 bug，故一并锁住形态。
+grep -qE "open && !drawerWasOpen && frame\.hasAttribute\('data-sidebar-collapsed'\)" app/src/main/assets/dsh-phone.js
+grep -qE "let drawerWasOpen = false" app/src/main/assets/dsh-phone.js
+# 宽屏下菜单按钮必须**代理**给上游侧栏开关（否则是死按钮：属性翻转被 adapt 当场撤销）
+grep -qF "__dshWideProxy = true" app/src/main/assets/dsh-phone.js
+grep -qF "railToggle.click()" app/src/main/assets/dsh-phone.js
 # 侧栏实体标签（4 条规则优先用它，抽掉则退回哈希依赖）
 grep -qE "RAIL_TAG = 'data-dsh-rail'" app/src/main/assets/dsh-phone.js
 # 断点必须与 CSS 一致（JS 767 而 CSS 700 会造成 701-767px 区间的半态）
