@@ -169,17 +169,29 @@ const result = {
   version: 'unknown',
 }
 
-// 判定：字节数 + 内容 sha 双判据（只比大小会被"长度凑巧相同"骗过）
-if (jsEnt && jsEnt.usize === localJs.length && Buffer.compare(jsEnt.buf, localJs) === 0) {
-  result.version = 'capsule'   // 设备上的就是本层成果
+// 判定：**JS 与 CSS 各自**比字节 + 内容 sha。
+//   ⚠️ 此前只看 JS —— 于是「JS 一致但 CSS 落后」会被报成「已装新版（含本层成果）」，
+//      而实际设备跑的是**较旧**的一版（实测踩到：设备 JS 32988 与产物一致，
+//      但 CSS 19156 ≠ 产物 19190 ⇒ 属「有本层成果但不是最新」）。
+//      这种状态最危险：验收会通过，但验的不是将要发布的那份。
+const jsSame = !!(jsEnt && jsEnt.usize === localJs.length && Buffer.compare(jsEnt.buf, localJs) === 0)
+const cssSame = !!(cssEnt && cssEnt.usize === localCss.length && Buffer.compare(cssEnt.buf, localCss) === 0)
+result.match = { js: jsSame, css: cssSame }
+
+if (jsSame && cssSame) {
+  result.version = 'capsule'      // 与产物**完全**一致
+} else if (jsSame || cssSame) {
+  result.version = 'stale'        // 部分一致 ⇒ 有成果但不是最新（须明确报出）
 } else if (jsEnt && jsEnt.usize === 25521) {
-  result.version = 'baseline'  // 已知的旧基线
+  result.version = 'baseline'     // 已知旧基线
 } else if (jsEnt) {
-  result.version = 'other'     // 都不匹配
+  result.version = 'other'        // 都不匹配
 }
 
 const VERDICT = {
-  capsule: ['✅ 设备已装新版（含本层成果）', '可直接做**真实 App 验收**（无需 CDP 注入）'],
+  capsule: ['✅ 设备已装**与产物完全一致**的版本', '可直接做**真实 App 验收**（无需 CDP 注入）'],
+  stale: ['⚠️ 设备版本**落后于当前产物**（部分文件一致）',
+    '仍可做真实 App 验收，但**验的不是将要发布的那份** ⇒ 建议先重装最新包再验收'],
   baseline: ['⚠️ 设备仍是旧基线版（无本层成果）', '只能做**注入式验收**（把产物投到运行中的引擎上）'],
   other: ['❓ 设备版本与本层已知的两档都不匹配', '不猜：请确认 APK 来源，或把该版本的 dsh-phone.js 加入基准'],
   unknown: ['❓ 读不到 APK 内的 dsh-phone.js', '检查 APK 路径与读取权限'],
@@ -187,8 +199,14 @@ const VERDICT = {
 
 console.log('设备端 UI 资源版本判定')
 console.log('  APK      ' + apk)
-console.log('  设备内   dsh-phone.js ' + (jsEnt?.usize ?? '?') + 'B · dsh-phone.css ' + (cssEnt?.usize ?? '?') + 'B')
-console.log('  本层产物 dsh-phone.js ' + localJs.length + 'B · dsh-phone.css ' + localCss.length + 'B')
+// 逐文件列出「设备内 / 产物 / 是否一致」——只报一个总判定会掩盖「部分落后」。
+const row = (label, ent, local) => {
+  const size = ent?.usize ?? '?'
+  const same = ent && ent.usize === local.length && Buffer.compare(ent.buf, local) === 0
+  return `  ${label.padEnd(16)} 设备 ${String(size).padStart(6)}B · 产物 ${String(local.length).padStart(6)}B · ${same ? '一致' : '**不一致**'}`
+}
+console.log(row('dsh-phone.js', jsEnt, localJs))
+console.log(row('dsh-phone.css', cssEnt, localCss))
 console.log('')
 console.log('  ' + VERDICT[0])
 console.log('  ⇒ ' + VERDICT[1])
