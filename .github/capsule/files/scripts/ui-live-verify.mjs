@@ -20,16 +20,30 @@
 // `dsh-auth-*` cookie 注入过去，它就成为一个**已认证 + 窄屏 + 不影响用户当前视图**
 // 的验收面。
 //
+// ## 两种验收模式（装包前后各一条）
+//
+//   · **注入式**（默认 `--surface-auth` + `--run`）：设备上跑的是旧包时，
+//     用 CDP 把工作区产物投到运行中的引擎上，验「产物本身对不对」。
+//   · **真实 App**（`--realapp`）：设备上跑的已是新版时，**直接验当前页面** ——
+//     验的是「设备实际装载的那份代码」。后者才是终态验收。
+//     ⚠️ 它需要对**视口做临时仿真**（手机形态全在 `@media (max-width:767px)` 内，
+//     而设备常是横屏 1212px）—— 只改渲染视口、不改代码/资源，且结束即 clear 并复核。
+//
+// 判据同源：两种模式用同一套断言（开关几何/不重叠/事实翻转/侧栏滑入…），
+// 故「注入式通过」与「真实 App 通过」可直接对比，不会有标准漂移。
+//
 // ## 三层验收的分工
 //
 //   · CDP 层（本脚本）：真实 DOM、真实几何、真实开合翻转；
-//   · ADB 层：实际遮挡与触控（本机 adb 无设备侧授权，未做，见报告）；
+//   · ADB 层：实际遮挡与触控（本机 adb 无设备侧授权、无障碍未启用，未做，见报告）；
 //   · 代码层：capsule 内的全部门禁与单测。
 //
 // 用法：
 //   node scripts/ui-live-verify.mjs --list            # 列可用调试目标
-//   node scripts/ui-live-verify.mjs --surface         # 建隔离验收面
-//   node scripts/ui-live-verify.mjs --run             # 跑验收（需先建面）
+//   node scripts/ui-live-verify.mjs --surface         # 看当前面状态（只读）
+//   node scripts/ui-live-verify.mjs --surface-auth    # 建隔离验收面（注入 cookie）
+//   node scripts/ui-live-verify.mjs --run             # 注入式验收
+//   node scripts/ui-live-verify.mjs --realapp         # 真实 App 验收（窄屏仿真，可逆）
 //   node scripts/ui-live-verify.mjs --restore         # 还原
 //
 // 无 CDP 通道/无引擎时**显式跳过**（CI 属预期），不假装通过。
@@ -260,6 +274,12 @@ if (args.includes('--list')) {
 //   手机形态只在 max-width:767px 下成立，故必须选真正窄的那个 WebView。
 //   实测本机：主窗口 1212px（不满足）、内置浏览器 454px（满足）——
 //   按枚举顺序猜会选错，必须实测宽度与认证态。
+//
+// ⚠️ `--realapp` 是例外：它**自己**做视口仿真，故宽视口正是它要处理的常态
+//    （设备模拟器/平板横屏）。此时按「已认证」挑即可，不再要求窄视口 ——
+//    否则会在真正需要它的场景下被这条守卫挡掉（本节实测踩到：
+//    --realapp 报了「没有满足 767px 的已认证视口」而退出）。
+const REALAPP = args.includes('--realapp')
 let surface = arg('--socket')
 let mainSock = null
 if (!surface) {
@@ -267,19 +287,30 @@ if (!surface) {
   for (const sock of sockets) {
     try {
       const c = await connectCdp(sock)
-      const v = await c.evalJs(`return { w: innerWidth, h: innerHeight, mq: matchMedia('(max-width: 767px)').matches, unauthed: document.body.innerText.includes('authentication required'), title: document.title }`)
+      const v = await c.evalJs(`return { w: innerWidth, h: innerHeight, mq: matchMedia('(max-width: 767px)').matches, unauthed: document.body.innerText.includes('authentication required'), title: document.title, hasFrame: !!document.querySelector('[data-rightbar-col]') }`)
       infos.push({ socket: sock, ...(v.value ?? {}) })
       c.close()
     } catch { /* 取不到就跳过 */ }
   }
-  const pick = infos.filter(i => i.mq === true && i.unauthed === false)[0] ?? infos.find(i => i.mq === true)
-  surface = pick?.socket
-  mainSock = infos.find(i => i.mq === false)?.socket ?? null
-  if (!surface) {
-    console.log('设备端验收：跳过（本机没有满足 767px 断点的已认证视口）')
-    console.log('  实测视口：' + infos.map(i => `${i.socket}=${i.w}px${i.unauthed ? '(未认证)' : ''}`).join(', '))
-    console.log('  提示：手机形态只在窄视口成立；宽视口下测不出结论。')
-    process.exit(0)
+  if (REALAPP) {
+    // 真实 App 模式：挑**已认证且已挂载框架**的那个（通常是主窗口），不要求窄视口。
+    const pick = infos.filter(i => !i.unauthed && i.hasFrame)[0] ?? infos.filter(i => !i.unauthed)[0]
+    surface = pick?.socket
+    if (!surface) {
+      console.log('设备端验收（真实 App）：跳过（未找到已认证且已挂载的视口）')
+      console.log('  实测：' + infos.map(i => `${i.socket}=${i.w}px${i.unauthed ? '(未认证)' : ''}${i.hasFrame ? '(有框架)' : ''}`).join(', '))
+      process.exit(0)
+    }
+  } else {
+    const pick = infos.filter(i => i.mq === true && i.unauthed === false)[0] ?? infos.find(i => i.mq === true)
+    surface = pick?.socket
+    mainSock = infos.find(i => i.mq === false)?.socket ?? null
+    if (!surface) {
+      console.log('设备端验收：跳过（本机没有满足 767px 断点的已认证视口）')
+      console.log('  实测视口：' + infos.map(i => `${i.socket}=${i.w}px${i.unauthed ? '(未认证)' : ''}`).join(', '))
+      console.log('  提示：手机形态只在窄视口成立。若设备已装新版，用 --realapp（自带视口仿真）。')
+      process.exit(0)
+    }
   }
 }
 if (!surface) { console.log('设备端验收：跳过（无可用的 page 目标）'); process.exit(0) }
@@ -334,6 +365,85 @@ if (args.includes('--restore')) {
   s.close(); process.exit(0)
 }
 
+// ── 真实 App 模式（--realapp）：设备上装的已是新版时，直接验当前页面 ──────
+//    与注入式的区别：不投任何产物 —— 验的就是 APK 里装载的那份代码。
+//    唯一让步是**视口仿真**（手机形态全在 @media(max-width:767px) 内，而设备常是
+//    横屏 1212px）：只改渲染视口，不改代码/资源，结束立即 clear 并复核恢复。
+if (args.includes('--realapp')) {
+  const width = Number(arg('--width', '400'))
+  const pre = (await s.evalJs(SNAP)).value
+  console.log('\n① 仿真前（设备当前视口）：' + JSON.stringify({ vp: pre.viewport, bp: pre.breakpoints, facts: pre.facts, menu: pre.menu, slotToggle: pre.slotToggle }, null, 1))
+  if (!pre.slotToggle.mountedFact && !pre.facts.maskMounted) {
+    console.log('  ⊘ 本页未见接管事实 ⇒ 设备上跑的可能仍是旧包。')
+    console.log('    先跑 `ui-verify-installed.mjs` 判定版本；旧包请用 --surface-auth + --run 做注入式验收。')
+    s.close(); process.exit(0)
+  }
+  // 关过渡（无焦点面里动画帧不推进，会读到过渡中间态 —— 此坑此前踩过）
+  await s.evalJs(`
+    const st = document.createElement('style'); st.id = 'probe-notrans'
+    st.textContent = '[data-dsh-rail],.pI_x6G_sidebarCol{transition:none!important}'
+    document.head.appendChild(st); return 1
+  `)
+  await s.send('Emulation.setDeviceMetricsOverride', { width, height: 655, deviceScaleFactor: 1, mobile: true, screenWidth: width, screenHeight: 655 })
+  await sleep(800)
+  const narrow = (await s.evalJs(SNAP)).value
+  const overlapFn = (a, b) => a && b && !(a[0]+a[2] <= b[0] || b[0]+b[2] <= a[0] || a[1]+a[3] <= b[1] || b[1]+b[3] <= a[1])
+  console.log(`\n② 仿真窄屏（width=${width}）：` + JSON.stringify({ vp: narrow.viewport, bp: narrow.breakpoints, facts: narrow.facts, slotToggle: narrow.slotToggle, overlap: overlapFn(narrow.slotToggle.box, narrow.slotToggle.titleRowBox), rail: narrow.rail }, null, 1))
+
+  const clickInfo = await s.evalJs(`
+    const slot = document.querySelector('.dsh-phone-menu-slot')
+    const legacy = document.querySelector('.dsh-phone-menu')
+    const t = (slot && getComputedStyle(slot).display !== 'none') ? slot : ((legacy && getComputedStyle(legacy).display !== 'none') ? legacy : null)
+    if (t) t.click()
+    return t ? String(t.className) : 'none'
+  `)
+  console.log('\n③ 点击目标：' + JSON.stringify(clickInfo.value ?? clickInfo.error))
+  await sleep(700)
+  const opened = (await s.evalJs(SNAP)).value
+  const cl = await s.evalJs(`
+    const cm = document.querySelector('.dsh-phone-mask'), lm = document.querySelector('.dsh-phone-sidebar-mask')
+    const t = (cm && getComputedStyle(cm).display !== 'none') ? cm : ((lm && getComputedStyle(lm).display !== 'none') ? lm : null)
+    if (t) t.click(); return 1
+  `)
+  await sleep(700)
+  const closed = (await s.evalJs(SNAP)).value
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(800)
+  const restored = (await s.evalJs(SNAP)).value
+
+  const checks = [
+    ['真实 App 上形态层已激活（窄屏 mobile-form）', narrow?.facts.mobileForm === true],
+    ['真实 App 上槽位开关已接管（toggle-mounted）', narrow?.slotToggle.mountedFact === true],
+    ['真实 App 上遮罩组件已接管（mask-mounted）', narrow?.facts.maskMounted === true],
+    ['开关渲染且几何非零', (narrow?.slotToggle.box?.[2] ?? 0) > 0 && (narrow?.slotToggle.box?.[3] ?? 0) > 0],
+    ['开关位于 header 内', !!(narrow?.slotToggle.headerBox) && !!narrow?.slotToggle.box &&
+      narrow.slotToggle.box[1] >= narrow.slotToggle.box[1] - 1 &&
+      narrow.slotToggle.box[1] + narrow.slotToggle.box[3] <= narrow.slotToggle.box[1] + narrow.slotToggle.box[3] + 1],
+    ['开关与标题行不重叠', !overlapFn(narrow?.slotToggle.box, narrow?.slotToggle.titleRowBox)],
+    ['标题行仍可见（宽 > 0）', (narrow?.slotToggle.titleRowBox?.[2] ?? 0) > 0],
+    ['旧自绘按钮已被隐藏（无两个开关）', narrow?.slotToggle.legacyVisible === false],
+    // 阈值与**仿真前**对比，不写死绝对值：该视图 header 本身 76px（空白会话 hero 头），
+    // 写死 41 会假红（本节首轮踩到）。接管只应改列布局，不应改高度。
+    ['header 高度未被接管改变（与仿真前相同）', ((narrow?.slotToggle.headerBox)?.[3] ?? -1) === ((pre?.slotToggle.headerBox)?.[3] ?? -2)],
+    ['点开关后事实翻转', opened?.facts.drawerOpen === true],
+    ['点开关后 aria-expanded 翻转（形态层同步）', opened?.slotToggle.expanded === 'true'],
+    ['点开关后侧栏滑入视口（x>=0）', (opened?.rail.box?.[0] ?? -1) >= 0],
+    ['点开关后遮罩可见且铺满', (opened?.activeMask?.box?.[3] ?? 0) > 100],
+    ['点遮罩后事实收回', closed?.facts.drawerOpen === false],
+    ['点遮罩后侧栏滑出（x<0）', (closed?.rail.box?.[0] ?? 0) < 0],
+    ['无槽位错误', (narrow?.slotErrors ?? []).length === 0],
+    ['仿真已复原（视口回到原值）', JSON.stringify(pre.viewport) === JSON.stringify(restored?.viewport)],
+  ]
+  console.log('\n═══ 真实 App 验收（窄屏仿真，可逆）═══')
+  let pass = 0
+  for (const [n, ok] of checks) { console.log('  ' + (ok ? '✓' : '✗') + ' ' + n); if (ok) pass++ }
+  console.log(`\n通过 ${pass}/${checks.length}`)
+  if (outPath) writeFileSync(outPath, JSON.stringify({ mode: 'realapp', pre, narrow, opened, closed, restored, checks }, null, 2))
+  console.log('\n注：本步只改渲染视口（可逆），未改代码/资源 —— 验的是设备实际装载的那份。')
+  s.close()
+  process.exit(pass === checks.length ? 0 : 1)
+}
+
 // ── 验收主流程 ───────────────────────────────────────────────────────────
 // ⚠️ 必须显式 --run。默认**只做只读快照**、不点击。
 //    原因：主流程含一次真实点击（开抽屉）。在 CI、或用户在正常用 App 时被
@@ -341,7 +451,8 @@ if (args.includes('--restore')) {
 if (!args.includes('--run') && !args.includes('--snapshot')) {
   console.log('设备端验收：未指定动作。')
   console.log('  --snapshot  只读快照（推荐先跑这个）')
-  console.log('  --run       跑完整验收（含一次可逆开合点击）')
+  console.log('  --run       注入式验收（含一次可逆开合点击）')
+  console.log('  --realapp   真实 App 验收（设备已装新版时用；窄屏仿真可逆）')
   console.log('  --surface-auth / --restore  建面 / 还原')
   console.log('  --list      列出调试目标')
   s.close(); process.exit(0)
