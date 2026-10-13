@@ -104,6 +104,10 @@ for tok in ds_bg ds_surface ds_border ds_text_primary ds_text_secondary ds_accen
   grep -q "name=\"$tok\"" app/src/main/res/values/ds_colors.xml || { echo "::error::浅色缺 token $tok"; exit 1; }
   grep -q "name=\"$tok\"" app/src/main/res/values-night/ds_colors.xml || { echo "::error::深色缺 token $tok（双态必须成对）"; exit 1; }
 done
+# 原生 token **接入自检**：文件铺过去还不够，必须真的被 Kotlin 引用 ——
+# 否则「token 定义了但没人用」，深色模式依旧不跟随，且**不报错**（正是本方案反复防的形态）。
+grep -q "R.color.ds_" app/src/main/java/com/dshphone/MainActivity.kt || { echo "::error::MainActivity.kt 未消费 ds_* token（接入失效）"; exit 1; }
+
 
 # 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
 #    这是「上游升级导致样式/逻辑静默失效」的第一道防线，CI 无引擎树也能跑。
