@@ -654,6 +654,43 @@ if (args.includes('--realapp')) {
     }
   }
 
+  // ── 断点一致性判据 ───────────────────────────────────────────────────────
+  //  本层手机形态由**两个独立消费方**判断：JS 的 matchMedia 与 CSS 的 @media。
+  //  两者若不一致会出现**半态**（JS 认为手机、CSS 认为桌面），且**不报错**。
+  //  故在断点两侧各取一点实测。用的是 --realapp 已建好的仿真通道。
+  {
+    const probe = async (w) => {
+      await s.send('Emulation.setDeviceMetricsOverride', { width: w, height: 655, deviceScaleFactor: 1, mobile: true, screenWidth: w, screenHeight: 655 })
+      await sleep(600)
+      return (await s.evalJs(`
+        const html = document.documentElement
+        // CSS 断点是否生效：用只在 @media(max-width:767px) 内声明的变量探测
+        const topbar = getComputedStyle(html).getPropertyValue('--dsh-phone-topbar').trim()
+        return {
+          vw: innerWidth,
+          visualW: visualViewport ? visualViewport.width : null,
+          jsBp: matchMedia('(max-width: 767px)').matches,
+          cssBp: topbar === '44px',
+          mobileForm: html.hasAttribute('data-dsh-mobile-form'),
+        }
+      `)).value
+    }
+    const inside = await probe(700)   // 断点内
+    const outside = await probe(900)  // 断点外
+    console.log('\n  断点一致性探测：')
+    console.log('    700px → ' + JSON.stringify(inside))
+    console.log('    900px → ' + JSON.stringify(outside))
+    checks.push(
+      ['断点内：JS 与 CSS 断点一致（无半态）', inside.jsBp === inside.cssBp],
+      ['断点内：形态事实与 JS 断点一致', inside.mobileForm === inside.jsBp],
+      ['断点外：JS 与 CSS 断点一致（无半态）', outside.jsBp === outside.cssBp],
+      ['断点外：形态事实与 JS 断点一致', outside.mobileForm === outside.jsBp],
+    )
+    // 复原到窄屏（后续判据依赖窄屏状态）
+    await s.send('Emulation.setDeviceMetricsOverride', { width, height: 655, deviceScaleFactor: 1, mobile: true, screenWidth: width, screenHeight: 655 })
+    await sleep(500)
+  }
+
   console.log('\n═══ ' + (PREVIEW ? '发布前预演' : '真实 App 验收') + '（窄屏仿真，可逆' + (USE_TOUCH ? '；交互=真实触摸事件' : '') + '）═══')
   let pass = 0
   for (const [n, ok] of checks) { console.log('  ' + (ok ? '✓' : '✗') + ' ' + n); if (ok) pass++ }
