@@ -145,7 +145,7 @@
 
 ### 5.2 做法
 
-**a. 分组**：把 [dsh-phone.css](../../.scratch/dshdiff/gh/app/src/main/assets/dsh-phone.css) 按**上游组件**切成若干块，每块加注释头：
+**a. 分组**：把 `dsh-phone.css`（本地镜像：`.scratch/dshdiff/gh/app/src/main/assets/dsh-phone.css`，工作区根相对） 按**上游组件**切成若干块，每块加注释头：
 
 ```
 /* ===== 上游组件：ui-conversation / composer 行 (.uV2eYG_*) =====
@@ -220,7 +220,7 @@
 
 ## 8. 建议直接吸收的两项「软资产」（零风险、高收益）
 
-1. **坑位库纪律** —— 参考 [`gotchas.md`](../../.scratch/lemonshell/dsh-mobile-apk-main/docs/AGENTS/gotchas.md)（248KB 实锤）：现象 → 真因 → 修法 → 复验证据，编号递增不重编。你已踩过多次同类坑（CSS 失效、快照指纹、坐标基准）。
+1. **坑位库纪律** —— 参考 `gotchas.md`（本地镜像：`.scratch/lemonshell/dsh-mobile-apk-main/docs/AGENTS/gotchas.md`，248KB 实锤）：现象 → 真因 → 修法 → 复验证据，编号递增不重编。你已踩过多次同类坑（CSS 失效、快照指纹、坐标基准）。
 2. **三层验收纪律** —— 代码层 + CDP 层 + ADB 真人操作层，缺一层即未验收。对你的 UI 改动尤其关键：几何/遮挡/键盘这类缺陷 **DOM 断言看不见**。
 
 ---
