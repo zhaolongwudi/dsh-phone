@@ -187,6 +187,19 @@ for peer in dsh-llm dsh-commands dsh-credentials; do
   grep -q "\"@deepseek-ai/$peer\": \"$ENGINE_VER_EXPECT\"" "$VENDOR_MANIFEST" \
     || { echo "::error::$VENDOR_MANIFEST 的 $peer peer 未同步到 $ENGINE_VER_EXPECT（设备上 Jet Hub 会被引擎静默跳过）"; exit 1; }
 done
+# 5.97) **同类地雷的泛化扫描**（2026-10-14 同日追加）。
+#      §5.95 只钉住了 Jet Hub 一个包，但事故的**成因是普遍的**：任何会被引擎当插件
+#      加载的包，只要 peerDependencies 里 @deepseek-ai/dsh* 钉了一个**精确旧版**，
+#      就会被同一条门禁判不兼容。故这里不逐个列举，而是**扫全部插件清单**：
+#        · 判定权威 = 引擎自身的 evaluatePluginCompatibility（semver + includePrerelease）
+#        · 覆盖范围 = runtime/package.json 的 file: 依赖（= build-assets.py 打进 APK 的插件）
+#      实测教训：dsh-channel-qq 在 Jet Hub 修复后仍钉 alpha.1；它**当前不发作**
+#      （不在 profile.bundles，patch 为空数组，走动态 import 不过门禁），
+#      属**潜伏地雷**而非现症 —— 但一旦被加进 bundles/patch 就会立刻复现同类事故。
+node scripts/check-plugin-peers.mjs
+#      该门禁自身的**判别力反证**：它的失效形态是「静默变恒真」，必须双向断言
+#      （精确旧版/空范围必须检出；caret 范围/非 dsh peer 必须放行）。详见该文件头。
+node scripts/ui-tests/plugin-peers.test.mjs
 
 
 # 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
