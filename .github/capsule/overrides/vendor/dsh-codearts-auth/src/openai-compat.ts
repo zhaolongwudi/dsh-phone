@@ -281,7 +281,23 @@ export function serializeMessages(
     // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
     // 拒收整个请求（实测）。
     const hasImage = parts !== undefined
-    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage
+    // ⚠️⚠️ **条件必须把 \`pendingOwnParts\` 也算进来**（手机版修掉的一处**真实数据丢失**，
+    //    上游同段逐字节相同、同样存在）：
+    //
+    //    上一条 user 消息含工具结果时，它的**自身正文**被延后到 \`pendingOwnParts\`；
+    //    若本条既没有挂起图片、自己也没有图（\`pendingToolImages.length === 0 && !hasImage\`），
+    //    上面这个条件恒为 false ⇒ \`combined\` 是 undefined ⇒
+    //    \`flushToolImages(undefined)\` 因「无挂图且 own 为空」**提前 return**
+    //    ⇒ 那份延后正文**从未被发出，静默丢失**。
+    //
+    //    可达性：harness 的真实形状就是「工具结果搭载在一条 user 消息里，而那条
+    //    消息可以同时带用户自己的正文」（见 \`message-shape.ts\` 的降级规则：
+    //    \`role:'tool'\` 降级后 content 只有 tool-result 块，但**混合形态** ——
+    //    user 消息里 text 与 tool-result 并存 —— 是 ≤0.1.6 的常规形状）。
+    //    实测（本仓库行为探针）：正文与顶层图片双双消失，模型看不到。
+    //
+    //    ⇒ 判据改成「有挂图 **或** 本条有图 **或** 有延后正文」。
+    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage || pendingOwnParts !== undefined
       ? [
         ...(pendingOwnParts ?? []),
         ...(parts ?? (text.length > 0 ? [{ type: 'text', text }] : [])),

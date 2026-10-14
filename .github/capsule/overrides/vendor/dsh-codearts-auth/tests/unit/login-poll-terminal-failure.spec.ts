@@ -625,6 +625,60 @@ describe('IKLI7J 接线守卫：两侧必须同改，缺一处就退回静默转
     expect(branch).toContain('stopPoll()')
   })
 
+  it('★★ 三条终态路径都必须**先停表再 await**（否则 1 秒轮询会重入）', () => {
+    /**
+     * ⚠️⚠️ 手机版特有的要求（上游没有这个窗口）。
+     *
+     * 轮询是 `setInterval(..., 1000)`，而手机版的失败/超时分支都改用了
+     * `setProbeNotice`（本面板没有可用的 setError/setPhase，见分支内注释），
+     * 于是必须 `await loadAccounts()` / `loadCredits()` 才能让列表与额度刷新。
+     *
+     * 若把 `stopPoll()` 放在 await **之后**：await 期间 `pollRef.current` 仍非 0，
+     * 下一拍会**再次进入**同一分支 —— 重复拉账号、重复设提示，且提示时序不可控。
+     *
+     * ⇒ 判据：两个终态分支里 `stopPoll()` 的下标必须**早于**该分支内第一个 `await`。
+     */
+    const branches: Array<{ name: string; from: RegExp; to: RegExp }> = [
+      {
+        name: '超时分支',
+        from: /^\s*if \(Date\.now\(\) > deadline\) \{$/m,
+        to: /^\s*const pollRes = await rpcCall\('login\.poll'/m,
+      },
+      {
+        name: '终态失败分支',
+        from: /^\s*if \(pollRes\?\.success === false\) \{$/m,
+        to: /^\s*if \(!pollRes\?\.done\) return;$/m,
+      },
+    ]
+    for (const { name, from, to } of branches) {
+      const fromMatch = from.exec(clientSource)
+      expect(fromMatch, `找不到 ${name}`).not.toBeNull()
+      const fromIdx = (fromMatch as RegExpExecArray).index
+      const toMatch = to.exec(clientSource.slice(fromIdx))
+      expect(toMatch, `找不到 ${name} 的结束锚点`).not.toBeNull()
+      // ⚠️⚠️ **必须剥注释后再判**：本分支的块注释里逐行写了「停表在前 ⇒ …」
+      //    以及「必须先 stopPoll() 再 await」这类说明，裸文本扫描会把**注释**里的
+      //    那行当成调用 —— 于是真实现把 stopPoll() 挪到 await 之后也照样「绿」
+      //    （本仓库记过的同型事故：判据自匹配修复注释本身）。
+      const body = stripComments(
+        clientSource.slice(fromIdx, fromIdx + (toMatch as RegExpExecArray).index),
+      )
+      // ⚠️ 用**行锚定**正则而不是 \`indexOf\`：本文件与被测源码的注释里都引用了
+      //    \`stopPoll()\`（例如「必须先 stopPoll() 再 await」），裸 indexOf 会先命中注释。
+      const stopMatch = /^\s*stopPoll\(\);?$/m.exec(body)
+      expect(stopMatch, `${name} 没有 stopPoll() 调用`).not.toBeNull()
+      const stopIdx = (stopMatch as RegExpExecArray).index
+      // ⚠️ 用「await + 空白 + 标识符」而不是裸 `await`：注释里也出现过这个词，
+      //    裸匹配会把注释当代码（本仓库记过的同型事故）。
+      const awaitIdx = body.search(/await\s+[A-Za-z_$]/)
+      expect(awaitIdx, `${name} 没有 await（判据前提变了）`).toBeGreaterThan(-1)
+      expect(
+        stopIdx,
+        `${name} 的 stopPoll() 排在 await 之后 ⇒ 1 秒轮询会在 await 期间重入`,
+      ).toBeLessThan(awaitIdx)
+    }
+  })
+
   it('★ 客户端超时分支必须给提示（原先静默关窗 + 停表）', () => {
     const timeoutIdx = lineIndex(/^\s*if \(Date\.now\(\) > deadline\) \{$/m)
     const pollIdx = lineIndex(/^\s*const pollRes = await rpcCall\('login\.poll'/m)

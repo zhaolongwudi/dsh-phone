@@ -81,6 +81,13 @@ function stripComments(source: string): string {
 const IMAGE_ID = 'att-1'
 const IMAGE_URLS = new Map([[IMAGE_ID, 'data:image/png;base64,AQID']])
 
+/** 三处同型实现（IKLIFH 必须同步修；漏一处 = 那一家继续「看不见图」）。 */
+const sources: Record<string, string> = {
+  'openai-compat.ts': readFileSync(new URL('../../src/openai-compat.ts', import.meta.url), 'utf8'),
+  'buddy-adapter.ts': readFileSync(new URL('../../src/buddy-adapter.ts', import.meta.url), 'utf8'),
+  'lobsterai-adapter.ts': readFileSync(new URL('../../src/lobsterai-adapter.ts', import.meta.url), 'utf8'),
+}
+
 /** 构造：assistant tool_call → 工具结果内嵌图片 → （可选中间 user）→ 提问。 */
 function messagesWithAsk(ask: string, middle?: string) {
   return [
@@ -243,12 +250,69 @@ describe('Issue IKLIFH：工具结果图片必须与提问同条', () => {
   })
 })
 
+describe('IKLIFH 边界：延后的正文与顶层图片绝不静默丢失', () => {
+  it('★★ 含工具结果的 user 消息其正文，在下一条普通 user 处必须被发出', () => {
+    /**
+     * ⚠️⚠️ **真实数据丢失**（本仓库行为探针定位；上游同段等价、同样存在）。
+     *
+     * 上一条 user 消息含工具结果 ⇒ 它的**自身正文**被延后进 `pendingOwnParts`。
+     * 下一条 user 若既没有挂起图片、自己也没有图，则 `combined` 的判据
+     *（原先只写 `pendingToolImages.length > 0 || hasImage`）恒为 false ⇒
+     * `combined === undefined` ⇒ `flushToolImages(undefined)` 因
+     * 「无挂图且 own 为空」**提前 return** ⇒ 那份正文**从未被发出**。
+     *
+     * 实测（修复前）：wire 上只剩「追问」，`工具的说明正文` 消失 —— 模型看不到。
+     */
+    const wire = serializeMessages([
+      { role: 'assistant', content: [{ type: 'tool-call', id: 'tc1', name: 'f', arguments: '{}' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '工具的说明正文' },
+          { type: 'tool-result', toolCallId: 'tc1', content: [{ type: 'text', text: 'out' }] },
+        ],
+      },
+      { role: 'user', content: '追问' },
+    ] as never, undefined)
+    expect(textIndexOf(wire, '工具的说明正文'), '延后的正文被静默丢弃').toBeGreaterThan(-1)
+    expect(textIndexOf(wire, '追问')).toBeGreaterThan(-1)
+  })
+
+  it('★★ 同一条 user 既带顶层图片又带工具结果时，顶层正文与图片都不得丢', () => {
+    /**
+     * 另一条同源路径：`parts`（本条自己的图）与 `deferred`（含工具结果）
+     * 同时成立。修复前 `combined` 虽因 `hasImage` 为真而存在，但那条消息的
+     * **顶层正文与顶层图片**会被 `pendingOwnParts = combined ?? …` 覆盖进延后队列，
+     * 而工具结果循环之后的落点又把队列清成 undefined —— 同样静默丢失。
+     */
+    const wire = serializeMessages([
+      { role: 'assistant', content: [{ type: 'tool-call', id: 'tc1', name: 'f', arguments: '{}' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '顶层正文' },
+          { type: 'image', attachment: { attachmentId: IMAGE_ID } },
+          { type: 'tool-result', toolCallId: 'tc1', content: [{ type: 'text', text: 'out' }] },
+        ],
+      },
+      { role: 'user', content: '问' },
+    ] as never, IMAGE_URLS)
+    expect(textIndexOf(wire, '顶层正文'), '顶层正文被丢弃').toBeGreaterThan(-1)
+    expect(imageIndexOf(wire), '顶层图片被丢弃').toBeGreaterThan(-1)
+    expect(textIndexOf(wire, '问')).toBeGreaterThan(-1)
+  })
+
+  it('★ 三处实现的 combined 判据都必须计入 pendingOwnParts（结构守卫）', () => {
+    for (const [name, src] of Object.entries(sources)) {
+      expect(
+        /const combined:[\s\S]{0,200}pendingOwnParts !== undefined/.test(src),
+        `${name} 的 combined 判据漏了 pendingOwnParts ⇒ 延后正文会静默丢失`,
+      ).toBe(true)
+    }
+  })
+})
+
 describe('IKLIFH 三处同型实现的结构守卫（漏一处即那一家继续「看不见图」）', () => {
-  const sources = {
-    'openai-compat.ts': readFileSync(new URL('../../src/openai-compat.ts', import.meta.url), 'utf8'),
-    'buddy-adapter.ts': readFileSync(new URL('../../src/buddy-adapter.ts', import.meta.url), 'utf8'),
-    'lobsterai-adapter.ts': readFileSync(new URL('../../src/lobsterai-adapter.ts', import.meta.url), 'utf8'),
-  }
 
   for (const [name, src] of Object.entries(sources)) {
     describe(name, () => {

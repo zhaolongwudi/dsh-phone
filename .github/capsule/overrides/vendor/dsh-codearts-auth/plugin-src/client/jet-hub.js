@@ -3131,10 +3131,29 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
             //   整体丢掉 —— 这正是「登录失败对用户完全不可见」的根因 1。
             //   判据刻意**不写进 `done:true` 分支**：对 `done` 的取值保持不敏感。
             if (pollRes?.success === false) {
-              if (loginWindow && !loginWindow.closed) loginWindow.close();
+              /**
+               * ⚠️⚠️ **`stopPoll()` 必须最先，不能放在 `await` 之后**。
+               *
+               * 轮询是 1 秒一次的 `setInterval`，而 `loadAccounts` / `loadCredits`
+               * 都是**真实网络往返**。若在 await 期间 `pollRef.current` 仍非 0，
+               * 回调会**再次进入**本分支：重复拉账号、重复设提示，且第二次的
+               * 提示时序不可控（用户可能先看到 A 再被 B 覆盖）。
+               * 停表在前 ⇒ 进入本分支的那一刻轮询即终态。
+               *
+               * ⚠️ 这是**手机版特有**的要求：上游此处没有 `await`
+               *（它的错误展示是同步的 `setError` + `setPhase`），故无此窗口；
+               * 本层改用 `setProbeNotice`（见本分支末尾说明）后必须补刷新，
+               * 才引入这两个 await。与上面的超时分支同构。
+               */
+              stopPoll();
               setLoginUrlForManual(null);
               await loadAccounts();
               if (canLoadCredits) await loadCredits();
+              // ⚠️ **手机版形态**：本面板的 create 流程没有可用的 `setError` /
+              //    `setPhase('error')` —— 错误文案只在 'error' 阶段渲染，而该流程
+              //    运行时 phase 恒为 'ready'，设了也看不见（同下面「弹窗被拦截」
+              //    那条注释的结论）。故失败提示走 `setProbeNotice({tone:'error'})`，
+              //    与同文件既有的「复用本机凭据」提示同一出口。
               if (mounted.current) {
                 setProbeNotice({
                   tone: 'error',
@@ -3142,7 +3161,6 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
                   details: [],
                 });
               }
-              stopPoll();
               return;
             }
             if (!pollRes?.done) return;
