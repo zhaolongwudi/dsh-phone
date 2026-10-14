@@ -205,3 +205,24 @@ spec** 覆盖的（zero-output-guard/catalog-broadcast/catalog-prewarm/backup-co
 > 详见 [移植第十轮报告](../reports/移植第十轮-官方引擎alpha2升级-20261014.md)。
 > ⚠️ **Gitee 线**在本轮期间又前进 3 提交（`8bb1035605` IKLMIY / `46ed99d443` merge /
 > `32681a8b13` IKLIFH 补修），**本轮未处理**，是下一轮的候选。
+
+> 🆕 **2026-10-14 18:55 追加（第十轮补丁，提交 `46e2cb7f94` + `ff58bb8064`）——★ 引擎升级引发的 Jet Hub 事故**：
+> **用户报障**：装本轮 APK 后**「jethub 插件不见了」**。
+> **根因**（引擎源码逐行确认）：`dsh-app-boot/lib/index.js:286` 的
+> `evaluatePluginCompatibility` 用 `semver.satisfies(runtime, range, {includePrerelease:true})`
+> 校验插件的 `peerDependencies`；`vendor/dsh-codearts-auth/package.json` 把
+> `@deepseek-ai/dsh-llm` **精确**钉在 `0.2.1-alpha.1` ⇒ 对 alpha.2 判不兼容；
+> `loadProfileDirectory`（:1011）遇不兼容直接 **throw** ⇒ **整个 profile bundle 被跳过**。
+> **⚠️ 本轮验证为何全绿却漏掉**：tsc/747 spec/UI 契约/apply.sh/APK 产物验收
+> **全是编译期或静态证据**，而门禁**只在运行期生效**；`runtime/overlays` 改得再对，
+> 也管不到另一个文件的 `peerDependencies` 字段。⇒ **「构建绿」证明不了「能跑」**。
+> **修复一（用户完成，`46e2cb7f94`）**：新增 `overrides/vendor/dsh-codearts-auth/package.json`，
+> peer + dev 同步 alpha.2；`apply.sh` 加 §5.95。实测 profile 声明的 6 个 bundle
+> **全部放行（0 个被跳过）**。
+> **修复二（本轮补做，`ff58bb8064`）**：泛化排查发现 **`dsh-channel-qq` 仍钉 alpha.1**
+> （同型地雷）。经逐条核实三条门禁路径（不在 `profile.bundles` / patch 为空数组 /
+> 走 phone-qq 动态 import）⇒ **潜伏地雷，非现症，未观测到 QQ 异常**。已新增同型覆盖，
+> 并补两件防复发工具：`scripts/check-plugin-peers.mjs`（泛化扫描，判定权威 = 引擎自身判据，
+> semver 取自仓库自带 pnpm ⇒ CI 无需 install）+ `ui-tests/plugin-peers.test.mjs`
+> （判别力反证 20/0，防「静默变恒真」），接入 `apply.sh` §5.97。
+> 详见 [第十轮报告 §12](../reports/移植第十轮-官方引擎alpha2升级-20261014.md)。
