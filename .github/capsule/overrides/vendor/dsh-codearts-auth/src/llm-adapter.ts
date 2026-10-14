@@ -14,6 +14,9 @@ import { isCodeArtsBenefitModel } from './models.js'
 import { isContextOverflowBody } from './openai-compat.js'
 import { normalizeHarnessMessages } from './message-shape.js'
 import { signRequestHuawei } from './sign.js'
+// ⚠️ `detailFieldText`（`detail` 那条腿）**只留一份实现** —— 本仓库多份同义的
+// `errorDetail` 各写一条判据必然漂移（见 `openai-compat.ts` 的注释，IKLBSH A1）。
+import { detailFieldText } from './openai-compat.js'
 import { createBlankReasoningSuppressor, createDsmlMarkerNormalizer, createReasoningLoopDetector, fixDsmlMarkers, hasUsableToolName, isReasoningLoopGuardEnabled, isTruncatedArguments, normalizeToolArguments, readWithIdleTimeout, reasoningLoopFailure, resolveEmptyResponseReason, resolveToolPairing, stripCourseLeakFromHistoryContent, stripCourseLeakIfEnabled } from './sse.js'
 import { planSessionTitleThinking } from './session-title.js'
 import type { CodeArtsCredential } from './types.js'
@@ -580,8 +583,44 @@ export function isSseQuotaExhaustedErrorCode(code: string, message: string): boo
  */
 const CODEARTS_QUOTA_EXHAUSTED_CODE = 'QUOTA_EXCEEDED'
 
-/** 从错误体提取可分类的 detail 文本（OpenAI 风格 error 或 CodeArts error_code/error_msg）。 */
+/**
+ * 从错误体提取**展示用**的可读 detail 文本（OpenAI 风格 error 或 CodeArts
+ * error_code/error_msg，**含**顶层 `detail` 字段）。
+ *
+ * ## ⚠️⚠️ 分类调用点必须走 {@link errorDetailForClassify}
+ *
+ * `detail` 对展示有价值，但它会**加长分类判据的输入** ⇒ 可能翻转错误码
+ * （上游两轮审计独立确证的真实净回归）：
+ *
+ * | 报文 | 只算既有腿 | 加上 detail 腿 |
+ * |---|---|---|
+ * | `{"message":"bad request","detail":"insufficient quota"}` | `INVALID_REQUEST` | **`QUOTA_EXCEEDED`** |
+ * | `{"message":"bad request","detail":"prompt is too long for this model"}` | `INVALID_REQUEST` | **`CONTEXT_WINDOW_EXCEEDED`** |
+ *
+ * 后者还会**触发 DSH 的上下文溢出压缩** —— 纯展示改进换来行为变更。
+ * 详见 `openai-compat.ts` 的 `errorDetail` doc（2026-10-14 自上游 IKLBSH A1 移植）。
+ */
 function errorDetail(body: string): string {
+  return errorDetailImpl(body, true)
+}
+
+/**
+ * 从错误体提取**分类用**的可读文本 —— **不含**顶层 `detail` 字段。
+ *
+ * ⚠️ 分类调用点（`httpErrorCode` / `isSseQuotaExhaustedErrorCode` 一类）
+ * **必须**走本出口。本出口保证分类输入与「加 detail 腿之前」**逐字节相同**。
+ */
+function errorDetailForClassify(body: string): string {
+  return errorDetailImpl(body, false)
+}
+
+/**
+ * `errorDetail` 的唯一实现（两条出口共用，**不各写一份** —— 那是本仓库首条红线
+ * 「同一语义两套判据」，且必然漂移）。
+ *
+ * @param includeDetailField - `true` = 展示出口；`false` = 分类出口。
+ */
+function errorDetailImpl(body: string, includeDetailField: boolean): string {
   try {
     const data = JSON.parse(body) as Record<string, unknown>
     const error = typeof data.error === 'object' && data.error !== null
@@ -598,6 +637,12 @@ function errorDetail(body: string): string {
       typeof data.error_code === 'string' ? data.error_code : undefined,
       typeof data.error_msg === 'string' ? data.error_msg : undefined,
       typeof data.message === 'string' ? data.message : undefined,
+      // ⚠️ 上游代理的 `{"error":"acp-proxy failure","detail":"<真实原因>"}` 形态
+      //（Gitee issue IKLBSH A1）—— 只认 `error` 会丢掉真正的原因。
+      // 判据**只留一份实现**（`openai-compat.ts` 的 `detailFieldText`）；本仓库
+      // 多份同义 `errorDetail` 各写一条必然漂移（「同一语义两套判据」）。
+      // ⚠️ **只在展示出口计入**（见上）。
+      includeDetailField ? detailFieldText(data) : undefined,
     ].filter((value): value is string => value !== undefined)
     if (parts.length > 0) return parts.join(' ')
   } catch {
@@ -628,7 +673,9 @@ function errorDetail(body: string): string {
  */
 function httpErrorCode(status: number, body: string): string {
   if (status === 401 || status === 403) return 'AUTH'
-  const detail = errorDetail(body)
+  // ⚠️ **分类必须走 `errorDetailForClassify`**（不含 detail 腿）—— 用展示出口会让
+  // detail 里的额度/超限措辞**翻转错误码**（实测表见 `errorDetail` 的 doc）。
+  const detail = errorDetailForClassify(body)
   // 额度码用字面量（IKJVCW）：harness 常量 'QUOTA' 会被客户端替换成固定文案。
   if (isQuotaExceededError(detail)) return CODEARTS_QUOTA_EXHAUSTED_CODE
   if (status === 429) return 'RATE_LIMIT'
@@ -1375,7 +1422,7 @@ export class CodeArtsAdapter extends LlmAdapter {
         //
         // ⚠️ 判据用整个错误体（`errorDetail` 会拼出 `error_code` + `error_msg`）：
         // 4xx 的报文形态与 SSE 不同，不能指望顶层 `error_code` 字段名一致。
-        if (isSseQuotaExhaustedErrorCode(errorDetail(errorText), errorText)) {
+        if (isSseQuotaExhaustedErrorCode(errorDetailForClassify(errorText), errorText)) {
           const message = codeartsQuotaExhaustedMessage(options.model, nextUtc8DayStartMs())
           if (this.options.accountPool) {
             if (currentAccountId) {
