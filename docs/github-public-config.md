@@ -1,6 +1,6 @@
 # GitHub 公开发布说明
 
-这是 2026-10-09 当前源码的独立公开快照。手机端保留原 0.1.58 源码；桌面端包含当时最新的本地源码及完整运行模块。来源提交及原项目许可证保留在 SOURCES.md。为排除旧历史中的内置 OAuth 信息，此次从干净初始提交发布，不推送旧标签与旧 Git 历史。
+这是 2026-10-09 当前源码的独立公开快照。手机端保留原 0.1.58 源码；桌面端包含当时最新的本地源码及完整运行模块。各组件来源许可保留在各自目录（如 phone-account/vendor/LICENSE.deepseek、vendor/dsh-codearts-auth/LICENSE、vendor/dsh-channel-qq/LICENSE.openclaw、runtime/overlays/@deepseek-ai/*/LICENSE）。为排除旧历史中的内置 OAuth 信息，此次从干净初始提交发布，不推送旧标签与旧 Git 历史。
 
 ## Gemini 浏览器授权
 
