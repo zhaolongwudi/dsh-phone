@@ -176,6 +176,18 @@ grep -q "DSH_PHONE_SHELL" runtime/overlays/@deepseek-ai/dsh-bash-local/lib/index
   || { echo "::error::bash-local overlay 丢了 Android shell 适配"; exit 1; }
 grep -q "materializeAndroid" runtime/overlays/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js \
   || { echo "::error::session-persistence overlay 丢了 Android 原子发布适配"; exit 1; }
+# 5.95) vendor 插件 peer 版本自检（2026-10-14 alpha.1→alpha.2 事故引入）。
+#      失效形态：引擎升到 alpha.2，而 vendor/dsh-codearts-auth 的 peerDependencies
+#      仍钉 alpha.1 ⇒ 引擎的精确版本门禁判「不兼容」，**静默跳过整个 profile bundle**
+#      （启动日志只有一行 "skipping profile bundle: ..."）⇒ 设备上 Jet Hub 整块消失，
+#      构建、类型检查、单测全绿。与 §5.9 的 runtime 覆盖失效是同一类「静默退回」，
+#      故同样钉成构建期硬断言；修复文件 = overrides/vendor/dsh-codearts-auth/package.json。
+VENDOR_MANIFEST='vendor/dsh-codearts-auth/package.json'
+for peer in dsh-llm dsh-commands dsh-credentials; do
+  grep -q "\"@deepseek-ai/$peer\": \"$ENGINE_VER_EXPECT\"" "$VENDOR_MANIFEST" \
+    || { echo "::error::$VENDOR_MANIFEST 的 $peer peer 未同步到 $ENGINE_VER_EXPECT（设备上 Jet Hub 会被引擎静默跳过）"; exit 1; }
+done
+
 
 # 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
 #    这是「上游升级导致样式/逻辑静默失效」的第一道防线，CI 无引擎树也能跑。
