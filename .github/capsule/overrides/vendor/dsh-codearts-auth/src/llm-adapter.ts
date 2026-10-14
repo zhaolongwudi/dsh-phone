@@ -884,6 +884,13 @@ function parseDsmlToolCalls(block: string): Array<{ name: string; arguments: str
  * 保留多少缓冲区等待下次 feed：若末尾是某开标签的不完整前缀（例如
  * `<tho` 跨 chunk 到达），保留该前缀；否则全部放行，避免短文本被
  * 过度缓冲延迟输出。
+ *
+ * ⚠️ **别名那一路必须从「最后一个 `<`」起判，不能按固定长度窗口扫**
+ * （2026-10-14 自上游移植）：`｜DSML｜` 之后的空白是 `\s*`，**长度无上限**，
+ * 任何固定 `maxCheck` 都会被「空白够多」绕过 —— 例如
+ * `<｜DSML｜` + 20 个空格 + `calls>` 总长 33 字符，窗口只回看 32 字符时
+ * 连开头的 `<` 都够不着 ⇒ 判据不命中 ⇒ 标签被**提前放行**。
+ * 从最后一个 `<` 起判则与空白长度无关（`lastIndexOf` 是 O(n)，无额外成本）。
  */
 function longestOpenPrefixTail(buffer: string, prefixes: readonly string[]): number {
   let keepLen = 0
@@ -892,7 +899,123 @@ function longestOpenPrefixTail(buffer: string, prefixes: readonly string[]): num
     const tail = buffer.slice(buffer.length - i)
     if (prefixes.some(p => p.startsWith(tail))) keepLen = i
   }
+  const lastLt = buffer.lastIndexOf('<')
+  if (lastLt !== -1) {
+    const tail = buffer.slice(lastLt)
+    if (isDsmlLabelPrefix(tail) && tail.length > keepLen) keepLen = tail.length
+  }
   return keepLen
+}
+
+/**
+ * 开标签的**别名形态**（2026-10-14 自上游移植，二次事故）。
+ *
+ * 实测部分模型（deepseek-v4.1-flash）会把 `<｜DSML｜tool_calls>` 漏写成
+ * `<｜DSML｜ calls>`（**少 `tool_` 前缀**），或插入多余空白
+ * （`<｜DSML｜ tool_calls>`）。宿主 `indexOf(DSML_TOOL_CALLS_OPEN)` 一律
+ * 不匹配 ⇒ 整段当正文、工具从不执行。
+ *
+ * 这三个串同时用于两处：① `feed()` 的别名归一（拼齐后改写为规范形）；
+ * ② `longestOpenPrefixTail` 的保留候选（**拆帧到达**时不漏放行）。
+ */
+const DSML_OPEN_ALIASES = [
+  '<｜DSML｜ calls>',
+  '<｜DSML｜calls>',
+  '<｜DSML｜ tool_calls>',
+] as const
+
+/**
+ * 判断 buffer 末尾（自最后一个 `<` 起）是否是 DSML 标签的**未完成前缀**。
+ *
+ * 分两段判，因为「竖线」与 `DSML` 名字本身在没到齐时也必须扣住：
+ *
+ * ① `^<｜{0,3}$` —— 只有 `<` 加 0~3 根竖线。逐字符拆帧时 buffer 恒在
+ *    「竖线已到、`DSML` 未到」这个状态，归一正则的 `｜{2,}DSML` 匹配不上
+ *    ⇒ 不判这一段就会把 `<｜｜` 当正文放行，其后每个字符跟着放行
+ *    ⇒ 整段双竖线标记漏到正文、工具全丢。
+ *    ⚠️ 上界 3 是刻意的：实测坏标记是双竖线，三根留一根冗余容错；
+ *    不写 `｜+`（无上界）是因为那会把正文里任意长的竖线串也扣住不放。
+ * ② `^<｜+D(?:S(?:M(?:L)?)?)?…` —— `DSML` 路径。
+ *    ⚠️⚠️ **两侧必须是 `｜+` 而不是 `｜{2,}`**（上游实测回归）：
+ *    初版写成 `｜{2,}` 只想覆盖双竖线坏标记，结果**漏掉了规范的单竖线
+ *    形态**（`<｜DSML｜ tool_calls>`）—— 而它恰是最常见的一种（多空白
+ *    别名走的就是这条路）⇒ 返回 false ⇒ keepLen=0 ⇒ 标签被**提前放行**
+ *    ⇒ 整段当正文、工具永不执行。
+ *    `DSML` 四字符逐级可选 —— 它本身也可能被拆帧切开（实测逐字符时
+ *    `<｜D`、`<｜DS`、`<｜DSM` 都会出现）。其后右侧竖线（`｜{0,3}`）、
+ *    空白（`\s`）、标签名、`>` 的任意未完成组合同理放开。
+ *
+ * `[a-zA-Z_][\w-]*` 放开到任意标签名（与 `normalizeDsmlLabel` 的名字规则
+ * 逐字一致）—— 两处若漂移，「判据扣住的名字」与「归一改得动的名字」
+ * 就会不一致。
+ */
+function isDsmlLabelPrefix(tail: string): boolean {
+  if (/^<｜{0,3}$/.test(tail)) return true
+  // 右侧竖线上界 3（与 ① 同口径：实测坏标记是双竖线，三根冗余容错）。
+  return /^<｜+D(?:S(?:M(?:L)?)?)?(?:｜{0,3}|\s|[a-zA-Z_][\w-]*|>)*$/.test(tail)
+}
+
+/**
+ * 对**单个 DSML 标签**压掉 `｜DSML｜` 与标签名之间的空白。
+ *
+ * ## 为什么必须做（上游三次事故之二：内容凭空消失）
+ *
+ * 模型不只把空白插进 `tool_calls` —— `invoke` / `parameter` 同样中招
+ * （现场逐字：`<｜DSML｜ invoke name="pwsh">`、`<｜DSML｜ parameter
+ * name="command" string="true">`）。空白形态让 `DSML_INVOKE_OPEN_PREFIX`
+ * 的 `indexOf` 恒不命中 ⇒ `parseDsmlToolCalls` 返回**空数组**（不是
+ * undefined）⇒ 调用方把整块当成「解析成功但无调用」⇒ **工具参数凭空消失**
+ * （用户看到「模型很快就结束了，没有原因」）。
+ *
+ * 故此处对**任意标签名**做归一（`[a-zA-Z_][\w-]*`），名字白名单由调用方
+ * 自己决定 —— 本函数不认识协议，只修「空白」这一种笔误。
+ */
+function normalizeDsmlLabel(tag: string): string {
+  // `(<\/?)` 捕获开/闭标签的 `<` 或 `</`，拼回去时保持原样。
+  // `\s*` 覆盖任意空白（含 `\t` / U+3000 / 换行），长度无上限。
+  // `([a-zA-Z_][\w-]*)` 是标签名，其后原样保留（可能是 `>`、` name="…">` 等）。
+  // 两侧各 `｜{1,}`：**独立**容忍左/右任意根竖线（实测有左双右单、
+  // 左单右双两种混合形态），且单竖线规范形天然命中（`{1,}` 含 1）。
+  return tag.replace(/(<\/?)｜+DSML｜+\s*([a-zA-Z_][\w-]*)/g, '$1｜DSML｜$2')
+}
+
+/**
+ * 对**整段文本**做 DSML 协议级归一：双竖线、别名（`calls` → `tool_calls`）
+ * 与标签空白（`<｜DSML｜ invoke` → `<｜DSML｜invoke`）一次做完。
+ *
+ * 三种笔误都来自实测（2026-10-13，自上游 dsml.ts 移植）：
+ *
+ * | 形态 | 不修的后果 |
+ * |---|---|
+ * | `<｜｜DSML｜｜` 双竖线 | 宿主解析器不认 ⇒ 标签当正文 |
+ * | `<｜DSML｜ calls>` 缺 `tool_` | 开闭标签不匹配 ⇒ 永不进 in-dsml |
+ * | `<｜DSML｜ invoke` / `parameter` 带空白 | `indexOf` 不命中 ⇒ **内容凭空消失** |
+ *
+ * ⚠️ **顺序有意为之**：先双竖线、再别名、最后空白。双竖线必须先修
+ * （否则 `<｜｜DSML｜｜ calls>` 里的双竖线会让后续 `｜DSML｜` 定位失败）；
+ * 别名与空白互相独立，交换顺序结果相同（均幂等）。
+ *
+ * 用于 `feed()` 的整段入口；**流式增量**不能用它（模式会跨帧），那是
+ * `sse.ts` 的 `createDsmlMarkerNormalizer` 的职责。
+ *
+ * ⚠️⚠️ **本函数的双竖线规则与 `sse.ts` 的 `fixDsmlMarkers` 逐字同源**
+ * （同两条正则、同一条 `DSML` 后边界前视 `[tcip]`）。手机版不引入上游
+ * `dsml.ts` 共享层（无 OfficeAce 通道，「协议只有一份」的动机不存在），
+ * 本文件持有唯一一份实现 —— 但改任一条正则时仍必须同步另一处，
+ * 否则「教得会、解不开」会以另一种形态复发。
+ */
+function normalizeDsmlText(text: string): string {
+  // ⚠️ 前视里的 `[tcip]` 是协议标签名首字母（`t`ool_calls / `c`alls /
+  //    `i`nvoke / `p`arameter / `t`hought），与 `sse.ts` 的 `fixDsmlMarkers`
+  //    逐字同源。少了它，右侧双竖线后紧跟字母的实测形态
+  //    （`<｜DSML｜｜invoke …>`）一条都修不了 —— 详见该函数的注释。
+  const AFTER = '(?=｜|\\s|>|\\/|$|[tcip])'
+  const fixedBars = text
+    .replace(new RegExp(`(<\\/?)｜{2,}DSML${AFTER}`, 'g'), '$1｜DSML')
+    .replace(new RegExp(`DSML｜{2,}${AFTER}`, 'g'), 'DSML｜')
+  return normalizeDsmlLabel(
+    fixedBars.replace(/(<\/?)｜DSML｜\s*(?:tool_)?calls>/g, '$1｜DSML｜tool_calls>'),
+  )
 }
 
 /**
@@ -907,7 +1030,7 @@ function longestOpenPrefixTail(buffer: string, prefixes: readonly string[]): num
  * - in-thought：寻找 `</thought>` 闭标签，期间内容作为 reasoning 流式输出
  * - in-dsml：寻找 `</｜DSML｜tool_calls>` 闭标签，完整后解析为 tool-call
  */
-class DsmlContentExtractor {
+export class DsmlContentExtractor {
   private buffer = ''
   private state: 'normal' | 'in-thought' | 'in-dsml' = 'normal'
 
@@ -916,6 +1039,18 @@ class DsmlContentExtractor {
     let reasoning = ''
     const toolCalls: Array<{ name: string; arguments: string }> = []
     this.buffer += chunk
+    // ── 协议级归一（2026-10-14 自上游 dsml.ts 移植，三次事故的修法）──
+    // `<｜DSML｜ calls>` / `<｜DSML｜calls>` / `<｜DSML｜ tool_calls>`
+    // 一律改写为规范形 `<｜DSML｜tool_calls>`，后续 indexOf 才认；
+    // **同时**把 `｜DSML｜` 之后的空白从**每一个**标签名上压掉
+    // （`<｜DSML｜ invoke` → `<｜DSML｜invoke`、`<｜DSML｜ parameter` →
+    // `<｜DSML｜parameter`）—— 后者是「内容凭空消失」那条缺陷的直接根因：
+    // 空白形态让 `DSML_INVOKE_OPEN_PREFIX` 的 indexOf 恒不命中 ⇒
+    // parse 返回空数组 ⇒ 调用方当「解析成功但无调用」⇒ 工具参数全丢。
+    // ⚠️ 必须放在 buffer 累积**之后**：别名与空白形态都可能被拆成多帧到达，
+    //    只有等 buffer 拼齐才改得动（这也是不能靠 sse.ts 逐帧归一化器的原因）。
+    // 幂等：规范形再过一遍，正则命中后重建出同一字符串。
+    this.buffer = normalizeDsmlText(this.buffer)
     for (;;) {
       if (this.state === 'normal') {
         // 寻找最早出现的开标签（thought 或 DSML tool_calls）
@@ -932,7 +1067,7 @@ class DsmlContentExtractor {
         }
         if (openIdx === -1) {
           // 没有完整开标签：但缓冲区末尾可能是任一开标签的不完整前缀
-          const keepLen = longestOpenPrefixTail(this.buffer, [THOUGHT_OPEN, DSML_TOOL_CALLS_OPEN])
+          const keepLen = longestOpenPrefixTail(this.buffer, [THOUGHT_OPEN, DSML_TOOL_CALLS_OPEN, ...DSML_OPEN_ALIASES])
           if (keepLen === 0) {
             text += this.buffer
             this.buffer = ''
