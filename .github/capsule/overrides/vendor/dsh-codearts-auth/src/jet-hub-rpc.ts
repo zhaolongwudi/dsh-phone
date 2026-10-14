@@ -1810,6 +1810,193 @@ function registerJetHubEndpoints(
   const pendingSmsMsgid = new Map<string, { phone: string; msgid: string }>()
 
   /**
+   * 登录**终态失败**记录（账号 id → `{ message, at }`；`message` 即下发给前端的原文）。
+   *
+   * ## 为什么必须有这张表（Gitee issue IKLI7J，真实缺陷）
+   *
+   * `login.poll` 原先**只有一条**终态通道：`done:true`，而它**只在成功时下发**。
+   * 失败侧走的是「删掉占位条目」的清理路径 ⇒ 下一次轮询命中
+   * `if (!entry) return {done:false}`，把
+   * 「账号尚未登记（用户还没授权完）」与「登录已被拒绝并清理」**混成同一个返回**。
+   * 前端只会判 `done`，于是**任何 provider 的登录失败都变成静默转圈 5 分钟**
+   * （5 分钟是客户端自己的轮询上限，不是服务端超时），用户分不清是网络问题、
+   * 账号未开通服务、自己关掉了弹窗，还是插件 bug。
+   *
+   * 实测代价（issue 附件）：上游 OfficeAce 因「账号未订阅 ModelArts MaaS」失败时，
+   * 云侧早已用 `HTTP 200 + subscription:null` 讲清原因，而用户只能看到转圈 ——
+   * 报告方为此改宿主代码加文件日志才定位。手机版无 OfficeAce，但**十余家
+   * provider 的后台登录失败走的是同一条静默路径**，缺陷同型。
+   *
+   * ## 生命周期
+   *
+   * 写入：各 provider 后台登录失败后的收尾（统一走 `failLogin`，**不要**各自
+   * 手写 `removeAccount` —— 漏一处就是「那一家失败时前端仍静默转圈」且完全无痕）。
+   * 读取：`login.poll` **在查账号池之前**先查这里。顺序是刻意的：
+   * `failLogin` 先同步记原因、再异步删条目，故「记录已写、条目未删」的窗口里
+   * 也必须能报出终态。
+   *
+   * ⚠️ **读后不删**（与 `pendingSmsMsgid` 的一次性中间态不同）：终态原因
+   * 要**幂等**——客户端 1 秒一次轮询、`setInterval` 的异步回调可能重叠，若
+   * 「读到即清」，一次丢包/慢响应就把唯一一次原因吃掉，又退回静默转圈。
+   * 记录按**账号 id** 索引，而 id 由 `account.create` 每次新生成（`shortId()`），
+   * 不存在「旧记录被下一次登录读到」的可能，故保留无害。过期与容量由
+   * `LOGIN_FAILURE_TTL_MS` / `LOGIN_FAILURE_LIMIT` 兜住。
+   */
+  const loginFailures = new Map<string, { message: string; at: number }>()
+
+  /** 终态失败记录的保留时长。客户端轮询上限是 5 分钟，留 6 倍余量。 */
+  const LOGIN_FAILURE_TTL_MS = 30 * 60_000
+
+  /**
+   * 条数上限（写入时按插入序淘汰最旧的）：挡住异常路径下的无界增长。
+   *
+   * ⚠️ 必须**远大于任何可能的「同时在轮询的登录数」**：淘汰会把一条**仍在被轮询**
+   * 的失败记录挤掉 ⇒ 那条登录退回静默（只剩客户端超时文案兜底）。客户端同一时刻
+   * 只允许一轮登录（`pollRef` 闸门），但 `login.poll` 可被外部脚本调用 ——
+   * 上游独立审计实测「连做 65 次失败登录」即可触发 64 上限的淘汰。真正的内存
+   * 边界是 `LOGIN_FAILURE_TTL_MS`（30 分钟），上限只是护栏。
+   */
+  const LOGIN_FAILURE_LIMIT = 256
+
+  /**
+   * 归一化异常为可读文案。
+   *
+   * ⚠️ **必须显式挡 `undefined` / `null`**：`String(undefined)` 不报错，会拼出
+   * 字面量 `"undefined"` —— 那会让用户看到「登录失败：undefined」这种零线索文案。
+   */
+  function loginReasonText(reason: unknown): string {
+    if (reason === undefined || reason === null) return '未知错误'
+    const text = reason instanceof Error ? reason.message : String(reason)
+    return text.trim().length > 0 ? text : '未知错误'
+  }
+
+  /**
+   * 终端失败对用户可见的文案。
+   *
+   * ⚠️ **只此一处构造**：首次报出（各 provider 的失败收尾）与后续轮询读表，
+   * 必须是**逐字相同**的一句话 —— 两处各写一份必然漂移，
+   * 用户会看到「第一次说 A、再点一次说 B」。
+   */
+  function loginFailureMessage(reason: unknown): string {
+    return `登录失败：${loginReasonText(reason)}。请重新点击「+ 新建账号」。`
+  }
+
+  /**
+   * 记一条登录终态失败，并**返回**落库的文案（调用方可据此立即回终态，与后续轮询一致）。
+   */
+  function recordLoginFailure(accountId: string, reason: unknown): string {
+    const message = loginFailureMessage(reason)
+    if (accountId.length > 0) {
+      const now = Date.now()
+      // ⚠️ **先 delete 再 set**：Map 的迭代序是**插入序**，覆盖已存在的 key
+      //    不会把它移到末尾 —— 少了这一步，淘汰序会停在「第一次失败的时刻」。
+      loginFailures.delete(accountId)
+      loginFailures.set(accountId, { message, at: now })
+      for (const [key, value] of loginFailures) {
+        if (now - value.at > LOGIN_FAILURE_TTL_MS) loginFailures.delete(key)
+      }
+      while (loginFailures.size > LOGIN_FAILURE_LIMIT) {
+        const oldest = loginFailures.keys().next()
+        if (oldest.done === true) break
+        loginFailures.delete(oldest.value)
+      }
+    }
+    return message
+  }
+
+  /** 读某账号的终态失败文案（不过期就不删，见 `loginFailures` 的说明）。 */
+  function loginFailureOf(accountId: string): string | undefined {
+    const record = loginFailures.get(accountId)
+    if (record === undefined) return undefined
+    if (Date.now() - record.at > LOGIN_FAILURE_TTL_MS) {
+      loginFailures.delete(accountId)
+      return undefined
+    }
+    return record.message
+  }
+
+  /**
+   * 该账号此刻的池内条目；**读不到时返回 `'unknown'`**（≠「没有这个账号」）。
+   *
+   * ⚠️ 为什么要区分「没有」与「读不到」：`failLogin` 会**删账号 + unset 凭据**，
+   * 那是不可逆的。池实现抛错（或测试替身没实现 `findAccount`）时若被当成
+   * 「账号不存在 / 没有凭据」，就会把一次**可能已经成功**的登录销毁 ——
+   * 正是 `failLogin` 要防的事。⇒ 读不到时**不删**（宁可留一张卡片让用户自己删；
+   * 反过来则无法恢复）。
+   */
+  function poolEntryOf(accountId: string): { credentialRef: string } | undefined | 'unknown' {
+    try {
+      const find = (pool as unknown as { findAccount?: (id: string) => unknown }).findAccount
+      if (typeof find !== 'function') return 'unknown'
+      return find.call(pool, accountId) as { credentialRef: string } | undefined
+    } catch {
+      return 'unknown'
+    }
+  }
+
+  /**
+   * 这次登录**是否已经真的成了**（该账号的凭据已落库）。
+   *
+   * ## 为什么失败收尾必须先问这一句（上游 2026-10-14 两轮独立审计查出的**净回归**）
+   *
+   * 各 provider 后台 `.then` 里，**记账**（`pool.updateAccount` → `state.json` 落盘）
+   * 排在**凭据落盘之后**；而 `AccountPool` 的落盘失败会**抛错**
+   *（`account-pool.ts` 的 `writeAccounts` —— 本仓库自己记过「落盘抛错时账号
+   * **已经是可用状态**」）。于是「登录其实成了、只是记账失败」会走进 `.catch`
+   * ⇒ `failLogin` ⇒ **删号 + 报「登录失败」**，用户被误导去重新登录
+   *（同一个上游账号会变成两条）。
+   *
+   * ⇒ 判据：**凭据在 ⇒ 这次登录就是成了**。`failLogin` 据此把「登录真的失败」与
+   * 「登录成功后的记账失败」分开（后者只记日志，不删号、不报失败）。
+   */
+  async function loginCredentialLanded(accountId: string): Promise<boolean> {
+    const refs = new Set<string>()
+    const entry = poolEntryOf(accountId)
+    if (entry !== undefined && entry !== 'unknown') refs.add(entry.credentialRef)
+    for (const name of refs) {
+      if (name.length === 0) continue
+      const resolved = await ctx.credentials.resolve(credentialRef(name)).catch(() => undefined)
+      if (resolved !== undefined && resolved.value.length > 0) return true
+    }
+    return false
+  }
+
+  /**
+   * 登录失败的**统一收尾**：先判「其实是否已经成功」→ 真失败才记终态 + 删占位条目。
+   *
+   * 十余处 provider 后台 `.catch()` 都走这里，**不要各自手写两行** ——
+   * 漏接的那一家会继续静默转圈（计数断言锁死接线）。
+   *
+   * @returns 需要报给前端的失败文案；**`undefined` = 这次登录其实已经成功**
+   *（凭据已落库，只是后续记账失败）—— 调用方**不得**把它当作失败。
+   */
+  async function failLogin(accountId: string, error: unknown): Promise<string | undefined> {
+    if (await loginCredentialLanded(accountId)) {
+      ctx.logger.warn(
+        `[jet-hub] ${accountId} 登录已拿到凭据、后续记账失败（按成功处理：不记失败、不删账号）：`
+        + `${loginReasonText(error)}`,
+      )
+      return undefined
+    }
+    const entry = poolEntryOf(accountId)
+    if (entry === 'unknown') {
+      // 读不到池（实现抛错 / 替身缺方法）：**不当成失败去删**（不可逆）。
+      ctx.logger.warn(
+        `[jet-hub] ${accountId} 登录收尾时读不到账号池，已记终态但**不删账号**（宁可留卡片）：`
+        + `${loginReasonText(error)}`,
+      )
+      return recordLoginFailure(accountId, error)
+    }
+    // 条目已被（用户）删除：不要把内部错误串（`Account xxx not found`）丢给用户。
+    if (entry === undefined) {
+      return recordLoginFailure(accountId, new Error('该账号条目已被删除（可能是你手动删掉了它）'))
+    }
+    const message = recordLoginFailure(accountId, error)
+    void pool.removeAccount(accountId).catch(() => {})
+    return message
+  }
+
+  /**
    * 用量徽标的显示偏好（`$DSH_HOME/jet-hub/ui-preferences.json`）。
    *
    * ⚠️ 与账号池**分开**的独立文档：`state.json` 是整体替换语义，同机另一条工作区
@@ -2234,8 +2421,8 @@ function registerJetHubEndpoints(
             })
           }).catch((err) => {
             ctx.logger.warn(`[jet-hub] background ${product.id} login failed for ${id}: ${err}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, err)
           })
           return { ok: true, value: { accountId: id, loginUrl: authUrl } }
         } else if (provider === 'codearts') {
@@ -2272,8 +2459,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background codearts login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === LOBSTERAI.id) {
@@ -2300,7 +2487,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${LOBSTERAI.id} login failed for ${id}: ${String(error)}`)
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (isQoderFamily(provider)) {
@@ -2348,8 +2536,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${product.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === TRAE.id) {
@@ -2378,8 +2566,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${TRAE.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === CLINE.id) {
@@ -2414,8 +2602,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${CLINE.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === LOOMY.id) {
@@ -2468,8 +2656,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${LOOMY.id} wechat login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
 
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
@@ -2523,8 +2711,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${RACCOON.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
 
           return { ok: true, value: { accountId: id, loginUrl: raccoonStarted.loginUrl } }
@@ -2577,8 +2765,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${MINIMAX.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
 
           return { ok: true, value: { accountId: id, loginUrl: minimaxStarted.loginUrl } }
@@ -2685,8 +2873,8 @@ function registerJetHubEndpoints(
             await pool.updateAccount(id, { nickname: `ZCode ${label}` })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${ZCODE.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === GEMINI.id) {
@@ -2744,8 +2932,8 @@ function registerJetHubEndpoints(
             })
           }).catch((error: unknown) => {
             ctx.logger.warn(`[jet-hub] background ${GEMINI.id} login failed for ${id}: ${String(error)}`)
-            // 登录失败：移除占位条目，避免留下无凭据的幽灵账号
-            void pool.removeAccount(id).catch(() => {})
+            // 登录失败：记终态原因（供 login.poll 报给前端）+ 移除占位条目，不留幽灵账号
+            void failLogin(id, error)
           })
 
           return { ok: true, value: { accountId: id, loginUrl: geminiStarted.loginUrl } }
@@ -2948,6 +3136,24 @@ function registerJetHubEndpoints(
 
       case 'login.poll': {
         const req = payload as RpcPollLoginRequest
+        /**
+         * ⚠️⚠️ **终态失败必须先于一切「进度」判据被检查**（Gitee issue IKLI7J）。
+         *
+         * 失败侧各 provider 都会删掉占位条目，而 `if (!entry)` 原先与
+         * 「账号尚未登记（用户还没授权完）」**同形** ⇒ 前端只能干等到 5 分钟上限。
+         *
+         * 放在 `listAllAccounts()` **之前**是刻意的：`failLogin` 是「先同步写记录、
+         * 再异步删条目」，落在「记录已写、条目还在」的窗口里也必须能报出终态。
+         * 正常路径不会误命中 —— 占位条目在 `account.create` 返回**之前**就已登记
+         *（十余处分支逐一核对过），故「条目在」期间不会有本账号 id 的失败记录。
+         */
+        const failure = loginFailureOf(req.accountId)
+        if (failure !== undefined) {
+          return {
+            ok: true,
+            value: { done: true, success: false, error: failure } satisfies RpcPollLoginResponse,
+          }
+        }
         const accounts = await pool.listAllAccounts()
         const entry = accounts.find((a) => a.id === req.accountId)
         if (!entry) return { ok: true, value: { done: false } }

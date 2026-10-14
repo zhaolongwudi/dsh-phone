@@ -3088,26 +3088,77 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
         //   **不新建条目、不返回 loginUrl**；只看 `loginUrl` 为空就报错会把一次
         //   成功操作显示成失败。ZCode 已不再产生该值，但判据保留作契约防御。
         const deadline = Date.now() + 300000;
+        // ⚠️ `login.poll` **自身**失败（宿主异常 ⇒ `ok:false`）原先被下面那个裸
+        //   `catch` 完全吞掉：用户只剩 5 分钟后一句「登录超时」，真实原因永不上屏
+        //   （上游独立审计攻击 5d 实测）。这里只记痕迹，不打断轮询（可能只是瞬时故障），
+        //   超时时一并展示。
+        let lastPollError = null;
+        let pollErrorCount = 0;
         pollRef.current = setInterval(async () => {
           if (!mounted.current) { stopPoll(); return; }
           if (Date.now() > deadline) {
+            // ⚠️ 超时**必须给用户一句话**（Gitee issue IKLI7J 期望 3）。
+            //   原先这里只是关窗 + 停表：用户看到「转圈 5 分钟后悄悄恢复」，
+            //   分不清是没授权、被服务端拒了、还是插件坏了。
+            // ⚠️ **文案不得把原因写死成「未完成授权」**（上游独立审计发现）：走到这里还有
+            //   几种与「没授权」相反的情形 —— 用户其实已授权但凭据形状不被接受（zcode
+            //   残缺凭据）、账号条目在登录途中被删掉、失败记录被 TTL/上限淘汰。
+            //   把原因写死会给排障者一个错误的第一个假设。
             stopPoll();
             setLoginUrlForManual(null);
             await loadAccounts();
             if (canLoadCredits) await loadCredits();
-            if (mounted.current) setProbeNotice({ tone: 'error', text: '授权未完成或已超时，请重新点击「添加账号」完成授权。', details: [] });
+            if (mounted.current) {
+              setProbeNotice({
+                tone: 'error',
+                text: '登录超时或未完成（已等待 5 分钟）：可能是授权未完成、授权被拒，'
+                  + '或账号条目已被删除。请重新点击「+ 新建账号」再试一次；'
+                  + '若账号其实已经添加，可点「重新读取」查看。'
+                  + (pollErrorCount > 0
+                    ? `（期间有 ${pollErrorCount} 次轮询请求本身失败，最后一次：${lastPollError}）`
+                    : ''),
+                details: [],
+              });
+            }
             return;
           }
           try {
             const pollRes = await rpcCall('login.poll', { accountId, provider });
             if (!mounted.current) return;
+            // ⚠️⚠️ **先判 `success === false`（终态失败），再判 `done`**
+            //   （Gitee issue IKLI7J）。后端把失败原因放在 `success:false` + `error`；
+            //   旧写法 `if (!pollRes?.done) return;` 在 `done:false` 时把 `error`
+            //   整体丢掉 —— 这正是「登录失败对用户完全不可见」的根因 1。
+            //   判据刻意**不写进 `done:true` 分支**：对 `done` 的取值保持不敏感。
+            if (pollRes?.success === false) {
+              if (loginWindow && !loginWindow.closed) loginWindow.close();
+              setLoginUrlForManual(null);
+              await loadAccounts();
+              if (canLoadCredits) await loadCredits();
+              if (mounted.current) {
+                setProbeNotice({
+                  tone: 'error',
+                  text: pollRes.error || '登录失败（宿主未给出原因），请重新点击「+ 新建账号」。',
+                  details: [],
+                });
+              }
+              stopPoll();
+              return;
+            }
             if (!pollRes?.done) return;
             if (loginWindow && !loginWindow.closed) loginWindow.close();
             setLoginUrlForManual(null);
             await loadAccounts();
             if (canLoadCredits) await loadCredits();
             stopPoll();
-          } catch { /* 继续轮询 */ }
+          } catch (caught) {
+            // ⚠️ **继续轮询**（宿主可能只是瞬时不可用），但必须留下痕迹：
+            //   原先这里是裸 `catch {}`，于是 `login.poll` 自身报错（`ok:false`，
+            //   例如宿主 handler 抛异常）时真实原因被彻底吞掉，用户只能等到
+            //   5 分钟后那句泛化的「登录超时」（上游独立审计攻击 5d）。
+            pollErrorCount += 1;
+            lastPollError = caught && caught.message ? caught.message : String(caught);
+          }
         }, 1000);
       } else {
         setError('后端未返回登录地址（loginUrl 为空）。');

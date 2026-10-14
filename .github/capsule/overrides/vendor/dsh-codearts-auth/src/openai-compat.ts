@@ -175,12 +175,49 @@ export function serializeMessages(
   const { keepCallIds, keepResultIds } = resolveToolPairing(normalized)
 
   let pendingToolImages: Array<Record<string, unknown>> = []
-  const flushToolImages = (): void => {
-    if (pendingToolImages.length === 0) return
-    wire.push({
-      role: 'user',
-      content: [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }, ...pendingToolImages],
-    })
+  // 含工具结果而被延后的那条 user 消息的内容（排在 `role:'tool'` 之后发出）。
+  let pendingOwnParts: Array<Record<string, unknown>> | undefined
+  /**
+   * 发出挂起的工具结果图片；`own` 是**同一轮要发的那条 user 消息**的内容。
+   *
+   * ⚠️⚠️ **图片必须与提问同在一条 user 消息里**（Issue IKLIFH，与 buddy /
+   * lobsterai 适配器同型）。实测（2026-10-14，直连 `copilot.tencent.com`，
+   * hy4-preview，同一张 1024x768 双色图）：图与问**同条** ✅「左白右蓝」；
+   * 图单独成一条（无论带不带提示句）❌「图像已被过滤」/「不支持图片识别」；
+   * 图并入 `role:'tool'` ❌「不支持读取图片」。
+   *
+   * ⚠️ 症状极具误导性：wire 上**确实有图**、上游也**不报错**（HTTP 200），
+   * 只是模型**看不见**并自称「当前模型不支持图片输入」⇒ 用户会误判成模型
+   * 能力问题、反复换模型。
+   *
+   * ⚠️ 无挂图且 `own` 为空时**什么都不发**：凭空造一条 parts 消息会让纯文本
+   * 会话被上游 400（反向验证实测）。
+   */
+  const flushToolImages = (own?: Array<Record<string, unknown>>): void => {
+    const ownParts = own ?? []
+    const hasImages = pendingToolImages.length > 0
+    if (!hasImages && ownParts.length === 0) return
+    /**
+     * ⚠️⚠️ **只在真的有挂起的工具结果图片时才重排顺序**（手机版对上游实现的收窄）。
+     *
+     * 上游此处**无条件**把图排到文本之前。本仓库实测：那会翻转**普通贴图**
+     *（无工具结果）的既有顺序 —— `[text, image]` 变成 `[image, text]`，
+     * 使既有 spec 的 2 条断言变红（buddy-adapter.spec.ts 的
+     * `stream sends user images as inline image_url parts` 与
+     * `贴图这一轮会自动重看目录`；lobsterai 同型）。
+     *
+     * 顺序本身**不影响模型能否看见图片**（上游注释亦称「两种顺序实测都能被看到」），
+     * 故这里按最小改动原则收窄：无挂图时 `own` **原样发出**（旧行为逐字节不变），
+     * 只有确实要「图与提问合条」时才做图前置的重排。
+     */
+    if (!hasImages) {
+      wire.push({ role: 'user', content: ownParts })
+      return
+    }
+    // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
+    const ownImages = ownParts.filter((part) => part.type !== 'text')
+    const ownText = ownParts.filter((part) => part.type === 'text')
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
     pendingToolImages = []
   }
 
@@ -209,8 +246,9 @@ export function serializeMessages(
         .join('')
       const text = contentToText(content)
       // 挂起的工具结果图片必须在 assistant 之前发出，否则会漂到这条
-      // assistant 之后，与产生它们的工具调用脱节。
-      flushToolImages()
+      // assistant 之后，与产生它们的工具调用脱节。延后正文一并带上。
+      flushToolImages(pendingOwnParts)
+      pendingOwnParts = undefined
       wire.push({
         role: 'assistant',
         // 正文为空且有工具调用时 content 必须为 null（OpenAI 规范）。
@@ -221,7 +259,8 @@ export function serializeMessages(
       continue
     }
     if (message.role === 'system') {
-      flushToolImages()
+      flushToolImages(pendingOwnParts)
+      pendingOwnParts = undefined
       wire.push({ role: 'system', content: contentToText(message.content) })
       continue
     }
@@ -234,12 +273,27 @@ export function serializeMessages(
     const regular = content.filter((block) =>
       !(typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'tool-result'))
     const parts = imageUrls === undefined ? undefined : userContentParts(regular, imageUrls)
-    if (parts !== undefined) {
-      flushToolImages()
-      wire.push({ role: 'user', content: parts })
-    } else if (text.length > 0 || toolResults.length === 0) {
-      flushToolImages()
-      wire.push({ role: 'user', content: text })
+    // ⚠️⚠️ **两条互斥分支**（Issue IKLIFH 的落点）：
+    // 无工具结果 → 立刻发出并让挂起图片搭车；含工具结果 → 整条延后到下一条
+    // user 消息（tool 消息必须紧跟其 assistant `tool_calls`，中间插消息会 400）。
+    const deferred = toolResults.length > 0
+    // ⚠️⚠️ **无挂图且本条无图时必须保持「字符串」形态**（旧行为逐字节不变）：
+    // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
+    // 拒收整个请求（实测）。
+    const hasImage = parts !== undefined
+    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage
+      ? [
+        ...(pendingOwnParts ?? []),
+        ...(parts ?? (text.length > 0 ? [{ type: 'text', text }] : [])),
+      ]
+      : undefined
+    pendingOwnParts = undefined
+    if (deferred) {
+      pendingOwnParts = combined ?? (text.length > 0 ? [{ type: 'text', text }] : undefined)
+    } else if (combined !== undefined || toolResults.length === 0) {
+      // ⚠️ 核心修复：挂起图片与本条内容**同一条**发出，而非让图片单独成一条。
+      flushToolImages(combined)
+      if (combined === undefined) wire.push({ role: 'user', content: text })
     }
     for (const result of toolResults) {
       // 丢弃孤儿工具结果：没有对应 assistant tool_call 的结果同样会让后端 400。
@@ -267,8 +321,13 @@ export function serializeMessages(
         content: resultText,
       })
     }
+    // ⚠️⚠️ **这里刻意不 flush**（Issue IKLIFH 的关键时序）：图片此刻刚由上面
+    // 的 `pendingToolImages.push` 入队，若在此发出就会**单独成一条** user
+    // 消息，而提问在再下一条 ⇒ 上游让模型「看不见」。留给下一条 user 消息搭车。
   }
-  flushToolImages()
+  // 历史末尾的残留：图片与延后正文**必须同一条**，否则上游看不见。
+  flushToolImages(pendingOwnParts)
+  pendingOwnParts = undefined
   return wire
 }
 

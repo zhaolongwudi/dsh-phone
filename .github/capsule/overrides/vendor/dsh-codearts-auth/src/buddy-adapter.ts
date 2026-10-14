@@ -283,9 +283,6 @@ function contentToText(content: unknown): string {
  *   ——与 codearts 的 deepseek-v4 校验一致；
  * - 正文为空且带 tool_calls 时 `content` 必须为 `null`（对齐 openai_chat.rs）。
  */
-/** 工具结果内嵌图片的载体文本（与官方 deepseek 适配器同名同义）。 */
-const TOOL_RESULT_IMAGE_TEXT = 'Attached image(s) from tool result:'
-
 /**
  * 「wire 首条不是 system」时补在首位的最小 system 文本。
  *
@@ -310,14 +307,65 @@ function serializeMessages(
 
   // 工具结果内嵌图片（read_image 等）不能并入 `role:'tool'` 消息：OpenAI 兼容
   // 协议要求每条 tool 消息紧跟其 assistant tool_call，中间插入任何消息都会 400。
-  // 故与官方 deepseek 适配器一致：挂起到其后的独立 user 消息统一发出。
+  // 但**也不能单独成一条 user 消息**（Issue IKLIFH，见 flushToolImages 的实测表）
+  // ⇒ 挂起，等下一条 user 消息把它「搭车」带走。
   let pendingToolImages: Array<Record<string, unknown>> = []
-  const flushToolImages = (): void => {
-    if (pendingToolImages.length === 0) return
-    wire.push({
-      role: 'user',
-      content: [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }, ...pendingToolImages],
-    })
+  // 含工具结果而被延后的那条 user 消息的内容（排在 `role:'tool'` 之后发出）。
+  let pendingOwnParts: Array<Record<string, unknown>> | undefined
+  /**
+   * 发出挂起的工具结果图片 + 延后正文；`own` 是**同一轮要发的那条 user 消息**。
+   *
+   * ⚠️⚠️ **图片必须与提问同在一条 user 消息里**
+   * （Issue IKLIFH，真实报障「codebuddy hy4 不支持识别图片」）。
+   *
+   * 实测（2026-10-14，直连 `copilot.tencent.com`，hy4-preview，同一张
+   * 1024x768 双色图，问「左右分别什么颜色」）：
+   *
+   * | wire 形态                                     | 上游行为           |
+   * |-----------------------------------------------|--------------------|
+   * | 图与提问**同一条** user                        | ✅ 「左白右蓝」    |
+   * | 图与提问**同一条**，且前面已存在 tool 消息     | ✅ 「左白右蓝」    |
+   * | 图单独一条 user（有提示句），问在下一条       | ❌ 「图像已被过滤」|
+   * | 图单独一条 user（**无**提示句），问在下一条   | ❌ 「不支持图片识别」|
+   * | 图并入 `role:'tool'` 消息本身                 | ❌ 「不支持读取图片」|
+   *
+   * ⇒ 触发条件是**图片与提问不在同一条 user 消息**；与提示句无关，也与 hy4 无关
+   * （同一张图换 `deepseek-v4-flash` 同样答「已被过滤」，而它远端同样是
+   * `supportsImages: true`）。
+   *
+   * ⚠️ 症状极具误导性：wire 上**确实有图**（抓包可见 `image_url` data URL）、
+   * 上游也**不报错**（HTTP 200 + 正常流），只是模型**看不见**并自称
+   * 「当前模型不支持图片输入」⇒ 用户会误判成模型能力问题、反复换模型。
+   *
+   * ⚠️ `own === undefined`（assistant / system / 历史末尾三处）时**只在有挂图
+   * 或有延后正文时才发**：无内容却凭空造一条消息，纯文本会话会因此被上游 400
+   * （反向验证实测）。
+   */
+  const flushToolImages = (own?: Array<Record<string, unknown>>): void => {
+    const ownParts = own ?? []
+    const hasImages = pendingToolImages.length > 0
+    if (!hasImages && ownParts.length === 0) return
+    /**
+     * ⚠️⚠️ **只在真的有挂起的工具结果图片时才重排顺序**（手机版对上游实现的收窄）。
+     *
+     * 上游此处**无条件**把图排到文本之前。本仓库实测：那会翻转**普通贴图**
+     *（无工具结果）的既有顺序 —— `[text, image]` 变成 `[image, text]`，
+     * 使既有 spec 的 2 条断言变红（buddy-adapter.spec.ts 的
+     * `stream sends user images as inline image_url parts` 与
+     * `贴图这一轮会自动重看目录`；lobsterai 同型）。
+     *
+     * 顺序本身**不影响模型能否看见图片**（上游注释亦称「两种顺序实测都能被看到」），
+     * 故这里按最小改动原则收窄：无挂图时 `own` **原样发出**（旧行为逐字节不变），
+     * 只有确实要「图与提问合条」时才做图前置的重排。
+     */
+    if (!hasImages) {
+      wire.push({ role: 'user', content: ownParts })
+      return
+    }
+    // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
+    const ownImages = ownParts.filter((part) => part.type !== 'text')
+    const ownText = ownParts.filter((part) => part.type === 'text')
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
     pendingToolImages = []
   }
 
@@ -373,8 +421,10 @@ function serializeMessages(
       // 故下面两条**刻意不**改写（改了既换不来放行，又破坏回读证据）。
       const text = rewriteTencentContentFingerprints(contentToText(content), provider)
       // 挂起的工具结果图片必须在 assistant 之前发出（对齐官方适配器）：
-      // 否则它们会漂到这条 assistant 之后，与产生它们的工具调用脱节。
-      flushToolImages()
+      // 否则它们会漂到这条 assistant 之后，与产生它的 tool_call 脱节。
+      // ⚠️ 延后正文一并带上（它已无处可去），否则会被下一条 user 消息吞掉。
+      flushToolImages(pendingOwnParts)
+      pendingOwnParts = undefined
       wire.push({
         role: 'assistant',
         // 正文为空且有工具调用时 content 必须为 null（对齐 openai_chat.rs）。
@@ -385,7 +435,8 @@ function serializeMessages(
       continue
     }
     if (message.role === 'system') {
-      flushToolImages()
+      flushToolImages(pendingOwnParts)
+      pendingOwnParts = undefined
       // system 是这条风控的**已知**位置（IKJNA1），与网关路径同一判据、同一份表。
       wire.push({ role: 'system', content: rewriteTencentContentFingerprints(contentToText(message.content), provider) })
       continue
@@ -410,12 +461,42 @@ function serializeMessages(
     const parts = regularImageUrls === undefined
       ? undefined
       : userContentParts(regular, regularImageUrls)
-    if (parts !== undefined) {
-      flushToolImages()
-      wire.push({ role: 'user', content: parts })
-    } else if (text.length > 0 || toolResults.length === 0) {
-      flushToolImages()
-      wire.push({ role: 'user', content: text })
+    // ⚠️⚠️ **两条互斥分支**（Issue IKLIFH 的落点）：
+    //
+    // | 本条形态                | 处置                                                  |
+    // |------------------------|-------------------------------------------------------|
+    // | 无工具结果              | **立刻**发出，并把挂起的工具结果图片**搭车**并入本条   |
+    // | 含工具结果（deferred）  | 本条内容也留到**下一条** user 消息，与挂图合并发出     |
+    //
+    // ⚠️ 「搭车」是本 issue 的正题：图若单独成一条 user 消息，上游就让模型
+    // 「看不见」（实测 hy4-preview 与 deepseek-v4-flash 均答「图像已被过滤」，
+    // 而两者远端都是 `supportsImages: true`）。明细见 flushToolImages 的表。
+    //
+    // ⚠️ 含工具结果时**整条延后**：OpenAI 兼容协议要求 tool 消息**紧跟**其
+    // assistant `tool_calls`，中间插任何 user 消息都会 400（trae 上游对应
+    // `code=4027`，回归见 `trae-adapter.spec.ts`）。与 trae 的 `deferred` 同型。
+    const deferred = toolResults.length > 0
+    // ⚠️ 本条同时是上一条延后内容的「搭车机会」：`pendingOwnParts` 里的正文
+    // 必须与本条内容、挂起图片**一起**发出一条，否则那份正文与提问分处两条。
+    //
+    // ⚠️⚠️ **无挂图时必须保持「字符串」形态**（旧行为逐字节不变）：纯文本若被
+    // 包装成 `[{type:'text',…}]` 发出去，上游会以 `model_param_invalid` 400
+    // 拒收整个请求（实测）。故这里只在**确实有挂图**或本条本身有图时才用
+    // parts，纯文本一律传 `undefined` 走字符串分支。
+    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || parts !== undefined
+      ? [
+        ...(pendingOwnParts ?? []),
+        ...(parts ?? (text.length > 0 ? [{ type: 'text', text }] : [])),
+      ]
+      : undefined
+    pendingOwnParts = undefined
+    if (deferred) {
+      pendingOwnParts = combined ?? (text.length > 0 ? [{ type: 'text', text }] : undefined)
+    } else if (combined !== undefined || toolResults.length === 0) {
+      // ⚠️ 核心修复：挂起图片与本条内容**同一条**发出，而非让图片单独成一条。
+      flushToolImages(combined)
+      // 纯文本（无挂图无图）：与旧行为一致，发**字符串** content。
+      if (combined === undefined) wire.push({ role: 'user', content: text })
     }
     for (const result of toolResults) {
       // 丢弃孤儿工具结果：没有对应 assistant tool_call 其结果同样会让后端 400。
@@ -445,8 +526,22 @@ function serializeMessages(
         content: resultText,
       })
     }
+    // ⚠️⚠️ **这里刻意不 flush**（Issue IKLIFH 的关键时序）：
+    // 本条 user 消息的内容与刚入队的工具结果图片，**都留到下一条 user 消息**
+    // 一起发出 —— 只有那样图片才与提问同在一条消息里。
+    //
+    // 若在本条末尾就 flush，图片此刻刚由上面的 `pendingToolImages.push` 入队，
+    // 会**单独成一条** user 消息紧随 tool 之后，而提问在再下一条 ⇒ 复现 IKLIFH
+    // （实测：hy4-preview 与 deepseek-v4-flash 均答「图像已被过滤」，而两者
+    // 远端都是 `supportsImages: true`）。明细见 flushToolImages 的表。
+    //
+    // `pendingOwnParts` 与 `pendingToolImages` 都留在队列里，由下一条 user
+    // 消息的 `flushToolImages(own)` 合并发出；历史末尾则由下面的兜底处理。
   }
-  flushToolImages()
+  // 历史末尾的残留（工具结果之后没有再跟任何 user 消息）：图片与延后正文**必须
+  // 同一条**发出，否则上游看不见（Issue IKLIFH）。
+  flushToolImages(pendingOwnParts)
+  pendingOwnParts = undefined
   return wire
 }
 
