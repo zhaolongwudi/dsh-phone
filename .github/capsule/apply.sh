@@ -156,6 +156,27 @@ done
 grep -q "R.color.ds_" app/src/main/java/com/dshphone/MainActivity.kt || { echo "::error::MainActivity.kt 未消费 ds_* token（接入失效）"; exit 1; }
 
 
+# 5.9) 引擎版本自检（2026-10-14 引擎 alpha.1→alpha.2 升级引入）。
+#      runtime/ 是**上游仓库内容**，本层通过 overrides/runtime/ 覆盖它。这类覆盖的
+#      失效形态很隐蔽：文件铺过去了，但版本号仍是旧值 ⇒ pnpm 装回旧引擎，
+#      而构建照样成功，只有设备上跑的是旧引擎（「静默退回」）。
+#      故在此把「铺的是 alpha.2」钉成硬断言。
+ENGINE_VER_EXPECT='0.2.1-alpha.2'
+grep -q "\"@deepseek-ai/dsh\": \"$ENGINE_VER_EXPECT\"" runtime/package.json \
+  || { echo "::error::runtime/package.json 未指向 $ENGINE_VER_EXPECT（覆盖失效，会装回旧引擎）"; exit 1; }
+grep -q "'@deepseek-ai/dsh-llm': $ENGINE_VER_EXPECT" runtime/pnpm-workspace.yaml \
+  || { echo "::error::runtime/pnpm-workspace.yaml 的 dsh-llm override 未同步到 $ENGINE_VER_EXPECT"; exit 1; }
+grep -q "specifier: $ENGINE_VER_EXPECT" runtime/pnpm-lock.yaml \
+  || { echo "::error::runtime/pnpm-lock.yaml 未随引擎升级重建（frozen-lockfile 会装回旧版）"; exit 1; }
+#      overlay 目录本身不能为空：全空会让 build-assets.py 的复制步骤静默无操作，
+#      设备上跑纯上游产物 ⇒ Android 适配（bash/flock/session 原子发布）整块丢失。
+test -d runtime/overlays/@deepseek-ai \
+  || { echo "::error::runtime/overlays 缺失（Android 适配补丁整块丢失）"; exit 1; }
+grep -q "DSH_PHONE_SHELL" runtime/overlays/@deepseek-ai/dsh-bash-local/lib/index.js \
+  || { echo "::error::bash-local overlay 丢了 Android shell 适配"; exit 1; }
+grep -q "materializeAndroid" runtime/overlays/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js \
+  || { echo "::error::session-persistence overlay 丢了 Android 原子发布适配"; exit 1; }
+
 # 6) UI 锚点门禁（离线层）：CSS 与 JS 引用的上游哈希必须全部登记在映射表里。
 #    这是「上游升级导致样式/逻辑静默失效」的第一道防线，CI 无引擎树也能跑。
 #    ⚠️ 两个消费面都要查：只查 CSS 会漏掉仅 JS 使用的锚点（如 .hHd-Xa_toggle
