@@ -3,7 +3,7 @@
 构建时外挂到 `vendor/dsh-codearts-auth` 的**全部自有代码**。起点是「在用模型」
 实时读数胶囊（输入区最下方显示当前这次请求实际发往的渠道与模型），2026-10-11
 起扩展为 Gitee 原作者功能移植的载体（Phase 1–5 + Step A/B + 9.17 上游增量，
-详见仓库根 `PORT-STATUS.md` 与 `PORTING-GITEE-HANDOFF.md`）。
+详见仓库 `docs/porting/PORT-STATUS.md` 与 `docs/porting/PORTING-GITEE-HANDOFF.md`（本地工作区另存完整轮次报告于 docs/reports/）。
 
 ## 为什么这样做
 
@@ -30,7 +30,7 @@ git 仓库（main 分支）
 | 路径 | 说明 |
 |---|---|
 | `files/` | 胶囊/移植**全新增**路径：11 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、context-window-store、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ spec（当前 30 个文件） |
-| `overrides/` | **51 个**「上游某版 + 我方改动」覆盖文件 = vendor 49 个（src 40 + plugin-src/client 5 + spec 4）+ **UI 层 2 个**（`app/src/main/assets/dsh-phone.{js,css}`，2026-10-12 新增）；另有 1 个 `lib/`（胶囊自带的 d.ts 源）。每个的基线版本见 `PORTING-GITEE-HANDOFF.md` 各轮次记录 |
+| `overrides/` | **51 个**「上游某版 + 我方改动」覆盖文件 = vendor 49 个（src 40 + plugin-src/client 5 + spec 4）+ **UI 层 2 个**（`app/src/main/assets/dsh-phone.{js,css}`，2026-10-12 新增）；另有 1 个 `lib/`（胶囊自带的 d.ts 源）。每个的基线版本见 `docs/porting/PORTING-GITEE-HANDOFF.md` 各轮次记录 |
 | `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）+ **UI 接线自检与锚点门禁**（2026-10-12 新增，见下节）；`DISABLED` 空文件 = 一键纯净构建 |
 | `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 15 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑** |
 | `build-apk.yml` | 完整构建 workflow 模板（sync 后由 sync-upstream.yml 恢复到 .github/workflows/） |
@@ -68,7 +68,7 @@ node scripts/ui-tests/check-ui-anchors.test.mjs        # 门禁判别力反证�
 **槽位契约（三期前置）**：`scripts/ui-slot-inventory.mjs` 从引擎树提取真实槽位名并
 校验三期迁移表。槽位名写错或上游删槽时注册代码**不报错**（slots.inject 永远等服务、
 控件静默不出现），故 `apply.sh` 与 CI 都跑它。三期五个候选的现状/目标槽/风险见
-`SHELL-UI-PORT-PLAN.md` §9.6。
+`docs/porting/SHELL-UI-PORT-PLAN.md` §9.6。
 
 **槽位注册审计**：`scripts/ui-slot-register-audit.mjs` 拦「跨包同 id / 同槽同
 order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-peer` 由同一份
@@ -143,4 +143,4 @@ order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-pe
 
 > 移植引入的其余接线点（Phase 1 注册块、zero-output-guard、备份 merge、
 > catalog-broadcast/prewarm、minimax 换号、探测分派分支等）逐文件记录在
-> `PORTING-GITEE-HANDOFF.md` 9.5–9.17，重做对应 override 前先读该节。
+> `docs/porting/PORTING-GITEE-HANDOFF.md` 9.5–9.17，重做对应 override 前先读该节。
