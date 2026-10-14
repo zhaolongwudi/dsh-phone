@@ -167,3 +167,41 @@ spec** 覆盖的（zero-output-guard/catalog-broadcast/catalog-prewarm/backup-co
 - 5 个独有文件消费方扫描（raw 全 src grep import）：见 3.1 表格列「上游消费方」。
 - IKJOF7 分支：`compare/master...16e246e6` = 1 commit、3 files（patch 已读）。
 - 树快照存 `nc/trees/`（gitee-tree-5a61117f.json / phone-tree-main.json / effective-tree.json）。
+
+> 🆕 **2026-10-14 16:00 追加（第九轮，提交 `7813bbbaff` + `7ae4954840`）**：
+> Gitee master 前进 4 个提交（`4ec67a853b`/`e93e40213f`/`b37dbf4315`/`0dd27ca0e4`），
+> **三项非 provider 专用的真实缺陷修正已全部移植**：IKLIFH（工具结果图片与提问合条
+> ——修「模型看不见图却自称不支持图片」）、PR#93（minimax `tool-call-delta` 携带 name
+> + 空名 tool_call 防线）、IKLI7J（`login.poll` 终态失败通道——修「登录失败只剩 5 分钟
+> 静默转圈」）。**不移植**：accio/officeace 两个新 provider、依赖升级。
+> **验证**：tsc 零新增；3 个 spec **119 passed / 0 failed**；反向验证 13 组全独立变红；
+> CI #176 与 **#177 全绿**（Tests **747 passed**），Release `build-20261014-0716` / `-0803`。
+> 随后按用户要求做**项目审查**，发现并修掉 3 处真实缺陷（详见
+> [移植第九轮报告](../reports/移植第九轮-Gitee三项修正与项目审查-20261014.md)）：
+> ① `combined` 判据漏 `pendingOwnParts` ⇒ **延后正文被静默丢弃**（上游同段等价同样存在）；
+> ② 客户端终态失败分支 `stopPoll()` 排在 await 之后（1 秒轮询重入）；
+> ③ 验证手段自身 5 处缺陷（驱动污染 / 沙箱陈旧 / 注释自匹配 / 转义丢失 / indexOf 命中注释）。
+
+> 🆕 **2026-10-14 17:15 追加（第十轮，提交 `c56abfcdd4`）——★ 官方引擎 alpha.1 → alpha.2 升级**：
+> 用户指令「上游官方引擎没有移植完毕，请继续移植」。查证结论：官方引擎**仍钉在
+> `0.2.1-alpha.1`**，alpha.2（`d7432673`，10-09）**从未移植** ⇒ 这是**引擎版本升级**，
+> 不是文件移植。**已完成并验收**：
+> - **结构**：引擎以 npm 包装进 `runtime/`，靠 `runtime/overlays/@deepseek-ai/`（23 包 40 文件）
+>   覆盖安装产物（`build-assets.py:153`）。升级必须**同时重做 overlays**。
+> - **方法**：三方比对（alpha.1 官方 / 本地 overlay / alpha.2 官方）⇒
+>   13 需重新套用 + 12 可沿用 + 13 未改动 + 2 本地新增。
+> - **合并**：自研 Myers 三方合并器（10/10 自测）⇒ **0 冲突**，13 个文件内容更新。
+> - **依赖**：`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml` 同步；
+>   lock 用 APK 自带 pnpm 10.34.6 重建（298 包真实安装成功）。
+> - **落地**：用户定夺走**胶囊 `overrides/runtime/`**（因 `runtime/` 与上游 jwoo 仓库
+>   **逐字节一致**，1121/1121，属「永不直接改的上游内容」）；`apply.sh` 新增 6 条
+>   runtime 版本自检（4 组反向验证逐组独立变红）。
+> - **验证**：vendor tsc 两版错误输出**逐字节相同**（零新增类型错误，105 源文件）；
+>   胶囊 27 spec **747 passed / 0 failed**（与第九轮 CI 数字一致）；
+>   55 个 UI 哈希 **0 消失** + 3 槽位 + 5 语义属性同包不变。
+> - **交付**：45 文件（44 新增 + 1 更新）/ 0 删除；**CI #222 全绿**；
+>   Release `build-20261014-0911`（136.6 MB）；
+>   **从 APK 反解 `dsh-tree.tar` 验收 9/9**（引擎=alpha.2 + Android 适配生效 + 上游新内容在场）。
+> 详见 [移植第十轮报告](../reports/移植第十轮-官方引擎alpha2升级-20261014.md)。
+> ⚠️ **Gitee 线**在本轮期间又前进 3 提交（`8bb1035605` IKLMIY / `46ed99d443` merge /
+> `32681a8b13` IKLIFH 补修），**本轮未处理**，是下一轮的候选。
