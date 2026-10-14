@@ -31,7 +31,8 @@ git 仓库（main 分支）
 |---|---|
 | `files/` | 胶囊/移植**全新增**路径：11 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、context-window-store、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ spec（当前 30 个文件） |
 | `overrides/` | **51 个**「上游某版 + 我方改动」覆盖文件 = vendor 49 个（src 40 + plugin-src/client 5 + spec 4）+ **UI 层 2 个**（`app/src/main/assets/dsh-phone.{js,css}`，2026-10-12 新增）；另有 1 个 `lib/`（胶囊自带的 d.ts 源）。每个的基线版本见 `docs/porting/PORTING-GITEE-HANDOFF.md` 各轮次记录 |
-| `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）+ **UI 接线自检与锚点门禁**（2026-10-12 新增，见下节）；`DISABLED` 空文件 = 一键纯净构建 |
+| `overrides/runtime/` | **官方引擎适配（2026-10-14 新增）**：3 个版本文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）+ `overlays/@deepseek-ai/`（23 包 40 文件）。上游 `runtime/` 与本仓库**逐字节一致**（属「永不直接改」的上游内容），故引擎升级走这里覆盖。当前基线 **`0.2.1-alpha.2`** |
+| `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）+ **UI 接线自检与锚点门禁**（2026-10-12 新增，见下节）+ **runtime 引擎版本自检**（2026-10-14 新增：6 条断言，防「文件铺了但装回旧引擎」的静默退回）；`DISABLED` 空文件 = 一键纯净构建 |
 | `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 15 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑** |
 | `build-apk.yml` | 完整构建 workflow 模板（sync 后由 sync-upstream.yml 恢复到 .github/workflows/） |
 | `update-readme.py` | README 下载区块自动改写（[skip ci] 防循环） |
