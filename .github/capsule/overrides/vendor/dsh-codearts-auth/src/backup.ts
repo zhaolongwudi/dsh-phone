@@ -1,9 +1,45 @@
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { providerOfAccountRef, sanitizeAccounts, sanitizePermanentLocks } from './jet-hub-store.js'
-import type { JetHubState, ModelDisableMap, PermanentLockMap } from './jet-hub-store.js'
+import type { AggregateRejectionMap, JetHubState, ModelDisableMap, PermanentLockMap } from './jet-hub-store.js'
 import { OPENCODE } from './opencode-product.js'
 import type { ProviderAccountEntry } from './types.js'
 import { BACKUP_FORMAT, BACKUP_VERSION, type BackupImportMode, type BackupPayload } from './types.js'
+
+/**
+ * 备份载荷里的**三份偏好**（Issue F-59）。
+ *
+ * `aggregateRejections`（哪些候选被拒绝参与该虚拟模型的轮换）/ `gatewayEnabled`
+ * （本机网关开关）/ `providerOrder`（供应商显示顺序，也是账号自动选号顺序）原先
+ * **不在** `getStateSnapshot()` 里 ⇒ 备份导出的「完整状态快照」缺了它们，还原后
+ * 全部回到默认值。三者的字段名与 `JetHubState` 逐字一致，导入时按同一组键读回。
+ *
+ * ⚠️ **它们还没登记进 `types.ts` 的 `BackupPayload`**（该文件不在本次改动的白名单内）
+ * ⇒ 本模块用这个局部扩展接口写出/读回。`types.ts` 补上同样三个**可选**字段后，
+ * 这里应收敛回直接引用 `BackupPayload`（届时本注释一并删除）。
+ *
+ * ⚠️ 三者都是**可选**：老备份文件里没有它们 ⇒ 导入时保持当前值。因此**不需要**
+ * 提升 `BACKUP_VERSION`（与 `permanentLocks` / `loomyPermanentLocked` 同一约定，
+ * 见 `types.ts` 里那两个字段的说明）。
+ */
+interface BackupPreferencesPayload {
+  aggregateRejections?: AggregateRejectionMap
+  gatewayEnabled?: boolean
+  providerOrder?: string[]
+}
+
+/** 写出用的载荷类型：`BackupPayload` + 上面三份偏好。 */
+interface BackupPayloadWithPreferences extends BackupPayload, BackupPreferencesPayload {}
+
+/**
+ * **读回**用的载荷形状：`BackupPayload` + 三个尚未登记的偏好键（Issue F-59）。
+ *
+ * 三个键声明为 `unknown`：备份文件可被手工编辑，取值前必须逐键判形状。
+ */
+interface BackupPayloadRecord extends BackupPayload {
+  aggregateRejections?: unknown
+  gatewayEnabled?: unknown
+  providerOrder?: unknown
+}
 
 /**
  * 备份操作所需的账号池最小接口。
@@ -12,7 +48,7 @@ import { BACKUP_FORMAT, BACKUP_VERSION, type BackupImportMode, type BackupPayloa
  * 真实的 {@link AccountPool} 结构上即满足此接口。
  */
 export interface BackupPool {
-  /** 读取完整状态快照（账号列表 + 模型黑名单 + Loomy 镜像字段）。 */
+  /** 读取完整状态快照（账号列表 + 模型黑名单 + Loomy 镜像字段 + 三份偏好）。 */
   getStateSnapshot(): JetHubState
   /**
    * 读取「锁定永久积分」表（权威值）。
@@ -22,11 +58,16 @@ export interface BackupPool {
    * （`$DSH_HOME/jet-hub/permanent-locks.json`），备份时单独取。
    */
   permanentLocksSnapshot(): PermanentLockMap
-  /** 整体替换账号列表、模型黑名单与各 provider 的永久积分锁定表。 */
+  /** 整体替换账号列表、模型黑名单、各 provider 的永久积分锁定表与三份偏好。 */
   replaceAll(
     accounts: readonly ProviderAccountEntry[],
     disabledModels: ModelDisableMap,
     permanentLocks?: PermanentLockMap,
+    preferences?: {
+      aggregateRejections?: AggregateRejectionMap
+      gatewayEnabled?: boolean
+      providerOrder?: readonly string[]
+    },
   ): Promise<void>
   /**
    * **只追加**账号（合并导入用）：已有的账号一律不动，返回实际新增的 id。
@@ -284,21 +325,29 @@ export async function exportBackup(
   }
   // 锁定表从独立文档取（状态快照里没有它）。
   const locks = sanitizePermanentLocks(pool.permanentLocksSnapshot())
-  return {
-    payload: {
-      format: BACKUP_FORMAT,
-      version: BACKUP_VERSION,
-      exportedAt: new Date().toISOString(),
-      credentials: exported,
-      accounts,
-      disabledModels: state.disabledModels,
-      // 权威表 + Loomy 兼容字段**同源**（老版本只读后者，缺了会看到
-      // 「锁定悄悄失效」，而失效的后果是真把永久积分烧掉了）。
-      permanentLocks: locks,
-      loomyPermanentLocked: locks.loomy === true,
-    },
-    warnings,
+  // ⚠️ 必须先落到一个**具名变量**上：`BackupPayloadWithPreferences` 比
+  //    `BackupExportResult.payload`（= `BackupPayload`）多三个键，而**对象字面量直接
+  //    赋值**会触发 TS 的多余属性检查（`satisfies` 也保不住字面量的"新鲜度"）⇒ 具名
+  //    变量的结构化赋值才是合法写法。
+  const payload: BackupPayloadWithPreferences = {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    credentials: exported,
+    accounts,
+    disabledModels: state.disabledModels,
+    // 权威表 + Loomy 兼容字段**同源**（老版本只读后者，缺了会看到
+    // 「锁定悄悄失效」，而失效的后果是真把永久积分烧掉了）。
+    permanentLocks: locks,
+    loomyPermanentLocked: locks.loomy === true,
+    // ⚠️ 三份偏好必须一起写出（Issue F-59）：少了它们，这份「完整状态快照」
+    //    还原后会把「已拒绝轮换的候选」「网关开关」「供应商顺序」静默打回默认值。
+    //    老版本代码读这份备份时忽略未知键，故加字段是**向后兼容**的。
+    aggregateRejections: state.aggregateRejections,
+    gatewayEnabled: state.gatewayEnabled,
+    providerOrder: state.providerOrder,
   }
+  return { payload, warnings }
 }
 
 /**
@@ -384,6 +433,27 @@ function locksFromPayload(payload: BackupPayload): PermanentLockMap | undefined 
     return payload.loomyPermanentLocked ? { loomy: true } : {}
   }
   return undefined
+}
+
+/**
+ * 从备份载荷里取出三份偏好（Issue F-59）。
+ *
+ * ⚠️ `BackupPayload` 里还没登记这三个键（见 {@link BackupPreferencesPayload} 的说明），
+ * 故这里按「可能存在、形状未知」读：**只有形状明确时**才取值，其余一律 `undefined`
+ * ⇒ `replaceAll` 保持当前值。判据与 `locksFromPayload` 同一精神：**不认识的形状
+ * 绝不猜成「用户想重置」**（猜错的代价是把用户的网关开关/顺序/拒绝表静默抹掉）。
+ */
+function preferencesFromPayload(payload: BackupPayload): BackupPreferencesPayload {
+  const record = payload as BackupPayloadRecord
+  return {
+    aggregateRejections: typeof record.aggregateRejections === 'object'
+      && record.aggregateRejections !== null
+      && !Array.isArray(record.aggregateRejections)
+      ? record.aggregateRejections as AggregateRejectionMap
+      : undefined,
+    gatewayEnabled: typeof record.gatewayEnabled === 'boolean' ? record.gatewayEnabled : undefined,
+    providerOrder: Array.isArray(record.providerOrder) ? record.providerOrder as string[] : undefined,
+  }
 }
 
 /**
@@ -608,10 +678,16 @@ export async function importBackup(
   }
 
   if (mode === 'merge') {
-    // 只追加：不传黑名单与锁定表，池会保持当前值。
+    // 只追加：不传黑名单、锁定表与三份偏好，池会保持当前值。
     await pool.mergeAccounts(importedAccounts)
   } else {
-    await pool.replaceAll(payload.accounts, payload.disabledModels, locksFromPayload(payload))
+    await pool.replaceAll(
+      payload.accounts,
+      payload.disabledModels,
+      locksFromPayload(payload),
+      // Issue F-59：三份偏好与账号、黑名单出自**同一份备份**（见该函数的说明）。
+      preferencesFromPayload(payload),
+    )
   }
 
   // 统计已过期账号：expiresAt 是毫秒时间戳，缺失或 NaN 视为「未知」不算过期。
