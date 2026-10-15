@@ -19,6 +19,16 @@
      · 打开方式菜单 .OMoRSG_*       ← dsh-client-ui-open-in-app
      · 自有         .dsh-phone-* / .dim-jh-* ← 本层注入，不依赖上游哈希
 
+   ## ⚠️ 跨层类名契约（Issue F-19）
+   上一条里的 .dim-jh-* 与「本层注入」不同：它们是**插件侧（dsh-codearts-auth
+   plugin-src/client）产出、本层消费**的类名。这类依赖此前是**无声契约** ——
+   无版本号、无断言、无测试锁：插件侧改名即静默失效（本层选择器不命中、页面照常
+   渲染、构建与单测全绿），F-15/F-16 正是因此长期无人发现。
+   现已在 app/src/main/assets/phone-plugin-contract.json 里显式登记（含插件侧
+   产出文件与语义），由 scripts/check-plugin-contract.mjs 在构建期做门禁：
+   本文件/本目录 dsh-phone.js 用到的每个 .dim-jh-* 都必须已登记、且插件侧仍在
+   产出它；插件包版本变化也会被点名要求复核。
+
    另有 4 条规则锚定的类名在上游 0.2.1-alpha.1 已不存在（一直静默失效），
    登记在 ui-anchors.json 的 knownDead，不重复报警；修掉后应移出该表。
 
@@ -39,6 +49,20 @@
   ._7KE1Ra_groupTitle { overflow-wrap:anywhere; }
   ._7KE1Ra_cellValue { max-width:65%; }
   .dim-jh-badgePop { box-sizing:border-box !important; left:var(--dsh-phone-popover-left,0px) !important; right:auto !important; width:var(--dsh-phone-popover-width,calc(100vw - 24px)) !important; min-width:0 !important; max-width:calc(100vw - 24px) !important; max-height:var(--dsh-phone-popover-height,55dvh) !important; overflow-x:hidden !important; overflow-y:auto !important; overscroll-behavior:contain; }
+  /* ⚠️ Issue F-15：插件侧 @media (max-width:720px) 会把徽标读数**整块隐藏**
+     （.dim-jh-badgeText、chevron、图标 svg 全部 display:none），而插件自己的注释
+     写明该断点是**桌面口径**（「徽标 216px + 模型选择器 ≥240px」的临界值）。
+     手机上视口恒 ≤720px ⇒ 用户明确定位为「止损工具」的读数一个字都看不到
+     （jet-hub.js 引用户原话：「必须要徽标，不然会导致不知道当前在用什么模型」），
+     屏幕上只剩一个 5px 圆点。
+     ⚠️ 必须 !important：插件样式是运行时注入 head 的，**晚于**本文件的 link，
+     同特异性下插件胜出（与上面 .dim-jh-badgePop 那条同款约定）。
+     ⚠️ 只恢复读数行（渠道名 + 数字），**不**恢复 chevron 与图标 svg —— 那两枚是
+     纯装饰，恢复它们会再吃掉约 20px 并挤压右侧模型选择器（插件注释里的原始理由
+     在窄屏仍然成立）。宽度由下面那条 max-width 收口：读数 flex:none 不参与收缩
+     ⇒ 数字恒定完整（与插件侧同一口径）。 */
+  .dim-jh-badgeText { display:flex !important; }
+  .dim-jh-badgeBtn { max-width:min(42vw,216px) !important; }
   /* Settings pages use flex/percentage heights. Give them a definite visible
      viewport, including while loading, and let only the content area scroll.
      面板本体的稳定钩子是上游自带的 [data-shortcut-modal="settings"]（语义属性，
@@ -68,6 +92,17 @@
   .dim-jh-brandName { font-size:18px; }
   .dim-jh-headerActions { flex-wrap:wrap !important; justify-content:flex-start !important; gap:6px !important; }
   .dim-jh-btn { min-height:36px; white-space:nowrap; font-size:13px; padding:6px 10px; }
+  /* ⚠️ Issue F-46：自有小控件在触屏上的可点尺寸兜底。
+     插件侧已按 @media (pointer: coarse) 放大过一轮，但该媒体特性在接了蓝牙鼠标/
+     触控板时会变成 fine，而这些控件照样会被手指点到 ⇒ 手机形态下再兜一层。
+     ⚠️ 用 min-width/min-height 而不是 width/height：min-* 在 CSS 里**恒定压过**
+     width/height（与源顺序、特异性无关）⇒ 不必 !important 也不会与插件侧
+     那两条 width/height 打架（最终取两者较大值）。
+     ⚠️ 刷新键与签到灯只给 32px：badge 弹窗头部一行还要放下状态点、渠道名与时间，
+     给 36px 在 220px 的窄弹窗里会顶出横向溢出（5 + 118 + 36 + 36 + 20 = 215）。
+     关闭键 / 额度翻页箭头 / 图标按钮所在行空间充足，直接给 36px。 */
+  .dim-jh-badgeRefresh, .dim-jh-badgeAuto { min-width:32px; min-height:32px; }
+  .dim-jh-badgeAutoClose, .dim-jh-quotaArrow, .dim-jh-iconBtn { min-width:36px; min-height:36px; }
   .dim-jh-layout { flex-direction:column !important; overflow:visible !important; }
   html[data-dsh-mobile-form] .dim-jh-rail { display:none !important; width:100% !important; border:0 !important; padding:12px 0 !important; overflow:visible !important; }
   html[data-dsh-mobile-form] .dsh-phone-choosing .dim-jh-rail { display:grid !important; }
