@@ -176,10 +176,13 @@ async function inspectApiSession(ctx, sessionId, signal) {
 		throw error;
 	}
 }
+/** ⚠️ Issue F-63：内存里的永久删除标记上限。超出后按插入顺序淘汰最旧项（调用方账本在启动时重新灌入）。 */
+const MAX_TRACKED_DELETED_IDS = 4096;
 /** Owns every operation that may create, resume, or configure a Web Agent. */
 var ApiSessionAgentController = class {
 	ctx;
 	ownedHandles = new Map();
+	/** Session ids hidden as permanently deleted; bounded by {@link MAX_TRACKED_DELETED_IDS}. */
 	deletedIds = new Set();
 	deletingIds = new Set();
 	async deletionLease(ids) {
@@ -193,11 +196,59 @@ var ApiSessionAgentController = class {
 				if ((agent || this.ctx.sessions.get(id)) && !this.ownedHandles.has(id)) throw new Error("聊天由其他服务持有，请先停止该服务并重试");
 			}
 			for (const id of ids) { const handle = this.ownedHandles.get(id); if (handle) { await handle.dispose(); this.ownedHandles.delete(id); } }
-			return () => { for (const id of ids) this.deletingIds.delete(id); };
+			return () => {
+				for (const id of ids) this.deletingIds.delete(id);
+				/* ⚠️ Issue F-10：release() 由调用方的 finally 同步调用，确认必须后台跑且自兜错。 */
+				this.confirmPermanentDeletion(ids).catch((error) => {
+					this.ctx.logger.warn(`session-controller: permanent-deletion confirmation failed: ${errorChain(error)}`);
+				});
+			};
 		} catch (error) { for (const id of ids) this.deletingIds.delete(id); throw error; }
 	}
 	retainHandle(handle) { this.ownedHandles.set(handle.agent.id, handle); return handle.agent; }
-	assertAvailable(id) { if (this.deletedIds.has(id) || this.deletingIds.has(id)) throw new ApiSessionNotFound(`session "${id}" was permanently deleted`); }
+	/**
+	* Record ids as permanently deleted, keeping the hide set bounded.
+	* @param ids - ids the durable deletion ledger claims are gone.
+	*/
+	markPermanentlyDeleted(ids) {
+		for (const id of ids) {
+			this.deletedIds.delete(id);
+			this.deletedIds.add(id);
+			if (this.deletedIds.size > MAX_TRACKED_DELETED_IDS) this.deletedIds.delete(this.deletedIds.values().next().value);
+		}
+	}
+	/**
+	* Confirm one finished deletion attempt against the persistence layer.
+	* ⚠️ Issue F-10：调用方在 cleanup **之前**就调用 markPermanentlyDeleted，于是 cleanup 中途抛错时
+	* list()/assertAvailable 会永久把它当作已删除，而日志/投影/附件仍在磁盘上（"隐藏了但数据还在"）。
+	* 删除租约释放后核对一次：只要存储里仍能查到该会话，就撤回隐藏标记，让它保持可见（可打开、可重试删除）。
+	* @param ids - ids released by the finished deletion lease.
+	*/
+	async confirmPermanentDeletion(ids) {
+		const tentative = ids.filter((id) => this.deletedIds.has(id));
+		if (tentative.length === 0) return;
+		const persistence = this.ctx.get("sessionPersistence");
+		if (persistence === void 0) return;
+		for (const id of tentative) {
+			let stored;
+			try {
+				stored = await persistence.stat(id);
+			} catch (error) {
+				/* ⚠️ Issue F-10：无法证实删除时保持隐藏（宁可不误报"未删除"，也不复活真正已删的会话）。 */
+				this.ctx.logger.warn(`session-controller: cannot confirm permanent deletion of "${id}"; keeping it hidden: ${errorChain(error)}`);
+				continue;
+			}
+			if (stored === void 0) continue;
+			this.deletedIds.delete(id);
+			this.ctx.logger.warn(`session-controller: session "${id}" is still stored after permanent deletion; it stays visible for retry`);
+		}
+	}
+	assertAvailable(id) {
+		/* ⚠️ Issue F-33：删除租约进行中的会话**还不是**永久删除 —— 旧判据把它也报成
+		   "was permanently deleted"，调用方据此得到不可重试的永久结论（见 §3.4 的调用链）。 */
+		if (this.deletingIds.has(id)) throw new Error("聊天正在删除，请稍后重试");
+		if (this.deletedIds.has(id)) throw new ApiSessionNotFound(`session "${id}" was permanently deleted`);
+	}
 	resumes = /* @__PURE__ */ new Map();
 	creations = /* @__PURE__ */ new Map();
 	selections = /* @__PURE__ */ new WeakMap();
@@ -2945,7 +2996,7 @@ let SessionController = (() => {
 			});
 		}
 		deletionLease(ids) { return this.agents.deletionLease(ids); }
-		markPermanentlyDeleted(ids) { for (const id of ids) this.agents.deletedIds.add(id); }
+		markPermanentlyDeleted(ids) { this.agents.markPermanentlyDeleted(ids); }
 		promote(observation) {
 			const sessionId = observation.header.id;
 			const task = (async () => {
@@ -3010,8 +3061,14 @@ let SessionController = (() => {
 		* @param signal - cancellation for list and search reads.
 		* @returns authorized bounded Session search results.
 		*/
-		search(request, signal) {
-			return this.listState.search(request.query, signal);
+		async search(request, signal) {
+			// ⚠️ Issue F-32：`list()` 过滤 deletedIds，`search()` 却不过滤 ⇒ 同一失败窗口下已被声明
+			// 永久删除的会话仍能通过内容检索命中（隐私口径不一致）。这里与 list() 对称过滤。
+			const result = await this.listState.search(request.query, signal);
+			return {
+				...result,
+				items: result.items.filter(item => !this.agents.deletedIds.has(item.sessionId))
+			};
 		}
 		/**
 		* Create or idempotently adopt one ordinary Session.
