@@ -40,6 +40,8 @@
  * ① 上游报文里读出来的真实上限；② 截断/超限时实测到的规模。「读不出 ⇒ 减半猜」
  * 的值**仍只留内存**。另有 {@link noteContextWindowSuccess} 作**自愈**：整轮正常
  * 结束时可用当轮实测规模把偏小的值放宽（该值必然 ≤ 真实上限，方向安全）。
+ * ⚠️ 落盘还要求值 ≥ {@link DYNAMIC_CONTEXT_WINDOW_FLOOR}（Issue F-55：低于自愈
+ * 下界的值一旦落盘就再也放宽不了）。
  * ⇒ 「重启不丢」与「不固化错值」同时成立，且用户**无需手动填任何上限**。
  *
  * ## ⚠️ 有意为之的边界
@@ -172,7 +174,16 @@ export function rememberContextWindowFailure(key: string, failureText: string): 
   // ⚠️ **只把「报文里读出来的真实上限」落盘**（9.22）：`reported` 是硬证据；而
   //    「读不出 ⇒ 减半猜」那条没有证据、方向可能过小 ⇒ 落盘等于把一个猜的值
   //    永久固化（正是 9.11「永远显示 200K」事故的形态）。
-  if (reported !== undefined) backend?.remember(key, reported)
+  //
+  // ⚠️⚠️ **还要求它 ≥ {@link DYNAMIC_CONTEXT_WINDOW_FLOOR}**（Issue F-55）：
+  //    {@link contextWindowFromFailureText} 的合理性下限是 1_024，而**自愈**
+  //    （{@link noteContextWindowSuccess}）要求观测规模 ≥ 同一个下界（32_768）。
+  //    于是一个落在 `[1024, 32768)` 的误读值一旦落盘就是**不可逆的窄化**：声明只有
+  //    1K ⇒ 会话被压到 1K ⇒ 永远观测不到 32K ⇒ 自愈那条腿恒不成立，重启后仍锁死
+  //    在那个值上（每轮先压缩、再撞墙）。
+  //    ⇒ 低于下界的读数**仍记内存**（本轮压缩阈值立即变保守，方向安全），但**不落盘**
+  //    —— 与「读不出 ⇒ 减半猜」同一条腿的处置：重启后重新观测即可。
+  if (reported !== undefined && reported >= DYNAMIC_CONTEXT_WINDOW_FLOOR) backend?.remember(key, reported)
   return next
 }
 
