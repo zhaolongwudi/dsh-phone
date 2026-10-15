@@ -458,10 +458,29 @@ export function describeWasmFailure(error: unknown): unknown {
   )
 }
 
-/** 建立（或复用）WASM glue。 */
+/**
+ * 建立（或复用）WASM glue。
+ *
+ * ⚠️⚠️ **失败的结果不得永久缓存**（Issue F-43）。
+ *
+ * 原实现是 `gluePromise ??= createGlue()` —— `??=` 会把**失败的 Promise** 也
+ * 记进单例，于是任何一次瞬时失败（首次调用时内存紧张 / `readFileSync` 撞上
+ * 打包未就绪 / `WebAssembly.compile` 被 OOM 打断）都被固化成
+ * 「Qoder 路由在整个**进程生命周期**内不可用」，只有重启 DSH 才能恢复
+ *（除单测的 `__testing.resetGlue()` 外没有任何复位路径）。
+ * 这与「实例化失败是可重试的一次性事件」这一事实相矛盾。
+ *
+ * 失败即清空缓存（且只在**仍是同一个** pending 时清，避免把后来者建好的
+ * 实例误清）；成功则照旧复用同一实例 —— wasm 实例本身无状态，可以共用。
+ */
 async function getGlue(): Promise<Glue> {
-  gluePromise ??= createGlue()
-  return gluePromise
+  if (gluePromise !== null) return await gluePromise
+  const pending = createGlue()
+  gluePromise = pending
+  pending.catch(() => {
+    if (gluePromise === pending) gluePromise = null
+  })
+  return await pending
 }
 
 /** 真正实例化 WASM 并接好 import。 */
