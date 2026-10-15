@@ -83,14 +83,13 @@ function makeRpc(modelAdapters: Record<string, unknown> | undefined) {
   const pool = new AccountPool(ctx)
   registerJetHubRpc(
     ctx, pool,
-    // ⚠️ 手机版是**位置传参**（16 个位置参数，Phase 6 的命名对象重构未做）——
-    //    与 Gitee 的命名对象形态不同。这里的 13 个 auth 桩按位置逐个传入，
-    //    顺序与 src/jet-hub-rpc.ts 的形参表一致：codearts, buddy, workbuddy,
-    //    lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini。
-    {} as never, {} as never, {} as never, {} as never,
-    {} as never, {} as never, {} as never, {} as never,
-    {} as never, {} as never, {} as never, {} as never,
-    {} as never,
+    {
+      codearts: {} as never, buddy: {} as never, workbuddy: {} as never, lobsterai: {} as never,
+      qoder: {} as never, qodercn: {} as never, trae: {} as never, cline: {} as never,
+      loomy: {} as never, raccoon: {} as never, minimax: {} as never, zcode: {} as never,
+      gemini: {} as never,
+      officeace: {} as never,
+    } as never,
     modelAdapters as never,
   )
   const h = handler

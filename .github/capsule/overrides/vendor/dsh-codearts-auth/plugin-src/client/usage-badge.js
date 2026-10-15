@@ -48,10 +48,36 @@ import {
 } from './quota-format.js';
 import { formatUnits, formatQuotaLine, formatClaimGains, unitLabel, QUOTA_UNIT } from './credits-format.js';
 import {
+  expirySplitParts,
   formatExpirySplitLine,
   formatPoolSplitLine,
   splitCreditsByExpiry,
 } from './credit-expiry.js';
+import { ensureJetHubStyles } from './jet-hub-styles.js';
+
+/**
+ * 浮层的**定位声明走内联样式**，不依赖注入的样式表。
+ *
+ * ⚠️⚠️ 为什么必须内联：注入的 `<style>` 一旦缺失，组件仍在渲染 ——
+ * 此时若 `position: absolute` 只写在样式表里，浮层就退化成**输入框底栏里的
+ * 普通块**，把宿主的输入卡片撑高（实测本机 114px → 576px，issue IKKGYN）。
+ *
+ * 内联样式随 DOM 走、不会被卸载，所以「不生效就会撑坏宿主布局」的这几条必须内联；
+ * 颜色 / 圆角 / 字号 / 阴影等**纯外观**仍留在样式表里。
+ *
+ * ⚠️⚠️ **`width` / `max-width` 故意不内联**（本机 CDP 实测的反向发现）：
+ * 内联样式优先级高于任何非 `!important` 规则，会把窄屏
+ * `@media (max-width: 720px)` 的 220px **压成 275px**。宽窄属纯外观且有媒体查询，
+ * 必须留在样式表里；这里的判据是「不生效会不会破坏宿主布局」。
+ */
+const POPOVER_ANCHOR_STYLE = Object.freeze({
+  position: 'absolute',
+  right: 0,
+  bottom: 'calc(100% + 8px)',
+  maxHeight: '58vh',
+  overflowY: 'auto',
+  zIndex: 40,
+});
 
 /**
  * 轮询间隔：60 秒。宿主侧还有 TTL 缓存（成功 120s / 全部失败 15s），故真实的
@@ -114,8 +140,6 @@ export const CREDITS_COLLAPSED_LIMIT = 5;
  * 之后安静放弃 —— 再长就变成用户可感知的「徽标迟迟不出来」。
  */
 const RESOLVE_RETRY_DELAYS = [300, 700, 1500, 2000];
-/** 显式退避用尽后的**常驻重试**间隔（毫秒）。见 tryResolve 内的长注释。 */
-const PERSISTENT_RETRY_MS = 5_000;
 
 /**
  * 徽标本体：只做门控，真正的工作在 {@link UsageBadgeActive}。
@@ -167,8 +191,6 @@ export function UsageBadge(props) {
     if (resolvedRef.current) return undefined;
     let alive = true;
     const timers = [];
-    // 「退避用尽」的 warn 只发一次（组件生命周期内）。
-    let gaveUpWarned = false;
     let attempt = 0;
     const tryResolve = () => {
       if (!alive || resolvedRef.current) return;
@@ -199,19 +221,8 @@ export function UsageBadge(props) {
       }
       attempt += 1;
       if (attempt >= RESOLVE_RETRY_DELAYS.length) {
-        // ⚠️⚠️ **不再「安静放弃」**（真实缺陷，用户报障 2026-10-11「正式开始调用的时候
-        // 胶囊又没有了」）：对话开始后宿主进入流式期，RPC 通道被请求与目录刷新占用，
-        // 4.5 秒的显式退避可能**全部落在这个窗口里** ⇒ 解析全部失败 ⇒ 徽标/胶囊
-        // 整块消失且**直到组件重挂载都不回来**。而「会话中途换模型/新开会话」恰恰
-        // 会重挂输入区 —— 用户看到的正是「一开始在、一开始对话就没了」。
-        // ⇒ 退化为**常驻低频重试**（每 5 秒，与本文件的路由/余额轮询同量级）：
-        //    解析本身是纯内存读（directoryFor + load），失败成本可忽略；
-        //    成功即恢复显示。warn 只记一次（不刷屏）。
-        if (!gaveUpWarned) {
-          gaveUpWarned = true;
-          console.warn('[jet-hub usage] 目录解析最终失败（转常驻低频重试，每 5s）——对话期 RPC 拥塞是常见原因');
-        }
-        timers.push(setTimeout(tryResolve, PERSISTENT_RETRY_MS));
+        // eslint-disable-next-line no-console
+        console.warn('[jet-hub usage] 目录解析最终失败，徽标不显示');
         return;
       }
       timers.push(setTimeout(tryResolve, RESOLVE_RETRY_DELAYS[attempt - 1]));
@@ -421,7 +432,15 @@ export function UsageBadge(props) {
   return React.createElement(UsageBadgeActive, { ...props, provider });
 }
 
-/** 展开态的完整实现（数据、轮询、弹窗）。 */
+/**
+ * 展开态的完整实现（数据、轮询、弹窗）。
+ *
+ * ⚠️ 折叠胶囊名的拼装（auto 三要素）已抽到 `badge-model.js` 的 `autoBadgeName`
+ *    —— 那是**纯函数**，可被单测直接 import 并做**行为断言**。本文件 import 了
+ *    `react`，单测环境无法 import 它，故原先内联在这里的逻辑只能用字符串断言，
+ *    而字符串断言对「短路禁用」（`if (false && …)` / `undefined && …`）天然免疫
+ *    —— 实测那是一条**恒真的假用例**（把功能改成永不执行，用例照样全绿）。
+ */
 function UsageBadgeActive(props) {
   const { provider, providerLabel, readBadge, writePreference, setAutoCheckin, dismissAutoCheckin, claimCredits } = props;
   const label = providerLabel(provider);
@@ -446,11 +465,6 @@ function UsageBadgeActive(props) {
   /** 自动签到开关的写入错误（与偏好分开：两者是不同的设置项，别互相顶掉）。 */
   const [autoError, setAutoError] = React.useState('');
   /**
-   * ⚠️ Issue F-45：自动签到开关的**写入在途**标记（禁用按钮 + aria-busy）。
-   * 见 onToggleAutoCheckin 的注释：连点两次会发出两个相反的写请求。
-   */
-  const [autoBusy, setAutoBusy] = React.useState(false);
-  /**
    * 领取状态。`claiming` 用**字符串**而不是布尔：
    * `'current'` = 只签当前渠道（单次请求）；`'all'` = 遍历全部支持签到的渠道
    * （串行多次请求，要显示 `done/total` 进度，否则用户以为卡住了）。
@@ -467,8 +481,32 @@ function UsageBadgeActive(props) {
    */
   const [creditsExpanded, setCreditsExpanded] = React.useState(false);
   const root = React.useRef(null);
+  /** 浮层根节点：只用于「样式表缺失时仍处于绝对定位」这道自检（见下面的 effect）。 */
+  const popRef = React.useRef(null);
   /** 供定时器与按钮调用的「读一次」入口（每次渲染替换，避免闭包过期）。 */
   const read = React.useRef(() => {});
+
+  /**
+   * 样式表自愈 + 定位自检（issue IKKGYN 的最后一道保险）。
+   *
+   * ⚠️ 为什么必须挂在**渲染路径**上：`installJetHubStyles` 只在 apply 阶段
+   * （`ctx.effect`）跑一次，宿主回收标签 / 热更新摘除之后**没有任何东西会补注** ——
+   * 症状是「Jet Hub 面板掉样式，且 F5 刷新前不会恢复」。
+   * 本机 CDP 实测：删掉签名样式表后，关掉再打开浮层、切 provider 重挂载，
+   * 样式表都是 0 份，只有整页重载才恢复。
+   *
+   * ⚠️ 定位自检**独立于样式表**：定位已内联（{@link POPOVER_ANCHOR_STYLE}），
+   * 这里断言的是「内联那几条确实生效」—— 不成立就说明有人改坏了它们，
+   * 早报一条 warn 比等用户截图便宜得多。
+   */
+  React.useEffect(() => {
+    ensureJetHubStyles();
+    if (!open) return;
+    const element = popRef.current;
+    if (element !== null && window.getComputedStyle(element).position !== 'absolute') {
+      console.warn('[jet-hub] 浮层未处于绝对定位：会撑高输入区（检查 POPOVER_ANCHOR_STYLE 是否被改坏）');
+    }
+  }, [open]);
 
   // 换渠道时先清空旧读数：否则会短暂把上一个渠道的余额画到新渠道的名字下。
   React.useEffect(() => {
@@ -484,11 +522,6 @@ function UsageBadgeActive(props) {
   React.useEffect(() => {
     let alive = true;
     let inFlight = false;
-    /**
-     * ⚠️ Issue F-45：在途期间被挡下的**强制**读数（见 load 里的让路说明）。
-     * 它只记「有一次 force 没跑成」，跑完当前这次就在 finally 里补一次。
-     */
-    let forcePending = false;
     /**
      * 读一次。三种调用形态（**语义不同，不要合并**）：
      *
@@ -507,24 +540,8 @@ function UsageBadgeActive(props) {
      * 后台标签页里新建的会话会一直停在「读取中…」。
      */
     const load = async (options = {}) => {
+      if (inFlight) return;
       const force = options.force === true;
-      /**
-       * ⚠️ Issue F-45：**强制读数不得被静默丢弃**。
-       *
-       * 原先第一行是 `if (inFlight) return;`（连 force 一起早退），于是用户点
-       * 「刷新」（`read.current()`）或刚签完到触发的补读，只要撞上一次正在跑的
-       * 轮询就会被**整体丢掉**：界面上什么都没发生，用户只会以为按钮坏了，
-       * 而他那次操作恰恰是「我不信缓存里的数，现在给我重读」（force 绕过宿主 120s 缓存）。
-       *
-       * ⇒ 分两种让路形态：
-       *   · 非强制（挂载 / 轮询 / 切回前台）：照旧早退 —— 那是节流，重复读没有意义；
-       *   · 强制：只**登记待办**（下面 finally 里补跑一次），既不并发打上游
-       *     （`inFlight` 这道闸门仍然有效，宿主侧逐账号顺序 HTTP），也不丢这次意图。
-       */
-      if (inFlight) {
-        if (force) forcePending = true;
-        return;
-      }
       // 隐藏的标签页跳过**轮询**（值不值得为一个没人看的数字保持请求）。
       if (options.poll === true && typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       inFlight = true;
@@ -546,13 +563,6 @@ function UsageBadgeActive(props) {
       } finally {
         inFlight = false;
         if (alive && force) setBusy(false);
-        // ⚠️ Issue F-45：补跑期间被挡下的那次强制读数（见上面的让路说明）。
-        //    用微任务而不是直接递归调用：直接调会在 finally 里同步进入本函数、
-        //    与 React 的 setState 批处理叠在一起（同一次提交里两次 setBusy）。
-        if (alive && forcePending) {
-          forcePending = false;
-          Promise.resolve().then(() => { void load({ force: true }); });
-        }
       }
     };
     read.current = () => { void load({ force: true }); };
@@ -649,15 +659,10 @@ function UsageBadgeActive(props) {
    * 2. 若这一轮正在跑，**12 秒后再读一次** —— 一轮是串行打十几个上游，通常十几秒
    *    内结束；不补这一次，状态灯要等满 60 秒轮询才从「进行中」变成「今天已完成」，
    *    用户会以为卡住了。只补一次，不做轮询循环（组件卸载后 `read.current` 已被置空）。
-   *
-   * ⚠️ Issue F-45：写入**在途时禁用**这个开关。它是一次落盘的设置写入，连点两次
-   * 会发出两个相反的写请求（最终值取决于服务端到达顺序），而开关自身是
-   * `aria-pressed` + `data-state` 的受控展示 —— 状态灯会与真实设置分叉。
    */
   const onToggleAutoCheckin = async () => {
-    if (auto === undefined || autoBusy) return;
+    if (auto === undefined) return;
     const next = auto.enabled !== true;
-    setAutoBusy(true);
     setAutoError('');
     try {
       await setAutoCheckin(next);
@@ -665,10 +670,6 @@ function UsageBadgeActive(props) {
       if (next) setTimeout(() => read.current(), 12_000);
     } catch (error) {
       setAutoError(describeBadgeError(error, '自动签到开关保存失败'));
-    } finally {
-      // ⚠️ 无论成败都要放行（否则写入失败后按钮永久变灰，用户无法重试 —— 而重试
-      // 恰恰是失败后唯一能做的事）。
-      setAutoBusy(false);
     }
   };
 
@@ -966,10 +967,6 @@ function UsageBadgeActive(props) {
           'data-state': autoState,
           'data-running': auto?.running === true,
           'aria-pressed': auto?.enabled === true,
-          // ⚠️ Issue F-45：写入在途时禁用（连点两次 = 两个相反的写请求），
-          //    并用 aria-busy 让读屏知道这个开关还没落定。
-          disabled: autoBusy || auto === undefined,
-          'aria-busy': autoBusy ? 'true' : undefined,
           title: autoTitle,
           'aria-label': autoTitle,
           onClick: () => { void onToggleAutoCheckin(); },
@@ -1010,14 +1007,14 @@ function UsageBadgeActive(props) {
         : '正在读取用量…（首次要逐账号查询，可能要几秒）'));
       // 签到不依赖本渠道的读数，故首屏也放出来（用户可能就是想先签到）。
       children.push(renderClaim());
-      return React.createElement('div', { className: 'dim-jh-badgePop' }, children);
+      return React.createElement('div', { className: 'dim-jh-badgePop', style: POPOVER_ANCHOR_STYLE, ref: popRef }, children);
     }
 
     children.push(renderSubscription());
     children.push(renderCredits());
     children.push(renderClaim());
     children.push(renderFoot());
-    return React.createElement('div', { className: 'dim-jh-badgePop' }, children);
+    return React.createElement('div', { className: 'dim-jh-badgePop', style: POPOVER_ANCHOR_STYLE, ref: popRef }, children);
   }
 
   /**
@@ -1198,10 +1195,11 @@ function UsageBadgeActive(props) {
               title: row.error || undefined,
             }, row.balance === null ? (row.error || '查询失败') : balanceLine(row.balance)),
           ]),
-          // 分桶/资源包说明：灰色小字，存在时才占一行
+          // 分桶/资源包说明：小字**逐段带色**（永久绿 / 长期黄 / 临期红 + 倒计时），
+          // 存在时才占一行。用户 2026-10-12 明确要求三档分色。
           row.balance === null
             ? null
-            : renderNote(splitLine(row.balance, windowDays, provider)),
+            : renderSplitNote(splitParts(row.balance, windowDays, provider)),
         ]))),
       hidden === 0
         ? null
@@ -1219,6 +1217,32 @@ function UsageBadgeActive(props) {
   function renderNote(text) {
     if (typeof text !== 'string' || text.length === 0) return null;
     return React.createElement('div', { key: 'note', className: 'dim-jh-badgeRowNote' }, text);
+  }
+
+  /**
+   * 一行**逐段带色**的小字（分桶说明）；无内容返回 `null`（不占位）。
+   *
+   * ⚠️ 颜色语义（用户 2026-10-12 定）：
+   * - `permanent`（**服务端没给到期时间**，真·永久）→ `ok` 绿
+   * - `longTerm`（有到期时间但还早）→ `warn` 黄
+   * - `expiring`（窗口内，再不用就作废）→ `error` 红，且带**倒计时**
+   *
+   * 段间用 ` · ` 分隔（与全局其它分桶行的分隔符一致）。倒计时放在括号里
+   * （`临期 100（2 天 4 小时）`）—— 用户要的「临期 100（倒计时）」正是这个形状。
+   */
+  function renderSplitNote(parts) {
+    if (!Array.isArray(parts) || parts.length === 0) return null;
+    const children = [];
+    parts.forEach((part, index) => {
+      if (index > 0) children.push(React.createElement('span', { key: `sep-${part.key}`, className: 'dim-jh-badgeNoteSep' }, ' · '));
+      children.push(React.createElement('span', {
+        key: part.key,
+        className: 'dim-jh-badgeNotePart',
+        'data-tone': part.tone,
+        ...(part.countdown === undefined ? {} : { title: `最早作废：${part.countdown}后` }),
+      }, part.countdown === undefined ? part.text : `${part.text}（${part.countdown}）`));
+    });
+    return React.createElement('div', { key: 'note', className: 'dim-jh-badgeRowNote' }, children);
   }
 
   /**
@@ -1340,11 +1364,6 @@ function UsageBadgeActive(props) {
     // 界面各写一份措辞，改一处就会出现「胶囊说A、弹窗说B」的偏差。
     // 只有积分模式才有那句话（窗口/套餐不是合计），故其余模式保留简写。
     if (view.failedCount > 0) parts.push(view.incompleteNote === '' ? `${view.failedCount} 个账号读取失败` : view.incompleteNote);
-    // ⚠️ Issue F-47：失败**原因**原先只在 `title` 里（见下面的 title 拼接）——
-    // 触屏没有 hover，手机上「为什么读不到」永远看不见，用户只能看到
-    // 「1 个账号读取失败」却无从下手。这里把它作为脚注的一部分常驻显示
-    // （`failureReason` 来自 badge-model 的 firstFailureReason，取首个账号的原因）。
-    if (view.failureReason !== '') parts.push(`原因：${view.failureReason}`);
     if (failed && snapshot !== null) parts.push('本次刷新失败，显示的是上一次读数');
     if (parts.length === 0) return null;
     return React.createElement('div', { key: 'foot', className: 'dim-jh-badgeFoot' }, parts.join(' · '));
@@ -1372,13 +1391,17 @@ function balanceLine(balance) {
 }
 
 /**
- * 分桶文案（当日池优先，其次按到期分桶）。
+ * 分桶**分段**（当日池优先，其次按到期分三档带色）。
  *
  * ⚠️ 与设置页账号卡片**同一套口径、同一批函数**（`credit-expiry.js`）：
- * 两处若各算各的，用户会看到「卡片说临时 55、徽标说长期 55」这种无法解释的偏差。
+ * 两处若各算各的，用户会看到「卡片说临期 55、徽标说长期 55」这种无法解释的偏差。
  * `now` 在渲染这一刻现取 —— 分桶是时间的函数，缓存它会让越线的包继续算长期。
+ *
+ * @returns `[{ key, text, tone, countdown? }]`。当日池（loomy / raccoon）走
+ *   `formatPoolSplitLine` 的单串口径（那两家的池没有到期维度），统一包成
+ *   **无色的 `muted` 段**；到期分桶走 `expirySplitParts` 的**三档带色**分段。
  */
-function splitLine(balance, windowDays, provider) {
+function splitParts(balance, windowDays, provider) {
   const packages = balance.packages || [];
   const unit = packages.find((pkg) => pkg && pkg.unit)?.unit;
   /**
@@ -1394,15 +1417,27 @@ function splitLine(balance, windowDays, provider) {
     for (const pkg of packages) {
       if (!pkg) continue;
       const left = quotaResetsIn(pkg.cycleEndTime);
-      if (left.length > 0) parts.push(`${pkg.name || '未命名'} ${left}`);
+      if (left.length > 0) parts.push({ key: pkg.name || 'unnamed', text: `${pkg.name || '未命名'} ${left}`, tone: 'muted' });
     }
-    return parts.join(' · ');
+    return parts;
   }
   const format = (value) => formatUnits(value, unit);
   const poolText = formatPoolSplitLine(packages, format, provider === 'loomy' ? '永久' : '长期');
-  if (poolText !== null) return poolText;
-  const expiryText = formatExpirySplitLine(splitCreditsByExpiry(packages, windowDays, Date.now()), format);
-  return expiryText ?? '';
+  // 当日池（loomy / raccoon）：池按名字分，没有到期维度 ⇒ 单段无色。
+  if (poolText !== null) return [{ key: 'pool', text: poolText, tone: 'muted' }];
+  // 其余渠道：按到期时间分**三档**，逐段带色（永久绿 / 长期黄 / 临期红 + 倒计时）。
+  return expirySplitParts(splitCreditsByExpiry(packages, windowDays, Date.now()), format, Date.now());
+}
+
+/**
+ * 分桶文案（纯字符串，供不支持分段的调用方/测试复用）。
+ *
+ * ⚠️ 与 `splitParts` **同源**：把分段重新拼成一行，避免两处各写一套判据。
+ */
+function splitLine(balance, windowDays, provider) {
+  return splitParts(balance, windowDays, provider)
+    .map((part) => (part.countdown === undefined ? part.text : `${part.text}（${part.countdown}）`))
+    .join(' · ');
 }
 
 /**

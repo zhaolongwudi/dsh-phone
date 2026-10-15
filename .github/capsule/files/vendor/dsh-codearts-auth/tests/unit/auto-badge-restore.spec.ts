@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { autoBadgeName, expiryCountdownText, shortProviderName } from '../../plugin-src/client/badge-model.js'
 import { resolveAutoBadgeRewrite } from '../../src/auto-badge.js'
 
@@ -25,7 +26,15 @@ function makeState({
   };
 }
 
-const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+/**
+ * 仓库根（源码级断言用）。
+ *
+ * ⚠️ **必须用 `fileURLToPath`，不能用 `URL.pathname`**（真实缺陷，Gitee issue
+ * IKLBSH A3）：`pathname` 对路径里的空格做百分号编码（`%20`），而原先的
+ * `replace(/^\/([A-Za-z]:)/, '$1')` 只修盘符、不修 `%20` ⇒ 含空格路径下
+ * `readFileSync` 恒 ENOENT，症状是**整份 spec 收集失败**。
+ */
+const here = fileURLToPath(new URL('.', import.meta.url))
 const read = (rel) => readFileSync(resolve(here, '../..', rel), 'utf8')
 
 /**
@@ -220,8 +229,6 @@ describe('★ 旧 auto 的徽标链路：宿主侧（上游 ba10f4f 回归的恢
     //    （实测 10 条接线断言同时变红），而那条不变量正是为了防「位置错位」。
     expect(INDEX).toMatch(/'jet-hub-auto': pruned\(AUTO_PROVIDER, autoAdapter/)
     // 反向：不得再给 registerJetHubRpc 追加参数（末尾必须仍是 modelAdapters）。
-    // ⚠️ 手机版形态与 Gitee 不同：手机版仍是**位置传参**（16 个位置参数，
-    //    Phase 6 的命名对象重构未做）⇒ 断言写成位置参数形态。
     /**
      * ⚠️ 本断言随上游架构更新（2026-10-11）：
      * 上游 `feat/provider-capability-abstraction`（Task 9）把 `registerJetHubRpc`
@@ -230,7 +237,7 @@ describe('★ 旧 auto 的徽标链路：宿主侧（上游 ba10f4f 回归的恢
      * ⇒ 原断言（位置参数形态）已不成立，改为断言命名对象形态。
      * 本 PR 的核心约定**未变**：auto 始终经 `modelAdapters` 按 id 传入、不占 auth 槽位。
      */
-    expect(INDEX).toMatch(/registerJetHubRpc\(ctx, pool, service,[^)]*gemini, modelAdapters\)/)
+    expect(INDEX).toMatch(/registerJetHubRpc\(ctx, pool, \{[\s\S]*?\}, modelAdapters\)/)
   })
 
   it('★ autoState 由适配器自己提供（调用方拿不到「new 一个」的机会）', () => {
@@ -290,7 +297,7 @@ describe('★ 旧 auto 的徽标链路：宿主侧（上游 ba10f4f 回归的恢
      * ⇒ 原断言（位置参数形态）已不成立，改为断言命名对象形态。
      * 本 PR 的核心约定**未变**：auto 始终经 `modelAdapters` 按 id 传入、不占 auth 槽位。
      */
-    expect(INDEX).toMatch(/registerJetHubRpc\(ctx, pool, service,[^)]*gemini, modelAdapters\)/)
+    expect(INDEX).toMatch(/registerJetHubRpc\(ctx, pool, \{[\s\S]*?\}, modelAdapters\)/)
   })
 
   it('★ autoState 由适配器自己提供（调用方拿不到「new 一个」的机会）', () => {

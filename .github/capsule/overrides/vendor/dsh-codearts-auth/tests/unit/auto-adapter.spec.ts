@@ -398,6 +398,109 @@ describe('★★ auto：胜者必须在将要派发的模型上仍有可用账�
     expect(sent, '中止不得继续发请求').toEqual([])
     expect(error?.name).toBe('AbortError')
   })
+
+  it('★★ 中止必须逃逸：池抛上游网关 499 报文（`aborted request HTTP_499`）', async () => {
+    // ⚠️ 同族判据逐格同构（本仓硬要求）：`aggregate-adapter.ts` 的 `isAbortLike`
+    //    已扩到**四条**，本处（`hasUsableAccountFor`）必须同步 —— 否则同一份报文
+    //    在两个 provider 上被判成不同类别。
+    // ⚠️ 关键约束：错误**不带** `name: 'AbortError'` / `code: 'ABORTED'`，
+    //    否则命中的是旧判据，第四条的覆盖是**假的**（假覆盖教训）。
+    const { adapter, sent } = makeAuto({
+      disabledModelsFor: () => new Set<string>(),
+      getAvailableAccount: async () => {
+        throw new Error('provider: client has aborted request HTTP_499')
+      },
+    })
+    const error = await run(adapter)
+    expect(sent, '499 中止不得继续发请求').toEqual([])
+    expect(error?.message).toContain('aborted request')
+  })
+
+  it('★ 反例：池抛普通异常 ⇒ 视为可用（第四条的判据不得恒真）', async () => {
+    const { adapter, sent } = makeAuto({
+      disabledModelsFor: () => new Set<string>(),
+      getAvailableAccount: async () => { throw new Error('pool exploded') },
+    })
+    await run(adapter)
+    expect(sent, '普通异常应被吞成「视为可用」并继续').toHaveLength(1)
+  })
+})
+
+describe('★★ auto：`dispatchTargetOf` 的 catch 也必须让 499 中止逃逸', () => {
+  /**
+   * ⚠️⚠️ 这是 auto 侧**第二处**内联中止判据（第一处是 `hasUsableAccountFor`）。
+   *
+   * PR #87 的 `c3d9e9c` **只补了第一处** —— 审计实测（2026-10-12）：本处
+   * 仍是 `name`/`code` 两条，499 报文会被吞成「倒计时缺席」后**照常发请求**。
+   * 本分支按「同族判据必须逐格同构」补齐，并**单独锁死**。
+   *
+   * ⚠️ 落点定位（实测确认，别搞错）：`selectProvider` 的候选循环会调**多次**
+   *    `expiryOf`（本用例目录下实测 5 次）且那处**没有** try/catch（异常直接冒泡）；
+   *    带 catch 的是 `dispatchTargetOf`。故用**调用栈**定位那一次。
+   *    ⚠️ 不用「第 N 次调用」定位：按次数定位在候选数变化时会**假绿**
+   *    （我在另一分支上实测踩过：selectProvider 那处没有 catch，
+   *      早抛会让 prepareCall 直接 reject，测到的就不是这个 catch）。
+   */
+  const makeExpiryCtx = () => {
+    const sent: string[] = []
+    const ctx = {
+      logger: { warn: () => {}, error: () => {} },
+      llm: {
+        listModels: async () => [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash · x0.1' }],
+        resolveModelInfo: async (provider: string, id: string) => ({ provider, id }),
+        stream: (o: { provider: string; model: string }) => {
+          sent.push(`${o.provider}/${o.model}`)
+          return (async function* () { /* noop */ })()
+        },
+      },
+    }
+    const adapter = new AutoAdapter(ctx as never, {
+      accountPool: {
+        disabledModelsFor: () => new Set<string>(),
+        getAvailableAccount: async () => ({ entry: { id: 'A' }, credential: { token: 't' } }),
+      } as never,
+      now: () => 1_000,
+      ttlMs: 0,
+    })
+    return { adapter, sent }
+  }
+
+  /** 只在 `dispatchTargetOf` 那次 `expiryOf` 抛错（用调用栈定位，与次数解耦）。 */
+  const armDispatchExpiryCall = (adapter: AutoAdapter, error: Error): void => {
+    adapter.expiryOf = async () => {
+      const stack = new Error().stack ?? ''
+      if (stack.includes('dispatchTargetOf')) throw error
+      return 100
+    }
+  }
+
+  const drain = async (adapter: AutoAdapter): Promise<{ message?: string } | undefined> => {
+    try {
+      const call = await adapter.prepareCall('jet-hub-auto', 'auto')
+      for await (const _ of call.stream({
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      } as never)) { /* drain */ void _ }
+      return undefined
+    } catch (error) {
+      return error as { message?: string }
+    }
+  }
+
+  it('★ `dispatchTargetOf` 的 `expiryOf` 抛 499 ⇒ 必须逃逸，不得吞成「倒计时缺席」', async () => {
+    const { adapter, sent } = makeExpiryCtx()
+    armDispatchExpiryCall(adapter, new Error('provider: client has aborted request HTTP_499'))
+    const caught = await drain(adapter)
+    expect(caught?.message, '499 必须原样上抛（不得吞成倒计时缺席）').toContain('aborted request')
+    expect(sent, '中止后不得继续发请求').toEqual([])
+  })
+
+  it('★ 反例：同一处抛普通异常 ⇒ 只让倒计时缺席、**照常发请求**（判据不得恒真）', async () => {
+    const { adapter, sent } = makeExpiryCtx()
+    armDispatchExpiryCall(adapter, new Error('余额接口抖动'))
+    const caught = await drain(adapter)
+    expect(caught, '普通异常不该上抛').toBeUndefined()
+    expect(sent, '普通异常不该阻断请求').toHaveLength(1)
+  })
 })
 
 /**

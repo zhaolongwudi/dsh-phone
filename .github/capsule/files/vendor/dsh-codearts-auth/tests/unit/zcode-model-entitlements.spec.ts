@@ -1,14 +1,4 @@
 /**
- * ⚠️ **手机版适配说明**（与上游 Gitee 版的唯一差异）
- *
- * 上游本文件依赖 `src/credential-resolver.ts`（Phase 6 注册表化重构）来见证
- * 末尾那条「fallback 绕过 modelRateLimits」的边界；**手机版没有该文件**
- * （本仓库有意未移植，见 `PORT-STATUS.md` §3.1），故该块改用手机版的真实
- * 载体 `ZcodeAuth.current()` —— 见证的是**同一个边界**。
- * 其余全部用例与上游逐字一致。
- */
-
-/**
  * ZCode **按模型额度**（专属桶 vs 通用赠送桶）的回归测试。
  *
  * **真实缺陷**（用户报障 2026-10-12）：
@@ -54,11 +44,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { AccountPool } from '../../src/account-pool.js'
 import { createExpiryProbe, zcodeExpiry } from '../../src/aggregate-expiry.js'
 import { NEVER, UNUSABLE } from '../../src/aggregate-core.js'
+import { createCredentialResolver } from '../../src/credential-resolver.js'
 import { createProviderExpiry } from '../../src/provider-expiry.js'
 import { clearProviderRuntimes, registerProviderRuntime } from '../../src/provider-runtime.js'
 import { descriptorOf } from '../../src/provider-registry.js'
 import { ZCODE } from '../../src/zcode-product.js'
-import { ZcodeAuth } from '../../src/zcode-auth.js'
 import { fetchZcodeBalance } from '../../src/zcode-upstream.js'
 import {
   bucketCoversModel,
@@ -677,43 +667,15 @@ describe('★★★ 端到端：折算层把「该模型已尽」写进池，且
     expect(entry?.modelRateLimits?.['GLM-5.3'], '标记必须真的写入').toBeGreaterThan(Date.now())
   })
 
-  it('★★★ 对照：手机版的「沉底」在**视图层**（证明上面那条有区分力）', async () => {
-    /**
-     * ⚠️⚠️ **与上游的差异（手机版结构适配，必须保留本说明）**
-     *
-     * 上游此条用 `updateModelRateLimit` 断言「撞限额 ⇒ **落盘**沉底」。
-     * 而**手机版有意不做落盘沉底**：落盘顺序 = 用户拖拽意图（成文契约，
-     * 系统不得改写），限流沉底只在 `listAccounts()` 的**视图层**做。
-     * 「写时挪位」的首版方案**已被废弃**（当年被上游行为契约测试抓出 4 条红），
-     * 见 `account-pool.ts` 的 `listAccounts` 注释。
-     *
-     * ⇒ 照抄上游断言会让 CI 必红（本地实测确认）。本条改为断言**手机版的真实
-     *    形态**，而对照的**目的不变**：证明上一条「落盘顺序不变」不是因为
-     *    池根本不会重排。
-     *
-     * 两个载体都真实存在于手机版：
-     *   ① 视图层：`listAccounts()` 把限流账号排到最后；
-     *   ② 落盘层：`reorderAccounts()` 能真的改写存储顺序（由用户拖拽驱动）。
-     */
+  it('★★★ 对照：`updateModelRateLimit`（撞限额语义）**会**沉底 —— 证明上面那条有区分力', async () => {
+    // ⚠️ 这条是**反向对照**：它证明「顺序不变」不是因为池根本不会重排。
+    //    没有它，上面那条在「沉底功能被整体删掉」时也会绿。
     const ctx = makeCtx()
     const pool = await seedTwoAccounts(ctx)
-
-    // ① 视图层沉底：撞限额后，A 在**视图**里排到 B 之后（磁盘顺序不动）。
     await pool.updateModelRateLimit('zcode-A', 'GLM-5.3', Date.now() + 3_600_000)
-    const viewAfter = (await pool.listAccounts(ZCODE.id)).map(a => a.id)
-    expect(viewAfter, '撞限额 ⇒ **视图**把 A 沉到底（手机版契约）')
-      .toEqual(['zcode-B', 'zcode-A'])
-    const storedAfter = (await pool.listAllAccounts())
+    const after = (await pool.listAllAccounts())
       .filter(a => a.provider === ZCODE.id).map(a => a.id)
-    expect(storedAfter, '⚠️ 但**磁盘顺序不动** —— 那是用户拖拽意图的契约')
-      .toEqual(['zcode-A', 'zcode-B'])
-
-    // ② 落盘层可重排：证明池**有能力**改写存储顺序（判据因此不是空断言）。
-    await pool.reorderAccounts(ZCODE.id, ['zcode-B', 'zcode-A'])
-    const reordered = (await pool.listAllAccounts())
-      .filter(a => a.provider === ZCODE.id).map(a => a.id)
-    expect(reordered, 'reorderAccounts 能真的改写落盘顺序（对照非空）')
-      .toEqual(['zcode-B', 'zcode-A'])
+    expect(after, '撞限额 ⇒ 沉底（A 被挪到 B 之后）').toEqual(['zcode-B', 'zcode-A'])
   })
 
   it('★ 标记时长 = UTC+8 次日 0 点（与 zcode 免费额度的自然日结算一致）', async () => {
@@ -1128,54 +1090,50 @@ describe('★★★ 接线守卫：`src/index.ts` 必须为 zcode 提供**整份
  * ⚠️ 本组**不是**「修复的验证」，而是把一条**已知旁路**固化成可执行的见证 ——
  * 免得将来有人照着乐观描述去推断「直选一律认标记」。
  *
- * ## 与上游版的差异（手机版结构适配，**必须保留说明**）
+ * 事实：`createCredentialResolver` 在池返回 `null` 时会落 `fallback`，
+ * 而 zcode 的 fallback 是 `zcode.current()`（`src/index.ts`），
+ * 它**既不看 `enabled`、也不看 `modelRateLimits`** ⇒ 单账号 / 全池标尽时
+ * **仍返回凭据**，请求照常发往已尽的模型。
  *
- * 上游此块用 `createCredentialResolver(...)` 复刻 fallback；**手机版没有**
- * `credential-resolver.ts`（那是上游 Phase 6 的注册表化重构，本仓库有意未移植，
- * 见 `PORT-STATUS.md` §3.1）。手机版 `src/index.ts` 的真实路径是：
- *
- * ```ts
- * const available = await pool.getAvailableAccount(ZCODE.id, modelId ?? '')
- * if (available) { ... return ... }
- * const accounts = pool.listAccountsByProvider(ZCODE.id)
- * if (limited) throw ...
- * if (accounts.length) return undefined
- * return await zcode.current()          // ← fallback
- * ```
- *
- * 而 `ZcodeAuth.current()` → `readStoredCredential()` **可能**从池里取到凭据
- * （`readCredentialFromPool` 按账号条目顺序取第一个可解析的），它
- * **既不看 `enabled`、也不看 `modelRateLimits`** ⇒ 全池标尽时**仍返回凭据**，
- * 请求照常发往已尽的模型。
- *
- * ⇒ 本组按**手机版的真实路径**断言同一事实：`pool.getAvailableAccount` 被标记
- * 拦下（返 `null`），而 `zcode.current()` 仍取得到 —— 与上游版见证的是**同一个
- * 边界**（标记不覆盖 fallback），只是用手机版的载体。
- *
- * ⚠️ 这是**刻意的既有设计**（`src/index.ts` 2026-10-06 实测后决定保持原样）。
- * ⇒ 本组**不**断言它「应该」认标记，只钉住**当前事实**，使「有人改了 fallback」
- * 这件事**立刻可见**（而不是静默改变行为）。
+ * ⚠️ 这是**刻意的既有设计**（`src/index.ts` 在 2026-10-06 实测后决定保持原样：
+ * 「zcode 没有 IKJOZ9 的症状，不该被『顺手修』；加判定反而会把本来能跑通的
+ * 一发变成硬失败」）。⇒ 本组**不**断言它「应该」认标记，只钉住**当前事实**，
+ * 使「有人改了 fallback」这件事**立刻可见**（而不是静默改变行为）。
  */
 describe('★★ 已登记边界：`fallback` 绕过 `modelRateLimits`（刻意保留，非缺陷）', () => {
-  it('★★ 池里该模型已尽 ⇒ 池查询返 `null`，但 `zcode.current()` 仍能取到凭据', async () => {
+  it('★★ 池里该模型已尽 ⇒ 池查询返 `null`，但 fallback 仍能取到凭据', async () => {
     const ctx = makeCtx()
     const pool = await seedTwoAccounts(ctx)
-    // 两个账号都标尽 ⇒ 池查询必然返 null ⇒ 生产路径会落到 fallback。
+    // 两个账号都标尽 ⇒ 池查询必然返 null ⇒ 走 fallback。
     await pool.markModelsExhaustedForExpiry('zcode-A', ['GLM-5.3'])
     await pool.markModelsExhaustedForExpiry('zcode-B', ['GLM-5.3'])
     expect(await pool.getAvailableAccount(ZCODE.id, 'GLM-5.3'), '池查询已拒绝').toBeNull()
 
-    // 复刻 `src/index.ts` 的 fallback：`zcode.current()`。
-    // ⚠️ 手机版同样没有 `credential-resolver.ts`，故这里直接用真实的 `ZcodeAuth`。
-    const auth = new ZcodeAuth(ctx, { product: ZCODE, accountPool: pool, fetchImpl: (async () => {
-      throw new Error('本用例不得发网络请求')
-    }) as unknown as typeof fetch })
-    const got = await auth.current()
+    // 复刻 src/index.ts 的 fallback（`zcode.current()` → 按数组序取第一个能解析的）。
+    const resolve = createCredentialResolver<ZcodeCredential>(
+      { pool, reportAccount: () => {} },
+      {
+        product: ZCODE,
+        readCredential: async () => undefined,
+        fallback: {
+          kind: 'custom',
+          resolve: async () => {
+            for (const entry of await pool.listAllAccounts()) {
+              if (entry.provider !== ZCODE.id) continue
+              const resolved = await ctx.credentials.resolve(credentialRef(entry.credentialRef))
+              if (resolved !== undefined) return JSON.parse(resolved.value) as ZcodeCredential
+            }
+            return undefined
+          },
+        },
+      },
+    )
+    const got = await resolve('GLM-5.3')
     /**
      * ⚠️ 断言的是**当前事实**（取得到）—— 若将来有人让 fallback 也认标记，
-     * 这条会变红，那正是**需要回来复核本段注释**的信号（不是「用例写错了」）。
-     * 反之若有人把它改成恒 `undefined`，则「池被筛空时仍要能跑通」那条既有
-     * 取舍会被打破，也该回来复核。
+     * 这条会变红，那正是**需要回来复核本段注释与文档 §七**的信号
+     *（不是「用例写错了」）。反之若有人把它改成恒 `undefined`，
+     * 则「池被筛空时仍要能跑通」那条既有取舍会被打破，也该回来复核。
      */
     expect(got, '⚠️ fallback 刻意不看 modelRateLimits（见本段注释）').toBeDefined()
   })

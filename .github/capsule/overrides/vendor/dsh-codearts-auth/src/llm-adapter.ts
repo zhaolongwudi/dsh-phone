@@ -1,20 +1,20 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import {
-  attributionHeaders, CONTEXT_WINDOW_EXCEEDED_CODE,
+  attributionHeaders, CONTEXT_WINDOW_EXCEEDED_CODE, isContextWindowExceededError,
   isQuotaExceededError, LlmAdapter, LlmError,
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
-import { ReasoningEffortId, ToolCallId as CallId } from '@deepseek-ai/dsh-llm'
-import { AccountPool, providerCatalogVisible } from './account-pool.js'
+import { ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { AccountPool } from './account-pool.js'
+import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
-import { settingsNamespaceFor } from './settings-compat.js'
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import { nextUtc8DayStartMs } from './model-queue.js'
 import { isCodeArtsBenefitModel } from './models.js'
-import { isContextOverflowBody } from './openai-compat.js'
 import { normalizeHarnessMessages } from './message-shape.js'
 import { signRequestHuawei } from './sign.js'
-// ⚠️ `detailFieldText`（`detail` 那条腿）**只留一份实现** —— 本仓库多份同义的
+// ⚠️ `detailFieldText`（`detail` 那条腿）**只留一份实现** —— 本仓库 6 份同义的
 // `errorDetail` 各写一条判据必然漂移（见 `openai-compat.ts` 的注释，IKLBSH A1）。
 import { detailFieldText } from './openai-compat.js'
 import { createBlankReasoningSuppressor, createDsmlMarkerNormalizer, createReasoningLoopDetector, fixDsmlMarkers, hasUsableToolName, isReasoningLoopGuardEnabled, isTruncatedArguments, normalizeToolArguments, readWithIdleTimeout, reasoningLoopFailure, resolveEmptyResponseReason, resolveToolPairing, stripCourseLeakFromHistoryContent, stripCourseLeakIfEnabled } from './sse.js'
@@ -28,6 +28,72 @@ import { reportLedgerAccount } from './token-ledger.js'
 export const CHAT_API_BASE = 'https://snap-access.cn-north-4.myhuaweicloud.com/api/v2'
 export const PROVIDER = 'codearts'
 /**
+ * 本家**恒声明**的两档思考开关 —— 顺序即**强度序（弱 → 强）**（Issue IKLIDV）。
+ *
+ * ## 为什么顺序是「关闭 → 开启」
+ *
+ * DSH 的契约把该数组当作**展示顺序**
+ *（`dsh-llm/lib/types/types.d.ts` 原文：`Supported efforts in adapter-preferred
+ * display order`），而官方客户端**直接 `map`、不排序**
+ *（`dsh-client-ui-model-selection/lib/client.js` 的 `effortChoices`：
+ * `[…, ...reasoning.efforts.map(…)]`）。故任何「把档位数组铺成一条轴」的渲染
+ * —— 官方那个纵向 `menuitemradio` 列表、以及第三方横向滑条 —— 都直接吃这个顺序。
+ *
+ * 原实现写成 `['on','off']`（把默认档排在最前）。那个动机在**纵向列表**里成立，
+ * 一旦铺成**横向轴**就变成「左强右弱」：「开启」贴最左、「关闭」贴最右，
+ * 与「左弱右强」的直觉相反。
+ *
+ * 强度序的**唯一权威**是本仓库的 `reasoning-ladder.ts`
+ *（`REASONING_EFFORT_RANK`：`off: 0` / `on: 5`）⇒ `off` 必须在前。
+ * 三处旁证同向：
+ * - DSH 自家 `dsh-llm-deepseek` 声明 `[off, low, high, max]`；
+ * - DSH 自家 `dsh-llm-pi-ai` 的 `THINKING_LEVELS` 是
+ *   `[off, minimal, low, medium, high, xhigh, max]`；
+ * - 本仓库 `zcode-upstream.ts` 的 `orderReasoningLevels` **主动**把上游的
+ *   乱序（实测插入序 `low, max, high`）排成 `none → minimal → low → … → max`。
+ *
+ * ⚠️ **`defaultEffort` 与数组位置是两件事**：默认档由 {@link CODEARTS_DEFAULT_EFFORT}
+ * 单独表达，**不**靠「排在首位」。故本顺序的调整不改变任何默认行为。
+ *
+ * ⚠️ **本声明的顺序不参与任何语义判断**：关闭思考靠
+ * `thinkingOffEffortOf` 的 `.find(isThinkingOffEffort)`（按 rank 找，不按位置），
+ * `session-title` 那条路径也只用它当集合。
+ *
+ * ⚠️ **本常量是这两档的唯一定义处**：同一文件里原先写了**两份**逐字相同的
+ * 数组（已知模型的 `toCatalogEntry` 与未知模型的 `unknownModelReasoning`）——
+ * 那正是「一文件两套同义判据」的形态，改一处必漏另一处（用户手填模型 id 时会
+ * 看到与已知模型相反方向的档位轴）。现已收敛到这一份。
+ *
+ * ⚠️ 网关的 `openai_efforts` 是这份顺序的**机械投影**
+ *（`openai-gateway/effort-view.ts` 逐个 push `canonical`），故本顺序同时决定
+ * `/v1/models` 里那一列的可读性：升序 ⇒ `["none","high"]`。
+ */
+export const CODEARTS_REASONING_EFFORTS: readonly { id: ReturnType<typeof ReasoningEffortId>; name: string }[] =
+  Object.freeze([
+    { id: ReasoningEffortId('off'), name: '关闭' },
+    { id: ReasoningEffortId('on'), name: '开启' },
+  ])
+
+/**
+ * 默认思考档 = `开启`。
+ *
+ * 依据（实测 2026-09-29）：不传 `thinking` 与服务端默认等价，而服务端**默认就开着**
+ *（`{type:'enabled'}` 与不传的 `reasoning_tokens` 落在同一基线）⇒ 标成 `on`
+ * 是**如实描述**，不是我们强行改变行为。
+ *
+ * ⚠️ 必须落在 {@link CODEARTS_REASONING_EFFORTS} 内：DSH 在 `normalizeModelInfo`
+ * 里校验「`defaultEffort` 必须是被声明过的 id」，不在则抛 **`INVALID_MODEL_REASONING`**
+ *（整轮对话起不来）。
+ * ⚠️ 别与 `UNSUPPORTED_REASONING_EFFORT` 混淆 —— 那个码是**另一回事**：
+ * 指「**请求**里带的档位不在该模型声明内」（`resolveCallWithInfo` 抛）。
+ * 审计实测（2026-10-14，`dsh-llm/lib/index.js`）：`defaultEffort='on'` 而
+ * `efforts=[low,high]` ⇒ code 为 `INVALID_MODEL_REASONING`。本行原写
+ * `UNSUPPORTED_REASONING_EFFORT` 是**张冠李戴**（同型措辞在 `raccoon-adapter.ts`
+ * 与 `trae-adapter.ts` 是既有问题，本次只修这一处新增注释）。
+ */
+export const CODEARTS_DEFAULT_EFFORT = 'on'
+
+/**
  * 「该账号没有 benefit（免费额度）包」的稳定失败码。
  *
  * CodeArts 对**积分制**账户（体验版等，没有 benefit 免费额度包）会以
@@ -38,6 +104,48 @@ export const PROVIDER = 'codearts'
 const BENEFIT_NOT_FOUND_CODE = 'BENEFIT_NOT_FOUND'
 /** CodeArts 在账号没有 benefit 包时下发的事件 error_code。 */
 const CODEARTS_BENEFIT_NOT_FOUND_ERROR_CODE = 'InferHub.4004.200'
+
+/**
+ * 额度用尽时抛出的错误码 —— **字面量 `'QUOTA_EXCEEDED'`，不是 harness 常量**。
+ *
+ * ## ⚠️ 为什么不能用 `QUOTA_EXCEEDED_CODE`（真实缺陷，Gitee issue IKJVCW）
+ *
+ * harness 导出的 `QUOTA_EXCEEDED_CODE` 字面值是 **`'QUOTA'`**，而 DSH 客户端
+ * 对这三个码会**丢弃适配器精心写的 message、换成一句固定文案**
+ * （实测 `dsh-client-ui-chat/lib/client.js`，桌面端 `app.asar` 内为逐字节同串）：
+ * ```js
+ * if (code === "QUOTA" || code === "ACCOUNT_QUOTA") return t("message.failure.quota");
+ * return code === "AUTH" ? t("message.failure.auth") : message;
+ * ```
+ * locale 表：`"message.failure.quota": "当前请求的额度已用尽"`。
+ *
+ * 于是 {@link codeartsQuotaExhaustedMessage} 里那句**带解禁时间**的说明
+ * （「预计 5.5 小时后重置（按 UTC+8 自然日结算…）可改用其它模型…」）
+ * 一个字都到不了用户眼前 —— 用户只看到「当前请求的额度已用尽」，
+ * 既没有原因也没有出路。这与 `docs/agent-notes/client-ui.md` 记的
+ * 「凡是要把自定义文案送到用户眼前，码必须避开这三个」是**同一条铁律**；
+ * buddy 的 `11140` 当初正因如此才从 `AUTH` 改成 `PERMISSION_DENIED`。
+ *
+ * ## 为什么取字面量而不是 `PERMISSION_DENIED`
+ *
+ * ① **语义准确**：额度用尽的出路是「等重置 / 充值 / 换模型」，不是「没权限」。
+ *    仓库里 buddy / cline / lobsterai / trae / zcode / minimax 等 **~20 处**
+ *    额度错误一律用字面量 `'QUOTA_EXCEEDED'`，且**都不被客户端替换** ——
+ *    本处改用 harness 常量才是异类（codearts 是**唯一**用它的 provider，
+ *    这正是缺陷只在本家复现的原因）。
+ * ② **可重试性不变**：`'QUOTA_EXCEEDED'` 与 `'QUOTA'` **同样不在**
+ *    harness 的 `DEFAULT_RETRYABLE_CODES`（`EMPTY_RESPONSE / RATE_LIMIT /
+ *    SERVER / TIMEOUT / TRANSPORT`）里 ⇒ 仍是「确定性、不白退避」。
+ * ③ **下游判据已双认**：`account-probe.isRateLimitFailure` 与
+ *    `qoder-adapter.isQuotaExceededError` 都同时接受 `'QUOTA_EXCEEDED'`
+ *    与 `'QUOTA'`；`dead-model-store` 的 `IGNORED_CODES` 更是**只收**
+ *    `'QUOTA_EXCEEDED'` —— 原先靠 `NOT_GONE_PATTERNS` 的 `/额度/` 文案兜底
+ *    才没被误记成模型失效，改后是显式命中，比原来更稳。
+ *
+ * ⚠️ **不要改回 `QUOTA_EXCEEDED_CODE`**，也不要为「与 harness 词汇一致」
+ * 而改回 `'QUOTA'`：那正是本缺陷的成因，会让解禁时间再次从 UI 上消失。
+ */
+const CODEARTS_QUOTA_EXHAUSTED_CODE = 'QUOTA_EXCEEDED'
 
 // DeepSeek V4（CodeArts Agent 模型列表新增，UI 标注"每日 1000 万免费 Tokens"福利）：
 //
@@ -113,11 +221,38 @@ export interface CodeArtsAdapterOptions {
   refresh: () => Promise<void>
   /** 动态拉取远端模型列表；失败时调用方回退到静态列表。 */
   fetchRemoteModels?: () => Promise<Array<{ id: string; name: string }>>
+  /**
+   * 最近一次目录拉取的**各来源成败**（issue IKJVTF，审计 I3）。
+   *
+   * CodeArts 的目录来自**两个独立端点**（`opengw gateway/config` 给 benefit 模型、
+   * `snap-access /v1/model/builtin` 给常规模型），而失败路径都**静默**返回
+   * `undefined` ⇒ 「一个成功、一个失败」时 `models.length > 0`，旧判据会把它
+   * 当成「已拿到目录」⇒ **永久缓存**（短路）⇒ 残缺目录固化，只能重启 DSH。
+   *
+   * ⚠️ 用**回调**而非直接读 `service` 的内部状态：适配器不该依赖 `CodeArtsAuth`
+   * 的字段形状（它由 `index.ts` 接线，且单测用替身）。接线层把它桥接成
+   * 「读 `service.lastCatalogOutcome`」，见 `src/index.ts`。
+   *
+   * 返回 `undefined` 时按「无法判定」处理 —— 与 `normalizeLoadResult` 的
+   * 向后兼容口径一致（`complete = got`）。
+   */
+  catalogComplete?: () => boolean | undefined
   fetchImpl?: typeof fetch
   chatId?: string
   sessionId?: string
   /** 多账号池（用于限流时切换账号） */
   accountPool?: AccountPool
+  /**
+   * 远端目录**落地后**的通知回调（issue IKJVTF）。
+   *
+   * 由 `registerCodeArtsLlm` 注入为 `broadcastCatalogChanged(ctx)`。适配器本身
+   * 拿不到 `ctx`，故必须由接线层桥接（与 `readImage` 等回调同一模式）。
+   *
+   * ⚠️ 必要性：客户端 `ModelCatalogDirectory` 在 `status === 'ready'` 时**短路
+   * 返回缓存**，只在宿主事件上 `refresh()`。没有本回调时，冷启动首拉失败
+   * 缓存的**兜底表**会永久留在对话框里，远端目录真的落地也不重读。
+   */
+  onCatalogLoaded?: () => void
 }
 
 /**
@@ -236,15 +371,24 @@ export function serializeMessages(messages: readonly { role: string; content: un
  * 模型将工具 schema 注入 system 消息、请求体不发送 `tools` 字段，让模型
  * 以 DSML 流式输出工具调用，从根上规避网关空闲断连。
  */
-function isDeepseekV4Model(model: string): boolean {
-  return /^deepseek-v4-(flash|pro)$/.test(model)
-}
+/**
+ * ⚠️ **已移至共享层 `./dsml.js`**（2026-10-13）。
+ *
+ * OfficeAce 通道复用不到本文件的实现 ⇒ 漏注入 DSML 提示 ⇒ 模型臆造
+ * `<｜DSML｜ calls>` 语法。协议定义**必须只有一份**。
+ */
+export { isDeepseekV4Model, needsDsmlToolMode, buildDsmlSystemPrompt } from './dsml.js'
+import {
+  buildDsmlSystemPrompt,
+  DsmlContentExtractor,
+  isDeepseekV4Model,
+  needsDsmlToolMode,
+} from './dsml.js'
 
 /**
  * 工具名匹配大参数写文件类工具（content/arguments 可能达到数万 token）。
  * 仅用于对非 deepseek-v4 模型的 DSML 模式降级判定（当前全量模式不再使用此列表）。
  */
-const DSML_LARGE_PARAM_TOOLS = ['write', 'file_write', 'apply_patch']
 /**
  * 判断模型是否应使用 DSML 原生工具调用语法输出。
  *
@@ -262,44 +406,6 @@ const DSML_LARGE_PARAM_TOOLS = ['write', 'file_write', 'apply_patch']
  * 非 deepseek-v4 模型（如 openpangu / GLM-5.2 等）使用华为标准 IAM AK/SK 鉴权，
  * 不走 CodeArts Agent APIG 网关，无 60s 空闲断连问题，继续保持标准 tool_calls。
  */
-function needsDsmlToolMode(model: string, _toolNames: readonly string[]): boolean {
-  return isDeepseekV4Model(model)
-}
-
-/**
- * 构造让 deepseek-v4 以原生 DSML 格式调用工具的 system 提示。
- *
- * 适配器不把 `tools` 字段发给后端（否则模型走标准 tool_calls 一次性
- * 打包路径），而是把 OpenAI function schema 以文本注入 system 消息，
- * 并明确要求模型使用 `<｜DSML｜tool_calls>` 语法。`parseDsmlToolCalls`
- * 会把模型输出的 DSML 块解析为结构化 tool-call，harness 无需感知差异。
- */
-function buildDsmlSystemPrompt(tools: Array<{
-  type: string
-  function: { name: string; description?: string; parameters?: unknown }
-}>): string {
-  const toolJson = JSON.stringify(tools.map((tool) => ({
-    name: tool.function.name,
-    description: tool.function.description,
-    parameters: tool.function.parameters,
-  })), null, 2)
-  return [
-    '以下是你可用的工具及其 JSON Schema。当需要调用工具完成任务时，',
-    '必须使用原生 DSML 工具调用语法输出，格式如下：',
-    '<｜DSML｜tool_calls><｜DSML｜invoke name="工具名"><｜DSML｜parameter name="参数名" string="true">参数值</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>',
-    '',
-    '规则：',
-    '- 工具名必须是下面列表中的 name。',
-    '- 每个参数用一个 <｜DSML｜parameter> 标签包裹，参数值放在标签之间。',
-    '- 字符串参数加 string="true" 属性；对象/数组/数字/布尔参数不要加该属性。',
-    '- 一次可以输出多个 <｜DSML｜invoke> 调用（工具可以并行）。',
-    '- 文件内容请一次性完整写入单个 write 调用的 content 参数，不要拆分或省略。',
-    '',
-    '工具列表（JSON Schema）：',
-    toolJson,
-  ].join('\n')
-}
-
 /**
  * CodeArts 并发排队端点。当后端按账户的会话
  * 并发上限达到时，chat completions 请求会以
@@ -557,60 +663,98 @@ export function isSseQuotaExhaustedErrorCode(code: string, message: string): boo
 }
 
 /**
- * 额度用尽时抛出的错误码 —— **字面量 `'QUOTA_EXCEEDED'`，不是 harness 常量**。
+ * HTTP **4xx** 报文里是否表示「该账号没有 benefit（免费额度）包」。
  *
- * ## ⚠️ 为什么不能用 `QUOTA_EXCEEDED_CODE`（真实缺陷，Gitee issue IKJVCW，
- * 2026-10-12 自上游 c2546558 移植）
+ * ## 为什么需要它（Gitee issue IKLBSH A6）
  *
- * harness 导出的 `QUOTA_EXCEEDED_CODE` 字面值是 **`'QUOTA'`**，而 DSH 客户端
- * 对这三个码会**丢弃适配器精心写的 message、换成一句固定文案**
- * （实测 `dsh-client-ui-chat/lib/client.js`）：
- * ```js
- * if (code === "QUOTA" || code === "ACCOUNT_QUOTA") return t("message.failure.quota");
- * return code === "AUTH" ? t("message.failure.auth") : message;
- * ```
- * locale 表：`"message.failure.quota": "当前请求的额度已用尽"`。
- * 于是额度用尽时那句**带解禁时间**的说明（「预计 5.5 小时后重置（按 UTC+8
- * 自然日结算…）可改用其它模型…」）一个字都到不了用户眼前。
+ * 同一个上游条件走**两条**通道下发：
  *
- * ## 为什么取字面量
- * ① 仓库里 buddy / cline / lobsterai / trae / zcode / minimax 等 **~20 处**
- *    额度错误一律用字面量 `'QUOTA_EXCEEDED'`，且**都不被客户端替换**。
- * ② 可重试性不变：`'QUOTA_EXCEEDED'` 与 `'QUOTA'` 同样**不在** harness 的
- *    `DEFAULT_RETRYABLE_CODES` 里 ⇒ 仍是「确定性、不白退避」。
- * ③ 下游判据已双认：`account-probe.isRateLimitFailure` 等同时接受两者。
- * ⚠️ **不要改回 `QUOTA_EXCEEDED_CODE`**：那正是本缺陷的成因。
+ * | 通道 | 形态 | 修复前 |
+ * |---|---|---|
+ * | SSE | HTTP 200 + `{error_code:"InferHub.4004.200", …}` | ✅ 已接（`consumeSse` 抛 `BENEFIT_NOT_FOUND_CODE`）|
+ * | HTTP | **4xx** + 同一码 | ❌ **未接** ⇒ 去头重试一次也不试，直接归 `INVALID_REQUEST` 抛出 |
+ *
+ * 「SSE 能自愈、4xx 却硬报错」＝同一个语义两套判据，正是本仓库首条红线的形态。
+ *
+ * ⚠️ **该缺陷已被独立锁定**：`origin/issue/IKJOF7-benefit-diagnostics` 分支
+ *（2026-10-05）用 `it.fails` 显式锁死了它（「HTTP 4xx + 正文含
+ * `InferHub.4004.200` 时也应当去头重试」），当时结论是「已确认，但本分支不修」。
+ *
+ * ⚠️ **判据复用同一个码值常量**（`CODEARTS_BENEFIT_NOT_FOUND_ERROR_CODE`），
+ * 不另写第二份 —— 与 SSE 通道的判据（`consumeSse` 的 `===` 比较）**同源**，
+ * 否则两条通道会在上游改码时分别漂移（这正是本缺陷的成因形态）。
+ *
+ * ⚠️ 与 {@link isSseQuotaExhaustedErrorCode} 的 `4291` **刻意不同**：那条腿用
+ * 子串是为了容忍 `InferHub.4291.xxx` 的其它尾号，而 `4004` 这一族里
+ * **没有证据**表明其它尾号是同一语义（`4004.200` 是实测唯一的 benefit 码）。
+ * 按证据收紧到**全等**：放宽成 `InferHub.4004.` 前缀会把该族里未知语义的
+ * 报文也变成可重试，属行为变更。将来真抓到别的尾号**再按实测放宽**。
+ *
+ * ⚠️ 不解析 JSON 而直接判原文：4xx 的报文形态与 SSE 不同（字段名可能不叫
+ * `error_code`），这正是上面那条注释记录的教训。
  */
-const CODEARTS_QUOTA_EXHAUSTED_CODE = 'QUOTA_EXCEEDED'
+export function isBenefitNotFoundBody(body: string): boolean {
+  return body.includes(CODEARTS_BENEFIT_NOT_FOUND_ERROR_CODE)
+}
 
 /**
- * 从错误体提取**展示用**的可读 detail 文本（OpenAI 风格 error 或 CodeArts
- * error_code/error_msg，**含**顶层 `detail` 字段）。
+ * 从错误体提取可分类的 detail 文本（OpenAI 风格 error 或 CodeArts error_code/error_msg）。
  *
- * ## ⚠️⚠️ 分类调用点必须走 {@link errorDetailForClassify}
+ * ⚠️ **本次只「加腿」，且如实标注证据强度**：新增顶层字符串 `error` 一条。
  *
- * `detail` 对展示有价值，但它会**加长分类判据的输入** ⇒ 可能翻转错误码
- * （上游两轮审计独立确证的真实净回归）：
+ * 该项的**证据是「同族实现已修」+「形态确实无法解析」，不是 codearts 的线上实录**
+ * （141 个真实会话里没有 codearts 的 `{"error":"<字符串>"}` 报文）——
+ * `src/openai-compat.ts` 的**同名函数**早已修过这个形态，其注释写明
+ * 「只认 code/message/msg 会把整个 JSON 原样返回，用户看到一坨不可读的裸 JSON」，
+ * 而本文件的这份没跟上（「一文件两套同义判据」是本仓库点名的复发形态，
+ * 两处改一处时**必须同时改另一处**）。
+ *
+ * 之所以加：该形态在本份实现里**必然**退化成整段裸 JSON（`parts` 为空 ⇒
+ * `return body`），而修法是把另一份已被验证的腿搬过来，零新增取舍 ——
+ * 与 `httpErrorCode` 那次「调整判据优先级」不同，这里**不改变任何已有分类**，
+ * 纯属补齐漏掉的形态（codearts 的 `errorDetail` 与 OpenAI 兼容报文同源）。
+ *
+ * ⚠️ **绝不「减腿」**：原有的 `error.code` / `error.type` / `error.message` /
+ * `error_code`+`error_msg` / 顶层 `message` 五条**必须全部保留** ——
+ * OpenAI 形态常把额度语义写在 `{"error":{"code":"insufficient_quota"}}` 里，
+ * 少了 code 那条腿，该报文会从额度**掉回** `AUTH`/`INVALID_REQUEST`
+ * （实测：`isQuotaExceededError` 对 `insufficient_quota` 为 true，
+ * 但只有在它被拼进 detail 时才生效）。改的第一版真的把几条腿一起删了。
+ *
+ * ⚠️ **导出仅供单测直接锁定「形态覆盖」这一判据本身**（与
+ * {@link isSseQueueErrorCode} / {@link isSseQuotaExhaustedErrorCode} 同款惯例）。
+ * **不要**绕道「分类结果」去测它：`{"error":"insufficient balance"}` 这种报文，
+ * 即使字符串腿失效、函数退回整段 JSON，**整段 JSON 里也含该短语** ⇒
+ * 额度判据照样命中 ⇒ 那是**假守卫**（实测确认过，第一版就是这么错的）。
+ * 直接断言本函数的**返回值**才测得到那条腿。
+ *
+ * ## ⚠️⚠️ 本函数是**展示**出口；分类出口是 {@link errorDetailForClassify}
+ *
+ * 无条件把 `detail` 计入产物会**翻转错误码**（真实净回归，两轮审计独立确证）：
  *
  * | 报文 | 只算既有腿 | 加上 detail 腿 |
  * |---|---|---|
  * | `{"message":"bad request","detail":"insufficient quota"}` | `INVALID_REQUEST` | **`QUOTA_EXCEEDED`** |
  * | `{"message":"bad request","detail":"prompt is too long for this model"}` | `INVALID_REQUEST` | **`CONTEXT_WINDOW_EXCEEDED`** |
  *
- * 后者还会**触发 DSH 的上下文溢出压缩** —— 纯展示改进换来行为变更。
- * 详见 `openai-compat.ts` 的 `errorDetail` doc（2026-10-14 自上游 IKLBSH A1 移植）。
+ * 后者还会**触发 DSH 的上下文溢出压缩**。本函数是 `httpErrorCode` 与 4xx 额度判据
+ * 的**唯一分类输入** ⇒ 那两处**必须**改走 {@link errorDetailForClassify}，
+ * 否则一个纯展示改进会静默改变分类行为（且我加的用例只断言返回值，零分类守卫）。
+ *
+ * ⚠️ **本份（codearts）与 `openai-compat.ts` 那份是同名不同实现**，
+ * 两条出口的语义必须两处一致。
  */
-function errorDetail(body: string): string {
+export function errorDetail(body: string): string {
   return errorDetailImpl(body, true)
 }
 
 /**
  * 从错误体提取**分类用**的可读文本 —— **不含**顶层 `detail` 字段。
  *
- * ⚠️ 分类调用点（`httpErrorCode` / `isSseQuotaExhaustedErrorCode` 一类）
- * **必须**走本出口。本出口保证分类输入与「加 detail 腿之前」**逐字节相同**。
+ * ⚠️ 分类调用点（`httpErrorCode` / `isSseQuotaExhaustedErrorCode`）**必须**走本出口：
+ * 它保证分类输入与「加 detail 腿之前」**逐字节相同**（见 {@link errorDetail} 的实测表）。
  */
-function errorDetailForClassify(body: string): string {
+export function errorDetailForClassify(body: string): string {
   return errorDetailImpl(body, false)
 }
 
@@ -626,8 +770,7 @@ function errorDetailImpl(body: string, includeDetailField: boolean): string {
     const error = typeof data.error === 'object' && data.error !== null
       ? data.error as Record<string, unknown>
       : undefined
-    // 顶层 `error` 是**字符串**的形态（`openai-compat` 那份已覆盖，本份原先漏掉；
-    // 2026-10-12 自上游 c2546558 移植）。⚠️ 只加腿不减腿。
+    // 顶层 `error` 是**字符串**的形态（`openai-compat` 那份已覆盖，本份原先漏掉）。
     const errorText = typeof data.error === 'string' ? data.error : undefined
     const parts = [
       typeof error?.code === 'string' ? error.code : undefined,
@@ -640,7 +783,7 @@ function errorDetailImpl(body: string, includeDetailField: boolean): string {
       // ⚠️ 上游代理的 `{"error":"acp-proxy failure","detail":"<真实原因>"}` 形态
       //（Gitee issue IKLBSH A1）—— 只认 `error` 会丢掉真正的原因。
       // 判据**只留一份实现**（`openai-compat.ts` 的 `detailFieldText`）；本仓库
-      // 多份同义 `errorDetail` 各写一条必然漂移（「同一语义两套判据」）。
+      // 6 份同义 `errorDetail` 各写一条必然漂移（「同一语义两套判据」）。
       // ⚠️ **只在展示出口计入**（见上）。
       includeDetailField ? detailFieldText(data) : undefined,
     ].filter((value): value is string => value !== undefined)
@@ -657,30 +800,31 @@ function errorDetailImpl(body: string, includeDetailField: boolean): string {
  * CONTEXT_WINDOW_EXCEEDED（触发 dsh compaction 自动压缩上下文），
  * 而不是不可重试的 HTTP_400，避免长会话在接近窗口上限时直接中断。
  *
- * ⚠️ 手机版补充（2026-10-11）：400 的判据改喂**完整报文**并复用共享层的
- * {@link isContextOverflowBody}（`openai-compat.ts`）。原实现有两个漏洞
- * （`buddy-adapter.ts:641-651` 的注释已记录同款结论）：
+ * ⚠️ **额度判据不得抢到 401/403 之前**（曾被审计建议改成这样，**已否决**）：
+ * 「同一文案用 400 归额度、用 403 归 `AUTH`」看起来不一致，但那正是**有意**的 ——
+ * codearts 的 401/403 来自**网关**（APIG.0602 Invalid token / APIG.0301 验签失败），
+ * 而本仓库有一条**成文铁律**（`AGENTS.md` 的「同族判据必须逐格同构」）：
+ * > **401/403 先判**，恒归认证类 —— 状态码与额度文案并存时
+ * > （网关侧故障常在报文里捎带余额提示）**以状态码为准**
  *
- * 1. 只喂 `errorDetail(body)` —— 它在能提取到 `error.*` / `message` 时会返回
- *    拼接后的短文本，**丢掉 `extError.code`**（`context_length_exceeded` 这种
- *    稳定命中的结构化字段），实测「仅 msg 文本」形态会被
- *    `isContextWindowExceededError` 漏判；
- * 2. 没有网关措辞兜底（`prompt is too long: N tokens > M maximum`）——
- *    宿主分类器认不出这句话。
+ * 该铁律是 2026-10-06 raccoon / loomy「一个请求内 6 个号各被封 24h」事故的产物。
+ * 把额度判据提到前面，就等于让网关故障时捎带的余额词**改写分类** ⇒
+ * 真凭据失效被说成「额度用尽」，用户被引向「等额度恢复」而不是重新登录。
  *
- * 判定看**完整报文**、展示仍用 `errorDetail()`，两者职责不同。
- * 复用共享判据是刻意的：本仓库红线「同一语义不得两套判据」。
+ * ⚠️ 而且「codearts 会用 401/403 下发额度文案」这一前提**没有实测支撑**：
+ * 141 个真实会话里 `InferHub.4291` 仅 1 次命中（还是在讨论参考实现的 Rust 源码），
+ * 无任何真实 401/403 + 额度文案的记录。**将来若真抓到该报文，再按实测处理** ——
+ * 不要据构造的报文改分类顺序。
  */
 function httpErrorCode(status: number, body: string): string {
   if (status === 401 || status === 403) return 'AUTH'
   // ⚠️ **分类必须走 `errorDetailForClassify`**（不含 detail 腿）—— 用展示出口会让
   // detail 里的额度/超限措辞**翻转错误码**（实测表见 `errorDetail` 的 doc）。
   const detail = errorDetailForClassify(body)
-  // 额度码用字面量（IKJVCW）：harness 常量 'QUOTA' 会被客户端替换成固定文案。
   if (isQuotaExceededError(detail)) return CODEARTS_QUOTA_EXHAUSTED_CODE
   if (status === 429) return 'RATE_LIMIT'
   if (status === 400) {
-    if (isContextOverflowBody(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
+    if (isContextWindowExceededError(detail)) return CONTEXT_WINDOW_EXCEEDED_CODE
     return 'INVALID_REQUEST'
   }
   if (status >= 500) return 'SERVER'
@@ -751,493 +895,51 @@ function readCodeArtsChunk(
  * - 边界：DSML 标签使用全角 `｜`（U+FF5C）而非半角 `|`，与模型实际
  *   输出一致。`<thought>` 为半角普通 XML 标签，与 DSML 官方文档一致。
  */
-const DSML_TOOL_CALLS_OPEN = '<｜DSML｜tool_calls>'
-const DSML_TOOL_CALLS_CLOSE = '</｜DSML｜tool_calls>'
-const DSML_INVOKE_OPEN_PREFIX = '<｜DSML｜invoke'
-const DSML_INVOKE_CLOSE = '</｜DSML｜invoke>'
-const DSML_PARAM_OPEN_PREFIX = '<｜DSML｜parameter'
-const DSML_PARAM_CLOSE = '</｜DSML｜parameter>'
-const THOUGHT_OPEN = '<thought>'
-const THOUGHT_CLOSE = '</thought>'
-
-/** 解析单个 DSML invoke 块为 { name, arguments }。 */
-
-/**
- * 对标记 string="true" 的参数值做宽松解析：若值恰好是 number/boolean
- * /null 字面量（如 "1304"、"true"、"null"），返回原始类型；若值是合法
- * JSON 数组或对象（如 todo_write 的 todos 被写成 `[{"content":...}]`），
- * 还原为原始类型；否则保持字符串。用于纠正模型对数字/数组/对象参数误标
- * string 的 DSML 输出（如 read 的 offset 被写成 offset="1304"、
- * todo_write 的 todos 被写成 string="true" 的 JSON 数组字符串），使工具
- * schema 校验通过。
- */
-function tryParseScalar(value: string): unknown {
-  if (value === '') return ''
-  const trimmed = value.trim()
-  if (trimmed === '') return value
-  if (trimmed === 'null') return null
-  if (trimmed === 'true') return true
-  if (trimmed === 'false') return false
-  // 带引号的 JSON 字符串字面量：deepseek-v4-pro 常把数字/布尔参数值用
-  // JSON 字符串编码（如 "840"），即便标记了 string="true" 也只输出引号
-  // 包裹的字面量。先 JSON.parse 解码去掉外层引号，再递归尝试标量转换：
-  // "840" → 840(number)、"true" → true(boolean)、"hello" → "hello"(string)。
-  // 仅当整体是合法 JSON 字符串字面量（"..." 配对）时才解码，避免误伤
-  // 含引号的普通文本（如路径中的引号片段）。flash 模型输出纯数字字面量
-  // 不带引号，不会进入此分支；pro 模型带引号才命中，故 pro 出错多。
-  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    try {
-      const decoded = JSON.parse(trimmed) as unknown
-      if (typeof decoded === 'string') return tryParseScalar(decoded)
-      return decoded
-    } catch { /* 非合法 JSON 字符串字面量，按原样处理 */ }
-  }
-  // 整数 / 浮点数 / 负数：仅当整体匹配数字语法时才转换，避免误伤路径
-  // 中的数字片段（如 "v1.2" 不含；"123abc" 不含）。
-  if (/^-?\d+$/.test(trimmed)) return Number(trimmed)
-  if (/^-?\d+\.\d+$/.test(trimmed)) return Number(trimmed)
-  // 数组 / 对象：模型常对数组/对象参数（如 todo_write 的 todos）误标
-  // string="true"，把 JSON 编码的数组/对象当作字符串输出。若值是合法
-  // JSON 数组或对象，还原为原始类型，使工具 schema 校验通过。仅对
-  // `[` / `{` 开头尝试 JSON.parse，避免误伤普通字符串（路径、正文等
-  // 极少以这两个字符开头且整段恰为合法 JSON）。
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    try { return JSON.parse(trimmed) } catch { /* 非合法 JSON，保持字符串 */ }
-  }
-  return value
-}
-
-function parseDsmlInvoke(block: string): { name: string; arguments: string } | undefined {
-  // 提取 name="..." 属性
-  const nameMatch = /name\s*=\s*"([^"]*)"/.exec(block)
-  if (nameMatch === null) return undefined
-  // ⚠️ **必须 trim**（Issue F-52）：模型把 invoke 写成 `name=" read_image "`
-  //    是实测形态，而两个消费点（本文件的 `dsmlCalls` / `reasoningDsmlCalls`）
-  //    都用 `hasUsableToolName` 的 `trim()` 判据放行 —— 判可用却把**带空白**的
-  //    名字下发，上游/DSH 按精确匹配解析 ⇒ `unknown tool " read_image "`。
-  //    在**唯一的解析入口**归一，两个消费点同时受益（不必各写一遍）。
-  const name = nameMatch[1].trim()
-  // 提取所有 parameter 子节点，按出现顺序拼装 arguments JSON
-  const params: Record<string, unknown> = {}
-  let cursor = 0
-  for (;;) {
-    const openStart = block.indexOf(DSML_PARAM_OPEN_PREFIX, cursor)
-    if (openStart === -1) break
-    const openEnd = block.indexOf('>', openStart)
-    if (openEnd === -1) break
-    const openTag = block.slice(openStart, openEnd + 1)
-    const paramNameMatch = /name\s*=\s*"([^"]*)"/.exec(openTag)
-    if (paramNameMatch === null) { cursor = openEnd + 1; continue }
-    const paramName = paramNameMatch[1]
-    const closeStart = block.indexOf(DSML_PARAM_CLOSE, openEnd + 1)
-    if (closeStart === -1) break
-    const value = block.slice(openEnd + 1, closeStart)
-    // string="true" 属性标记字符串类型。但模型经常对数字参数（如 read 的
-    // offset/limit、write 的 offset）误标 string="true"，把 "1304" 当作字符串
-    // 输出，工具 schema 校验报 `"offset" must be a number`。因此即使标记了
-    // string，也尝试 JSON 解析：若是 number/boolean/null 字面量则按原始类型
-    // 使用，其余（路径、正文等）保持字符串。
-    const isString = /string\s*=\s*"true"/.test(openTag)
-    if (isString) {
-      const parsed = tryParseScalar(value)
-      params[paramName] = parsed
-    } else {
-      // 非 string 参数理论上应是 number/array/object/boolean。但
-      // deepseek-v4-pro 有时把数字参数值用 JSON 字符串引号包裹（如 "840"）
-      // 且不加 string="true"：JSON.parse('"840"') 得到字符串 "840"，
-      // schema 校验仍报 "offset" must be a number。对 JSON.parse 得到的
-      // 字符串结果再走一次 tryParseScalar，把数字字面量还原为 number。
-      try {
-        const parsed = JSON.parse(value)
-        params[paramName] = typeof parsed === 'string' ? tryParseScalar(parsed) : parsed
-      } catch { params[paramName] = value }
-    }
-    cursor = closeStart + DSML_PARAM_CLOSE.length
-  }
-  return { name, arguments: JSON.stringify(params) }
-}
-
-/**
- * 从一段已闭合的 DSML tool_calls 块中解析所有 invoke，返回结构化
- * tool-call 列表。返回 undefined 表示解析失败（调用方应回退为纯文本）。
- */
-function parseDsmlToolCalls(block: string): Array<{ name: string; arguments: string }> | undefined {
-  // block 形如 `<｜DSML｜tool_calls>...invokes...</｜DSML｜tool_calls>`
-  let inner = block
-  if (inner.startsWith(DSML_TOOL_CALLS_OPEN)) inner = inner.slice(DSML_TOOL_CALLS_OPEN.length)
-  if (inner.endsWith(DSML_TOOL_CALLS_CLOSE)) inner = inner.slice(0, inner.length - DSML_TOOL_CALLS_CLOSE.length)
-  const calls: Array<{ name: string; arguments: string }> = []
-  let cursor = 0
-  for (;;) {
-    const openStart = inner.indexOf(DSML_INVOKE_OPEN_PREFIX, cursor)
-    if (openStart === -1) break
-    const openEnd = inner.indexOf('>', openStart)
-    if (openEnd === -1) break
-    const closeStart = inner.indexOf(DSML_INVOKE_CLOSE, openEnd + 1)
-    if (closeStart === -1) break
-    const invokeBlock = inner.slice(openStart, closeStart + DSML_INVOKE_CLOSE.length)
-    const parsed = parseDsmlInvoke(invokeBlock)
-    if (parsed === undefined) return undefined
-    calls.push(parsed)
-    cursor = closeStart + DSML_INVOKE_CLOSE.length
-  }
-  return calls
-}
-
-/**
- * 计算缓冲区末尾与任一开标签的最长公共前缀长度。用于流式提取器决定
- * 保留多少缓冲区等待下次 feed：若末尾是某开标签的不完整前缀（例如
- * `<tho` 跨 chunk 到达），保留该前缀；否则全部放行，避免短文本被
- * 过度缓冲延迟输出。
- *
- * ⚠️ **别名那一路必须从「最后一个 `<`」起判，不能按固定长度窗口扫**
- * （2026-10-14 自上游移植）：`｜DSML｜` 之后的空白是 `\s*`，**长度无上限**，
- * 任何固定 `maxCheck` 都会被「空白够多」绕过 —— 例如
- * `<｜DSML｜` + 20 个空格 + `calls>` 总长 33 字符，窗口只回看 32 字符时
- * 连开头的 `<` 都够不着 ⇒ 判据不命中 ⇒ 标签被**提前放行**。
- * 从最后一个 `<` 起判则与空白长度无关（`lastIndexOf` 是 O(n)，无额外成本）。
- */
-function longestOpenPrefixTail(buffer: string, prefixes: readonly string[]): number {
-  let keepLen = 0
-  const maxCheck = Math.min(buffer.length, Math.max(...prefixes.map(p => p.length)))
-  for (let i = 1; i <= maxCheck; i++) {
-    const tail = buffer.slice(buffer.length - i)
-    if (prefixes.some(p => p.startsWith(tail))) keepLen = i
-  }
-  const lastLt = buffer.lastIndexOf('<')
-  if (lastLt !== -1) {
-    const tail = buffer.slice(lastLt)
-    if (isDsmlLabelPrefix(tail) && tail.length > keepLen) keepLen = tail.length
-  }
-  return keepLen
-}
-
-/**
- * 开标签的**别名形态**（2026-10-14 自上游移植，二次事故）。
- *
- * 实测部分模型（deepseek-v4.1-flash）会把 `<｜DSML｜tool_calls>` 漏写成
- * `<｜DSML｜ calls>`（**少 `tool_` 前缀**），或插入多余空白
- * （`<｜DSML｜ tool_calls>`）。宿主 `indexOf(DSML_TOOL_CALLS_OPEN)` 一律
- * 不匹配 ⇒ 整段当正文、工具从不执行。
- *
- * 这三个串同时用于两处：① `feed()` 的别名归一（拼齐后改写为规范形）；
- * ② `longestOpenPrefixTail` 的保留候选（**拆帧到达**时不漏放行）。
- */
-const DSML_OPEN_ALIASES = [
-  '<｜DSML｜ calls>',
-  '<｜DSML｜calls>',
-  '<｜DSML｜ tool_calls>',
-] as const
-
-/**
- * 判断 buffer 末尾（自最后一个 `<` 起）是否是 DSML 标签的**未完成前缀**。
- *
- * 分两段判，因为「竖线」与 `DSML` 名字本身在没到齐时也必须扣住：
- *
- * ① `^<｜{0,3}$` —— 只有 `<` 加 0~3 根竖线。逐字符拆帧时 buffer 恒在
- *    「竖线已到、`DSML` 未到」这个状态，归一正则的 `｜{2,}DSML` 匹配不上
- *    ⇒ 不判这一段就会把 `<｜｜` 当正文放行，其后每个字符跟着放行
- *    ⇒ 整段双竖线标记漏到正文、工具全丢。
- *    ⚠️ 上界 3 是刻意的：实测坏标记是双竖线，三根留一根冗余容错；
- *    不写 `｜+`（无上界）是因为那会把正文里任意长的竖线串也扣住不放。
- * ② `^<｜+D(?:S(?:M(?:L)?)?)?…` —— `DSML` 路径。
- *    ⚠️⚠️ **两侧必须是 `｜+` 而不是 `｜{2,}`**（上游实测回归）：
- *    初版写成 `｜{2,}` 只想覆盖双竖线坏标记，结果**漏掉了规范的单竖线
- *    形态**（`<｜DSML｜ tool_calls>`）—— 而它恰是最常见的一种（多空白
- *    别名走的就是这条路）⇒ 返回 false ⇒ keepLen=0 ⇒ 标签被**提前放行**
- *    ⇒ 整段当正文、工具永不执行。
- *    `DSML` 四字符逐级可选 —— 它本身也可能被拆帧切开（实测逐字符时
- *    `<｜D`、`<｜DS`、`<｜DSM` 都会出现）。其后右侧竖线（`｜{0,3}`）、
- *    空白（`\s`）、标签名、`>` 的任意未完成组合同理放开。
- *
- * `[a-zA-Z_][\w-]*` 放开到任意标签名（与 `normalizeDsmlLabel` 的名字规则
- * 逐字一致）—— 两处若漂移，「判据扣住的名字」与「归一改得动的名字」
- * 就会不一致。
- */
-function isDsmlLabelPrefix(tail: string): boolean {
-  if (/^<｜{0,3}$/.test(tail)) return true
-  // 右侧竖线上界 3（与 ① 同口径：实测坏标记是双竖线，三根冗余容错）。
-  return /^<｜+D(?:S(?:M(?:L)?)?)?(?:｜{0,3}|\s|[a-zA-Z_][\w-]*|>)*$/.test(tail)
-}
-
-/**
- * 对**单个 DSML 标签**压掉 `｜DSML｜` 与标签名之间的空白。
- *
- * ## 为什么必须做（上游三次事故之二：内容凭空消失）
- *
- * 模型不只把空白插进 `tool_calls` —— `invoke` / `parameter` 同样中招
- * （现场逐字：`<｜DSML｜ invoke name="pwsh">`、`<｜DSML｜ parameter
- * name="command" string="true">`）。空白形态让 `DSML_INVOKE_OPEN_PREFIX`
- * 的 `indexOf` 恒不命中 ⇒ `parseDsmlToolCalls` 返回**空数组**（不是
- * undefined）⇒ 调用方把整块当成「解析成功但无调用」⇒ **工具参数凭空消失**
- * （用户看到「模型很快就结束了，没有原因」）。
- *
- * 故此处对**任意标签名**做归一（`[a-zA-Z_][\w-]*`），名字白名单由调用方
- * 自己决定 —— 本函数不认识协议，只修「空白」这一种笔误。
- */
-function normalizeDsmlLabel(tag: string): string {
-  // `(<\/?)` 捕获开/闭标签的 `<` 或 `</`，拼回去时保持原样。
-  // `\s*` 覆盖任意空白（含 `\t` / U+3000 / 换行），长度无上限。
-  // `([a-zA-Z_][\w-]*)` 是标签名，其后原样保留（可能是 `>`、` name="…">` 等）。
-  // 两侧各 `｜{1,}`：**独立**容忍左/右任意根竖线（实测有左双右单、
-  // 左单右双两种混合形态），且单竖线规范形天然命中（`{1,}` 含 1）。
-  return tag.replace(/(<\/?)｜+DSML｜+\s*([a-zA-Z_][\w-]*)/g, '$1｜DSML｜$2')
-}
-
-/**
- * 对**整段文本**做 DSML 协议级归一：双竖线、别名（`calls` → `tool_calls`）
- * 与标签空白（`<｜DSML｜ invoke` → `<｜DSML｜invoke`）一次做完。
- *
- * 三种笔误都来自实测（2026-10-13，自上游 dsml.ts 移植）：
- *
- * | 形态 | 不修的后果 |
- * |---|---|
- * | `<｜｜DSML｜｜` 双竖线 | 宿主解析器不认 ⇒ 标签当正文 |
- * | `<｜DSML｜ calls>` 缺 `tool_` | 开闭标签不匹配 ⇒ 永不进 in-dsml |
- * | `<｜DSML｜ invoke` / `parameter` 带空白 | `indexOf` 不命中 ⇒ **内容凭空消失** |
- *
- * ⚠️ **顺序有意为之**：先双竖线、再别名、最后空白。双竖线必须先修
- * （否则 `<｜｜DSML｜｜ calls>` 里的双竖线会让后续 `｜DSML｜` 定位失败）；
- * 别名与空白互相独立，交换顺序结果相同（均幂等）。
- *
- * 用于 `feed()` 的整段入口；**流式增量**不能用它（模式会跨帧），那是
- * `sse.ts` 的 `createDsmlMarkerNormalizer` 的职责。
- *
- * ⚠️⚠️ **本函数的双竖线规则与 `sse.ts` 的 `fixDsmlMarkers` 逐字同源**
- * （同两条正则、同一条 `DSML` 后边界前视 `[tcip]`）。手机版不引入上游
- * `dsml.ts` 共享层（无 OfficeAce 通道，「协议只有一份」的动机不存在），
- * 本文件持有唯一一份实现 —— 但改任一条正则时仍必须同步另一处，
- * 否则「教得会、解不开」会以另一种形态复发。
- */
-function normalizeDsmlText(text: string): string {
-  // ⚠️ 前视里的 `[tcip]` 是协议标签名首字母（`t`ool_calls / `c`alls /
-  //    `i`nvoke / `p`arameter / `t`hought），与 `sse.ts` 的 `fixDsmlMarkers`
-  //    逐字同源。少了它，右侧双竖线后紧跟字母的实测形态
-  //    （`<｜DSML｜｜invoke …>`）一条都修不了 —— 详见该函数的注释。
-  const AFTER = '(?=｜|\\s|>|\\/|$|[tcip])'
-  const fixedBars = text
-    .replace(new RegExp(`(<\\/?)｜{2,}DSML${AFTER}`, 'g'), '$1｜DSML')
-    .replace(new RegExp(`DSML｜{2,}${AFTER}`, 'g'), 'DSML｜')
-  return normalizeDsmlLabel(
-    fixedBars.replace(/(<\/?)｜DSML｜\s*(?:tool_)?calls>/g, '$1｜DSML｜tool_calls>'),
-  )
-}
-
-/** DSML `parameter` **开**标签（容忍 `｜DSML｜` 后的空白与多根竖线笔误）。 */
-const DSML_PARAM_OPEN_TAG = /<｜+DSML｜+\s*parameter\b[^>]*>/
-/** DSML `parameter` / `invoke` **闭**标签（值区段的右边界，形态同样放宽）。 */
-const DSML_PARAM_CLOSE_TAG = /<\/｜+DSML｜+\s*parameter\b[^>]*>/
-const DSML_INVOKE_CLOSE_TAG = /<\/｜+DSML｜+\s*invoke\b[^>]*>/
-
-/**
- * {@link normalizeDsmlText} 的**协议感知**版本：只归一**标签**，不动参数值。
- *
- * ## 为什么必须区分（Issue F-56，工具参数被静默篡改）
- *
- * `feed()` 拿到的是 `this.buffer += chunk` 的**整个累积缓冲**，而
- * `normalizeDsmlText` 的三条正则会把文中任何像坏标记的片段都改掉 ——
- * 包括 `parameter` 标签**之间的参数值**。实测形态：模型用 DSML 写
- * `write` 的 `content`（或 `bash` 的 `command`）时，正文里出现
- * `<｜｜DSML｜｜ calls>` 这样的**字面文本**（贴日志、写文档、讨论协议都算），
- * 它会被收敛成 `<｜DSML｜ calls>` ⇒ 落进 `content` 的值被**静默改写**：
- * 用户拿到的文件与模型给的原文不一致，且**没有任何日志**。
- * 这条通道本来是要「修工具的写法」，不该动工具的参数。
- *
- * ## 判据（本文件唯一需要「认识协议」的地方）
- *
- * 值区段 = **`parameter` 开标签的 `>` 之后** 到 **下一个 `parameter` / `invoke` 闭标签之前**，
- * 这一段**逐字节照抄**；其余区段（含 `tool_calls` / `invoke` / `parameter` 三种标签本身）
- * 照旧走 {@link normalizeDsmlText}。
- *
- * ⚠️ **起点必须落在 `parameter` 而不是 `tool_calls`**：从 `tool_calls` 之后就放行，
- * 会把 `invoke` / `parameter` 的**标签写法**（`<｜DSML｜ invoke` 这类空白形态）
- * 一起放行 ⇒ `indexOf(DSML_INVOKE_OPEN_PREFIX)` 恒不命中 ⇒ 工具调用凭空消失
- *（正是上游三次事故的那条，`dsml-extractor-normalize` 的用例 ④⑥ 锁着它）。
- * 值区段的边界判据与解析侧**同一套正则形态**，两处不会漂移。
- *
- * ## ⚠️ 与「尾部半截标签」的关系
- *
- * 本函数**不**负责扣留半截前缀（那是 {@link createDsmlMarkerNormalizer} 与
- * `feed()` 的 `keepLen` 的职责）：开标签被拆帧切在半路时本函数找不到完整的
- * `parameter` 开标签，于是整段照旧归一（与修复前逐字节一致）——
- * 下一次 `feed()` 拼齐后才进值区段。两条判据各管一段，不重叠。
- *
- * ⚠️ 幂等：区段外仍走 `normalizeDsmlText`（它本身幂等），值区段逐字节不变。
- */
-function normalizeDsmlChunk(text: string): string {
-  // 三条正则都要求出现 `DSML` ⇒ 不含它的文本逐字节等价，直接短路（零成本）。
-  if (!text.includes('DSML')) return text
-  let result = ''
-  let cursor = 0
-  for (;;) {
-    const chunk = text.slice(cursor)
-    // 本段不含 `DSML` ⇒ 不可能有标签，逐字节放行。
-    if (!chunk.includes('DSML')) return result + chunk
-    // **最早**的 `parameter` 开标签：多个参数按出现顺序逐个处理（循环自然推进）。
-    const open = DSML_PARAM_OPEN_TAG.exec(chunk)
-    if (open === null) return result + normalizeDsmlText(chunk)
-    const valueStart = cursor + open.index + open[0].length
-    const rest = text.slice(valueStart)
-    const closes: number[] = []
-    const closeParam = DSML_PARAM_CLOSE_TAG.exec(rest)
-    const closeInvoke = DSML_INVOKE_CLOSE_TAG.exec(rest)
-    if (closeParam !== null) closes.push(closeParam.index)
-    if (closeInvoke !== null) closes.push(closeInvoke.index)
-    const valueEnd = closes.length === 0 ? text.length : valueStart + Math.min(...closes)
-    // 值之前（含 `parameter` 开标签本身）照旧归一；值区段逐字节照抄。
-    result += normalizeDsmlText(text.slice(cursor, valueStart)) + text.slice(valueStart, valueEnd)
-    if (valueEnd >= text.length) return result
-    cursor = valueEnd
-  }
-}
-
-/**
- * 流式 DSML 提取器。feed() 接收 content delta，返回一个结果对象：
- * - `text`：应作为 text-delta 输出的纯文本（可能为空串）
- * - `reasoning`：应作为 reasoning-delta 输出的推理增量（可能为空串）
- * - `toolCalls`：已完整解析的 DSML tool-call 列表（可能为空数组）
- * flush() 在流结束时调用，把残留缓冲区作为纯文本返回。
- *
- * 状态机三态：
- * - normal：寻找 `<thought>` 或 `<｜DSML｜tool_calls>` 开标签
- * - in-thought：寻找 `</thought>` 闭标签，期间内容作为 reasoning 流式输出
- * - in-dsml：寻找 `</｜DSML｜tool_calls>` 闭标签，完整后解析为 tool-call
- */
-export class DsmlContentExtractor {
-  private buffer = ''
-  private state: 'normal' | 'in-thought' | 'in-dsml' = 'normal'
-
-  feed(chunk: string): { text: string; reasoning: string; toolCalls: Array<{ name: string; arguments: string }> } {
-    let text = ''
-    let reasoning = ''
-    const toolCalls: Array<{ name: string; arguments: string }> = []
-    this.buffer += chunk
-    // ── 协议级归一（2026-10-14 自上游 dsml.ts 移植，三次事故的修法）──
-    // `<｜DSML｜ calls>` / `<｜DSML｜calls>` / `<｜DSML｜ tool_calls>`
-    // 一律改写为规范形 `<｜DSML｜tool_calls>`，后续 indexOf 才认；
-    // **同时**把 `｜DSML｜` 之后的空白从**每一个**标签名上压掉
-    // （`<｜DSML｜ invoke` → `<｜DSML｜invoke`、`<｜DSML｜ parameter` →
-    // `<｜DSML｜parameter`）—— 后者是「内容凭空消失」那条缺陷的直接根因：
-    // 空白形态让 `DSML_INVOKE_OPEN_PREFIX` 的 indexOf 恒不命中 ⇒
-    // parse 返回空数组 ⇒ 调用方当「解析成功但无调用」⇒ 工具参数全丢。
-    // ⚠️ 必须放在 buffer 累积**之后**：别名与空白形态都可能被拆成多帧到达，
-    //    只有等 buffer 拼齐才改得动（这也是不能靠 sse.ts 逐帧归一化器的原因）。
-    // 幂等：规范形再过一遍，正则命中后重建出同一字符串。
-    //
-    // ⚠️⚠️ **用 `normalizeDsmlChunk` 而不是 `normalizeDsmlText`**（Issue F-56）：
-    //    后者会把 `parameter` 标签**之间的参数值**里任何像坏标记的片段一并改写
-    //    ⇒ 工具参数被**静默篡改**（模型写文件/贴日志时最常出现该形态）。
-    //    前者只归一标签区段，值区段逐字节照抄。
-    this.buffer = normalizeDsmlChunk(this.buffer)
-    for (;;) {
-      if (this.state === 'normal') {
-        // 寻找最早出现的开标签（thought 或 DSML tool_calls）
-        const thoughtIdx = this.buffer.indexOf(THOUGHT_OPEN)
-        const dsmlIdx = this.buffer.indexOf(DSML_TOOL_CALLS_OPEN)
-        let openIdx = -1
-        let nextState: 'in-thought' | 'in-dsml' = 'in-thought'
-        if (thoughtIdx !== -1 && (dsmlIdx === -1 || thoughtIdx < dsmlIdx)) {
-          openIdx = thoughtIdx
-          nextState = 'in-thought'
-        } else if (dsmlIdx !== -1) {
-          openIdx = dsmlIdx
-          nextState = 'in-dsml'
-        }
-        if (openIdx === -1) {
-          // 没有完整开标签：但缓冲区末尾可能是任一开标签的不完整前缀
-          const keepLen = longestOpenPrefixTail(this.buffer, [THOUGHT_OPEN, DSML_TOOL_CALLS_OPEN, ...DSML_OPEN_ALIASES])
-          if (keepLen === 0) {
-            text += this.buffer
-            this.buffer = ''
-          } else if (this.buffer.length > keepLen) {
-            text += this.buffer.slice(0, this.buffer.length - keepLen)
-            this.buffer = this.buffer.slice(this.buffer.length - keepLen)
-          }
-          break
-        }
-        // 放行开标签之前的纯文本
-        if (openIdx > 0) text += this.buffer.slice(0, openIdx)
-        this.buffer = this.buffer.slice(openIdx)
-        // 跳过开标签本身
-        const openLen = nextState === 'in-thought' ? THOUGHT_OPEN.length : DSML_TOOL_CALLS_OPEN.length
-        this.buffer = this.buffer.slice(openLen)
-        this.state = nextState
-        continue
-      }
-      if (this.state === 'in-thought') {
-        // 寻找 </thought> 闭标签，期间内容作为 reasoning 流式输出
-        const closeIdx = this.buffer.indexOf(THOUGHT_CLOSE)
-        if (closeIdx === -1) {
-          // 闭标签未到达：放行除可能的不完整闭标签前缀外的内容
-          const keepLen = longestOpenPrefixTail(this.buffer, [THOUGHT_CLOSE])
-          if (keepLen === 0) {
-            reasoning += this.buffer
-            this.buffer = ''
-          } else if (this.buffer.length > keepLen) {
-            reasoning += this.buffer.slice(0, this.buffer.length - keepLen)
-            this.buffer = this.buffer.slice(this.buffer.length - keepLen)
-          }
-          break
-        }
-        // 放行闭标签之前的推理
-        if (closeIdx > 0) reasoning += this.buffer.slice(0, closeIdx)
-        this.buffer = this.buffer.slice(closeIdx + THOUGHT_CLOSE.length)
-        this.state = 'normal'
-        continue
-      }
-      // state === 'in-dsml'：寻找闭标签，完整块才解析
-      const closeIdx = this.buffer.indexOf(DSML_TOOL_CALLS_CLOSE)
-      if (closeIdx === -1) {
-        // 闭标签未到达，等待更多数据
-        break
-      }
-      const block = this.buffer.slice(0, closeIdx + DSML_TOOL_CALLS_CLOSE.length)
-      const parsed = parseDsmlToolCalls(block)
-      if (parsed === undefined) {
-        // 解析失败：把整个块作为纯文本放行，避免吞内容
-        text += block
-      } else {
-        toolCalls.push(...parsed)
-      }
-      this.buffer = this.buffer.slice(closeIdx + DSML_TOOL_CALLS_CLOSE.length)
-      this.state = 'normal'
-      continue
-    }
-    return { text, reasoning, toolCalls }
-  }
-
-  flush(): { text: string; reasoning: string } {
-    // 流结束：残留缓冲根据状态决定输出通道
-    const remaining = this.buffer
-    this.buffer = ''
-    if (this.state === 'in-thought') {
-      // 不完整的 thought 块：作为 reasoning 放行（避免泄漏到正文）
-      this.state = 'normal'
-      return { text: '', reasoning: remaining }
-    }
-    if (this.state === 'in-dsml') {
-      // 不完整的 DSML 块：开标签已在进入 in-dsml 状态时被消耗，需加回
-      // 才能保持用户可见内容的完整性（避免 dump 出缺少开标签的残片）。
-      this.state = 'normal'
-      return { text: DSML_TOOL_CALLS_OPEN + remaining, reasoning: '' }
-    }
-    // normal 拘留：作为纯文本放行
-    this.state = 'normal'
-    return { text: remaining, reasoning: '' }
-  }
-}
 
 /** 兼容 OpenAI 格式的 CodeArts 模型适配器，使用华为请求签名。 */
 export class CodeArtsAdapter extends LlmAdapter {
   private readonly fetchImpl: typeof fetch
   private readonly chatId: string
   private readonly sessionId: string
+  /**
+   * ⚠️ **2026-10-08 Task 7b：三个方法收敛到共享骨架** `createModelCatalog`。
+   * 原先 `listModels` / `resolveModel` / `listAllModels` 各写一遍骨架，
+   * 现在只剩 `toCatalogEntry`（本家私有形状 + VL 过滤 + 静态 context 表）。
+   */
+  private readonly catalog: ModelCatalog
 
   constructor(private readonly options: CodeArtsAdapterOptions) {
     super()
     this.fetchImpl = options.fetchImpl ?? fetch
     this.chatId = options.chatId ?? crypto.randomUUID().replace(/-/g, '')
     this.sessionId = options.sessionId ?? crypto.randomUUID().replace(/-/g, '')
+    // 目录落地后通知客户端重读（issue IKJVTF 的缺陷①）。
+    this.catalogGate = new RemoteCatalogGate(
+      options.onCatalogLoaded === undefined ? {} : { onLoaded: options.onCatalogLoaded },
+    )
+    // ⚠️ 共享骨架（Task 7b）：门控 → 读目录 → 黑名单 → 回填 → 三态。
+    this.catalog = createModelCatalog(
+      { accountPool: options.accountPool },
+      {
+        product: { id: PROVIDER },
+        loadCatalog: () => this.catalogEntries(),
+        syncCatalog: () => this.syncCatalogEntries(),
+        // ⚠️ 未知 id 恒声明 `['text']`（本家是纯文本网关）。
+        // ⚠️ 这是**用户 2026-10-08 裁定的一处行为变更**：原 `resolveModel` 对未知 id
+        //    **省略**该字段（而 `listModels` 却声明 `['text']`，同一家内部不一致）
+        //    ⇒ 统一为声明。影响面为零：CodeArts 是纯文本网关，VL 模型已被滤掉。
+        unknownModelInputModalities: () => ['text'] as const,
+        // ⚠️ **未知模型也声明思考档位**（7b 曾在此引入回归、7d 补回）：
+        // 本网关唯一生效的思考控制是顶层 `thinking.type`，与模型无关 ⇒
+        // 原实现对未知 id 同样给这两档。
+        // ⚠️ 顺序规则见 `CODEARTS_REASONING_EFFORTS` 的长注释（**强度序：弱 → 强**）。
+        // 未知模型与已知模型必须同一份顺序，否则用户手填 id 时档位轴会翻向。
+        unknownModelReasoning: () => ({
+          efforts: [...CODEARTS_REASONING_EFFORTS],
+          defaultEffort: ReasoningEffortId(CODEARTS_DEFAULT_EFFORT),
+        }),
+      },
+    )
   }
 
   /**
@@ -1257,14 +959,22 @@ export class CodeArtsAdapter extends LlmAdapter {
   private remoteModels: Array<{ id: string; name: string }> | undefined
 
   /**
+   * 已落缓存的目录是否**所有来源都取全**（issue IKJVTF，审计 I3）。
+   *
+   * ⚠️ **这是短路判据的第二半**：CodeArts 有两个目录端点，残缺目录也落
+   * `remoteModels`，故只判「已定义」会让残缺永久固化（见 `ensureRemoteModels`）。
+   */
+  private remoteComplete = false
+
+  /**
    * 目录加载闸门：并发去重 + 失败冷却。
    *
    * ⚠ **不能省**：DSH 的 `buildModelCatalog` 对每个 provider `await listModels()`
    * 后再对每个模型 `await resolveModelInfo()`，两处都会走到这里。原实现失败
    * 直接返回（不落缓存）⇒ 一次网络故障被放大成「每模型重试一次」，每次顶着
-   * 10s 超时（`src/models.ts:55 FETCH_TIMEOUT_MS`），首屏因此长时间空转。
+   * 10s 超时（`src/models.ts FETCH_TIMEOUT_MS`），首屏因此长时间空转。
    */
-  private readonly catalogGate = new RemoteCatalogGate()
+  private readonly catalogGate: RemoteCatalogGate
 
   /**
    * 懒加载远端模型目录。resolveModel 可能先于 listModels 被调用
@@ -1272,14 +982,26 @@ export class CodeArtsAdapter extends LlmAdapter {
    */
   private async ensureRemoteModels(): Promise<void> {
     const fetchRemote = this.options.fetchRemoteModels
-    if (this.remoteModels !== undefined || fetchRemote === undefined) return
+    if (fetchRemote === undefined) return
+    // ⚠️⚠️ **短路判据是「已完整」，不是「已定义」**（issue IKJVTF 复审，审计 I3）。
+    //
+    // CodeArts 有两个独立目录端点，残缺目录**也**要落 `remoteModels`
+    //（展示需要 —— 目录服务抖动时用户的模型列表不该整个消失），但那时**不能**
+    // 短路：`RemoteCatalogGate` 的冷却（`retryAt` / `cooling()`）在生产里只有
+    // 闸门自己那一处调用点，而它排在短路**之后** ⇒ 残缺目录一旦落缓存，
+    // 冷却永远读不到、残缺永远补不齐（与 Cline 的缺陷② 完全同构）。
+    if (this.remoteComplete) return
     await this.catalogGate.run(async () => {
       const models = await fetchRemote()
       // 空目录同样算「没拿到」：既不应落缓存（否则再也拉不回来），
       // 也不应立刻重试（否则每个模型都打一次空请求）。
       if (models.length === 0) return false
       this.remoteModels = models
-      return true
+      // ⚠️ 完整性由接线层桥接的数据源上报（两来源各自的成败）。
+      // 拿不到判定时退回 `got`（= 旧行为），避免把「判不出」当成「残缺」
+      // 而让每个 provider 都反复重拉。
+      this.remoteComplete = this.options.catalogComplete?.() ?? true
+      return { got: true, complete: this.remoteComplete }
     })
   }
 
@@ -1290,65 +1012,86 @@ export class CodeArtsAdapter extends LlmAdapter {
    * 黑名单过滤掉它们 —— RPC 层只能凭裸 id 补回，展示名随之丢失
    * （用户报障：「关闭的就没有显示倍率」）。CodeArts 目录虽无倍率，但同样
    * 需要正确的 `name`（否则关闭项显示 `deepseek-v4-flash` 这类裸 id）。
+   *
+   * ⚠️ **2026-10-08 Task 7b**：骨架已上移到 `src/model-catalog.ts`，此处只剩委托。
+   * ⚠️ 本家有一处**特有**的「可见性过滤」（VL 多模态不参与，见 `toCatalogEntry`），
+   * 它在 `listModels` 与 `listAllModels` **两条路径上都要生效** ——
+   * 故放在 `toCatalogEntry` 之前的取数回调里（`catalogEntries()`）。
    */
   listAllModels(): readonly { id: string; name: string }[] {
+    return this.catalog.listAllModels()
+  }
+
+  /**
+   * 把本家条目转成共享骨架的中间结构。
+   *
+   * ⚠️ 本家三处**真实差异**（不要「顺手统一」）：
+   * 1. **VL 多模态不参与目录**（`-VL-` / `-VL` 结尾的 id 被滤掉）——
+   *    这是本家的可见性判据，骨架不认识；
+   * 2. `contextWindow` 来自静态 `CONTEXT_WINDOWS` 表（不是远端字段）；
+   * 3. `reasoning` 是**恒声明**的两档（关闭/开启，**强度序**），与 entry 无关 ——
+   *    实测（2026-09-29）：本网关**唯一**真正生效的思考控制是顶层
+   *    `thinking.type`，`reasoning_effort`（含 low/high/none/minimal）与嵌套
+   *    `reasoning.effort` 都被服务端接受但**完全无效果**（判据为服务端上报的
+   *    `reasoning_tokens`，落在基线噪声内；`none` 也照常思考）。
+   *    故**不**臆造 low/high/max 强度阶梯。
+   */
+  private toCatalogEntry(model: { id: string; name: string }): CatalogEntry {
+    const contextWindow = CONTEXT_WINDOWS.get(model.id)
+    return {
+      id: model.id,
+      name: model.name,
+      // ⚠️ 本家恒声明 `['text']`（CodeArts 是纯文本网关；VL 模型上面已滤掉）。
+      inputModalities: ['text'] as const,
+      ...contextWindow !== undefined ? { contextWindow } : {},
+      reasoning: {
+        // ⚠️ 顺序 = **强度序（弱 → 强）**，逐条理由见 `CODEARTS_REASONING_EFFORTS`
+        // 的长注释（Issue IKLIDV）—— 简言之：DSH 把该数组当展示顺序、客户端不排序，
+        // 故 `['on','off']` 会让「开启」落在横向轴的最左。
+        // ⚠️ `defaultEffort` 仍由 `CODEARTS_DEFAULT_EFFORT` 单独表达，与位置无关。
+        efforts: [...CODEARTS_REASONING_EFFORTS],
+        defaultEffort: ReasoningEffortId(CODEARTS_DEFAULT_EFFORT),
+      },
+    }
+  }
+
+  /**
+   * 本家全部条目（**含 VL 可见性过滤**）。
+   *
+   * ⚠️ `await this.ensureRemoteModels()` 是**必需**的（不是可选优化）：
+   * 早期实现用 `void` 丢弃 Promise，冷缓存时远端目录尚未落地就走静态兜底表，
+   * 模型选择器会短暂显示错误的模型集合（Jet Hub 的模型开关也据此渲染，
+   * 会造成「关掉的模型又冒出来」）。
+   */
+  private async catalogEntries(): Promise<readonly CatalogEntry[]> {
+    await this.ensureRemoteModels()
     const source = this.remoteModels ?? DEFAULT_MODELS.map((id) => ({ id, name: id }))
-    // 与 listModels 保持同一套「可见性」过滤（VL 多模态不参与），
-    // 唯一区别是不套用户黑名单。
+    // ⚠️ 与 `listModels` 保持**同一套**「可见性」过滤（VL 多模态不参与），
+    // 唯一区别是不套用户黑名单 —— 那条区别现在由骨架的 `listAllModels` 承担。
     return source
       .filter((m) => !/-VL-/i.test(m.id) && !/-VL$/i.test(m.id))
-      .map((m) => ({ id: m.id, name: m.name }))
+      .map((m) => this.toCatalogEntry(m))
+  }
+
+  /**
+   * 同步视图（`listAllModels` 用）。
+   *
+   * ⚠️ **不能** `await ensureRemoteModels()`（同步契约）—— 读 `remoteModels`
+   * 缓存，未落地时回退静态兜底表（这正是原实现的语义）。
+   */
+  private syncCatalogEntries(): readonly CatalogEntry[] {
+    const source = this.remoteModels ?? DEFAULT_MODELS.map((id) => ({ id, name: id }))
+    return source
+      .filter((m) => !/-VL-/i.test(m.id) && !/-VL$/i.test(m.id))
+      .map((m) => this.toCatalogEntry(m))
   }
 
   async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    // ⚠️ 没有任何已登录账号时返回空数组 → DSH 的 `buildModelCatalog` 把整个
-    // provider 分组隐藏（它显式 `.filter(group => group.models.length > 0)`）。
-    // ⚠️ 必须返回 `[]` 而**不能抛错**（抛错会被归入 catalog 的 `failures`，
-    // 界面上反而多出一条 provider 报错）。
-    //
-    // ⚠️ **CodeArts 不再有单凭据例外**：早期它额外把固定 ref
-    // `CODEARTS_ACCESS_TOKEN` 计入判据（单凭据模式），该模式已随
-    // `credentialRef` 回退解析一并移除 —— 六个 provider 现在判据完全一致，
-    // 都只看账号池。
-    //
-    // ⚠️ 门控放在 `ensureRemoteModels()` **之前**：没有已登录账号时连远端目录都
-    // 不必拉。
-    if (!await providerCatalogVisible(this.options.accountPool, PROVIDER)) return []
-    // 必须 await：ensureRemoteModels 是异步的，早期实现用 `void` 丢弃 Promise，
-    // 冷缓存时远端目录尚未落地就走静态兜底表，模型选择器会短暂显示错误的
-    // 模型集合（Jet Hub 的模型开关也据此渲染，会造成"关掉的模型又冒出来"）。
-    await this.ensureRemoteModels()
-    const visible = this.listAllModels()
-    // 用户在 Jet Hub 关闭的模型（黑名单制：不在表里即默认打开）。
-    // 只影响此处对外播报的模型目录，不改变 resolveModel/stream 的路由能力
-    // ——与 DSH 对 listModels 的约定一致（目录是建议性的，缺省不构成拒绝）。
-    const disabled = this.options.accountPool?.disabledModelsFor(PROVIDER)
-    const listed = disabled === undefined || disabled.size === 0
-      ? visible
-      : visible.filter((m) => !disabled.has(m.id))
-    return listed.map((m) => ({ provider: PROVIDER, id: m.id, name: m.name, inputModalities: ['text'] as const }))
+    return this.catalog.listModels(_provider)
   }
 
-  async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
-    await this.ensureRemoteModels()
-    const remoteModel = this.remoteModels?.find((m) => m.id === model)
-    const name = remoteModel?.name ?? model
-    const contextWindow = CONTEXT_WINDOWS.get(model)
-    const resolved: LlmResolvedModelInfo = { provider, id: model, name }
-    if (contextWindow !== undefined) resolved.context = { contextWindow }
-    // 思考开关（实测，2026-09-29）：本网关**唯一**真正生效的思考控制是
-    // 顶层 `thinking.type`。`reasoning_effort`（含 low/high/none/minimal）与
-    // 嵌套 `reasoning.effort` 都被服务端接受但**完全无效果**（判据为服务端
-    // 上报的 reasoning_tokens，落在基线噪声内；`none` 也照常思考）。
-    // 故这里只声明「开启 / 关闭」两档，**不**臆造 low/high/max 强度阶梯。
-    resolved.reasoning = {
-      efforts: [
-        { id: ReasoningEffortId('on'), name: '开启' },
-        { id: ReasoningEffortId('off'), name: '关闭' },
-      ],
-      defaultEffort: ReasoningEffortId('on'),
-    }
-    return resolved
+  async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    return this.catalog.resolveModel(provider, model, signal)
   }
 
   async prepareCall(
@@ -1438,7 +1181,10 @@ export class CodeArtsAdapter extends LlmAdapter {
     const titlePlan = planSessionTitleThinking({
       purpose: options.purpose,
       requestedEffort: options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort),
-      declaredEfforts: ['on', 'off'],
+      // ⚠️ 与 `resolveModel` 声明的档位**同源**（`CODEARTS_REASONING_EFFORTS`）——
+      // 各写一份必然漂移，而漂移的症状是「标题请求挑的关闭档不在声明里」。
+      // ⚠️ `thinkingOffEffortOf` 按 **rank** 找关闭档（不按位置），故顺序调整不影响它。
+      declaredEfforts: CODEARTS_REASONING_EFFORTS.map((effort) => String(effort.id)),
       maxTokens: options.maxTokens,
     })
     const body = JSON.stringify({
@@ -1582,12 +1328,12 @@ export class CodeArtsAdapter extends LlmAdapter {
             // 第一**（当失败类别不写标记时尤甚），不排除就会拿回同一个、命中
             // `tried.has` 而立即放弃切换（换号形同虚设）。
             if (this.options.accountPool) {
-              const next = await this.options.accountPool.getAvailableAccount(
+              const next = await this.options.accountPool.getAvailableAccount<CodeArtsCredential>(
                 'codearts', options.model, rateLimitTried,
               )
               if (next && !rateLimitTried.has(next.entry.id)) {
                 rateLimitTried.add(next.entry.id)
-                credential = next.credential as CodeArtsCredential
+                credential = next.credential
                 currentAccountId = next.entry.id
                 authRefreshed = false // 新凭据：重置「已刷新过」标记
                 continue // 用下一个账号重试
@@ -1635,6 +1381,8 @@ export class CodeArtsAdapter extends LlmAdapter {
         //
         // ⚠️ 判据用整个错误体（`errorDetail` 会拼出 `error_code` + `error_msg`）：
         // 4xx 的报文形态与 SSE 不同，不能指望顶层 `error_code` 字段名一致。
+        // ⚠️ **分类必须走 `errorDetailForClassify`**（不含 detail 腿）—— 理由同上，
+        // 用展示出口会让 detail 里的额度措辞翻转这条判据。
         if (isSseQuotaExhaustedErrorCode(errorDetailForClassify(errorText), errorText)) {
           const message = codeartsQuotaExhaustedMessage(options.model, nextUtc8DayStartMs())
           if (this.options.accountPool) {
@@ -1644,18 +1392,44 @@ export class CodeArtsAdapter extends LlmAdapter {
               )
               rateLimitTried.add(currentAccountId)
             }
-            const next = await this.options.accountPool.getAvailableAccount(
+            const next = await this.options.accountPool.getAvailableAccount<CodeArtsCredential>(
               'codearts', options.model, rateLimitTried,
             )
             if (next && !rateLimitTried.has(next.entry.id)) {
               rateLimitTried.add(next.entry.id)
-              credential = next.credential as CodeArtsCredential
+              credential = next.credential
               currentAccountId = next.entry.id
               authRefreshed = false
               continue
             }
           }
           throw new LlmError(message, CODEARTS_QUOTA_EXHAUSTED_CODE, { status: response.status })
+        }
+        // ── benefit 去头重试的 **4xx 通道**（Gitee issue IKLBSH A6）──
+        //
+        // 同一个上游条件（该账号没有 benefit 免费额度包）会走**两条**通道下发：
+        // SSE 200（`consumeSse` 已接，见 `CODEARTS_BENEFIT_NOT_FOUND_ERROR_CODE`）
+        // 与 HTTP 4xx。此前**只有 200 那条接上了** —— 4xx 形态会径直落到
+        // `httpErrorCode` 归成 `INVALID_REQUEST` 抛出，**去头重试一次也不试**，
+        // 于是「同一条件下 SSE 能自愈、4xx 却硬报错」。
+        //
+        // ⚠️ 这不是推断：`origin/issue/IKJOF7-benefit-diagnostics` 分支
+        //（2026-10-05 取证提交）用 `it.fails` **显式锁定**了该缺陷
+        //（「HTTP 4xx + 正文含 InferHub.4004.200 时也应当去头重试」），
+        // 当时的结论是「已确认，但本分支不修」——本处即补上那一半。
+        //
+        // 判据复用既有的 `benefitHeaderDropped` 门禁（**只试一次**）——它与
+        // SSE 通道**共享同一个标记**，故两条通道叠加也只会去头一次，不会
+        // 「各试一次」把请求放大成两轮。
+        //
+        // ⚠️ 不采纳 issue 建议的「1s / 2s / 3s 递增退避重试最多 3 次」：
+        // 去头重试是**一次**（`benefitHeaderDropped` 的既有语义，注释写明
+        // 「只试一次，避免与真实失败互相掩盖」），且 issue 自己给的证据是
+        // 「去掉请求头后密集取样 9 次全部 200」——那说明的正是**去头即通**，
+        // 而非「需要多次退避」。按证据改，不按建议改。
+        if (isBenefitModel && !benefitHeaderDropped && isBenefitNotFoundBody(errorText)) {
+          benefitHeaderDropped = true
+          continue
         }
         // 限流处理：记录当前账号在该模型上的重置时间，然后切换账号重试
         // （外层 for(;;) 会在拿到新凭据后重新签名发请求）。用 tried 集合
@@ -1679,10 +1453,10 @@ export class CodeArtsAdapter extends LlmAdapter {
                 currentAccountId, parsed.modelId, parsed.resetTimeMs,
               )
             }
-            const next = await this.options.accountPool.getAvailableAccount('codearts', options.model)
+            const next = await this.options.accountPool.getAvailableAccount<CodeArtsCredential>('codearts', options.model)
             if (next && !rateLimitTried.has(next.entry.id)) {
               rateLimitTried.add(next.entry.id)
-              credential = next.credential as CodeArtsCredential
+              credential = next.credential
               currentAccountId = next.entry.id
               authRefreshed = false // Reset auth refresh flag for new credential
               continue // Retry request with new credential
@@ -1828,8 +1602,8 @@ export class CodeArtsAdapter extends LlmAdapter {
      */
     const proseLoopGuard = isReasoningLoopGuardEnabled() ? createReasoningLoopDetector() : undefined
     /**
-     * DSML 标记归一化器（见 sse.ts 的 createDsmlMarkerNormalizer）。
-     * ⚠️ **每个 stream() 调用一个实例**：待定缓冲是跨帧状态，共用会串流。
+     * DSML 标记归一化器（见 sse.ts `createDsmlMarkerNormalizer`）。
+     * ⚠️ **每个 `stream()` 调用一个实例**：待定缓冲是跨帧状态，共用会串流。
      */
     const dsmlFix = createDsmlMarkerNormalizer()
     let proseLoopDetected = false
@@ -1883,8 +1657,10 @@ export class CodeArtsAdapter extends LlmAdapter {
         }
         if (!proseLoopDetected) {
           // ⚠️ **先归一化再累积**（2026-10-13）：本文件是 codearts 等多家渠道的
-          //    基础正文出口。坏标记 若不修，宿主解析不了，工具调用会被
-          //    当成正文。push() 流式安全，见 sse.ts 的 createDsmlMarkerNormalizer。
+          //    基础正文出口，此前**漏接**归一化 —— 实测重启后会话仍有 270 处
+          //    `<｜｜DSML｜｜` 坏标记，正是走这条路径（首批只覆盖了
+          //    openai-compat 与 buddy）。push() 流式安全，
+          //    见 sse.ts `createDsmlMarkerNormalizer`。
           const fixedText = dsmlFix.push(text)
           block.text += fixedText
           if (fixedText.length > 0) {
@@ -1941,7 +1717,7 @@ export class CodeArtsAdapter extends LlmAdapter {
           index: nextIndex++,
           text: call.arguments,
           name: call.name,
-          callId: CallId(`dsml-${crypto.randomUUID().replace(/-/g, '')}`),
+          callId: ToolCallId(`dsml-${crypto.randomUUID().replace(/-/g, '')}`),
           announced: true,
         }
         toolCalls.set(wireIndex, block)
@@ -2111,7 +1887,7 @@ export class CodeArtsAdapter extends LlmAdapter {
                 index: nextIndex++,
                 text: call.arguments,
                 name: call.name,
-                callId: CallId(`dsml-${crypto.randomUUID().replace(/-/g, '')}`),
+                callId: ToolCallId(`dsml-${crypto.randomUUID().replace(/-/g, '')}`),
                 announced: true,
               }
               toolCalls.set(wireIndex, block)
@@ -2142,10 +1918,7 @@ export class CodeArtsAdapter extends LlmAdapter {
             // 直接覆盖会把首个分片解析出的真实工具名清空，导致
             // `unknown tool ""`。只有非空名字才允许更新。
             if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
-              // ⚠️ 存进去的必须是**下发值**（Issue F-52，与 `openai-compat.ts`
-              //    同源同修）：闸门 `hasUsableToolName` 用 `trim()` 判可用，而
-              //    此前存原样值 ⇒ 带空白的工具名一路下发到 wire。
-              block.name = call.function.name.trim()
+              block.name = call.function.name
             }
             const fragment = call.function?.arguments ?? ''
             block.text += fragment
@@ -2161,7 +1934,7 @@ export class CodeArtsAdapter extends LlmAdapter {
               yield {
                 type: 'tool-call-delta',
                 index: block.index,
-                id: CallId(callId),
+                id: ToolCallId(callId),
                 name: block.name!,
                 argumentsDelta: block.text,
               }
@@ -2170,7 +1943,7 @@ export class CodeArtsAdapter extends LlmAdapter {
             yield {
               type: 'tool-call-delta',
               index: block.index,
-              id: CallId(callId),
+              id: ToolCallId(callId),
               ...block.name !== undefined ? { name: block.name } : {},
               argumentsDelta: fragment,
             }
@@ -2342,7 +2115,7 @@ export class CodeArtsAdapter extends LlmAdapter {
           // `block.callId ?? ''`：空串 id 会被格式 v4 校验拒绝（它判
           // `length === 0`），落库即等于报废整条会话（见上方 `toolIds` 注释）。
           // 正常路径下 `block.callId` 已在建块时填好，此处仅为最后一道防线。
-          id: CallId(block.callId || `call_${index}`),
+          id: ToolCallId(block.callId || `call_${index}`),
           name: block.name!,
           // 同上：空分片补 {}，残缺参数保持原样交由截断判定处理。
           arguments: isTruncatedArguments(block.text)
@@ -2478,7 +2251,12 @@ export class CodeArtsAdapter extends LlmAdapter {
 
 /** 在 ctx.llm 上注册 codearts 提供商路由和适配器。 */
 export function registerCodeArtsLlm(ctx: Context, options: CodeArtsAdapterOptions): CodeArtsAdapter {
-  const adapter = new CodeArtsAdapter(options)
+  const adapter = new CodeArtsAdapter({
+    ...options,
+    // ⚠️ 注入**唯一**的广播实现（`src/catalog-broadcast.ts`），不要在这里
+    // 另写一份 emit —— 两份实现必然漂移（issue IKJVTF 的缺陷① 就是「十处全漏」）。
+    onCatalogLoaded: () => broadcastCatalogChanged(ctx),
+  })
   registerAdapterIdempotent(ctx.llm, [PROVIDER], adapter)
   // 返回实例：Jet Hub「显示列表」需要 `listAllModels()`（不受黑名单影响、
   // 带最终展示名）。`ctx.llm` 不透传自定义方法，须由调用方持有引用。

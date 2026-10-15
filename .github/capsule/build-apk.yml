@@ -204,6 +204,22 @@ jobs:
           echo "门禁用工具：$AAPT"
           BADGING="$("$AAPT" dump badging "$APK")"
           echo "$BADGING" | grep -E '^package:|^application-'
+          # ⚠️ **判据必须自证可判定**（判据缺失 ≠ 通过，本项目既定纪律）：
+          #    `aapt2 dump badging` 的输出格式与 `aapt` **未经验证完全一致**。若格式不同，
+          #    下面的 `^application-debuggable` grep 会静默不命中 ⇒ **真 debuggable 包被放行**，
+          #    而这是发布前唯一防线。故先要求输出确实是可判定的 badging：
+          #      · 必须含 `package:` 行（证明它真解析了 APK）；
+          #      · 必须至少有一行 `application-*`（证明 debuggable 之类标志会出现的位置存在）。
+          #    任一不满足即硬失败 —— 宁可挡住发布，也不放过一个未判定的产物。
+          if ! echo "$BADGING" | grep -q '^package:'; then
+            echo "::error::badging 输出没有 `package:` 行 —— 该工具的 dump badging 格式与 aapt 不同，门禁无法判定，按失败处理。"
+            echo "::error::请检查 $AAPT 的版本与子命令（本步依赖 aapt/aapt2 的 dump badging 兼容性）。"
+            exit 1
+          fi
+          if ! echo "$BADGING" | grep -q '^application-'; then
+            echo "::error::badging 输出没有任何 `application-*` 行 —— debuggable 标志的出现位置不存在，门禁无法判定，按失败处理。"
+            exit 1
+          fi
           if echo "$BADGING" | grep -q '^application-debuggable'; then
             echo "::error::发布产物是 debuggable 包（Issue F-01 回归）：run-as / adb pull 可读应用私有目录，WebView 远程调试可读页面内 Cookie（= 管理员凭据）。"
             echo "::error::请检查 -I .github/capsule/files/scripts/no-debuggable.gradle 是否被 Gradle 接受（AGP 版本变更可能让 init script 失效）。"

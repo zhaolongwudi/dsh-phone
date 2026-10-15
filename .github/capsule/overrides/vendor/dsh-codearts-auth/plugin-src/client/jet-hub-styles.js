@@ -4,7 +4,16 @@
 
 const STYLES = `
 .dim-jh-page { display: flex; flex-direction: column; height: 100%; }
-.dim-jh-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--dsw-alias-border-default, #e5e5e5); }
+/* ⚠️ 左右 padding 为 0（2026-10-14）：宿主 SettingsRoot 已经把整个 section
+   内容区按 padding 0 24px 24px 缩进了一层（类名 .wCInkW_options，见
+   @deepseek-ai/dsh-client-ui-settings-general/SettingsRoot.module.css）。
+   此前这里再写 24px，页头就比下方内容（.dim-jh-layout 无 padding）多缩进
+   一层，按钮行看起来往里缩、与 provider 列表左边界对不齐。
+   改为 0 后页头与内容对齐到同一条 24px 基准线，并净得 48px 横向空间
+   （页头按钮多，这 48px 直接决定「渠道原生搜索」开关是否换行）。
+   注意：本文件是 JS 模板字符串，注释里不能出现反引号。
+   ⚠️ 不要加回来：它省不了任何东西，只会重新制造那层错位。 */
+.dim-jh-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--dsw-alias-border-default, #e5e5e5); }
 /* ⚠️ 页头左侧的标题块**已整块删除**（2026-10-07）：
    ① 「Jet Hub」标题本体（.dim-jh-brand / .dim-jh-brandName）—— 页头一排已有
       7 个按钮，标题只占宽度、不带任何操作。CSS 一并删除（留在样式表里的
@@ -64,6 +73,15 @@ const STYLES = `
 /* Gemini Code Assist：内联 SVG 自带蓝紫渐变星形，白底容器中显示清晰。
    ⚠️ 本文件的样式整体是一个模板字符串 —— 注释里**不能出现反引号**（会提前终止）。 */
 .dim-jh-providerIcon.gemini { background: white; }
+/* Accio（阿里）：内联 SVG 自带品牌橙圆角方块 + 白色 A 字，白底容器中显示清晰。
+   ⚠️ 本文件的样式整体是一个模板字符串 —— 注释里**不能出现反引号**（会提前终止）。 */
+.dim-jh-providerIcon.accio { background: white; }
+/* OfficeAce（华为 MaaS / 果办）：内联 SVG **自带不透明红底 + 白字 OA**，
+   故容器用 transparent（与 zcode 同因：图标自己不透明，再叠白底是多余的）。
+   ⚠️ 这一条是 2026-10-13 合并审计补的 —— 此前 provider-icons.js 的注释
+      声称「样式见本文件」，而本文件**零命中 officeace**（注释失实且无守卫）。
+   ⚠️ 本文件的样式整体是一个模板字符串 —— 注释里**不能出现反引号**（会提前终止）。 */
+.dim-jh-providerIcon.officeace { background: transparent; }
 /* 聚合 provider：内联 SVG（三渠道汇聚），白底容器中显示清晰。
    ⚠️ 加这一条是必要的 —— 上面每家的 logoClass 都各自声明了背景，
       没有兜底规则，缺了会让聚合的图标容器**没有背景**（与其它行不一致）。 */
@@ -90,21 +108,6 @@ const STYLES = `
 
 /* 右侧面板 */
 .dim-jh-panel { flex: 1; padding: 24px; overflow-y: auto; }
-.dim-jh-providerIcon.chatgpt { background: var(--dsw-alias-label-primary, #20242b); color: var(--dsw-alias-bg-layer-3, #fff); font-size: 10px; font-weight: 750; }
-.dim-jh-chatgpt { max-width: 760px; }
-.dim-jh-chatgpt h2 { margin: 0 0 10px; font-size: 20px; }
-.dim-jh-chatgpt h3 { margin: 0; font-size: 16px; }
-.dim-jh-chatgpt p { line-height: 1.65; overflow-wrap: anywhere; }
-.dim-jh-chatgptIntro, .dim-jh-chatgptHint { color: var(--dsw-alias-label-secondary, #646a73); font-size: 13px; }
-.dim-jh-chatgptActions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-.dim-jh-chatgpt .dim-jh-btn { min-height: 44px; }
-.dim-jh-chatgptAccounts { width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--dsw-alias-border-default, #e5e5e5); border-radius: 8px; color: inherit; background: var(--dsw-alias-bg-layer-3, #fff); }
-.dim-jh-chatgptCatalogHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.dim-jh-chatgptModel { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--dsw-alias-border-default, #e5e5e5); }
-.dim-jh-chatgptModel code { overflow-wrap: anywhere; font-size: 12px; user-select: text; }
-.dim-jh-chatgptNotice { color: #b45309; }
-.dim-jh-chatgptWelcome { position: fixed; inset: 0; z-index: 1100; background: #0006; display: grid; place-items: center; padding: 20px; }
-.dim-jh-chatgptWelcome > div { max-width: 440px; width: 100%; box-sizing: border-box; }
 .dim-jh-empty { text-align: center; padding: 40px; color: var(--dsw-alias-label-tertiary, #888); }
 .dim-jh-empty p { margin: 8px 0; font-size: 14px; }
 
@@ -115,16 +118,9 @@ const STYLES = `
 
 /* 拖拽排序 */
 /* 抓取柄：独立的小区域，避免与卡片内的按钮/文本选择冲突 */
-/* ⚠️ Issue F-16：touch-action: none 是**触屏拖拽能工作的前提** —— 没有它，
-   浏览器会把手指在柄上的纵向移动当成页面滚动，指针事件随即收到 pointercancel，
-   指针拖拽（onPointerDown/Move/Up）一次都不会走完。旁证：同仓库
-   .dim-jh-providerDragHandle 早就有这一行（provider 开关弹窗的拖拽在触屏上可用），
-   而账号卡片的柄只挂了类名 .dim-jh-dragHandle ⇒ 手机上「拖不动」而界面仍在提示可拖。 */
-.dim-jh-dragHandle { flex: none; width: 16px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: grab; color: var(--dsw-alias-label-tertiary, #9aa0a6); font-size: 12px; line-height: 1; letter-spacing: -1px; user-select: none; border-radius: 4px; touch-action: none; }
+.dim-jh-dragHandle { flex: none; width: 16px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: grab; color: var(--dsw-alias-label-tertiary, #9aa0a6); font-size: 12px; line-height: 1; letter-spacing: -1px; user-select: none; border-radius: 4px; }
 .dim-jh-dragHandle:hover { color: var(--dsw-alias-label-secondary, #5f6672); background: rgb(31 35 41 / 5%); }
 .dim-jh-dragHandle:active { cursor: grabbing; }
-.dim-jh-providerDragHandle { touch-action: none; }
-@media (pointer: coarse) { .dim-jh-providerDragHandle { min-width: 32px; min-height: 40px; } .dim-jh-dragHandle { min-width: 32px; min-height: 40px; } }
 /* 正在被拖动的卡片：淡出以表明它已"拿起" */
 .dim-jh-accountCard[data-dragging="true"] { opacity: 0.4; border-style: dashed; }
 /* 拖拽悬停的目标位置：插入线。上方=插到该卡片之前，下方=之后。 */
@@ -142,6 +138,8 @@ const STYLES = `
 .dim-jh-accountTag { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 17px; font-weight: 500; }
 .dim-jh-accountTag[data-tone="on"] { color: #15803d; background: rgb(34 197 94 / 12%); }
 .dim-jh-accountTag[data-tone="off"] { color: var(--dsw-alias-label-tertiary, #8f959e); background: rgb(143 149 158 / 12%); }
+/* 「限额中」标记：与 metaRow 的 warn 同色系，让「沉到底部的原因」一眼可辨。 */
+.dim-jh-accountTag[data-tone="warn"] { color: #b45309; background: rgb(227 116 0 / 12%); }
 
 /* 元信息：键值对齐的网格 */
 .dim-jh-accountMeta { display: grid; gap: 3px; margin: 8px 0 0; }
@@ -159,6 +157,18 @@ const STYLES = `
 .dim-jh-metaRow dd.dim-jh-creditValue { display: flex; flex-direction: row; align-items: baseline; gap: 6px; overflow: visible; }
 .dim-jh-creditTotal { font-size: 13px; font-weight: 600; color: #1677ff; font-variant-numeric: tabular-nums; }
 .dim-jh-creditPackages { font-size: 11px; color: var(--dsw-alias-label-tertiary, #8f959e); }
+/* 分桶说明（三档带色）：永久绿 / 长期黄 / 临期红 + 倒计时（用户 2026-10-12）。
+   ⚠️ 颜色语义与 credit-expiry.js 的 expirySplitParts 一一对应：
+     permanent（服务端没给到期时间，真·永久）→ ok 绿
+     longTerm（有到期时间但还早）              → warn 黄
+     expiring（窗口内，再不用就作废）          → error 红
+   ⚠️ 与 .dim-jh-badgeNotePart 同一套 tone 变量（深浅主题各自有定义）。 */
+.dim-jh-creditPoolPart { font-size: 11px; font-variant-numeric: tabular-nums; }
+.dim-jh-creditPoolPart[data-tone="ok"] { color: var(--dsw-alias-state-success-primary, #15803d); }
+.dim-jh-creditPoolPart[data-tone="warn"] { color: var(--dsw-alias-state-warn-primary, #b45309); }
+.dim-jh-creditPoolPart[data-tone="error"] { color: var(--dsw-alias-state-error-primary, #d93025); }
+.dim-jh-creditPoolPart[data-tone="muted"] { color: var(--dsw-alias-label-tertiary, #8f959e); }
+.dim-jh-creditPoolSep { font-size: 11px; color: var(--dsw-alias-label-tertiary, #8f959e); }
 /* 已失效额度：弱化的橙色提示，与主数值的蓝色明确区分 */
 .dim-jh-creditExpired { font-size: 11px; color: #b45309; }
 
@@ -203,11 +213,16 @@ const STYLES = `
 /* ⚠️ 本文件 CSS 装在**模板字符串**里 —— 注释内绝不能出现反引号，否则提前
    闭合、esbuild 报 "Expected ; but found ..." 并把指针指到注释行（2026-10-07
    在同一天内踩了两次，故把这条写进最常改的页头段落）。
-   ⚠️ 页头左侧标题块（.dim-jh-brand / .dim-jh-brandName）已删除（2026-10-07），
-   故按钮组改为**独占整行**（flex: 1 而非 none）：原先 space-between 靠左侧
-   标题把按钮推到右边，标题一删按钮会贴左，改用 flex: 1 + 左对齐保持原观感。
-   ⚠️ 仍**保留** flex-wrap: wrap：窗口极窄时让按钮换行远好过溢出到窗口外点不到。 */
-.dim-jh-headerActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+   ⚠️ 页头左侧标题块（.dim-jh-brand / .dim-jh-brandName）已删除（2026-10-07）。
+   ⚠️ 对齐方式历经三次调整，**当前是居中**：
+   ① 有标题时：space-between 靠标题把按钮推到右边；
+   ② 标题删除后：改 flex: 1 + 默认左对齐（贴左，注释原话「保持原观感」）；
+   ③ 2026-10-14：用户要求改**居中**（justify-content: center）—— 按钮组
+      是页头唯一内容，居中让整排在视觉上更平衡，也不与下方内容左边界打架。
+   ⚠️ 仍**保留** flex-wrap: wrap：窗口极窄时让按钮换行远好过溢出到窗口外点不到。
+   ⚠️ 居中与 flex: 1 1 auto 并存是**必需的**：去掉 flex 后容器宽度收缩到内容宽，
+   justify-content 就没有可分配的空间、视觉上退回贴左。 */
+.dim-jh-headerActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
 
 /* 上一次「重测 / 重置」的结果提示 */
 .dim-jh-probeNotice { margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, #eef0f3); background: var(--dsw-alias-bg-layer-2, #f7f8fa); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary, #646a73); }
@@ -222,22 +237,16 @@ const STYLES = `
 /* 复制失败时把链接变成一次点击全选，用户能直接 Ctrl+C。 */
 .dim-jh-loginLinkRow[data-copy-state="failed"] .dim-jh-loginLink { user-select: all; }
 
-/* ⚠️ Issue F-69：这里原先是一整块「登录弹窗」样式 —— .dim-jh-loginOverlay /
-   .dim-jh-loginDialog（外加它的 h3 与 p 两条）/ .dim-jh-loginActions。
-   客户端源码里**一个消费者都没有**：全仓库 className 零命中，已发布的
-   lib/client/jet-hub.js 构建产物里也只剩这几条规则自身 ⇒ 属死 CSS
-   （下面 modalOverlay 那段注释是唯一提到旧类名的地方，已改为不写类名）。
-   其中 .dim-jh-loginDialog 的 min-width: 320px 既没有 box-sizing: border-box
-   也没有 max-width，在 360px 视口下会横向溢出 —— 既然无人使用，**删除**比
-   补属性更对（与页头 .dim-jh-brand 那次的处置同口径：留在样式表里的无引用规则
-   没有任何价值，只会在下次重构时被误当成生效样式）。
-   ⚠️ 将来若真的要重建登录弹窗，不要照抄上面那组值：min-width 必须配
-   box-sizing: border-box 与 max-width: calc(100vw - 24px)。 */
+/* 登录弹窗 */
+.dim-jh-loginOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.dim-jh-loginDialog { background: var(--dsw-alias-bg-layer-1, #fff); border-radius: 12px; padding: 24px; min-width: 320px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
+.dim-jh-loginDialog h3 { margin: 0 0 8px; font-size: 16px; }
+.dim-jh-loginDialog p { font-size: 13px; color: var(--dsw-alias-label-secondary, #555); margin: 0 0 16px; }
+.dim-jh-loginActions { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* ── 模型列表弹窗（「显示列表」） ── */
 /* 复用登录弹窗的遮罩模式：fixed 覆盖全屏，z-index 高于设置页内容。
-   3000 高于登录弹窗遮罩的 1000（那组规则已按 Issue F-69 删除，此处只留数值关系
-   作历史依据），保证两个弹窗同时存在时模型列表在上。 */
+   3000 高于 .dim-jh-loginOverlay 的 1000，保证两个弹窗同时存在时模型列表在上。 */
 .dim-jh-modalOverlay { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,0.32); }
 /* 模型列表弹窗：**顶部锚定**而非垂直居中。
    ⚠️ 这是修真实缺陷（用户报障「输入文字后整个弹框的位置会发生改变，有点突兀」）：
@@ -251,6 +260,7 @@ const STYLES = `
    不再用 100vh - 48px 这类视口算式 —— 否则 8vh 大于 24px 时会溢出视口。 */
 .dim-jh-modalOverlay--top .dim-jh-modal { max-height: 100%; }
 .dim-jh-modal { display: flex; flex-direction: column; width: min(560px, 100%); max-height: min(640px, calc(100vh - 48px)); padding: 20px 22px; border-radius: 14px; background: var(--dsw-alias-bg-layer-1, #fff); box-shadow: 0 16px 48px rgba(0,0,0,0.22); }
+.dim-jh-modal--ledger { width: min(960px, 100%); max-height: min(820px, calc(100vh - 40px)); }
 .dim-jh-modalHead { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dim-jh-modalTitle { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2329); }
 .dim-jh-modalSubtitle { overflow: hidden; font-size: 12px; line-height: 18px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #8f959e); text-overflow: ellipsis; white-space: nowrap; }
@@ -558,7 +568,7 @@ const STYLES = `
    卡片结构与网关弹窗的供应商卡片同一规格语言（细边框 + 圆角 + 吸顶头），
    但不吸顶：本弹窗层级只有两级，吸顶收益小于复杂度。
    ⚠️ 本文件整体是 JS 模板字符串，注释里绝不能出现反引号 —— 类名一律裸写。 */
-.dim-jh-ledgerFilters { display: flex; gap: 6px; margin-bottom: 8px; }
+.dim-jh-ledgerFilters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .dim-jh-ledgerFilterBtn { padding: 2px 10px; font-size: 11.5px; line-height: 17px; border-radius: 999px; opacity: .72; }
 .dim-jh-ledgerFilterBtn[data-active="true"] { opacity: 1; font-weight: 600; }
 .dim-jh-ledgerCard { min-width: 0; border: .5px solid var(--dsw-alias-border-l3, #e5e5e5); border-radius: 10px; overflow: hidden; }
@@ -583,33 +593,53 @@ const STYLES = `
 .dim-jh-ledgerModelTokens { flex: none; font-size: 11.5px; line-height: 17px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-primary, #1f2329); white-space: nowrap; }
 /* 均值格（首字 · 速率）：三级汇总行（渠道/账号/模型）共用，等宽数字对齐。 */
 .dim-jh-ledgerPerf { flex: none; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary, #8f959e); white-space: nowrap; }
-/* ── 历史视图（第 4 期）：趋势柱状图 + 展开的日聚合树 ──
-   柱状图用纯 div（不引图表库）：每根柱 = 一天，高度按相对最大值的百分比。
-   ⚠️ 容器 height 由 barHeightPercent 的**百分比**决定上限（88%），故这里留出
-   足够净高；柱宽**不能**靠 flex 拉伸填满 —— 单日窗口只有一根柱时
-   flex: 1 0 14px 会把它横向拉满整行，呈现为「一整条白块」。
-   故给单柱/少柱窗口一个 max-width，让它保持柱子的形状。 */
+/* ── 历史视图（第 4 期）：GitHub 风格每日用量格 + 展开的日聚合树 ── */
 .dim-jh-ledgerSection { margin-bottom: 14px; }
 .dim-jh-ledgerSectionTitle { font-size: 13px; line-height: 19px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2329); margin-bottom: 6px; }
-.dim-jh-ledgerTrend { display: flex; align-items: flex-end; gap: 3px; height: 64px; padding: 4px 2px 0; overflow-x: auto; }
-/* 柱子列：横向可滚、但单柱不吃满宽（见上方注释）。 */
-.dim-jh-ledgerTrendCol { flex: 1 0 14px; min-width: 14px; max-width: 56px; height: 100%; display: flex; align-items: flex-end; cursor: pointer; }
-/* ⚠️ 颜色必须**自带可见性**：品牌变量 --dsw-alias-brand-primary 只在变量
-   *缺失* 时才走 #1677ff 兜底；一旦宿主主题把它定义成接近底色的浅色，再叠
-   opacity 就会退化成一块与背景同色的「白块」（真实缺陷 2026-10-07，深色主题
-   实测）。故：① opacity 从 .45 提到 .55（仍是「未选中」的弱化语义），
-   ② 补 box-shadow 描边 —— 即使底色与背景同色也留有边界，不会「消失」。 */
-.dim-jh-ledgerTrendBar { width: 100%; min-height: 2px; border-radius: 3px 3px 0 0; background: var(--dsw-alias-brand-primary, #1677ff); box-shadow: inset 0 0 0 1px rgba(127,127,127,.45); opacity: .55; transition: opacity .12s ease; }
-.dim-jh-ledgerTrendBar:hover { opacity: .8; }
-.dim-jh-ledgerTrendBar[data-today="true"] { opacity: .95; }
-.dim-jh-ledgerTrendBar[data-active="true"] { opacity: 1; outline: 1.5px solid var(--dsw-alias-brand-primary, #1677ff); }
-/* 日期短标签：常驻显示 MM-DD，根治「不知道哪根柱是哪天」。 */
-.dim-jh-ledgerTrendLabel { font-size: 10px; line-height: 12px; text-align: center; color: var(--dsw-alias-label-tertiary, #8f959e); font-variant-numeric: tabular-nums; }
+.dim-jh-ledgerHeatmapWrap { width: 100%; overflow-x: auto; padding: 4px 3px 8px; }
+.dim-jh-ledgerHeatmap { display: grid; grid-auto-flow: column; grid-template-rows: repeat(4, 12px); grid-auto-columns: 12px; gap: 4px; width: max-content; }
+.dim-jh-ledgerHeatmapCell { appearance: none; box-sizing: border-box; width: 12px; height: 12px; padding: 0; border: 1px solid rgba(34, 211, 238, .16); border-radius: 3px; background: rgba(34, 211, 238, .07); box-shadow: 0 0 2px rgba(34, 211, 238, .08); transition: background .12s ease, box-shadow .12s ease, transform .12s ease; }
+.dim-jh-ledgerHeatmap button.dim-jh-ledgerHeatmapCell { cursor: pointer; }
+.dim-jh-ledgerHeatmapCell[data-level="1"] { background: rgba(34, 211, 238, .25); box-shadow: 0 0 4px rgba(34, 211, 238, .16); }
+.dim-jh-ledgerHeatmapCell[data-level="2"] { background: rgba(34, 211, 238, .46); box-shadow: 0 0 5px rgba(34, 211, 238, .28); }
+.dim-jh-ledgerHeatmapCell[data-level="3"] { background: rgba(6, 182, 212, .84); border-color: rgba(103, 232, 249, .75); box-shadow: 0 0 7px rgba(34, 211, 238, .5); }
+.dim-jh-ledgerHeatmapCell[data-level="4"] { background: #0e7490; border-color: #67e8f9; box-shadow: 0 0 12px rgba(34, 211, 238, .9), inset 0 0 5px rgba(103, 232, 249, .72); }
+.dim-jh-ledgerHeatmap button.dim-jh-ledgerHeatmapCell:hover { transform: scale(1.18); border-color: #a5f3fc; box-shadow: 0 0 10px rgba(34, 211, 238, .8); }
+.dim-jh-ledgerHeatmapCell[data-today="true"] { outline: 1px solid #cffafe; outline-offset: 1px; }
+.dim-jh-ledgerHeatmapCell[data-active="true"] { outline: 2px solid #67e8f9; outline-offset: 2px; }
+.dim-jh-ledgerHeatmap button.dim-jh-ledgerHeatmapCell:focus-visible { outline: 2px solid #cffafe; outline-offset: 2px; }
+.dim-jh-ledgerDayPeek { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; min-height: 30px; margin-top: 7px; padding: 5px 9px; border-radius: 7px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); color: var(--dsw-alias-label-secondary, #4e5969); font-size: 11.5px; }
+.dim-jh-ledgerDayPeek strong { color: var(--dsw-alias-label-primary, #1f2329); }
+.dim-jh-ledgerChartHint { margin-top: 7px; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; }
+.dim-jh-ledgerDeleteQuick { margin-left: auto; }
+.dim-jh-ledgerDateRange { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.dim-jh-ledgerDateRange label { display: flex; align-items: center; gap: 5px; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; }
+.dim-jh-ledgerDateRange input { width: 136px; padding: 3px 6px; font-size: 11px; }
+.dim-jh-ledgerExport { flex: none; }
 /* 明细表：紧凑小字；模型列允许换行（长 wire 名不能截断 —— 网关弹窗同一条教训）。 */
-.dim-jh-ledgerTable { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 11.5px; line-height: 17px; }
+.dim-jh-ledgerEntryTools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 12px 0 5px; }
+.dim-jh-ledgerEntryTools strong { margin-right: 2px; font-size: 13px; color: var(--dsw-alias-label-primary, #1f2329); }
+.dim-jh-ledgerEntryCount { margin-right: auto; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dim-jh-ledgerSearch { flex: 1 1 130px; width: auto; min-width: 120px; padding: 4px 7px; font-size: 11px; }
+.dim-jh-ledgerSelect { min-width: 82px; max-width: 130px; padding: 4px 6px; border: 1px solid var(--dsw-alias-border-l2, #d0d3d9); border-radius: 6px; background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #1f2329); font-size: 11px; }
+.dim-jh-ledgerTable { width: 100%; margin-top: 4px; border-collapse: collapse; table-layout: fixed; font-size: 11.5px; line-height: 17px; }
 .dim-jh-ledgerTable th { position: sticky; top: 0; z-index: 1; padding: 4px 6px; text-align: left; font-weight: 600; color: var(--dsw-alias-label-tertiary, #8f959e); background: var(--dsw-alias-bg-layer-1, #fff); border-bottom: .5px solid var(--dsw-alias-border-l3, #e5e5e5); }
 .dim-jh-ledgerTable td { padding: 3px 6px; border-bottom: .5px solid var(--dsw-alias-border-l3, #f0f1f3); font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-secondary, #4e5969); vertical-align: baseline; }
 .dim-jh-ledgerTable .dim-jh-ledgerEntryModel { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-primary, #1f2329); overflow-wrap: anywhere; }
+.dim-jh-ledgerTable tbody tr[data-error="true"] td { color: var(--dsw-alias-state-error-primary, #d93025); }
+.dim-jh-ledgerTable .dim-jh-ledgerError { cursor: help; font-weight: 600; }
+.dim-jh-ledgerTable .dim-jh-ledgerSuccess { color: var(--dsw-alias-state-success-primary, #25803c); }
+.dim-jh-ledgerPagination { display: flex; align-items: center; justify-content: flex-end; gap: 7px; padding: 7px 0; color: var(--dsw-alias-label-tertiary, #8f959e); font-size: 11px; }
+@media (max-width: 700px) {
+  .dim-jh-modal--ledger { padding: 14px 12px; }
+  .dim-jh-ledgerPerf { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .dim-jh-ledgerEntryTools { align-items: stretch; }
+  .dim-jh-ledgerEntryCount { flex: 1 1 50%; }
+  .dim-jh-ledgerSearch { flex-basis: 100%; }
+  .dim-jh-ledgerSelect { flex: 1 1 30%; max-width: none; }
+  .dim-jh-ledgerTable { font-size: 10px; }
+  .dim-jh-ledgerTable th, .dim-jh-ledgerTable td { padding: 3px 2px; overflow-wrap: anywhere; }
+}
 
 /* ── 模型列表的「计费/来源」分组（订阅 / 免费 / Cline Cloud / 按量计费）──
    分组由 model-groups.js 的纯函数决定（判据见其模块注释）；这里只管观感。
@@ -634,6 +664,12 @@ const STYLES = `
 .dim-jh-switch:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, #1677ff 30%, transparent); }
 .dim-jh-switch:disabled { opacity: 0.5; cursor: default; }
 
+/* 「渠道原生搜索」开关（页头，取代原「关闭」按钮）。
+   white-space: nowrap 是必需的：页头按钮行不换行，而 label 内的文字
+   默认会在窄面板下折成两行，把整行高度撑开（与页头按钮同款约束）。
+   字号与 .dim-jh-btn 对齐，视觉上仍是「一排控件」的一部分。 */
+.dim-jh-nativeSearch { flex: none; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; color: var(--dsw-alias-label-p, inherit); cursor: pointer; user-select: none; }
+
 /* ── 账号备份（导出 / 恢复）── */
 /* 口令输入框：宽度撑满弹窗内容区，避免在窄面板下挤坏布局。
    ⚠️ 背景必须用**真实存在**的 token。早期写的是 --dsw-alias-bg-input，而主题里
@@ -648,7 +684,9 @@ const STYLES = `
 /* 加密勾选行：勾选框 + 文案一行排开 */
 .dim-jh-checkRow { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; font-size: 13px; color: var(--dsw-alias-label-primary, #1f2329); cursor: pointer; }
 .dim-jh-checkRow input[type="checkbox"] { margin: 0; accent-color: #1677ff; }
-/* ── 账号勾选（导出选账号 / 导入选账号）──（移植自 Gitee） */
+/* 两次口令输入：纵向堆叠 */
+.dim-jh-formRows { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+/* ── 账号勾选（导出选账号 / 导入选账号）── */
 /* 「全部」那行与逐条列表同宽，列表可滚动：账号多时不把弹窗撑爆 */
 .dim-jh-accountPick { display: flex; flex-direction: column; margin: 6px 0 2px; }
 .dim-jh-accountPickList { display: flex; flex-direction: column; max-height: 200px; overflow-y: auto; padding-right: 4px; }
@@ -661,8 +699,6 @@ const STYLES = `
 /* ── 导入方式单选（整体还原 / 单独导入）── */
 .dim-jh-modePick { display: flex; flex-direction: column; margin: 4px 0 8px; }
 .dim-jh-modePick input[type="radio"] { margin: 0; accent-color: #1677ff; }
-/* 两次口令输入：纵向堆叠 */
-.dim-jh-formRows { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
 /* 弹窗底部动作区：右对齐（生成/确认按钮） */
 .dim-jh-modalActions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
@@ -929,19 +965,6 @@ const STYLES = `
  * 靠**源顺序**决定胜负 —— 一旦被排到前面，窄屏下 display:none 会被
  * 后面的 display:flex 覆盖，文字重新出现并挤压模型选择器（静默回归）。 */
 @media (max-width: 720px) { .dim-jh-badgeText, .dim-jh-badgeBtn > svg, .dim-jh-badgeBtn > .dim-jh-badgeChevron { display: none; } .dim-jh-badgeBtn { max-width: none; padding: 2px 6px; } }
-/* ⚠️ Issue F-48：上面那条断点把拥挤判据挂在**视口宽度**上，而 composer 的真实可用
- * 宽度 = 视口 − 侧栏（该限制上面那段注释已自承）。手机**横屏**时视口往往 >720px，
- * 于是落进「不收敛」的一侧：216px 徽标与模型选择器在同一行争宽，正是上面注释描述的
- * 「模型选择器图标被挤没」形态。
- * 严格解是容器查询（容器 = composer 行），但 @container 要 Chrome 105+，而本层目标
- * 内核下界由 files/scripts/ui-compat-floor.mjs 定为 **Chrome 97**（该文件 FEATURES
- * 表里 @container 标着 since:105）⇒ 容器查询在本层不可用。
- * 故取「粗指针 + 横屏 + 矮视口」作 composer 拥挤的等价判据：粗指针=触屏设备、
- * 横屏+max-height 500px=手机（平板横屏通常 ≥700px 高，不会被误伤）。
- * ⚠️ 与 app 层 dsh-phone.css 的 F-15 规则的分工：视口 ≤767px 时 app 层用 !important
- * 强制显示读数（那是 F-15 的诉求：手机上必须看得到读数，宽度由 max-width 收口）；
- * 本条只在 >767px（app 层媒体查询不生效）的横屏手机上接管。 */
-@media (pointer: coarse) and (orientation: landscape) and (max-height: 500px) { .dim-jh-badgeText, .dim-jh-badgeBtn > svg, .dim-jh-badgeBtn > .dim-jh-badgeChevron { display: none; } .dim-jh-badgeBtn { max-width: none; padding: 2px 6px; } }
 .dim-jh-badgeDot { width: 5px; height: 5px; flex: none; border-radius: 999px; background: var(--dsw-alias-state-success-primary); }
 .dim-jh-badgeDot[data-tone="warn"] { background: var(--dsw-alias-state-warn-primary); }
 .dim-jh-badgeDot[data-tone="error"] { background: var(--dsw-alias-state-error-primary); }
@@ -1008,6 +1031,18 @@ const STYLES = `
 .dim-jh-badgeRowHead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-primary); }
 .dim-jh-badgeRowName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dim-jh-badgeRowNote { font-size: 10px; line-height: 14px; color: var(--dsw-alias-label-tertiary); }
+/* 分桶说明的**逐段带色**（用户 2026-10-12：永久绿 / 长期黄 / 临期红 + 倒计时）。
+   ⚠️ 颜色语义与 credit-expiry.js 的 expirySplitParts 一一对应，改一处要改两处：
+     permanent（服务端没给到期时间，真·永久）→ ok 绿
+     longTerm（有到期时间但还早）              → warn 黄
+     expiring（窗口内，再不用就作废）          → error 红
+   ⚠️ 用 tone 变量而不是硬编码色值：深浅色主题各自有定义（与 .dim-jh-badgeDot 同源）。 */
+.dim-jh-badgeNotePart { font-variant-numeric: tabular-nums; }
+.dim-jh-badgeNotePart[data-tone="ok"] { color: var(--dsw-alias-state-success-primary, #15803d); }
+.dim-jh-badgeNotePart[data-tone="warn"] { color: var(--dsw-alias-state-warn-primary, #b45309); }
+.dim-jh-badgeNotePart[data-tone="error"] { color: var(--dsw-alias-state-error-primary, #d93025); }
+.dim-jh-badgeNotePart[data-tone="muted"] { color: var(--dsw-alias-label-tertiary); }
+.dim-jh-badgeNoteSep { color: var(--dsw-alias-label-tertiary); }
 /* 窗口：**一行**放下 名称 / 进度条 / 百分比 / 重置倒计时。
    ⚠️ 用户 2026-10-02 明确口径（附截图）：「像两边对齐，但进度条要一样长，文字部分
    左右分别对齐」⇒ 用**共享列宽的 grid**（不是整块居中、也不是每行各自 flex）：
@@ -1087,79 +1122,154 @@ const STYLES = `
 .dim-jh-aggFooter { display: flex; flex-direction: column; gap: 2px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-secondary); }
 .dim-jh-aggFooter p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--dsw-alias-label-tertiary); }
 
-/* 「在用模型」实时读数胶囊（输入区最下方，conversation.composer.dock）。
-   ⚠️ 该槽是 list，官方按 order 注入 activity / usage 两枚统计胶囊；本插件以
-   order 2 追加在它们之后，故这里只需保证自身不挤压、可整体省略。
-   ⚠️⚠️ **竖排两行 + 更小字号**（真机实测后改，2026-10-10）：第一版是一行
-   「在用 · 渠道 · 模型」，而 dock 是 display:flex 且**没有 flex-wrap**，
-   四个元素共处一行 ⇒ 宽度是**相加**的，三枚文字胶囊全被截断
-   （实测：20 ... / 74.3... / 在用 · CodeBuddy (）。竖排后本胶囊宽度从
-   「渠道+模型」的和变成两者的**较大值**（约减半），是保住官方两枚显示的关键。
-   ⚠️ 因此这里**不得**再加 white-space: nowrap 之类会撑宽的单行约束。
-   ⚠️ 本条注释不得使用反引号：本文件的 STYLES 是模板字符串，反引号会提前闭合它
-   （见 docs/agent-notes/client-ui.md 的同类事故记录）。 */
-/* ⚠️⚠️ 宽度上限只写在**外层** root 上（32%）。内层 button 必须是 max-width: 100%
-   —— 我第一版把 32% 同时写在两层上，而百分比是相对**各自的包含块**解析的：
-   button 的包含块是 root，于是实际可用宽度变成 32% × 32% ≈ 视口的 10%，
-   模型名会被砍到只剩几个字符（比不加约束更糟）。 */
-.dim-jh-routePill { box-sizing: border-box; display: inline-flex; flex-direction: column; justify-content: center; gap: 0; min-width: 0; max-width: 100%; padding: 0 6px; border: none; border-radius: 8px; background: 0 0; font: inherit; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); }
-button.dim-jh-routePill { cursor: pointer; }
-button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { color: var(--dsw-alias-label-secondary); }
-/* 唯一的上限：让出宽度给官方 activity / usage 两枚胶囊（三枚共处一行）。 */
-.dim-jh-routePillRoot { display: inline-flex; min-width: 0; max-width: 32%; }
-/* 两行各自省略：行内 overflow 必须由行自己扛（容器是 column，overflow 会切成整块）。
-   ⚠️ 不加 min-width: 0 也能工作 —— 列向容器的交叉轴（宽）由本行的 max-width: 100%
-   与容器的 32% 上限共同约束，省略号即在这些边界处生效。 */
-.dim-jh-routePillTop, .dim-jh-routePillBottom { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 上行渠道：更弱一档（它是「谁」、不常变，让视线先落到下面的模型名上）。 */
-.dim-jh-routePillTop { font-size: 9px; line-height: 11px; opacity: 0.75; }
-/* 下行模型：略大一点，且等宽数字（模型名里常带 4.1 / 5.2 这类版本号）。 */
-.dim-jh-routePillBottom { font-size: 10px; line-height: 12px; }
-
-/* 点开后的明细弹层（用户 2026-10-10 建议：把完整读数放进弹层，
-   胶囊本体只留两行短文本 —— 这是手机上唯一能同时保住官方两枚胶囊的做法）。
-   ⚠️ 定位（left/top）由 JS 算好内联进来（贴边夹紧、优先放上方），
-   故这里**不得**写 position: fixed 之外的定位值，也不要写 top/left。 */
-.dim-jh-routePanel { position: fixed; z-index: 60; box-sizing: border-box; min-width: 168px; max-width: min(260px, calc(100vw - 24px)); padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #fff); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16); font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-secondary); }
-.dim-jh-routePanelTitle { margin-bottom: 4px; font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-primary); }
-/* 两列网格：标签定宽、值可换行（长模型名不能撑破弹层）。 */
-.dim-jh-routePanelRows { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; }
-.dim-jh-routePanelRows dt { color: var(--dsw-alias-label-tertiary); }
-.dim-jh-routePanelRows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); }
-
-/* ⚠️ Issue F-46：本插件自有的小控件在触屏上远低于可点尺寸下限 ——
-   刷新键与自动签到灯 20×20、状态文字的关闭键 14×14、额度翻页箭头 24×24、
-   开关 34×20、纯图标按钮 min-width 26。app 层 dsh-phone.css 只把 .dim-jh-btn
-   提到 36px，这些类一个都没覆盖。
-   ⚠️ 为什么放在**插件侧**而不是 app 层：插件样式是运行时注入 head 的，**晚于**
-   app 层的 link ⇒ 同特异性下插件胜出；app 层要压过它得逐个 !important，
-   且每加一个小控件都要回去补一条。按 pointer:coarse 在插件侧放大是一次性收口
-   （与上面 .dim-jh-providerDragHandle 同款做法）。
-   ⚠️ 取值依据：badge 弹窗头部一行要放下 状态点 + 渠道名 + 时间 + 两枚按钮，
-   两枚按钮给到 44px 会把渠道名挤没，故取 32px（已高于 WCAG 2.5.8 的 24px 下限）；
-   额度翻页箭头 / 开关 / 图标按钮所在行空间充足，直接给 36~44px。 */
-@media (pointer: coarse) {
-  .dim-jh-badgeRefresh, .dim-jh-badgeAuto { width: 32px; height: 32px; }
-  .dim-jh-badgeAutoClose { width: 26px; height: 26px; }
-  .dim-jh-quotaArrow { width: 36px; height: 36px; }
-  .dim-jh-switch { width: 44px; height: 26px; }
-  .dim-jh-switch::after { width: 22px; height: 22px; }
-  .dim-jh-switch:checked::after { transform: translateX(18px); }
-  .dim-jh-iconBtn { min-width: 36px; min-height: 36px; }
-}
-
+/* ── Accio：**没有**专属样式 ──
+   ⚠️ 2026-10-13 删除了原先的「专属积分区」整段（dim-jh-accioPanel /
+   accioHead / accioAccount* / accioCountdown / accioBuckets* 共 12 条）。
+   原因：用户报障「accio 的显示和别的 provider 没统一，例如 loomy 的」——
+   accio 原先另起一个独立区块，现改为与 loomy 同形（积分行直接进账号卡片，
+   三类桶由 formatNamedPoolLine 逐池列出、倒计时作为同一行内的附注）。
+   ⇒ 那 12 条样式已零引用，留着就是死代码（且会让人以为还有那个面板）。
+   ⚠️ 图标底色 .dim-jh-providerIcon.accio 在文件上方，**仍在用**，别一起删。
+   ⚠️ 本文件整体是模板字符串：注释里**绝不能出现反引号**（会提前闭合，
+   esbuild 的报错会指向注释行、看起来像 CSS 写错）。本条注释就曾踩过。 */
 
 `
 
-let injected = false
-export function installJetHubStyles() {
-  if (injected) return () => {}
-  injected = true
+/**
+ * 本插件的**包 id** —— 必须与 plugin-src/client/build.mjs 的 loaderId 逐字一致。
+ *
+ * ⚠️ 它同时是宿主 claimStyles / removeOwnedStyles 用的 ownerId
+ * （dsh-client-modules 的 stripClientSuffix(registration.id)），
+ * 也就是样式标签 data-plugin 的**正确取值**。改名必须两边一起改。
+ */
+const PLUGIN_ID = 'dsh-codearts-auth'
+
+/** 样式标签的资源标识（宿主 data-plugin-css 的语义，见下）。 */
+const STYLE_TAG_ID = PLUGIN_ID + '/jet-hub.css'
+
+/** 幂等判据用的选择器：按**资源标识**查自己的那张标签。 */
+/** 幂等判据用的选择器：按**资源标识**查自己那张标签。 */
+const STYLE_SELECTOR = 'style[data-plugin-css=' + JSON.stringify(STYLE_TAG_ID) + ']'
+
+/**
+ * 引用计数的挂载键。
+ *
+ * ⚠️⚠️ 计数必须挂在**元素**（dataset）上，不能挂在模块级变量上
+ * （真机实测 2026-10-09，issue IKKGYN）：
+ *
+ * 模块级变量只在**同一个模块实例**内有效，而宿主 replace 会先
+ * tearDownEntryFiber（它会 await 旧 fiber 的 inertia）再重新 import ——
+ * 新 factory 若跑在旧 dispose **之前**，就出现
+ * 「两个实例先后注入、disposer 交错执行」的交错。计数挂在 DOM 上则跨实例共享
+ * 同一份真相。
+ *
+ * ⚠️ 挂载后是 data-jet-hub-refs，是本插件**私有**属性名；
+ * 宿主 claimStyles / removeOwnedStyles 只认 data-plugin，不会碰它。
+ */
+const REFS_KEY = 'jetHubRefs'
+
+/** 当前挂在文档里的样式元素（不在就返回 null）。 */
+function styleElement() {
+  // ⚠️ 用字符串拼接而**不是**模板字符串：本文件的反引号数被单测钉死为 2
+  // （STYLES 的定界符），多一对就会命中「模板字符串被提前闭合」那条闸门。
+  return document.head.querySelector(STYLE_SELECTOR)
+}
+
+/** 插入一份样式表；已存在则**复用**（绝不新建第二份）。 */
+function mountStyles() {
+  const existing = styleElement()
+  if (existing !== null) return existing
   const style = document.createElement('style')
+  // ⚠️ 署名是**关键**（issue IKK764）：claimStyles 只认领无主标签，
+  // removeOwnedStyles 只删自己名下的标签。
+  style.dataset.plugin = PLUGIN_ID
+  style.dataset.pluginCss = STYLE_TAG_ID
   style.textContent = STYLES
   document.head.appendChild(style)
+  return style
+}
+
+/** 把引用计数读成整数（缺失 / 非法一律当 0）。 */
+function refsOf(style) {
+  const n = Number(style.dataset[REFS_KEY])
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * 注入 Jet Hub 的整张样式表。
+ *
+ * ## ⚠️⚠️ 为什么必须写 data-plugin（Gitee issue IKK764）
+ *
+ * 宿主（@deepseek-ai/dsh-client-modules 的 lib/client.js）对 style 标签有归属机制：
+ *
+ * - claimStyles(id)：把自己物化期间出现的**无主**标签
+ *   （选择器 style:not([data-plugin])）**全部**认领给当前插件；
+ * - removeOwnedStyles(id)：按 data-plugin 精确匹配删除，触发路径有四条 ——
+ *   该插件行 revision 变化（updateManifest）、对应行被 prune、factory 抛错、
+ *   条目被替换（replace）。
+ *
+ * 而 installJetHubStyles 是在 ctx.effect(...)（插件 apply 阶段）里注入的，
+ * **必然晚于自己那次 claimStyles**。所以无署名版本有双重缺陷：
+ *
+ * 1. 标签**始终无主** ⇒ 之后任何一个插件物化都会把它认领走；那个插件一热重载 /
+ *    被禁用 / 被卸载，宿主就把「它名下」的样式连根删掉 ⇒ **Jet Hub 整套 UI 掉样式**
+ *    （.dim-jh-* 全量，不是局部）；
+ * 2. 幂等按模块级布尔 ⇒ 标签被外部删除后**永不再补注**。
+ *
+ * 故这里：① 注入时**署名**；② 幂等按**DOM 存在性**判断。
+ *
+ * ## ⚠️⚠️ 为什么 disposer 改用「闭包持有元素 + 元素上引用计数」（IKKGYN）
+ *
+ * 旧 disposer 是 document.querySelector(STYLE_SELECTOR)?.remove() ——
+ * 它删的是**「当前那张」**，不是「自己注入的那张」。只要出现
+ * 「新实例先注入、旧 disposer 后执行」的交错（宿主 replace 的
+ * tearDownEntryFiber 会 await 旧 fiber 的 inertia，故 dispose 天然晚于新的 apply），
+ * 旧 disposer 就会把**新注入的那张**删掉，且此后无人补注 ⇒ IKK764 的故障面重新打开。
+ * 本机 CDP 实测该时序确实成立（新表 1 份 → 旧 disposer 跑完 → 0 份）。
+ *
+ * 现在：disposer **闭包持有自己那张元素**，只减自己的计数 —— 后来注入的那张
+ * （另一个元素）既不会被旧 disposer 减到，也就不会被误删。
+ *
+ * ⚠️ data-plugin-css 只是资源标识（宿主 claimStyles 回读它做 inventory），
+ * 用「包 id + 文件名」的形式，便于将来多张样式表各自幂等。
+ *
+ * ⚠️⚠️ 本文件的样式整体装在模板字符串里，**整份文件只允许 STYLES 首尾那两个
+ * 反引号**：注释里写字面反引号会提前闭合模板（AGENTS.md 红线，已有三条护栏用例
+ * 分别计数）。故上面所有标识符一律裸写，本函数内也不得再引入模板字符串 ——
+ * STYLE_TAG_ID / STYLE_SELECTOR 因此刻意用字符串拼接。
+ */
+export function installJetHubStyles() {
+  const style = mountStyles()
+  style.dataset[REFS_KEY] = String(refsOf(style) + 1)
+  let released = false
   return () => {
+    // 幂等守卫：cordis 允许同一 disposer 被调用两次，重入不得二次减计数。
+    if (released) return
+    released = true
+    // ⚠️ 只动**自己闭包里那张**元素：已被外部删掉就别再计数（元素不在文档里）。
+    if (style.parentNode === null) return
+    const left = refsOf(style) - 1
+    if (left > 0) {
+      style.dataset[REFS_KEY] = String(left)
+      return
+    }
     style.remove()
-    injected = false
   }
+}
+
+/**
+ * 渲染期自愈：样式表被外力摘掉（宿主回收、热更新、误删）时补回。
+ *
+ * ⚠️ 为什么记账还不够：「组件还在、样式没了」正是这样发生的 —— 记账只保证
+ * 「有人持有就不删」，管不住「已经被删掉之后」。而 installJetHubStyles 只挂在
+ * apply 阶段（ctx.effect），**渲染路径上不会重跑**，故必须另开一个渲染期入口，
+ * 否则样式表一丢就只能 F5 整页刷新才恢复。
+ *
+ * @returns 是否真的补了一次（补过就打一条 warn，便于直接定位而不是靠截图取证）
+ */
+export function ensureJetHubStyles() {
+  if (styleElement() !== null) return false
+  mountStyles()
+  console.warn('[jet-hub] 样式表缺失（被卸载或热更新摘除），已重新注入')
+  return true
 }

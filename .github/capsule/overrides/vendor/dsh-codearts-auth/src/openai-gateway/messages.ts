@@ -33,6 +33,53 @@ export interface OpenAiToolCall {
   function?: { name?: unknown; arguments?: unknown }
 }
 
+/**
+ * 网关自有的消息来源标识。
+ *
+ * ⚠️ 0.2.0 的 `MessageSourceMap` **删除了共享的 `plugin` 包装**，改为由每个
+ * 生产者自己声明 kind（见 `packages/llm/llm/src/message.ts` 的注释：
+ * 「no shared catch-all `plugin` kind」）。网关正是一个生产者，故如实署名。
+ *
+ * ⚠️ 网关造出的消息**只进 `llm.stream()`**（`server.ts`），**不落盘**
+ * （没有 `session.append` 调用），故这个 kind 不会出现在会话日志里。
+ */
+export const GATEWAY_SOURCE_KIND = 'openai-gateway'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** 由 OpenAI 兼容网关（`/v1/chat/completions`、`/v1/responses`）合成的入站消息。 */
+    'openai-gateway': { readonly kind: 'openai-gateway' }
+  }
+}
+
+/**
+ * 造一个网关自用的**工具结果包裹块**。
+ *
+ * ⚠️⚠️ `'tool-result'` 是 ≤0.1.6 的历史块形状，**0.2.0 的 `ContentBlockMap`
+ * 已把它删除**（工具结果改为一等 `role:'tool'` 消息）。但网关**刻意继续产出
+ * 这个包裹形状**，因为它正是本插件内部的规范形状：`message-shape.ts` 的
+ * `normalizeHarnessMessages` 会把一等 `tool` 消息**降级**成它，五个适配器
+ * （`llm-adapter` / `openai-compat` / `buddy` / `lobsterai` / `trae`）都按
+ * `type === 'tool-result'` 识别工具结果。网关按同一形状产出，归一化因此是
+ * **零成本透传**；而包裹块的 `content` 正是工具结果内嵌图片的挂载点
+ * （`collectImages` / `userContentParts`）。
+ *
+ * ⇒ 升级前后**行为完全一致**，变的只是类型可见性（该块不再在全局块表里）。
+ * 故把断言集中在**这一处**并写明理由，而不是把全局 `ContentBlockMap` 改回去
+ * —— 那会让所有生产者（含 `stream()` 的 chunk）都能产出它，并顺手掩盖
+ * `gemini-messages.ts` / `minimax-messages.ts` 里真实的类型收窄。
+ *
+ * @param toolCallId - 该结果回答的工具调用 id。
+ * @param content - 结果的内层块（可含图片）。
+ * @returns 可按 `ContentBlock` 使用的包裹块。
+ */
+export function gatewayToolResultBlock(
+  toolCallId: string,
+  content: readonly ContentBlock[],
+): ContentBlock {
+  return { type: 'tool-result', toolCallId, content } as unknown as ContentBlock
+}
+
 export interface OpenAiChatMessage {
   role?: unknown
   content?: unknown
@@ -208,12 +255,14 @@ export async function partsFromContent(
   content: unknown,
   bridge: AttachmentBridge | undefined,
   limits: ImageLimits,
-): Promise<Message['content']> {
+): Promise<readonly ContentBlock[]> {
   if (typeof content === 'string') return [{ type: 'text', text: content }]
   if (content === null || content === undefined) return []
   if (!Array.isArray(content)) {
     throw new OpenAiGatewayError('message.content must be a string or an array of content parts')
   }
+  // ⚠️ 0.2.0 起 `Message.content` 是 readonly，故用**本地可变数组**累积、
+  // 返回时即为不可变面 —— 不能像升级前那样往 `Message['content']` 上 push。
   const blocks: ContentBlock[] = []
   const used = { count: 0, bytes: 0 }
   for (const part of content) {
@@ -294,18 +343,20 @@ export function textFromContent(content: unknown): string {
  *
  * ⚠️ **导出**给 `responses.ts` 用：两个端点造出来的消息必须同形（同样的 id/source
  * 构造），否则同一份历史在两个端点上的来源标记不同，排查时会误导。
+ *
+ * ⚠️ 0.2.0 起 `Message.content` 是 **`readonly ContentBlock[]`**，故调用方**不得**
+ * 在事后 `push`（`responses.ts` 的 assistant 合并改为先累积再一次性构造）。
  */
 export function createGatewayMessage(
-  role: Message['role'],
-  content: Message['content'],
+  role: 'system' | 'user' | 'assistant',
+  content: readonly ContentBlock[],
   source: Message['source'],
 ): Message {
-  if (role === 'tool' && source.kind !== 'tool') {
-    throw new OpenAiGatewayError('tool messages require a tool source')
-  }
-  return { id: randomUUID() as Message['id'], role, content, source,
-    ...(role === 'tool' && source.kind === 'tool' ? { toolCallId: source.callId } : {}),
-  } as Message
+  // ⚠️ 这里必须断言：`Message` 是 system/user/assistant/tool/developer 的**联合**，
+  // 而本函数按收窄后的 `role` 构造 —— 联合的每个成员都要求 `role` 是单一字面量，
+  // 故 TS 无法从「三选一的 role」推出某一个成员。网关只产出这三种角色
+  // （tool 走包裹块、developer 由归一化层丢弃），故收窄是**如实**的。
+  return { id: randomUUID() as Message['id'], role, content, source } as Message
 }
 
 /**
@@ -313,7 +364,7 @@ export function createGatewayMessage(
  *
  * ⚠️ **必须只有这一份判据**（本仓库首条红线：同一语义不得有两套判据）。
  * issue IKLRIK 的修法要在**两处**判断同一个调用「坏不坏」—— 主转换
- * （{@link convertToolCalls}）与预扫（{@link collectCallAvailability}）——
+ * （{@link convertToolCalls}）与预扫（{@link collectUnusableCallIds}）——
  * 若两处各写一遍 `typeof id === 'string' && id.length > 0`，改一处忘另一处就会
  * **静默漂移**：预扫认为「这条 id 可用、要进剔除集合」，而主转换认为「id 不可用、
  * 直接 400」⇒ 用户既看到 400 又留着孤儿结果，两个缺陷同时复发。
@@ -445,9 +496,7 @@ async function convertMessage(
     return createGatewayMessage('system', [{
       type: 'text',
       text: rewriteTencentContentFingerprints(textFromContent(value.content), provider),
-    }], {
-      kind: 'system-prompt',
-    })
+    }], { kind: GATEWAY_SOURCE_KIND })
   }
   if (role === 'user') {
     // ⚠️ user 消息走 parts：图片在这里被真正接收（其它角色不接受图片）。
@@ -458,6 +507,7 @@ async function convertMessage(
     // ./tencent-fingerprint.ts 的表）。只改这一处文本；`tool_calls` 的
     // `arguments` 实测不拦，故原样传递（改它会破坏「工具调用参数是要回读的证据」）。
     const text = rewriteTencentContentFingerprints(textFromContent(value.content), provider)
+    // ⚠️ 先累积再构造（0.2.0 的 content 是 readonly，不能事后 push）。
     const content: ContentBlock[] = text.length > 0 ? [{ type: 'text', text }] : []
     if (value.tool_calls !== undefined) {
       const calls = convertToolCalls(value.tool_calls)
@@ -473,6 +523,10 @@ async function convertMessage(
       // ⚠️ 判据必须同时看 `text.length === 0`：**正文非空**的 assistant（模型的
       // 真实发言）即使调用被剔光也要留下 —— 那是用户在界面上真的看到的内容，
       // 剔掉会让助手的话从历史里消失。
+      //
+      // ⚠️ 边界如实标注：**无** `tool_calls` 的空 assistant（`content:''`）在改前
+      // 也产出同形，故这**不是本次引入的回归**；但本次修法把它从「罕见」变成
+      // 「坏块会话的必经路径」（坏块会话一定会走到这里），故一并堵上。
       if (calls.length === 0 && text.length === 0) return undefined
     }
     return createGatewayMessage('assistant', content, { kind: 'model', provider, model })
@@ -494,8 +548,16 @@ async function convertMessage(
     if (callIds.dropped.has(value.tool_call_id) && !callIds.kept.has(value.tool_call_id)) {
       return undefined
     }
-    return { ...createGatewayMessage('tool', await partsFromContent(value.content, bridge, limits),
-      { kind: 'tool', callId: value.tool_call_id as never }), toolCallId: value.tool_call_id } as Message
+    // ⚠️ 工具结果的 content **同样支持图片**（2026-10-04 修，真实报障）。
+    // 早先这里走 `textFromContent`，而它对 `image_url` 一律抛错 ⇒
+    // 「读图类工具」（Codex 的 `view_image`、DSH 的 `read_image`）的结果
+    // 让整轮对话 400（用户看到「tool 消息的内容不能包含图片」）。
+    // 图片走与 user 消息**同一份**入站实现（附件服务落盘），故这里复用
+    // `partsFromContent`；各适配器本就递归消费 `tool-result` 的内嵌图片
+    // （见 `trae-adapter.ts` 的 `collectImages` / `userContentParts`）。
+    return createGatewayMessage('user', [
+      gatewayToolResultBlock(value.tool_call_id, await partsFromContent(value.content, bridge, limits)),
+    ], { kind: 'tool', callId: value.tool_call_id as never })
   }
   throw new OpenAiGatewayError(`unsupported message role: ${String(role)}`)
 }

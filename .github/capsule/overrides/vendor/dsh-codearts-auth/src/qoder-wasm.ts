@@ -458,29 +458,10 @@ export function describeWasmFailure(error: unknown): unknown {
   )
 }
 
-/**
- * 建立（或复用）WASM glue。
- *
- * ⚠️⚠️ **失败的结果不得永久缓存**（Issue F-43）。
- *
- * 原实现是 `gluePromise ??= createGlue()` —— `??=` 会把**失败的 Promise** 也
- * 记进单例，于是任何一次瞬时失败（首次调用时内存紧张 / `readFileSync` 撞上
- * 打包未就绪 / `WebAssembly.compile` 被 OOM 打断）都被固化成
- * 「Qoder 路由在整个**进程生命周期**内不可用」，只有重启 DSH 才能恢复
- *（除单测的 `__testing.resetGlue()` 外没有任何复位路径）。
- * 这与「实例化失败是可重试的一次性事件」这一事实相矛盾。
- *
- * 失败即清空缓存（且只在**仍是同一个** pending 时清，避免把后来者建好的
- * 实例误清）；成功则照旧复用同一实例 —— wasm 实例本身无状态，可以共用。
- */
+/** 建立（或复用）WASM glue。 */
 async function getGlue(): Promise<Glue> {
-  if (gluePromise !== null) return await gluePromise
-  const pending = createGlue()
-  gluePromise = pending
-  pending.catch(() => {
-    if (gluePromise === pending) gluePromise = null
-  })
-  return await pending
+  gluePromise ??= createGlue()
+  return gluePromise
 }
 
 /** 真正实例化 WASM 并接好 import。 */
@@ -910,6 +891,125 @@ export class QoderEncryptedInfer {
     } finally {
       // 🔴 **只释放 `result`**：`qodercontext_new` 的 4 个输入字符串由 Rust
       // 侧持有，手工释放会当场 trap `unreachable`（实测边界，见文件头）。
+      g.freePointer('__wbg_requestresult_free', result)
+    }
+  }
+
+  /**
+   * 构造并签名**任意端点**的请求（不只推理）。
+   *
+   * ## 为什么需要它
+   *
+   * WASM 同时导出了两个请求构造函数：
+   *
+   * | 导出 | 用途 | 本插件此前用了吗 |
+   * |---|---|---|
+   * | `qodercontext_prepareInferRequest` | 推理端点（`agent_chat_generation`） | ✅ `prepareInfer` |
+   * | `qodercontext_prepareRequest` | **通用**：任意 endpoint / path / method | ❌ 本方法才接上 |
+   *
+   * 官方客户端的**搜索**走后者 —— 见 `qoder-worker-runtime` 的 `tPl`：
+   * ```js
+   * let n = i.prepareRequest(A, e, "POST", "auth", t, void 0)
+   * return { url: n.url, path: e, headers: kc(n.headers), body: n.body ?? t, free: () => n.free() }
+   * ```
+   * 即 `prepareRequest(endpoint, path, method, mode, bodyJson, headersJson)`。
+   *
+   * ## 参数语义（照 wasm-bindgen glue 逐位对齐）
+   *
+   * ```js
+   * prepareRequest(A, e, t, i, n, r) {
+   *   // A=endpoint  e=path  t=method  i=签名模式  n=body(可选)  r=headers(可选)
+   *   qodercontext_prepareRequest(sp, ctx,
+   *     A, lenA, e, lenE, t, lenT, i, lenI,
+   *     MX(n) ? 0 : n, lenN,      // ⚠️ 可选参数：缺席时**传 0**，不是空串
+   *     MX(r) ? 0 : r, lenR)
+   * }
+   * ```
+   * 故本方法对 `body` / `headers` 的**缺席**（`undefined`）传 `0` —— 传空串
+   * 会让 Rust 侧当成「有值但为空」，与官方行为不一致。
+   *
+   * ## ⚠️ 与 `prepareInfer` 的三点差异
+   *
+   * 1. **不写 `host`**：`prepareInfer` 用实例上的 `this.host`；本方法把
+   *    endpoint（host）**作为参数传入** —— 因为搜索与推理的 host 不同
+   *    （搜索挂 center 的 host，见 `qoder-product.ts`）。
+   * 2. **参数个数不同**：glue 里 `prepareRequest` 是 6 个 JS 参（含可选），
+   *    `prepareInferRequest` 是 4 个（host / body / modelKey / source）。
+   * 3. **返回值同形**：都是 `RequestResult`，用同一组 `requestresult_*`
+   *    读取器 + 同一个 `__wbg_requestresult_free` 释放。
+   *
+   * @param endpoint - 目标 host（含 scheme，如 `https://gateway.qoder.com.cn`）。
+   * @param path - 请求路径（如 `/api/v1/webSearch/oneSearch`）。
+   * @param method - HTTP 方法（官方对搜索与推理都用 `POST`）。
+   * @param mode - 签名模式：`'auth'`（登录态）或 `'sign'`（匿名）。
+   * @param body - 请求体字符串；`undefined` 表示不带 body。
+   * @param headers - 额外请求头的 JSON 字符串；`undefined` 表示不带。
+   * @returns `{ url, headers, body }` —— headers 含 `Authorization: Bearer COSY.<载荷>.<签名>`。
+   * @throws {Error} 实例已 `dispose`，或 wasm 侧返回错误时。
+   */
+  prepareRequest(
+    endpoint: string,
+    path: string,
+    method: string,
+    mode: 'auth' | 'sign',
+    body?: string,
+    headers?: string,
+  ): QoderInferRequest {
+    const g = this.g
+
+    if (this.disposed) {
+      // 与 `prepareInfer` 同款：显式报错好过拿到悬垂指针后 trap 一句裸 `unreachable`。
+      throw new Error('qoder: QoderEncryptedInfer 已 dispose，不能再次 prepareRequest')
+    }
+
+    const result = g.callPointer((stack) => {
+      const ep = g.writeString(endpoint); const epLen = g.lastLength()
+      const pt = g.writeString(path); const ptLen = g.lastLength()
+      const md = g.writeString(method); const mdLen = g.lastLength()
+      const mo = g.writeString(mode); const moLen = g.lastLength()
+      // ⚠️ 可选参数缺席传 0（glue 的 `MX(n) ? 0 : ...` 语义），不能传空串指针。
+      const bd = body === undefined ? 0 : g.writeString(body)
+      const bdLen = body === undefined ? 0 : g.lastLength()
+      const hd = headers === undefined ? 0 : g.writeString(headers)
+      const hdLen = headers === undefined ? 0 : g.lastLength()
+      g.exports.qodercontext_prepareRequest!(
+        stack, this.context, ep, epLen, pt, ptLen, md, mdLen, mo, moLen, bd, bdLen, hd, hdLen,
+      )
+    })
+
+    // 与 `prepareInfer` 完全同款的读取 + 释放（理由见那处的长注释：
+    // 读进 JS 字符串后即可释放 `result`，且必须用 try/finally 覆盖异常路径）。
+    try {
+      const headerMap = g.takeObject(g.exports.requestresult_headers!(result))
+      const outHeaders: Record<string, string> = {}
+      if (headerMap instanceof Map) {
+        for (const [k, v] of headerMap) outHeaders[String(k)] = String(v)
+      }
+
+      const readResultString = (invoke: (stack: number, ptr: number) => void): string => {
+        let out = ''
+        let outPtr = 0
+        let outLen = 0
+        const v = g.view()
+        const stack = g.exports.__wbindgen_add_to_stack_pointer!(-16)
+        try {
+          invoke(stack, result)
+          outPtr = v.getInt32(stack + 0, true)
+          outLen = v.getInt32(stack + 4, true)
+          out = outPtr ? g.readString(outPtr, outLen) : ''
+        } finally {
+          g.exports.__wbindgen_add_to_stack_pointer!(16)
+          g.freeString(outPtr, outLen)
+        }
+        return out
+      }
+
+      return {
+        url: readResultString((stack, ptr) => g.exports.requestresult_url!(stack, ptr)),
+        headers: outHeaders,
+        body: readResultString((stack, ptr) => g.exports.requestresult_body!(stack, ptr)),
+      }
+    } finally {
       g.freePointer('__wbg_requestresult_free', result)
     }
   }

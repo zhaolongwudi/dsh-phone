@@ -28,27 +28,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { activeRoutes } from './active-route.js'
-// ⚠️ 零输出撞墙的判据与目标级冷却（issue IKJW31 的 B 方案）——**唯一权威**在那个模块。
-//    本文件此前只在该模块头里被列为「调用方之一」却**从未接线**（真实缺口，2026-10-12
-//    用户实测报障）：`jet-hub-auto` 能在「上游收下请求却零输出」时改道下一个 provider，
-//    而聚合层只能把 `finish: max-tokens` 原样透出（DSH 对 max-tokens **不自动重试**）
-//    ⇒ 用户侧看到「回答被截断」，且下一次仍派给同一家（最便宜的那家）。
-//    ⚠️ 判据复用共享函数，**不在这里另写一份**（本仓库红线：同一语义不得两套判据）。
-import {
-  emptyZeroOutputProbe,
-  isTargetCoolingDown,
-  isZeroOutputWallHit,
-  noteChunk,
-  noteZeroOutputHit,
-  zeroOutputKey,
-  ZERO_OUTPUT_COOLDOWN_MS,
-  type ZeroOutputCooldownMap,
-} from './zero-output-guard.js'
-
 // ⚠️ `contentHasImage` 是**值导入**（`auto-adapter.ts` 同款）：带图判定必须与宿主
 // capability 判据**同一函数**（它含 tool-result 递归），自己写一遍必然漂移。
-import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage } from '@deepseek-ai/dsh-llm'
 import type { LlmErrorOptions } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
@@ -79,38 +61,12 @@ import { registerAdapterIdempotent } from './llm-register-compat.js'
 // ⚠️ 只导入**常量**（不导入 `createExpiryProbe`）⇒ 依赖方向仍是
 // `aggregate-adapter → aggregate-expiry → aggregate-core`，无环。
 import { WIRED_EXPIRY_PROVIDERS } from './aggregate-expiry.js'
-// ⚠️ 动态窗口学习器（Step B 切片一）：只服务「候选**全都不声明**窗口」的**兜底**路径 ——
-// 一旦拿到供应商真值（`widest !== undefined`）就用真值，**不查**它（约定 3）。
-import {
-  contextWindowKey,
-  dynamicContextWindowFor,
-  learnedContextWindow,
-  noteContextWindowSuccess,
-  rememberContextWindowCeiling,
-  rememberContextWindowFailure,
-} from './context-window-learn.js'
-// ⚠️ 共享的「上下文超限」判据（宿主分类器 + 网关措辞兜底）。
-// 本文件的兜底网（`isContextOverflowFailure`）原先**只喂宿主分类器**，于是
-// 「HTTP 200/400 + 通用码 + `prompt is too long: N tokens > M maximum`」这类
-// 报文在这里**漏判**（那正是 9.15/9.16 在四条通道上统一修掉的那一类）。
-// 复用同一判据是刻意的：本仓库红线「同一语义不得两套判据」。
-import { isContextOverflowBody } from './openai-compat.js'
 
 /** 注册到 `ctx.llm` 的路由，也是 `providerInfo().id`（DSH 校验二者相等）。 */
 export const AGGREGATE_PROVIDER = 'aggregate'
 
 /** 「不挑模型」的虚拟模型 id。 */
 export const AGGREGATE_AUTO_MODEL = 'auto'
-
-/**
- * ⚠️ 这里**不再有**「候选全无声明时的写死兜底值」。
- *
- * 沿革（别把它改回去）：2026-10-11 曾把兜底改成 1M（**被用户否决**：一刀切不符合
- * 「各家声明各不相同」的真实），随后查明真问题是**记忆化固化**（解析不到声明也写缓存
- * ⇒ 目录就绪后仍返回固化值）。本轮按用户新口径（接力文档「设计约定 3」）改为
- * **动态方案**：能拿到真值的用真值；拿不到的起步给大 → 撞墙 → 收窄
- * （见 `context-window-learn.ts` 的 {@link dynamicContextWindowFor}）。
- */
 
 /**
  * 临期探针的类型 `ExpiryProbe` 定义在 **`aggregate-core.ts`**（纯类型、零 IO）——
@@ -137,6 +93,73 @@ export const AGGREGATE_TTL_MS = 60_000
  */
 export const AGGREGATE_CATALOG_TTL_MS = 60_000
 
+/**
+ * 取不到任何候选窗口时的**兜底**声明值。
+ *
+ * ## ⚠️⚠️ 这不是「聚合模型的窗口」，只是「我们不知道」时的占位
+ *
+ * 真实缺陷（用户报障 2026-10-07）：本适配器的 `resolveModel` 把这个值当成
+ * **所有**虚拟模型的窗口硬编码下发（`context: { contextWindow: 200_000 }`，
+ * `auto` 与具名虚拟模型两处），于是 `aggregate/deepseek-v4-1-flash` 在界面上
+ * 只显示 `~x / 200k` —— 而同一个模型**直连** buddy / codearts 时声明的都是
+ * **1M**（`product.ts` 的兜底表 1_000_000、`llm-adapter.ts` 的
+ * `CONTEXT_WINDOWS` 1_000_000）。
+ *
+ * 设计文档 §4.1 写的口径是「ctx / 图片 / 档位取**候选集的能力并集**」，
+ * 档位与图片都按该口径落地了（见 {@link aggregateReasoningInfo} 与
+ * `capabilityOf`），**只有 ctx 这一项**留在了 P1 的写死占位值上。
+ *
+ * ## 两个真实消费者（所以它不只是展示问题）
+ *
+ * | 消费者 | 位置 | 后果 |
+ * |---|---|---|
+ * | 自动压缩阈值 | `dsh-compaction-basic/lib/index.js` 读 `info.context.contextWindow` 算 `thresholdTokens` | 上下文涨到 `200k × ratio` 就触发压缩，**永远吃不到 1M** |
+ * | 上下文占用指示器 | `dsh-client-ui-conversation` 读 `pressure.contextWindow` | 界面显示 `~x / 200k` |
+ *
+ * ## ⚠️ 为什么不能「不声明」
+ *
+ * `dsh-compaction-basic` 在 `info.context === undefined` 时**抛**
+ * `TargetPressureConfigError: no context capacity for …; configure contextWindow
+ * on that adapter model`。即 DSH 要求每个可路由的模型都声明一个**正整数**窗口
+ * ⇒ 兜底值必须存在且为正，这不是可选的美化。
+ *
+ * ⇒ 正确口径见 {@link AggregateAdapter.contextWindowFor}：**取候选集的最大值**；
+ * 本常量只在「一个候选的窗口都取不到」时使用（如候选渠道全部未登录、
+ * 或该渠道的 `resolveModel` 不声明窗口 —— zcode 之外的多数渠道都有可能）。
+ */
+export const AGGREGATE_FALLBACK_CONTEXT_WINDOW = 200_000
+
+/**
+ * 一条候选（provider + realId）的**能力缓存**：窗口 / 档位 / 图片。
+ *
+ * ⚠️ 三项**共用同一次 `resolveModelInfo` 调用** —— 这是把窗口推导做成
+ * 「顺带取回」而不是「另查一遍」的原因（见 {@link AggregateAdapter.capabilityOf}）。
+ */
+interface CandidateCapability {
+  /** 该候选声明的上下文窗口；远端/静态表都没给时为 `undefined`。 */
+  contextWindow?: number
+  /** 该候选声明的思考档位 id（供逐候选翻译用，见 `dispatch`）。 */
+  efforts: readonly string[]
+  /**
+   * 该候选是否声明支持图片输入。
+   *
+   * ⚠️ **解析失败时必须是 `false`**（保守方向）：把「不知道」当成「支持」会让带图
+   * 请求被发到一个可能收不了图的渠道，而失败现象是**上游报错**（用户看不出真因）；
+   * 当成「不支持」最多是**少用一个候选**（带图时换一个已声明支持的），代价小得多。
+   * 与全仓「未知不编造」一致。
+   */
+  imageCapable: boolean
+  /**
+   * 本次能力是**真的解析成功**了，还是失败后的保守回落。
+   *
+   * ⚠️ 存在的唯一理由是让调用方能区分「这个候选没声明窗口」与「这次没问出来」——
+   * 前者可以记忆化，**后者绝不能**（见 {@link AggregateAdapter.contextWindowFor}：
+   * 把瞬时故障记忆化会把它固化成持续错误，正是本仓库反复修过的单向门形态）。
+   * ⚠️ 它**不进** {@link DispatchTarget} 的语义面，只是随缓存对象一起流动的内部标记。
+   */
+  resolved: boolean
+}
+
 export interface AggregateAdapterOptions {
   accountPool: AccountPool
   /** 注入的当前时刻（测试用）。 */
@@ -159,37 +182,6 @@ export interface AggregateAdapterOptions {
    *（RPC 端点负责这件事，见 `aggregate.setRejected`）。
    */
   rejections?: () => AggregateRejectionMap
-}
-
-/**
- * 一次 `usage` 帧代表的**本轮规模**（token）。
- *
- * DSH 的 `TokenUsage` 各计数是**互斥**的（`inputTokens` 只含未缓存部分，缓存命中另计
- * `cacheReadTokens`/`cacheWriteTokens`）⇒ 「在飞的上下文规模」= 四者之和；
- * 上游给了 `totalTokens` 时以它为准（那是权威口径）。
- *
- * ⚠️ 拿不到任何正数就返回 `undefined`（**不编造**）：方案 B/C 都建立在
- * 「确实观测到规模」之上，猜一个值会让筛选误伤宽窗口候选。
- */
-function contextTokensOfUsage(
-  usage: {
-    inputTokens?: number
-    outputTokens?: number
-    totalTokens?: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-  } | undefined,
-): number | undefined {
-  if (usage === undefined) return undefined
-  if (typeof usage.totalTokens === 'number' && Number.isFinite(usage.totalTokens) && usage.totalTokens > 0) {
-    return usage.totalTokens
-  }
-  const parts = [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]
-  let sum = 0
-  for (const part of parts) {
-    if (typeof part === 'number' && Number.isFinite(part) && part > 0) sum += part
-  }
-  return sum > 0 ? sum : undefined
 }
 
 /** 聚合适配器。 */
@@ -215,56 +207,6 @@ export class AggregateAdapter extends LlmAdapter {
    * ⚠️ 一分钟内临期时刻不会显著变化，故 60 秒 TTL 不破坏「临期优先」的语义。
    */
   private readonly choiceCache = new Map<string, { at: number; targets: DispatchTarget[] }>()
-  /** 虚拟模型 → 解析出的最大上下文窗口。仅在**全部候选**解析成功时记忆化。 */
-  private readonly contextWindowCache = new Map<string, number>()
-  /**
-   * 「目标收下请求却零输出」的目标级冷却表（issue IKJW31 的 B 方案，2026-10-12 接线）。
-   *
-   * ⚠️ **纯内存、进程内、不落盘**：它优化的是「本次运行内别再三连撞同一堵墙」，
-   * 重启后重新试探是**正确**行为（用户可能已升级插件、上游可能已扩容）。
-   * ⚠️ 与 `jet-hub-auto` 的 `zeroOutputCooldowns` **同一语义、同一判据**，只是各记各的
-   * （两家路由的候选池不同，共用一张表会让一家的失败影响另一家的选型）。
-   */
-  private zeroOutputCooldowns: ZeroOutputCooldownMap = new Map()
-
-
-  /**
-   * `provider\u0000realId` → 该候选**声明**的上下文窗口（解析时顺手记下）。
-   *
-   * ⚠️ 用途是**派发前按本轮体积跳过太窄的候选**（方案 C，2026-10-12）：
-   * `aggregate/auto` 的候选横跨十几个渠道，声明的窗口相差两个数量级（1M vs 32K），
-   * 而 DSH 只看到虚拟模型那**一个**窗口。若不筛，一个 20 万 token 的会话会被派给
-   * 3.2 万窗口的候选 ⇒ 上游报超限（或按自己的上限截断）。
-   * ⚠️ 只记「确实有声明」的值；未知的候选**不筛**（未知 ≠ 太窄）。
-   */
-  private readonly candidateWindow = new Map<string, number>()
-
-  /**
-   * 各会话**最近一次观测到的本轮上下文规模**（token，来自 `usage` 帧的 `totalTokens`）。
-   *
-   * ## ⚠️⚠️ 为什么必须按会话分桶、且必须逐请求覆盖（Issue F-04，2026-10-14）
-   *
-   * 修法前这里是**一个进程级字段 + `Math.max` 只增不减**，却被当成「本轮体积」喂给
-   * 两处消费（方案 C 的派发前筛选、方案 B 的 `finish: max-tokens` 学习）。后果：
-   *
-   * | # | 消费点 | 后果 |
-   * |---|---|---|
-   * | ① | 方案 C 筛选 | 进程内任一会话产生过一次大 usage（文档实测过 90 万）后，**另一个几千 token 的小会话**发请求时 `required = 峰值 × 1.05` 高于池内全部候选已知上限 ⇒ `kept` 与 `cooling` 同时为空 ⇒ 主动抛 `CONTEXT_WINDOW_EXCEEDED` ⇒ DSH 压缩后重发 ⇒ 值不变 ⇒ **压缩重试死循环**，该会话在进程存活期内永久不可用 |
-   * | ② | 方案 B 学习 | 把**峰值**而非本次尝试的 `turnTokens` 喂给 `rememberContextWindowCeiling`，而它**只在更小时覆盖** ⇒ 宽候选观测过 90 万后，窄候选真实撞墙 26.2 万时永远学不进 ⇒ cap 恒 90 万 ⇒ 恒不跳过窄候选 ⇒ 反复截断 |
-   *
-   * 故语义收窄为两条：
-   * 1. **按 `options.sessionId` 分桶** —— 一个会话的规模不得成为另一个会话的判据；
-   * 2. **逐请求覆盖**（不再跨请求 `Math.max`）—— 会话被压缩变小后，下一次观测要能
-   *    如实降到小值。`Math.max` 只保留在**同一次请求内部**（一次请求里 usage 可能
-   *    到多帧，规模只会增长，取最大才安全）。
-   *
-   * ⚠️ 无 `sessionId` 的请求落在同一个 `''` 桶里；它们**不会**因此互相锁死 ——
-   * 主动抛错时会清桶（见下方 `CONTEXT_WINDOW_EXCEEDED` 分支），退回「未知 ⇒ 不筛」。
-   *
-   * ⚠️ 容量上限 512：与会话数同阶，超出按插入序淘汰最旧的一条（与
-   * `candidateWindow` 那种「只增不清」的表刻意不同 —— 那正是 F-53 的形态）。
-   */
-  private readonly lastContextTokensBySession = new Map<string, number>()
 
   /**
    * 「上次**实际**转发成功的渠道」——按虚拟模型分别记录（P3，供用量徽标显示）。
@@ -284,11 +226,42 @@ export class AggregateAdapter extends LlmAdapter {
    * 本表记录的是**实际结果**（已发生）——两者不可互相推导。
    */
   private readonly activeProviderByModel = new Map<string, string>()
+
   /**
-   * 「上次实际转发成功的渠道 + 真实 modelId」（与 `activeProviderByModel` 同一门控：
-   *    整轮正常结束才写；不落盘、只记**真实历史**）。
+   * 每个候选（`provider\0realId`）的**能力**缓存：窗口 / 档位 / 图片。
+   *
+   * ## 为什么需要它
+   *
+   * 窗口推导（{@link contextWindowFor}）与派发前的能力解析（{@link capabilityOf}）
+   * 问的是**同一件事**，而两者都会被高频调用：
+   * - DSH 的 `buildModelCatalog` 对**目录里每个模型**都调一次 `resolveModelInfo`
+   *   （`dsh-api-session-controller/lib/index.js:506`）⇒ 窗口推导会在用户每次打开
+   *   模型选择器时对全部虚拟模型的全部候选各问一次；
+   * - `prepareCall` 每次请求都会对本次候选逐个解析能力。
+   *
+   * 没有缓存时同一份元数据会被反复解析（对**远端目录**类适配器是本地查表，
+   * 但对目录尚未拉全的适配器会重试拉取）。缓存让两者共用一次结果。
+   *
+   * ## ⚠️ 只缓存**成功**的结果，绝不缓存失败
+   *
+   * 失败时 `capabilityOf` 返回保守默认值（无档位 / 不支持图片 / 无窗口）。
+   * 把「这一次没问出来」缓存 60 秒会把**瞬时**故障固化成单向门 —— 那正是
+   * 本仓库反复修过的缺陷形态（见 `AGENTS.md` 的「`refreshable` 单向门」）。
+   * ⇒ 失败不写缓存，下一次调用照常重试；上游恢复后自动生效。
+   *
+   * ⚠️ 与目录同生命周期：{@link refreshCatalog} 重建目录时清空 —— 目录变了，
+   *    「哪些候选存在」就变了，缓存必须跟着失效。
    */
-  private readonly activeTargetByModel = new Map<string, { provider: string; realId: string }>()
+  private readonly capabilityCache = new Map<string, CandidateCapability>()
+
+  /**
+   * 每个虚拟模型（含 `auto`）的**窗口声明值**缓存。
+   *
+   * ⚠️ 判决结果是「候选集的最大值」，是个**纯函数**（同一份目录 + 同一份能力缓存
+   * 必然得到同一个值）⇒ 记忆化不改变语义，只是避免每次 `resolveModel` 都重算。
+   * ⚠️ 同样在 {@link refreshCatalog} 里清空（目录变了 ⇒ 候选集变了 ⇒ 最大值可能变）。
+   */
+  private readonly contextWindowCache = new Map<string, number>()
 
   constructor(private readonly ctx: Context, private readonly options: AggregateAdapterOptions) {
     super()
@@ -410,6 +383,29 @@ export class AggregateAdapter extends LlmAdapter {
   }
 
   /**
+   * 清空**临期折算缓存**（领取成功后由 RPC 调用）。
+   *
+   * ## ⚠️⚠️ 为什么领取之后必须清（真实缺陷，对抗审计实测证伪，2026-10-07）
+   *
+   * 折算缓存**也缓存 `UNUSABLE`**，而 `zcodeExpiry` 现在把「余额为 0」判成
+   * `UNUSABLE`（修掉「额度已尽仍被 auto 选中」的真实缺陷）。zcode 的每日赠送额度
+   * **要先领取才进 `balances` 桶** ⇒ 「先撞额度尽（写 `UNUSABLE`）→ 去签到 → 立刻用
+   * auto」时，**最长 60 秒内 auto 仍说没有候选**，用户会以为签到没用。
+   *
+   * ⚠️ 已有的两个清理入口（`pool.onAccountAdded` / 拒绝表变更）**都不覆盖领取**。
+   *
+   * ⚠️ 必须清**共享的**那一份探针（装配层 `src/index.ts` 把同一个实例同时给
+   * aggregate 与 auto）—— 只清一份会让 auto 仍看到旧的 `UNUSABLE`。
+   * 故这里清的是注入进来的 `options.expiryProbe`（与 auto 同一个对象）。
+   */
+  clearExpiryCache(): void {
+    // ⚠️ 类型是 `ExpiryProbe`（不含 `clear`），故按结构化判据探测 ——
+    //    单测注入的替身通常没有 `clear`，那时静默跳过（不报错）。
+    const probe = this.options.expiryProbe as { clear?: () => void } | undefined
+    probe?.clear?.()
+  }
+
+  /**
    * 「上次**实际**转发成功的渠道」（P3，供用量徽标）。
    *
    * ⚠️ **纯内存读、零网络零余额查询** —— 徽标在**门控阶段**就要拿到它
@@ -429,25 +425,6 @@ export class AggregateAdapter extends LlmAdapter {
     }
     return this.lastActiveProvider
   }
-
-  /**
-   * 「上次实际转发成功的**渠道 + 具体模型**」；无历史时 `null`。
-   *
-   * ⚠️ 与 {@link activeProvider} 同源、同一提交点、同样**纯内存零网络**
-   *   （徽标在门控阶段同步渲染，查网络会让渠道变一次徽标闪一次）。
-   * ⚠️ 用途：`auto` 的徽标只显示渠道时，用户不知道跑的是哪个模型
-   *   （用户 2026-10-09 报障）。**服务端先把这个事实暴露出来**，客户端胶囊据此显示。
-   */
-  activeTarget(canonicalId?: string): { provider: string; realId: string } | null {
-    if (typeof canonicalId === 'string' && canonicalId.length > 0) {
-      return this.activeTargetByModel.get(canonicalId) ?? null
-    }
-    if (this.lastActiveProvider === null) return null
-    return { provider: this.lastActiveProvider, realId: this.lastActiveModel ?? '' }
-  }
-
-  /** 最近一次（任意虚拟模型）实际转发成功的真实 modelId；无历史时 `null`。 */
-  private lastActiveModel: string | null = null
 
   /** 最近一次（任意虚拟模型）实际转发成功的渠道；无历史时 `null`。 */
   private lastActiveProvider: string | null = null
@@ -657,23 +634,20 @@ export class AggregateAdapter extends LlmAdapter {
     const previousIds = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)]
     this.catalog = buildVirtualModels(catalogs)
       .filter((virtual) => virtual.candidates.some((c) => WIRED_EXPIRY_PROVIDERS.includes(c.provider)))
-    // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
-    // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
-    this.contextWindowCache.clear()
-    /**
-     * ⚠️⚠️ **逐候选窗口表必须与上面那张缓存一起清**（Issue F-53）。
-     *
-     * 两张表的写入点都在 `contextWindowFor`（同一趟 `resolveModelInfo` 顺便记下），
-     * 但此前只清 `contextWindowCache` ⇒ `candidateWindow` **只增不清**：
-     * 渠道被停用/账号被删后，它名下的候选条目仍留在表里，而方案 C 的派发前筛选
-     * 正是读它（`cap < required` ⇒ 跳过）—— 于是一个**已经不在候选池里**的渠道
-     * 留下的窄窗口，会继续参与「这个虚拟模型装不装得下」的判断；反过来，
-     * 换渠道后重新解析出的更宽窗口也不会顶掉旧值（`set` 覆盖只发生在
-     * 该候选重新进入解析路径时，被清掉缓存才可能发生）。
-     * 两张表同源同生命周期，清一张留一张必有一处是错的。
-     */
-    this.candidateWindow.clear()
     this.catalogAt = now
+    // ⚠️⚠️ **目录变了 ⇒ 能力缓存与窗口缓存必须一起失效**（与目录同生命周期）。
+    //
+    // 为什么不能留着：
+    // - 窗口缓存的键是虚拟模型 id，而**候选集会变**（登录/登出渠道、用户黑名单、
+    //   上游下架模型都会改候选表）⇒ 留着旧值会让 `aggregate/deepseek-v4-1-flash`
+    //   一直按「当时那批候选的最大值」声明，即使后来只挂了一个窗口更小的候选；
+    // - 能力缓存的键是 `provider\0realId`，**跨目录也仍然指向同一个真实模型**，
+    //   但它记录的是「上一次解析时远端下发的能力」。上游改窗口（或某次解析赶在
+    //   远端目录就绪之前、拿到了较旧的值）同样需要重取一次。
+    // 两者都是「几十到几百条小对象」，整表清空的开销可以忽略，而漏清的代价是
+    // 用户看到的窗口与压缩阈值**长期错误**（本适配器刚修的就是这类缺陷）。
+    this.capabilityCache.clear()
+    this.contextWindowCache.clear()
     // ⚠️⚠️ **维持「整个 provider 已关闭」的语义**（真实缺陷，实测复现）。
     //
     // ## 机制（本适配器的**动态目录**与宿主「一键关闭」的**快照**假设相撞）
@@ -775,7 +749,22 @@ export class AggregateAdapter extends LlmAdapter {
    *
    * ⚠️ 用字面量而非 import 各 `product.ts` 的常量：那要引入 12 个模块，显著加重本文件
    * 的依赖；而这些 id 是**稳定契约**（`index.ts` 的 `modelAdapters` 表同样用字面量）。
-   * 新增 provider 时**两处都要加**（与 `modelAdapters` 同一约定）。
+   * 新增 provider 时**两处都要加**。
+   *
+   * ## ⚠️ 本清单**有守卫**（2026-10-12 补）
+   *
+   * 原先本行写的是「（与 `modelAdapters` 同一约定）」—— 那句是**误导**：`modelAdapters`
+   * 当时已有两条守卫（源码文本抓多余键 + 行为抓漏键），而**本数组一条都没有**。
+   * 实测（对抗性审计）：从本数组删掉 `'gemini'` 后全量测试**依然全绿**，而线上后果是
+   * 该渠道的模型**永不进聚合目录**、用户看不到、`auto` 也不用，**无报错无日志**。
+   *
+   * 现由 `tests/unit/aggregate-adapter.spec.ts` 的
+   * 「★★ 聚合渠道白名单与 registry 对齐」守：它用 `listModels` 的**调用记录**反推本
+   * 数组（该常量是私有的，行为路径才拿得到），与 `PROVIDER_REGISTRY.filter(d => d.channel)`
+   * 做**集合**比对，漏一家即红并点名。
+   * ⚠️ 判据是**集合**不是有序：本数组与 registry 的尾部顺序**本来就不同**
+   *（本数组 `… gemini, zcode, opencode`，registry `… zcode, opencode, gemini`），
+   * 故不能要求有序相等；顺序本身在本数组内有语义，由下面的排列体现。
    */
   private static readonly AGGREGATE_CHANNELS: readonly string[] = Object.freeze([
     'codearts',
@@ -792,6 +781,30 @@ export class AggregateAdapter extends LlmAdapter {
     'gemini',
     'zcode',
     'opencode',
+    // officeace（2026-10-12）：华为 MaaS 云端直连渠道，`channel: true`
+    // ⇒ 必须进聚合目录，否则它的模型**永不进聚合、静默不可见**。
+    // ⚠️⚠️ **但它目前仍被第二道闸门挡着**（2026-10-13 合并审计实测）：
+    //    `WIRED_EXPIRY_PROVIDERS` **不含** officeace ⇒ 本文件 4 处过滤会把它
+    //    从**候选表**里剔掉（模型层归并了也没用）。
+    //    与 accio 不同，officeace **有**逐包到期口径（`jet-hub-rpc.ts` 把
+    //    `group.expiresAt` 归一化成 `deductionEndTime`，与 buddy 系同形）
+    //    ⇒ 它是**可接而未接**。接它需要：给 `provider-expiry.ts` 加一条
+    //    `officeaceExpiry`（可复用 `sharedPackageExpiry`）+ 进白名单
+    //    （`expiry-runtime-parity.spec.ts` 锁两者一致，必须同改）。
+    //    ⚠️ 本轮**刻意只接了 accio**（用户明确要求的是 accio）；officeace 的
+    //    接入**未做**，此注释如实登记这个缺口，不要读成「它已经能进聚合了」。
+    'officeace',
+    // ⚠️⚠️ accio（阿里 Accio Work，2026-10-13）—— 两件事**都要**做，缺一即静默：
+    //    ① 加进本数组（进聚合目录）；
+    //    ② 加进 `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`（进**候选表**）。
+    //
+    //    ⚠️ **只做 ① 是无效接线**（2026-10-13 合并审计实测）：决定候选可见性的
+    //    是 `WIRED_EXPIRY_PROVIDERS` —— 本文件有 4 处按它过滤（探测/候选/虚拟模型/
+    //    价格）。当时 accio 的 `PRIMARY_CHANNEL` 与 `CANONICAL_OVERRIDES` 都配对了
+    //    （`canonicalKeyFor` 返回 `via: 'patch'` ⇒ 归并到 `qwen3-8-flash`），
+    //    但候选层被那道闸门剔掉 ⇒ **用户要的「轮换列表里要有 accio」并没有实现**，
+    //    且症状静默（无报错、无日志）。现两处都补齐。
+    'accio',
   ])
 
   /**
@@ -853,18 +866,17 @@ export class AggregateAdapter extends LlmAdapter {
     }
   }
 
-  /** 虚拟模型的展示名。
+  /** 虚拟模型的展示名 —— **设置页与解析路径用**（不带倍率，见 {@link pickerNameOf}）。
    *
    * ⚠️ **不加「（单渠道）」之类的后缀**（与 brief 初版的 `nameOf` 不同）：
-   * 设计文档 §12.1（`2026-10-06-aggregate-provider-design.md:669-673`）把新 provider
+   * 设计文档 §12.1（`docs/superpowers/specs/2026-10-06-aggregate-provider-design.md`
+   * 的「关于 `auto-adapter.ts` 的三处名字」一节）把新 provider
    * 定成「目录展示规范名 + 运行期渠道后缀」**单一形态**，并逐字写死三处的名字都是
    * 规范名（`listModels` / `resolveModel` → `DeepSeek V4.1 Flash`；`prepareCall`
    * → `DeepSeek V4.1 Flash · buddy`）。加后缀会让选择器与服务端目录名不一致，
    * 且 `prepareCall` 会拼出 `…（单渠道） · buddy` 这类双重后缀。
    * 「有没有冗余渠道」是**设置页**的信息（§7.3：按厂商分组、组内按候选渠道数降序、
    * 展开看逐条候选），不该混进模型展示名。
-   */
-  /** 虚拟模型的展示名 —— **设置页与解析路径用**（不带倍率，见 {@link pickerNameOf}）。
    *
    * ⚠️ 本方法**保持无倍率**：`resolveModel` 与 `describeCatalog` 的返回值被三处
    * 既有断言逐字钉住（`aggregate-adapter.spec.ts:88`、`aggregate-rejections.spec.ts:251`、
@@ -953,6 +965,8 @@ export class AggregateAdapter extends LlmAdapter {
    * 「这次选中的渠道收不收得了图」由分发阶段改道保证。
    * ⚠️ **档位声明规范化档位的并集**（不是候选集交集）—— 理由见下方
    * {@link aggregateReasoningInfo} 的注释。
+   * ⚠️ **窗口声明候选集的<u>最大值</u>**（不是写死、也不是取小）——
+   * 理由与失效形态见 {@link AggregateAdapter.contextWindowFor}。
    */
   /**
    * 解析一个虚拟模型。
@@ -969,13 +983,16 @@ export class AggregateAdapter extends LlmAdapter {
   ): Promise<LlmResolvedModelInfo> {
     if (model === AGGREGATE_AUTO_MODEL) {
       const info = this.autoModelInfo()
+      await this.ensureCatalog(signal)
       return {
         provider,
         id: model,
         name: info.name,
         ...(info.description === undefined ? {} : { description: info.description }),
         inputModalities: ['text', 'image'],
-        context: { contextWindow: await this.contextWindowFor(model, this.aggregateCandidatePool(), signal) },
+        // `auto` 的候选池 = **所有渠道的所有模型**（与 `candidatesFor` 的池同语义）
+        // ⇒ 它的窗口是整池的最大值（通常就是池里最大的那个 1M）。
+        context: { contextWindow: await this.contextWindowFor(model, this.autoCandidates(), signal) },
         reasoning: aggregateReasoningInfo(),
       }
     }
@@ -1002,6 +1019,29 @@ export class AggregateAdapter extends LlmAdapter {
       context: { contextWindow: await this.contextWindowFor(model, virtual.candidates, signal) },
       reasoning: aggregateReasoningInfo(),
     }
+  }
+
+  /**
+   * `auto` 的候选池：所有虚拟模型的候选**并集**（按 `provider\0realId` 去重）。
+   *
+   * ⚠️ 与 `candidatesFor` 的 `auto` 分支同语义（那边还要叠加拒绝表过滤；本方法
+   *    **不过滤拒绝** —— 窗口声明是「这个池里最大能到多少」，被拒的候选仍在池的
+   *    物理能力范围内，且拒绝表随时可能被改回来）。
+   * ⚠️ 去重是必要的：同一候选可能归属多个虚拟模型（如同一 realId 同时归入两个
+   *    规范名），重复解析虽被 `capabilityCache` 吸收，但会让循环做无用功。
+   */
+  private autoCandidates(): Array<{ provider: string; realId: string }> {
+    const seen = new Set<string>()
+    const out: Array<{ provider: string; realId: string }> = []
+    for (const virtual of this.catalog) {
+      for (const candidate of virtual.candidates) {
+        const key = `${candidate.provider}\u0000${candidate.realId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({ provider: candidate.provider, realId: candidate.realId })
+      }
+    }
+    return out
   }
 
   /**
@@ -1163,9 +1203,35 @@ export class AggregateAdapter extends LlmAdapter {
       }
     }
 
+    // ⚠️⚠️ **先按候选自己的 `realId` 复核账号可用性，再折算临期**（真实缺陷，2026-10-07）。
+    //    顺序是刻意的：本地过滤先于上游余额探测 —— 被剔除的候选不必再打一次余额接口
+    //    （与上方「拒绝轮换在建池时就排除」同一取舍）。
+    //
+    // ⚠️⚠️ **被剔除的候选必须显式置 `expiry = UNUSABLE`，不能只把它从折算循环里拿掉**
+    //（真实缺陷，对抗审计实测证伪，2026-10-07 —— 我自己上一版正是这么错的）。
+    //
+    // 机制：建池时每个候选的 `expiry` 初值是 `NEVER`（见上方 `pool.push({…, expiry: NEVER})`），
+    // 而 `rankCandidates`（`aggregate-core.ts`）**只剔除 `UNUSABLE`** ——
+    // `NEVER` 是合法排序值（语义是「可用、只是不临期」）。于是「只把候选从
+    // `usable` 里拿掉」时，它的 `expiry` 仍是 `NEVER` ⇒ **照样进入候选序**，
+    // 只是排在最后 ⇒ 当前面的候选失败时**回落到它**（`targets` 是逐个尝试的）。
+    //
+    // 实测（探针）：buddy 可用、codearts 在该模型上额度已尽 ⇒ 候选序
+    // `[buddy, codearts]`；buddy 失败后请求**发往 codearts**，即那个额度已尽的
+    // 渠道仍被尝试 —— 缺陷只是被**推迟**而非消除。
+    //
+    // ⇒ 判据必须落到 `expiry` 上（那才是 `rankCandidates` 读的字段）。
+    const available = await this.availableByModel(pool, signal)
+    const usable = pool.filter((candidate) => {
+      if (available.get(candidate) !== false) return true
+      // ⚠️ 关键一行：显式标记为不可用，否则它会以 `NEVER` 的身份留在候选序里。
+      candidate.expiry = UNUSABLE
+      return false
+    })
+
     // 逐候选折算临期（同一渠道只探一次）。
     const seen = new Map<string, number>()
-    for (const candidate of pool) {
+    for (const candidate of usable) {
       let expiry = seen.get(candidate.provider)
       if (expiry === undefined) {
         try {
@@ -1180,6 +1246,12 @@ export class AggregateAdapter extends LlmAdapter {
           // 该报错与「真的没登录」无法区分。
           // ⚠️ 真实缺陷（Task 7 复审 M4）：本处是同一缺陷的**第二实例** ——
           // `aggregate-expiry.ts` 已修，这里漏了。
+          //
+          // ⚠️⚠️ **判据必须与 `isAbortLike` 逐格同构（2026-10-12 审计实测补全）**：
+          // 本处原先只认 `name === 'AbortError'`，于是同一份 499 报文在
+          // `dispatch` 里归**中止**、在这里却被折算成 `UNUSABLE` ⇒ 用户取消后
+          // 看到的是「当前没有任何可用候选」而不是中止（正是 M4 那个形态的
+          // 新实例）。故改为直接复用共享判据，杜绝再次分叉。
           signal?.throwIfAborted()
           if (isAbortLike(error, signal)) throw error
           expiry = UNUSABLE
@@ -1214,7 +1286,10 @@ export class AggregateAdapter extends LlmAdapter {
     const targets: DispatchTarget[] = []
     for (const candidate of ranked.slice(0, limit)) {
       const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal)
-      targets.push({ ...candidate, ...capability })
+      // ⚠️ 只取 `DispatchTarget` 需要的两项：`capability` 上的 `contextWindow` /
+      //    `resolved` 是本适配器内部的推导中间量，摊进目标对象只会在日志与
+      //    序列化里留下无意义的字段（`resolved` 尤其容易被误读成「这次请求成功了」）。
+      targets.push({ ...candidate, efforts: capability.efforts, imageCapable: capability.imageCapable })
     }
     // ⚠️ 只在**非空**时写缓存：空候选通常意味着「所有渠道都不可用」——那是**瞬时**
     // 状态（如额度刚好用尽、账号正在限流），缓存 60 秒会让用户在这期间即使恢复了
@@ -1224,134 +1299,118 @@ export class AggregateAdapter extends LlmAdapter {
   }
 
   /**
-   * 取目标模型的两项能力：**思考档位 id** 与**是否收得了图片**。
+   * 逐个候选问账号池「该候选**自己的模型**上还有可用账号吗」。
    *
-   * ⚠️ 两项**共用同一次 `resolveModelInfo` 调用** —— 不额外发请求。这是把图片
-   * 能力做成「顺带取回」而不是「另查一遍」的原因（选型路径上每次请求都会走这里，
+   * ## ⚠️⚠️ 为什么返回**映射**而不是「过滤后的数组」（真实缺陷，对抗审计实测证伪）
+   *
+   * 我上一版返回「过滤后的数组」，调用方拿它去折算临期 —— 但**建池时每个候选的
+   * `expiry` 初值是 `NEVER`**，而 `rankCandidates`（`aggregate-core.ts`）
+   * **只剔除 `UNUSABLE`**（`NEVER` 是合法排序值：「可用、只是不临期」）。
+   * ⇒ 被过滤掉的候选 `expiry` 仍是 `NEVER`，**照样进入候选序**、只是排最后；
+   * 当前面的候选失败时**回落到它**（`targets` 逐个尝试）。
+   *
+   * 实测：buddy 可用 + codearts 在该模型上额度已尽 ⇒ 候选序 `[buddy, codearts]`，
+   * buddy 失败后请求**发往 codearts** —— 缺陷只是被推迟而非消除。
+   *
+   * ⇒ 必须让调用方**显式把 `expiry` 置 `UNUSABLE`**（那才是 `rankCandidates` 读的字段）。
+   * 返回映射就是为了让「谁不可用」这个事实能落到调用方的赋值上。
+   *
+   * ## ⚠️⚠️ 为什么必须按 `realId` 复核，不能只靠临期折算
+   *
+   * 各 provider 的「额度耗尽」是按 **modelId** 记账的：
+   * `AccountPool.getAvailableAccount` / `listAvailableCredentials` 都按
+   * `entry.modelRateLimits[modelId]` 过滤候选（`account-pool.ts`），
+   * 而 codearts 的 benefit（免费额度）耗尽正是写进那里的
+   * （`llm-adapter.ts` 的三处 `updateModelRateLimit` 调用）。
+   *
+   * 但 `createExpiryProbe` 取号时用的模型键是**该渠道目录的第一个模型**
+   * （`src/index.ts` 的 `firstModelIdOf`：`models[0]?.id`），而**聚合层要派发的是
+   * 候选自己的 `realId`** —— 两者常常不是同一个模型（一个虚拟模型会挂多渠道多模型的
+   * 候选表）。于是：
+   *
+   * | 场景 | 探测用的键 | 实际派发 | `modelRateLimits` 过滤 | 结果 |
+   * |---|---|---|---|---|
+   * | auto | `firstModelOf`（= 实际派发） | 同一个 | ✓ 生效 | 已覆盖 |
+   * | **aggregate** | `models[0]` | **候选 `realId`** | ✗ **失效** | **缺口可达** |
+   *
+   * ## 返回值
+   *
+   * `Map<候选, 是否有可用账号>`：`false` = 明确查到「该模型上无可用账号」；
+   * `true` = 有可用账号 / 池未实现该方法 / 查询异常（后两者是**保留**的取舍）。
+   * ⚠️ 用 `Map` 而非 `Set` 是为了让「查过且为真」与「没查」在类型上可区分 ——
+   * 虽然调用方按 `=== false` 判据处理，两者等价。
+   *
+   * ## 取舍
+   *
+   * - ⚠️ **只在池实现了 `getAvailableAccount` 时过滤**：它是既有 API，但大量单测桩
+   *   只实现了 `disabledModelsFor`（见 `{@link refreshCatalog}` 的注释）。缺失时**跳过过滤**而不是
+   *   判成不可用 —— 宁可少筛一层，不可把整池误剔除（与 `aggregate-expiry.ts` 对
+   *   `listAvailableCredentials` 缺失时的降级同一取向）。
+   * - ⚠️ 查询失败（抛错）时**保留该候选**：一次池查询异常不该让渠道整体消失。
+   * - ⚠️ **中止必须原样逃逸**（与 `candidatesFor` / `capabilityOf` 同一口径，
+   *   本仓库已在该缺陷上复发三次）。
+   */
+  private async availableByModel(
+    pool: readonly RankedCandidate[],
+    signal?: AbortSignal,
+  ): Promise<Map<RankedCandidate, boolean>> {
+    const out = new Map<RankedCandidate, boolean>()
+    const accountPool = this.options.accountPool as unknown as {
+      getAvailableAccount?: (provider: string, modelId: string) => Promise<unknown>
+    }
+    if (typeof accountPool.getAvailableAccount !== 'function') return out
+    for (const candidate of pool) {
+      signal?.throwIfAborted()
+      try {
+        const available = await accountPool.getAvailableAccount(candidate.provider, candidate.realId)
+        out.set(candidate, available !== null && available !== undefined)
+      } catch (error) {
+        if (isAbortLike(error, signal)) throw error
+        // 查询异常 ⇒ 保留该候选（见方法注释的取舍）。
+        out.set(candidate, true)
+      }
+    }
+    return out
+  }
+
+  /**
+   * 取目标模型的**三项**能力：**上下文窗口**、**思考档位 id**、**是否收得了图片**。
+   *
+   * ⚠️ 三项**共用同一次 `resolveModelInfo` 调用** —— 不额外发请求。这是把窗口与
+   * 图片能力做成「顺带取回」而不是「另查一遍」的原因（选型路径上每次请求都会走这里，
    * 多一次解析就是多一次上游交互）。
    *
-   * ⚠️ 失败时按**保守**方向回落：档位为空（不下发该字段）、图片为 `false`
-   * （不把它当带图候选）。理由见 {@link DispatchTarget.imageCapable}。
+   * ⚠️ 失败时按**保守**方向回落：窗口 `undefined`（不编造，由调用方兜底）、
+   * 档位为空（不下发该字段）、图片为 `false`（不把它当带图候选）。
+   * 理由见 {@link DispatchTarget.imageCapable} 与 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW}。
+   *
+   * ⚠️ **成功的解析结果进 {@link capabilityCache}**（见那里的长注释：失败**不**缓存）。
    */
-  /**
-   * 虚拟模型声明给宿主的上下文窗口：**取候选集里已声明的最大值**（移植自上游
-   * Gitee 原作者 contextWindowFor 的实现口径）。
-   *
-   * ## 为什么是「最大值」
-   *
-   * 聚合的派发按临期在候选间切换，请求实际发往哪家取决于运行时状态；目录元数据
-   * 只有一份，声明任何具体一家的窗口都会在切到别家时失真。取最大值 ⇒ 压缩阈值与
-   * 占用指示器按最宽的候选计算，切换供应商时「实际可用 ≥ 已声明」恒成立。
-   *
-   * ⚠️ **学习值不再收窄本值**（2026-10-12 修正，用户实测提出；原先有个
-   * `applyLearnedWindow` 在这里收窄）：学习值是按**虚拟模型**记的，于是「一个窄窗口
-   * 候选撞墙」会把整个虚拟模型的对外声明**粘性压低**，之后即使换回宽窗口的候选也
-   * **不恢复**（DSH 压缩阈值 = 声明 × 0.8 ⇒ 长期过早压缩，宽候选的能力被白白让掉）。
-   * 而且那层保护本就**多余**：池整体窄时这个「最大值」自然就窄、压缩自然早发生；
-   * 真正需要「这个候选装不下」这层信息的只有**筛选**（方案 C），它读的是**候选键**。
-   *
-   * ## ⚠️ 只有当每一个候选都解析成功时才记忆化
-   *
-   * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进缓存，目录服务抖动一次就会把
-   * 兜底值固化整个 TTL 周期。失败时返回值照给（调用方需要立即拿到可用值），但
-   * 不写缓存，下一次调用重新尝试解析。
-   */
-  private async contextWindowFor(
-    modelKey: string,
-    candidates: readonly { provider: string; realId: string }[],
-    signal?: AbortSignal,
-  ): Promise<number> {
-    // ⚠️ 缓存里存的就是**对外值**（候选里的最大值）—— 学习值**不再**收窄它
-    //    （理由见本函数 JSDoc 的「学习值不再收窄本值」）。
-    const remembered = this.contextWindowCache.get(modelKey)
-    if (remembered !== undefined) return remembered
-    let widest: number | undefined
-    let allResolved = true
-    // 手机版诊断（2026-10-11）：逐候选记录解析结果，定位「声明在哪一家丢失」。
-    const traces: string[] = []
-    for (const candidate of candidates) {
-      let window: number | undefined
-      try {
-        const info = await this.ctx.llm.resolveModelInfo(candidate.provider, candidate.realId, signal)
-        // 已解析；未声明窗口的渠道（undefined）不参与取大。
-        window = info.context?.contextWindow
-      } catch (error) {
-        // 中止不得被吞成「解析失败」（与 capabilityOf 同一口径）。
-        signal?.throwIfAborted()
-        if (isAbortLike(error, signal)) throw error
-        allResolved = false
-        traces.push(`${candidate.provider}(${candidate.realId})=解析失败`)
-        continue
-      }
-      traces.push(`${candidate.provider}(${candidate.realId})=${window ?? '未声明'}`)
-      if (window !== undefined && (widest === undefined || window > widest)) widest = window
-      // ⚠️ 顺手记下**逐候选**的声明窗口（方案 C 用）：派发前按本轮体积跳过太窄的候选。
-      //    这里本来就在逐个 resolve，故不额外产生调用。
-      if (window !== undefined) {
-        this.candidateWindow.set(
-          candidate.provider + String.fromCharCode(0) + candidate.realId,
-          window,
-        )
-      }
-    }
-    // ⚠️ 兜底**必须**是动态值：候选全都没声明时也得给一个正数（`context` 为空会让压缩链
-    // 直接抛 `compaction-basic: no context capacity …`），而写死 200K 会让真有 1M 窗口的
-    // 模型永远只用到五分之一。学习值/起步值都来自 `context-window-learn.ts`，
-    // 撞墙后由 `dispatch` 的失败路径收窄。
-    // ⚠️ 它**不进** `contextWindowCache`（见下方记忆化条件）——学过之后要立刻生效。
-    // ⚠️ 候选全无声明时才用动态起步值（`dynamicContextWindowFor` = 学到的 ?? 起步值）。
-    const declared = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))
-    const resolved = declared
-    // ⚠️ **手机版修正（2026-10-11，用户实测报障）**：记忆化必须同时要求
-    // 「无抛错」**和**「真的解析到了声明」。原条件只看 `allResolved`（没抛错）——
-    // 渠道目录未就绪时 `resolveModelInfo` 会**成功返回但不带窗口声明**（undefined），
-    // 5 家全 undefined ⇒ 兜底值被当成「解析成功」**写进缓存固化**：此后即使各家
-    // 目录就绪、各自声明了不同窗口（实测同一虚拟模型 5 家候选声明各异），
-    // 也永远返回固化的兜底值 ⇒ GUI 恒显示 200K。
-    // ⇒ 只缓存「确有声明」的结果（widest !== undefined）；解析不出时**不缓存**，
-    //    下一次调用重新尝试（目录就绪后自然取到各家声明的最大值）。
-    //    兜底值仅作本次的**瞬时**回落，不进入任何缓存。
-    // ⚠️ **缓存的是声明值 widest，不是收窄后的 resolved**：把收窄值缓存下来会让
-    //    「后来才学到的更小值」被固化挡住（收窄必须立刻生效）。
-    if (allResolved && widest !== undefined) this.contextWindowCache.set(modelKey, widest)
-    // 诊断日志：每次实际解析（未命中缓存）打一行汇总，含逐候选窗口与是否固化。
-    this.ctx.logger?.info?.(
-      `[jet-hub] 窗口解析 ${modelKey}: ${traces.join(', ')} → ${resolved}`
-        + `${allResolved && widest !== undefined ? '（已缓存）' : '（未缓存）'}`,
-    )
-    return resolved
-  }
-
-  /**
-   * auto 的候选池：所有虚拟模型的候选并集（去重）。
-   * 与 candidatesFor 的 auto 分支同口径，但不做余额探测（这里只要候选表）。
-   */
-  private aggregateCandidatePool(): readonly { provider: string; realId: string }[] {
-    const SEP = String.fromCharCode(0)
-    const seen = new Set<string>()
-    const pool: { provider: string; realId: string }[] = []
-    for (const virtual of this.catalog) {
-      for (const candidate of virtual.candidates) {
-        const key = candidate.provider + SEP + candidate.realId
-        if (seen.has(key)) continue
-        seen.add(key)
-        pool.push({ provider: candidate.provider, realId: candidate.realId })
-      }
-    }
-    return pool
-  }
-
   private async capabilityOf(
     provider: string,
     realId: string,
     signal?: AbortSignal,
-  ): Promise<{ efforts: readonly string[]; imageCapable: boolean }> {
+  ): Promise<CandidateCapability> {
+    const key = `${provider}\u0000${realId}`
+    const cached = this.capabilityCache.get(key)
+    if (cached !== undefined) return cached
     try {
       const info = await this.ctx.llm.resolveModelInfo(provider, realId, signal)
       const efforts = (info.reasoning?.efforts ?? [])
         .map((effort) => String(effort.id))
         .filter((id) => id.length > 0)
-      return { efforts, imageCapable: info.inputModalities?.includes('image') === true }
+      // ⚠️ DSH 已校验过 `context.contextWindow` 是**正整数**
+      //（`dsh-llm/lib/index.js` 的 `normalizeModelInfo`：非整数或 ≤0 抛
+      // `INVALID_MODEL_CONTEXT`），故这里不必重复校验；但仍按「不编造」口径
+      // 只在**有值**时记录，缺省保持 `undefined`。
+      const capability: CandidateCapability = {
+        efforts,
+        imageCapable: info.inputModalities?.includes('image') === true,
+        resolved: true,
+        ...info.context === undefined ? {} : { contextWindow: info.context.contextWindow },
+      }
+      this.capabilityCache.set(key, capability)
+      return capability
     } catch (error) {
       // ⚠️⚠️ **中止不得被折算成「无档位 / 不支持图片」**（真实缺陷，全分支终审 I3：
       // 这是同一缺陷的**第三处** —— `aggregate-expiry.ts` 与 `candidatesFor` 各修过一处）。
@@ -1362,10 +1421,83 @@ export class AggregateAdapter extends LlmAdapter {
       // 「候选渠道都不支持图片输入」这类**与中止无关**的误导性报错，且整轮不会中止。
       // 与本仓库口径相反：中止应**立刻**以 `AbortError` 结束
       //（`aggregate-core.ts` 的哨兵注释：「abort 立刻抛，绝不折算」）。
+      //
+      // ⚠️⚠️ **判据必须与 `isAbortLike` 逐格同构（2026-10-12 审计实测补全）**：
+      // 本处原先只认 `name === 'AbortError'`，同族分叉的**第三处**。
+      // 不修的话，同一份 499 报文在这里会被折算成 `{imageCapable:false}` ⇒
+      // 用户看到「候选渠道都不支持图片输入」这类与中止无关的误导性报错。
       signal?.throwIfAborted()
       if (isAbortLike(error, signal)) throw error
-      return { efforts: [], imageCapable: false }
+      // ⚠️ 走这里的结果**不入缓存**（见 `capabilityCache` 的注释）——否则一次瞬时
+      //    失败会让该候选在整段 TTL 内恒被当成「无档位 / 不支持图片 / 无窗口」。
+      return { efforts: [], imageCapable: false, resolved: false }
     }
+  }
+
+  /**
+   * 该虚拟模型的**上下文窗口声明值**：**候选集的最大值**。
+   *
+   * ## 口径（设计文档 §4.1「ctx / 图片 / 档位取候选集的能力并集」）
+   *
+   * 取**最大值**而不是最小值/交集，理由与档位取并集同源：
+   *
+   * - 声明的窗口是给**宿主**看的（压缩阈值 + 占用指示器），而一次请求实际发往
+   *   哪个候选**在声明时还没定**（`prepareCall` 是发起请求之前就返回元数据的）。
+   *   取最小值意味着「池里有一条 262144 的候选，就把整池按 262144 声明」——
+   *   用户明明在用 1M 的渠道，界面与压缩却按最小的那条算，与本条报障同类；
+   * - 取最大值后，若某次真的切到了窗口更小的候选，**由既有的失败切换兜住**
+   *   （上游报超长 → 换下一个候选重试）。代价是可能白跑一轮，而最小值口径的
+   *   代价是**每一次**请求都被按最小窗口过早压缩 —— 后者持续存在，前者只在
+   *   恰好选中小窗口候选时发生。
+   *
+   * ⚠️ **一个候选的窗口都取不到时**（渠道全部未登录 / 该渠道的 `resolveModel`
+   * 不声明窗口）回落到 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW} —— 不能返回
+   * `undefined`，`dsh-compaction-basic` 会抛 `TargetPressureConfigError`。
+   *
+   * ⚠️ 本方法**不做任何余额探测**（`resolveModel` 会被 `buildModelCatalog` 对
+   * 目录里每个模型各调一次），只是读/填能力缓存。
+   *
+   * ⚠️ **取不到窗口的候选也进入循环**：它不拉低结果，但要为它解析一次能力 ——
+   * 解析结果会进缓存，供同一候选在派发路径上复用。
+   *
+   * ## ⚠️⚠️ 只有当**每一个候选都解析成功**时才记忆化结果
+   *
+   * 这是本条实现里最容易写错的一处（本用例第一版就写错了，被自己写的用例抓住）。
+   * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进 `contextWindowCache`，那么：
+   *
+   * 1. 目录服务抖动一次 ⇒ 该虚拟模型在 60 秒（目录 TTL）内恒声明兜底值，
+   *    **即使上游早已恢复**；
+   * 2. 更糟的是失效时机也错位 —— 缓存键是虚拟模型，与「哪个候选失败了」无关，
+   *    于是**一个**候选的瞬时故障会污染整个虚拟模型的声明值。
+   *
+   * 这正是 `AGENTS.md` 记录的「`refreshable` 单向门」同型缺陷：把一次瞬时失败
+   * 固化成持续状态。⇒ 失败时**返回值照给**（调用方需要立即拿到一个可用值），
+   * 但**不写缓存**，下一次调用会重新尝试解析。
+   *
+   * @param modelKey - 虚拟模型 id（含 `auto`），仅用于记忆化。
+   * @param candidates - 该虚拟模型的候选表（`auto` 传全池候选）。
+   */
+  private async contextWindowFor(
+    modelKey: string,
+    candidates: readonly { provider: string; realId: string }[],
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const remembered = this.contextWindowCache.get(modelKey)
+    if (remembered !== undefined) return remembered
+    let widest: number | undefined
+    let allResolved = true
+    for (const candidate of candidates) {
+      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal)
+      if (!capability.resolved) allResolved = false
+      const window = capability.contextWindow
+      // ⚠️ 只用**已声明**的窗口参与取大：把 `undefined` 当成 0 参与比较是错的
+      //    （那会让「没声明」拉低结果），当成 `Infinity` 更错（那是凭猜测放大窗口）。
+      if (window !== undefined && (widest === undefined || window > widest)) widest = window
+    }
+    const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW
+    // ⚠️ 有任一候选没解析成功 ⇒ **不记忆化**（见上方长注释）。
+    if (allResolved) this.contextWindowCache.set(modelKey, resolved)
+    return resolved
   }
 
   /**
@@ -1449,178 +1581,10 @@ export class AggregateAdapter extends LlmAdapter {
        * ⇒ 记录类型，切换前判定（`text` 是安全类型，因为它最可能就是下一个候选要开的）。
        */
       const openedBlocks = new Map<number, string>()
-      /**
-       * **方案 C（2026-10-12）：派发前按本轮体积跳过太窄的候选**。
-       *
-       * ## 为什么必须筛
-       * `aggregate/auto` 的候选横跨十几个渠道，声明窗口相差两个数量级；而 DSH 只看到
-       * 虚拟模型那一个（取候选最大值）⇒ 一个 20 万 token 的会话会被派给 3.2 万窗口的
-       * 候选，上游报超限、或按自己的上限把输出截断（用户 2026-10-12 实测的正是后者）。
-       *
-       * ## 判据
-       * - 本轮体积取**最近一次观测**（`usage.totalTokens` 的最大值）；没观测过 ⇒ **不筛**
-       *   （首轮无从判断，且「未知不编造」）。
-       * - 候选上限取**学习值优先**（`learnedContextWindow`，来自截断/超限学习），
-       *   否则取它声明的窗口；**两者都没有 ⇒ 不筛**（未知 ≠ 太窄）。
-       * - 留 5% 余量：上游按「输入 + 输出」计总量，贴着上限派发必然失败。
-       *
-       * ## ⚠️ 兜底：一个都不剩时**按成因分两路**（2026-10-12 起）
-       * - 全被**体积**筛掉（确定找不出装得下的候选）⇒ **主动报
-       *   `CONTEXT_WINDOW_EXCEEDED`**，交给 DSH 的压缩链压缩后重发
-       *   —— 硬发只会被上游静默截断（9.22 要点 5）。
-       * - 全在**零输出冷却**中（**瞬时针**，不构成「装不下」的证据）⇒ 照常逐个尝试。
-       */
-      let attemptTargets: readonly DispatchTarget[] = targets
-      /**
-       * ⚠️⚠️ **筛选用的「本轮体积」必须来自本会话，且不得是进程级峰值**（Issue F-04）。
-       * 判据与取舍见 `lastContextTokensBySession` 的声明处注释。
-       * ⚠️ 本会话没有观测过 ⇒ `undefined` ⇒ **不筛**（「未知不编造」；首轮无从判断）。
-       */
-      const sessionKey = String(options.sessionId ?? '')
-      const observedTokens = self.lastContextTokensBySession.get(sessionKey)
-      /**
-       * **本次请求**（本次 `dispatch`）观测到的最大上下文规模。
-       *
-       * ⚠️ 「请求内取最大」必须落在**这个局部变量**上，不能落进会话表：usage 帧在
-       * 一次请求里可能来多帧（规模只会增长，取最大才安全），而**跨请求必须覆盖**
-       * ——否则会话被压缩变小后观测值降不下来，又回到「只增峰值」的老毛病。
-       * 判据与后果见 `lastContextTokensBySession` 的声明处注释。
-       */
-      let requestTokens: number | undefined
-      /**
-       * 因**零输出冷却**被跳过的候选（与体积无关的**瞬时针**）。
-       *
-       * ⚠️ 必须与体积原因分开记：冷却不构成「装不下」的证据，故它不能参与
-       * 下方「全被筛掉 ⇒ 主动压缩」的判据（判据里的 `cooling.length === 0`）。
-       */
-      const cooling: string[] = []
-      /**
-       * ⚠️⚠️ **零输出冷却表必须无条件消费**（Issue F-54）。
-       *
-       * 原实现把冷却检查放在「本会话观测过 usage」（`observedTokens !== undefined`）
-       * 那个大 `if` **内部**，于是冷却表在两种情形下**永不消费**：
-       *
-       * ① 会话没观测过 usage（首轮，或 usage 帧丢失）⇒ 整块不执行；
-       * ② 观测到了，但**没有**候选因体积被跳过 ⇒ 末尾
-       *    `kept.length > 0 && skipped.length > 0` 不成立 ⇒ `attemptTargets`
-       *    仍是全量 ⇒ 冷却候选**照旧被派发**。
-       *
-       * 两种情形的后果一致：上一轮刚吞掉一次请求、零输出的候选，这一轮又拿到
-       * 请求 —— 方案 F 的「本次运行内别再三连撞同一堵墙」在大多数请求上压根
-       * 没生效。故把冷却筛选**提到体积判据之前独立做一遍**：它的依据
-       *（「这个目标上一轮零输出」）是已经发生的事实，与体积无关。
-       */
-      const liveTargets: DispatchTarget[] = []
-      for (const candidate of targets) {
-        // ⚠️ 零输出冷却中的目标**优先跳过**（与体积无关的理由）：它上一轮刚吞掉
-        //    一次请求、零输出（方案 F 记的冷却），再派给它只会重复一次失败。
-        if (isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId, self.options.now?.() ?? Date.now())) {
-          cooling.push(`${candidate.provider}(${candidate.realId})=零输出冷却中`)
-          continue
-        }
-        liveTargets.push(candidate)
-      }
-      if (cooling.length > 0 && liveTargets.length > 0) {
-        attemptTargets = liveTargets
-        self.ctx.logger?.info?.(
-          `[jet-hub] 候选筛选 ${modelKey}: 跳过 ${cooling.length} 个零输出冷却中的候选`
-          + `[${cooling.join(', ')}]`,
-        )
-      } else if (cooling.length > 0) {
-        // 全在冷却中（**瞬时针**，不是装不下）：压缩对它毫无帮助 ——
-        // 照常逐个尝试，冷却目标会自己失败并切换。
-        self.ctx.logger?.warn?.(
-          `[jet-hub] 候选筛选 ${modelKey}: ${cooling.length} 个候选全在零输出冷却中`
-          + `[${cooling.join(', ')}]，放弃筛选、照常逐个尝试`,
-        )
-      }
-      /**
-       * 全在冷却中 ⇒ 下方体积筛选**整块不做**：`attemptTargets` 此时仍是全量，
-       * 若照筛会把冷却候选按体积再判一次，与「冷却不构成装不下的证据」相矛盾
-       *（原实现在这种情况下也是全量尝试）。
-       */
-      const allCooling = cooling.length > 0 && liveTargets.length === 0
-      if (!allCooling && observedTokens !== undefined && observedTokens > 0) {
-        const required = Math.ceil(observedTokens * 1.05)
-        const kept: DispatchTarget[] = []
-        const skipped: string[] = []
-        for (const candidate of attemptTargets) {
-          const sep = String.fromCharCode(0)
-          const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))
-            ?? self.candidateWindow.get(candidate.provider + sep + candidate.realId)
-          if (cap !== undefined && cap < required) {
-            skipped.push(`${candidate.provider}(${candidate.realId})=${cap}`)
-            continue
-          }
-          kept.push(candidate)
-        }
-        if (kept.length > 0 && skipped.length > 0) {
-          attemptTargets = kept
-          self.ctx.logger?.info?.(
-            `[jet-hub] 候选筛选 ${modelKey}: 本轮约 ${observedTokens} tokens（需 ${required}），`
-            + `跳过 ${skipped.length} 个太窄候选 [${skipped.join(', ')}]`,
-          )
-        } else if (kept.length === 0 && cooling.length === 0) {
-          // ⚠️⚠️ **全被体积筛掉 ⇒ 确定装不下**（每个候选都有已知上限，且都低于本轮体积）。
-          //    硬发出去正是用户 2026-10-12 实测的形态：上游收下请求、按自己的上限把输出
-          //    **静默截断**（`finish: max-tokens`），报错通道里什么都没有、学习器也收不到信号。
-          //    ⇒ 主动归成 CONTEXT_WINDOW_EXCEEDED —— DSH 的压缩恢复链**只认这个码**
-          //    （`dsh-compaction-basic` 的 request-error listener 第一行即本判据），
-          //    压缩后重发才是唯一出路（9.22 要点 5：不硬发被截断）。
-          //    代价刻意取**不对称**：误判最多白压缩一次；硬发的代价是**回答被截断**。
-          // ⚠️⚠️ **必须先清掉本会话的观测再抛**（Issue F-04）：这条判词的含义是
-          //    「按**陈旧**观测看，没有候选装得下」，而不是「我们量到了本轮的真实体积」。
-          //    留着它，DSH 压缩后重发的下一次请求会读到**同一个数字**、再抛一次 ⇒
-          //    **压缩重试死循环**（进程存活期内该会话永久不可用）。
-          //    清掉后退回「未知 ⇒ 不筛」（与没有观测的既有分支同一条路径），
-          //    硬发的代价最多是被上游截断，而循环的代价是**会话彻底不可用**。
-          self.lastContextTokensBySession.delete(sessionKey)
-          throw new LlmError(
-            `aggregate: 本轮约 ${observedTokens} tokens（本会话最近一次观测），已超出全部 `
-            + `${targets.length} 个候选的已知上限 [${skipped.join(', ')}]，已在压缩上下文后重试。`,
-            CONTEXT_WINDOW_EXCEEDED_CODE,
-          )
-        } else if (kept.length === 0) {
-          // 剩下的唯一成因是「非冷却候选全被体积筛掉，而池里仍有候选在零输出冷却中」：
-          // 冷却（**瞬时针**）不是装不下的证据，压缩对它毫无帮助 —— 照常逐个尝试。
-          self.ctx.logger?.warn?.(
-            `[jet-hub] 候选筛选 ${modelKey}: 非冷却候选全部装不下（需 ${required}），`
-            + `但仍有 ${cooling.length} 个候选在零输出冷却中 [${cooling.join(', ')}]，照常逐个尝试`,
-          )
-        }
-      }
-      for (let index = 0; index < attemptTargets.length; index += 1) {
-        // ⚠️ 索引必须落在**筛选后**的 `attemptTargets` 上（2026-10-12 复核发现的错配）：
-        //    方案 C 的 `kept` 是**子集而非前缀**，读 `targets[index]` 会把刚被判定
-        //    「装不下」的候选重新派出去，而真正装得下的候选反而永远轮不到
-        //    —— 恰好在最需要筛选的场景（宽候选排在窄候选之后）里筛了个空。
-        const target = attemptTargets[index]!
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index]!
         // 该候选是否已经产出过内容（决定失败时能否安全切换，见上方长注释）。
         let emitted = false
-        /**
-         * **本次尝试**实测到的规模（`usage.totalTokens`），成功时用于**自愈**（9.22）。
-         *
-         * ⚠️ 与 `self.lastContextTokens` 的区别是**关键**的：那个是跨候选、跨轮次的
-         * 累积峰值，可能来自一个窗口宽得多的候选；拿它去放宽窄候选就是「填大」
-         *（危险方向）。这里只记本次尝试真正收到的值。
-         */
-        let turnTokens: number | undefined
-        /** 本候选的「零输出撞墙」探针（见下方方案 F 的接线）。 */
-        let zeroProbe = emptyZeroOutputProbe()
-        /** 本次尝试是否因「零输出撞墙」而改道（决定内层 break 后走 continue）。 */
-        let reroute = false
-        /**
-         * ⚠️⚠️ **在「转发一开始」就记下真实目标**（`activeRoutes`，供客户端实时读数）。
-         *
-         * 与下面 `activeProviderByModel` 的「只在整轮跑完才写」**判据相反**，这是
-         * 刻意的：那张表回答「该看哪个渠道的余额」，写失败候选会让徽标指向一个刚
-         * 失败、甚至已无额度的账号；而本表回答「**此刻正在用什么**」，等整轮跑完
-         * 才更新就失去了实时性（长回答几十秒内用户都看不到）。
-         *
-         * ⇒ 两个语义、两处写入，**不要合并**（详见 `active-route.ts` 模块头）。
-         * ⚠️ 每次尝试都覆盖写：失败切换后读数跟着变，这正是「实时」应有的行为。
-         */
-        activeRoutes.record(AGGREGATE_PROVIDER, target.provider, target.realId)
         /**
          * 本候选「已产出可见内容 ⇒ 待定记录」的渠道（`undefined` = 没产出过内容）。
          *
@@ -1697,35 +1661,8 @@ export class AggregateAdapter extends LlmAdapter {
               const failure = chunk.reason.failure
               const message = `aggregate: ${target.provider}（${target.realId}）上游失败`
                 + `${describeFailure(failure)}`
-              // ⚠️ 手机版补充（2026-10-11）：上游其实说的是「请求超出上下文窗口」时，
-              //    必须如实归成 `CONTEXT_WINDOW_EXCEEDED`，否则 DSH 的压缩恢复链
-              //    **根本不会启动**（`dsh-compaction-basic` 的 request-error listener
-              //    第一行就是这个判据）——归成 `SERVER` / `INVALID_REQUEST` 的代价是
-              //    **长会话越过窗口后每轮报废**，而误归一次的最坏代价只是一次无效压缩。
-              //    方向不对称，与 `buddy-adapter.ts` / `gemini-adapter.ts` 的成文口径一致。
-              const code = resolveUpstreamCode(upstreamCode, message)
-              // ⚠️ **动态窗口学习**（Step B 切片一）：上游确实说「超出窗口」时把上限记下来。
-              //    取值优先级：报文里的**真实上限** > 当前声明值**减半**（见
-              //    `context-window-learn.ts`）。这一步必须紧跟归码、不能放到「重试之后」——
-              //    压缩链一启动就会重发请求，越早收窄越少「撞墙 → 压缩 → 再撞墙」。
-              //    ⚠️ 这里**不设**「该模型当前是否走兜底」的前置条件：记录本身无害，而
-              //    `contextWindowFor` 只在**候选全无声明**时才查学习表 —— 某家一旦给了真值，
-              //    真值仍然优先（约定 3）。反过来若声明与真实不符，这里记下的至少更接近真实。
-              //    ⚠️⚠️ **按该候选记，不按虚拟模型记**（2026-10-12 修正，用户实测提出）：
-              //    原先记虚拟模型 ⇒ 一个窄候选撞墙就把**整个虚拟模型**的对外声明粘性
-              //    压低，之后即使换回宽窗口的候选也**不恢复**（DSH 压缩阈值 = 声明 × 0.8
-              //    ⇒ 长期过早压缩、宽候选的能力被让掉）。而且那层保护**多余**：虚拟声明
-              //    本就取候选最大值，池整体窄时声明自然窄；需要「这个候选装不下」这层
-              //    信息的只有**筛选**（方案 C），它读的正是候选键。
-              if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {
-                const learned = rememberContextWindowFailure(
-                  contextWindowKey(target.provider, target.realId), message,
-                )
-                self.ctx.logger?.info?.(
-                  `[jet-hub] 窗口学习 ${target.provider}（${target.realId}）: `
-                  + `上游报超限 → 记该候选 ${learned}`,
-                )
-              }
+              const code = typeof upstreamCode === 'string' && upstreamCode.length > 0
+                ? upstreamCode : 'SERVER'
               // ⚠️⚠️ **逐字段独立回退**（不是整袋回退）。
               //
               // 我先前的两版都有问题：
@@ -1798,142 +1735,15 @@ export class AggregateAdapter extends LlmAdapter {
               //   （即候选真的把整轮跑完）才提交进 Map。见下方 `return` 之前的提交处。
               pendingProvider = target.provider
             }
-            // ⚠️⚠️ **方案 B（2026-10-12）：把「截断」也变成可学的信号**。
-            //
-            // ## 为什么必须单独处理（用户实测报障的根因）
-            //
-            // 既有学习钩子只在**失败**（`finish: error` 且归成 `CONTEXT_WINDOW_EXCEEDED`）
-            // 时触发。但多数上游**不报错**：它们按自己的上限把输出截断，回
-            // `finish_reason: length`（DSH 侧显示「已达到输出 token 上限」）。
-            // 实测（本机 2026-10-12，`aggregate/auto` → loomy spark-x）：
-            // 会话 20.9 万 token、虚拟模型声明 1M ⇒ DSH 压缩阈值 800K 永不触发，
-            // 而 spark-x 真实上限约 262K ⇒ 连续两轮以 `max-tokens` 收场。
-            // ⇒ 这种形态下**没有任何失败帧**，学习器完全是瞎的。
-            //
-            // ## 判据与取值
-            //
-            // `finish: max-tokens` = 模型在本轮**用尽了自己的预算**，此刻在飞的
-            // 规模（`usage.totalTokens`）就是该候选的有效上限**下界**。
-            // 记它有两个作用：
-            // 1. **虚拟模型**收窄 ⇒ 对外声明变小 ⇒ DSH 下轮更早压缩（用户要的
-            //    「自动降低上限并压缩」）；
-            // 2. **该候选**收窄 ⇒ 方案 C 的筛选在后续轮次**跳过**它（20 万 token 的
-            //    会话不再派给 26 万上限的 spark-x）。
-            // ⚠️ 只在**有观测值**时记：拿不到 usage 就不猜（「未知不编造」）。
-            if (chunk.type === 'usage') {
-              const seen = contextTokensOfUsage(chunk.usage)
-              if (seen !== undefined) {
-                turnTokens = seen
-                // ⚠️ `Math.max` **只作用于同一次请求内部**（落在这个局部变量上）；
-                //    落桶是**覆盖**，这样会话被压缩变小后观测值能如实下降
-                //    ——「只增峰值」正是 F-04 的根因。详见字段声明处注释。
-                requestTokens = Math.max(requestTokens ?? 0, seen)
-                self.recordSessionContextTokens(sessionKey, requestTokens)
-              }
-            }
-            if (chunk.type === 'finish' && chunk.reason.kind === 'max-tokens') {
-              /**
-               * ⚠️⚠️ **学习值必须取「本次尝试」的规模，不是进程/会话峰值**（Issue F-04 第 ② 条）。
-               *
-               * 原先读的是那个进程级只增峰值 ⇒ 一处**静默的学习失效**：宽候选观测过
-               * 90 万之后，窄候选（真实上限 26.2 万）以 max-tokens 收场时送进去的是
-               * 90 万 ⇒ `rememberContextWindowCeiling` 「只在更小时覆盖」⇒
-               * **永远学不进 26.2 万** ⇒ cap 恒 90 万 ⇒ 方案 C 恒不跳过该窄候选 ⇒
-               * 每轮都派给它、每轮都被截断。
-               *
-               * ⇒ 改用 `turnTokens`（只由本次尝试的 usage 帧记录）。这与它在
-               * :1511 声明处的自警「拿峰值去放宽窄候选就是填大（危险方向）」同一口径，
-               * 本条只是把同一判断补到学习点上。
-               * ⚠️ 没观测到 usage ⇒ `undefined` ⇒ **不学**（「未知不编造」）。
-               */
-              const observed = turnTokens
-              if (observed !== undefined) {
-                // ⚠️ **只记该候选**（2026-10-12 修正，与上面的失败路径同口径）：记虚拟模型
-                //    会把整个虚拟模型的对外声明粘性压低 ⇒ 换回宽候选也不恢复。
-                const perCandidate = rememberContextWindowCeiling(
-                  contextWindowKey(target.provider, target.realId), observed,
-                )
-                self.ctx.logger?.warn?.(
-                  `[jet-hub] 窗口学习(截断) ${modelKey}: ${target.provider}（${target.realId}）`
-                  + `以 max-tokens 收场，本轮 ${observed} tokens ⇒ 记该候选 ${perCandidate ?? '未记'}`,
-                )
-              }
-            }
-            // ⚠️⚠️ **零输出撞墙 ⇒ 换下一个候选重发**（方案 F，2026-10-12 接线）。
-            //
-            // 判据在 `zero-output-guard.ts`（**唯一权威**）：`max-tokens` **且零输出**。
-            // ⚠️ 必须同时要求零输出 —— 有输出的 `max-tokens` 是「正常答到半截撞了输出
-            // 上限」，换候选会把已经产出的内容撤回（本文件上方两道守卫正是防这个）。
-            //
-            // ⚠️ 判定必须在**透出该终止帧之前**：一旦把 `max-tokens` 交给 harness，
-            //    本轮就结束了（DSH 对 `max-tokens` 不自动重试），改道机会随即消失。
-            //
-            // ⚠️ 额外要求 `openedBlocks.size === 0`：`block-start` **不算**可见内容
-            //（见 `isVisibleContent`），故「零输出」仍可能已经开过块 —— 而按 index
-            // 幂等的 `BlockAssembler` 会让下一个候选的内容灌进错误类型的块（本文件
-            // 上方那段长注释记录的真实缺陷）。零输出 + 没开过块才是**可安全重发**的形态。
-            zeroProbe = noteChunk(zeroProbe, chunk)
-            if (chunk.type === 'finish' && isZeroOutputWallHit(zeroProbe)) {
-              if (emitted || openedBlocks.size > 0) {
-                // 已开块/已吐内容：**如实透出**（重发会丢内容，比截断更糟）。
-                self.ctx.logger?.warn?.(
-                  `[aggregate] ${target.provider}（${target.realId}）零输出撞墙，但已开过 `
-                  + `${openedBlocks.size} 个块，不重发（重发会让内容灌进错误的块类型）`,
-                )
-              } else if (index + 1 < attemptTargets.length) {
-                self.zeroOutputCooldowns = noteZeroOutputHit(
-                  self.zeroOutputCooldowns, target.provider, target.realId, self.options.now?.() ?? Date.now(),
-                )
-                self.ctx.logger?.warn?.(
-                  `[aggregate] ${modelKey}: ${target.provider}（${target.realId}）收下请求却零输出`
-                  + `（疑似声明窗口虚高），改道下一个候选重发；该目标在 `
-                  + `${Math.round(ZERO_OUTPUT_COOLDOWN_MS / 60_000)} 分钟内不再被选`,
-                )
-                reroute = true
-                break
-              } else {
-                // 没有下一个候选：**如实透出**这轮的终止帧（不吞掉、不伪造成功）。
-                self.ctx.logger?.warn?.(
-                  `[aggregate] ${modelKey}: ${target.provider}（${target.realId}）收下请求却零输出，`
-                  + `但候选序已到末位；如实上报该结果`,
-                )
-              }
-            }
             yield chunk
           }
-          // ⚠️ 零输出撞墙改道：内层 `break` 出来，**不提交**任何「实际选中」记录，
-          //    直接试下一个候选（与 auto-adapter 的 `yield* this.dispatch(next, ...)` 同语义）。
-          if (reroute) continue
           // ⚠️ 走到这里 = 该候选的流**正常结束**（没有抛错、没有失败帧）⇒ 提交「实际选中」。
-          //
-          // ⚠️ **成功自愈**（9.22）：整轮正常结束 ⇒ **本次尝试**的实测规模证明「该键至少
-          //    能装这么多」。若此前学到的值比它小，说明那个值偏小（报文误读、或收敛途中
-          //    的中间值）⇒ 放宽它，避免「重启后仍按一个偏小的值过早压缩」。
-          //    方向安全：该值来自**真正成功**的请求，必然 ≤ 真实上限（不会「填大」）。
-          if (turnTokens !== undefined) {
-            // ⚠️ 只对**该候选**自愈：虚拟模型那侧自 2026-10-12 起不再记学习值
-            //    （见 `dispatch` 的两处学习点与本文件 `contextWindowFor` 的注释）。
-            const candidateHealed = noteContextWindowSuccess(
-              contextWindowKey(target.provider, target.realId), turnTokens,
-            )
-            if (candidateHealed !== undefined) {
-              self.ctx.logger?.info?.(
-                `[jet-hub] 窗口自愈 ${target.provider}（${target.realId}）: `
-                + `本轮 ${turnTokens} tokens 成功 ⇒ 放宽到 ${candidateHealed}`,
-              )
-            }
-          }
           if (pendingProvider !== undefined) {
             // ⚠️ 是**实际发往**的 `target.provider`，不是候选序第一个（带图改道时可能不同）。
             // ⚠️ 同时更新「最近一次」指针：`Map` 的迭代顺序是**插入顺序**，
             //    覆盖已存在的键**不改变**其位置 ⇒ 不能靠它取「最近」。
             self.activeProviderByModel.set(modelKey, pendingProvider)
             self.lastActiveProvider = pendingProvider
-            // ⚠️ 与渠道**同一提交点**记下具体模型（真实 modelId）：`auto` 的徽标只显示
-            //    渠道时用户不知道跑的是哪个模型（用户 2026-10-09 报障）。门控完全一致
-            //    —— 只有整轮正常结束才算「真的用了这家这个模型」。
-            self.activeTargetByModel.set(modelKey, { provider: pendingProvider, realId: target.realId })
-            self.lastActiveModel = target.realId
           }
           return
         } catch (error) {
@@ -2002,7 +1812,7 @@ export class AggregateAdapter extends LlmAdapter {
           //
           // ⚠️ 严格的替代方案是**延迟 `block-start`**（缓冲到第一个 delta 一起发，
           //    使「已开块」等价于「已吐内容」）—— 那确实是本仓库既有做法
-          //   （`buddy-adapter.ts:2068` 的 `announced: '名字可用的那一刻才发'`），
+          //   （`buddy-adapter.ts` 的 `announced: '名字可用的那一刻才发'`），
           //    但它要改动**所有**候选的产出路径（含 tool-call 的 id/name 装配时机），
           //    属于比本修复更大的改动面。留给后续任务，此处取安全的一刀切。
           if (openedBlocks.size > 0) {
@@ -2016,24 +1826,9 @@ export class AggregateAdapter extends LlmAdapter {
             )
             throw error
           }
-          // ⚠️ 判据必须用**筛选后**的 `attemptTargets`（2026-10-12 复核，与循环头同一处错配）：
-          //    用 `targets.length` 会在尾部候选被筛掉时谎报「切换下一个候选」，
-          //    而下一轮循环已结束（走到这里仍会如实抛出最后一个错误）。
-          if (index + 1 < attemptTargets.length) {
-            // ⚠️ 显式点名「上下文超限」（手机版补充，2026-10-11）：此前日志只有泛化的
-            //    失败文案，看不出这次切换是因为**请求超出该候选的窗口**。
-            //    为什么这情形会真实发生：{@link contextWindowFor} 按候选**最大值**声明
-            //    窗口（切换渠道时「实际可用 ≥ 已声明」恒成立的代价），而**实际选中**的
-            //    候选窗口可能更窄 ⇒ 溢出后换下一个候选正是应有的行为，需在日志里可辨认。
-            //    ⚠️ **只影响日志文案，不改任何行为**：既不把失败改归成
-            //    `CONTEXT_WINDOW_EXCEEDED`（那会触发 DSH 的压缩重试链，见
-            //    `zero-output-guard.ts` 模块头「为什么不把这类失败归成…」），
-            //    也不改变切换范围（本日志位于 `emitted` / `openedBlocks` 两道
-            //    「不许切换」判据**之后**，走到这里就一定会切换）。
-            const overflow = isContextOverflowFailure(error)
-              ? '（上下文超限：请求超出该候选窗口）' : ''
+          if (index + 1 < targets.length) {
             self.ctx.logger?.warn?.(
-              `[aggregate] ${target.provider}（${target.realId}）失败${overflow}，切换下一个候选：${String(error)}`,
+              `[aggregate] ${target.provider}（${target.realId}）失败，切换下一个候选：${String(error)}`,
             )
           }
         }
@@ -2043,24 +1838,6 @@ export class AggregateAdapter extends LlmAdapter {
   }
 
   /** 把请求转发给一个候选，按目标档位表翻译 `reasoningEffort`。 */
-  /**
-   * 记录某会话**最近一次请求**观测到的上下文规模（Issue F-04）。
-   *
-   * ⚠️ 语义是**覆盖**，不是取最大 —— 会话被压缩变小后观测值必须能如实下降，
-   * 否则又回到「只增峰值」的老毛病（那正是 F-04 的根因）。
-   * 「请求内取最大」由调用方的局部变量负责（usage 一次请求可能来多帧）。
-   * ⚠️ 容量上限 512（超出淘汰最旧一条）：与会话数同阶，防无界增长。
-   */
-  private recordSessionContextTokens(sessionKey: string, value: number): void {
-    // `delete` + `set` 保证插入序即「最近写入序」，淘汰最旧一条时才有确定语义。
-    this.lastContextTokensBySession.delete(sessionKey)
-    this.lastContextTokensBySession.set(sessionKey, value)
-    if (this.lastContextTokensBySession.size > 512) {
-      const oldest = this.lastContextTokensBySession.keys().next()
-      if (!oldest.done) this.lastContextTokensBySession.delete(oldest.value)
-    }
-  }
-
   private streamThrough(target: DispatchTarget, options: GenerateOptions): AsyncIterable<StreamChunk> {
     const base = { ...options, provider: target.provider, model: target.realId }
     const requested = options.reasoningEffort
@@ -2088,6 +1865,7 @@ export class AggregateAdapter extends LlmAdapter {
 
 /** 一个转发目标：候选 + 该模型声明的档位 id + 它收不收得了图片。 */
 interface DispatchTarget extends RankedCandidate {
+  /** 该候选声明的思考档位 id（供逐候选翻译用，见 `dispatch`）。 */
   efforts: readonly string[]
   /**
    * 该候选是否声明支持图片输入。
@@ -2124,13 +1902,13 @@ export function maxAttemptsFor(models: readonly VirtualModel[]): number {
  *
  * | 渠道 | 档位 id |
  * |---|---|
- * | codearts | `on` / `off`（只有开关，注释明确「不臆造强度阶梯」） |
+ * | codearts | `off` / `on`（只有开关，声明顺序即强度序；注释明确「不臆造强度阶梯」） |
  * | buddy / workbuddy | `low` / `high` / `max`（**逐模型不同**） |
  * | zcode | `low` / `high` / `max` |
  * | loomy | `none` / `low` / `medium` / `high` / `xhigh` |
  * | trae | `light` / `high` / `extra_high`（**私有名**） |
  * | lobsterai | `off` / `high` / `xhigh` |
- * | raccoon | `on` / `off` |
+ * | raccoon | `off` / `on`（同 codearts，强度序） |
  *
  * `deepseek-v4.1-flash` 跨 buddy + codearts + cline ⇒ **交集为空**。而空档位的后果
  * 本仓库有明确记录（`opencode-adapter.ts`：「档位为空时**不声明**本字段，声明空数组
@@ -2261,73 +2039,6 @@ function describeFailure(failure: { message?: string; code?: string; status?: nu
 }
 
 /**
- * 判一个候选失败是不是「请求超出该候选的上下文窗口」——**仅供日志点名**。
- *
- * ## 为什么需要一个判定（问题形态）
- *
- * 聚合把虚拟模型的窗口按候选**最大值**声明（见 {@link contextWindowFor}），而实际
- * 选中的候选窗口可能更窄 ⇒ 上游会以「上下文超限」拒绝 ⇒ 聚合换下一个候选重试。
- * 这条链路此前在日志里与普通失败**完全同形**，看不出是「窗口不够」还是真故障。
- *
- * ## 为什么用两条判据（而不是只看错误码）
- *
- * 两者都来自宿主同一个模块，**没有本地重新实现措辞匹配**（本仓库红线：同一语义
- * 不得两套判据）：
- * 1. `code === CONTEXT_WINDOW_EXCEEDED_CODE` —— 机器可路由的**规范码**
- *    （`@deepseek-ai/dsh-llm` 的成文要求：「route on this, never by parsing message」）。
- *    已验证 `dsh-llm-pi-ai` / `dsh-llm-deepseek` 真的会下发它（前者含「usage 超出
- *    已解析目录容量」这条用量侧判据）。
- * 2. 否则退回**共享**判据 `isContextOverflowBody(code + message)` ——
- *    **有些渠道**仍沿用通用码（如 `SERVER` / `INVALID_REQUEST`）只把原因写在文案里，
- *    只认规范码会让这些渠道的溢出在日志里继续隐身。
- *    ⚠️ 2026-10-11（9.16 补）：这里原先只喂宿主 `isContextWindowExceededError`，
- *    于是**网关措辞**（`prompt is too long: N tokens > M maximum`，宿主分类器认不出）
- *    在本兜底网**漏判**。改用共享判据后，与另外三条通道（HTTP 400 / 流内帧 / zcode）
- *    **同一语义、同一判据**。
- *
- * ⚠️ 第 2 条只在第 1 条不成立时执行，且**只用于日志**；将来若上游把所有渠道都归了
- *    规范码，可安全删掉第 2 条（行为不变，只少一层兜底）。
- */
-function isContextOverflowFailure(error: unknown): boolean {
-  if (error === null || typeof error !== 'object') return false
-  const { code, message } = error as { code?: unknown; message?: unknown }
-  if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return true
-  const detail = [typeof code === 'string' ? code : '', typeof message === 'string' ? message : '']
-    .filter((part) => part.length > 0).join(' ')
-  return detail.length > 0 && isContextOverflowBody(detail)
-}
-
-/**
- * 定这次上游失败最终该报什么码（手机版补充，2026-10-11）。
- *
- * ## 为什么要在**聚合层**再判一次
- *
- * DSH 的「撞窗口 → 剪工具结果 + 压缩 → 重试」链**只认** `CONTEXT_WINDOW_EXCEEDED`
- * （`dsh-compaction-basic/lib/index.js` 的 `agent/request-error` listener 第一行即本判据）。
- * 而聚合的候选横跨十几个适配器，其中多数把上游的「输入超限」按**通用码**抛出
- * ——HTTP 400 更是被共享层一律映射成 `INVALID_REQUEST`（`openai-compat.ts` 的
- * `httpErrorCode`）⇒ 用户只看到裸错误，且**长会话越过窗口后每轮报废**。
- * 在聚合层补这一次判断，等于让**所有走 aggregate / auto 的模型**同时获得恢复能力，
- * 不必逐个改十三个适配器（各适配器内的同类修正见 `buddy-adapter.ts` /
- * `llm-adapter.ts` / `gemini-adapter.ts` 的 `httpErrorCode`）。
- *
- * ## 只对「泛化码」再判（不覆盖已归好的语义）
- *
- * `AUTH` / `QUOTA_EXCEEDED` / `RATE_LIMIT` / `TRANSPORT` / `TIMEOUT` / `EMPTY_RESPONSE` 等
- * 都是**已经归好类**的失败，覆盖它们只会丢掉更具体的诊断信息。真正「没归类」的载体
- * 只有两个：`SERVER`（兜底）与 `INVALID_REQUEST`（HTTP 400 的兜底）。
- *
- * ⚠️ 判据复用 {@link isContextOverflowFailure}（宿主规范码 + 宿主措辞分类器），
- * **本文件里没有第二套措辞匹配**（本仓库红线：同一语义不得两套判据）。
- */
-function resolveUpstreamCode(upstreamCode: unknown, message: string): string {
-  const code = typeof upstreamCode === 'string' && upstreamCode.length > 0 ? upstreamCode : 'SERVER'
-  if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return code
-  if (code !== 'SERVER' && code !== 'INVALID_REQUEST') return code
-  return isContextOverflowFailure({ code, message }) ? CONTEXT_WINDOW_EXCEEDED_CODE : code
-}
-
-/**
  * 造一个「调用方中止」类错误。
  *
  * ⚠️ **必须同时带 `name` 与 `code` 两个判据**（对抗审计实测订正）：
@@ -2364,7 +2075,7 @@ function abortError(): Error {
  * - `code === 'ABORTED'` —— 某些适配器上报失败时的机器码；
  * - 🔴 `message` 含 `aborted request` / `HTTP_499` / `HTTP 499` —— **上游网关的
  *   499 口径**（nginx「client closed request」＝ 连接在响应完成前被断开）。
- *   实测（2026-10-11，上游会话两次 + 工单 `raccoon-499/01` 取证）：raccoon 网关把
+ *   实测（2026-10-11，本会话两次 + 工单 `raccoon-499/01` 取证）：raccoon 网关把
  *   这类断开报成 `provider: client has aborted request HTTP_499` 的 **error 帧**，
  *   三条旧判据全不命中 ⇒ 被归成「本轮运行失败」⇒ 消费者看到误导性的 provider
  *   故障，而真相是「请求没跑完，重发即可」。归 aborted 的语义收益：终端不再
@@ -2407,9 +2118,9 @@ export function registerAggregateLlm(
   // ⚠️ **注册后主动预热一次目录**（fire-and-forget，不阻塞注册）。
   //
   // 为什么必须预热：`listAllModels()` 被契约要求是**同步**方法，只能读上一次
-  // 推导结果；而 `provider.status`（`jet-hub-rpc.ts:3883`）会在**冷缓存**下直接
+  // 推导结果；而 `provider.status`（`jet-hub-rpc.ts`）会在**冷缓存**下直接
   // 调它并据条数算 `models.total`，判据是
-  // `closed = total > 0 && disabled === total`（同文件 `:3884-3903`）。
+  // `closed = total > 0 && disabled === total`（该分支即 `provider.status` 的 models.total 判据）。
   // 冷缓存时 `total` 只有 1（`auto`）⇒ 用户一关掉 `auto`，`disabled === total`
   // 即成立 ⇒ `aggregate` 被**误显示为「已关闭」**（掉进设置页的「已关闭」分组）。
   // 预热后 `this.catalog` 在**有已登录渠道时**非空（`refreshCatalog` 只在被调用时
@@ -2418,7 +2129,7 @@ export function registerAggregateLlm(
   // `total` 仍为 1 —— 那种状态下聚合确实无模型可选，`closed` 的判定与事实相符。
   //
   // 成本可控：各家的 `listModels` 内部都有 `providerCatalogVisible` 门控
-  //（`buddy-adapter.ts:1303` 等，门控在 `ensureRemoteModels()` **之前**）——
+  //（`buddy-adapter.ts` 等，门控在 `ensureRemoteModels()` **之前**）——
   // 未登录的渠道直接返回空目录、不发网络请求；已登录渠道本就会被模型选择器
   // 触发同一批请求，预热只是提前一次，随后 60 秒内走 `AGGREGATE_CATALOG_TTL_MS`。
   //

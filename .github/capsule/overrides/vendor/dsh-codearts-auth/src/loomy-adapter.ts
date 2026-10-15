@@ -21,9 +21,10 @@ import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { AccountPool, providerCatalogVisible } from './account-pool.js'
+import { AccountPool } from './account-pool.js'
+import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
-import { settingsNamespaceFor } from './settings-compat.js'
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import {
   isLoomyChatModel,
   isLoomyExpired,
@@ -32,8 +33,7 @@ import {
   splitLoomyRate,
   type LoomyCredential,
 } from './loomy.js'
-import { LOOMY, type LoomyFallbackModel, type LoomyProduct } from './loomy-product.js'
-import { planSessionTitleThinking } from './session-title.js'
+import { LOOMY, loomyContextWindow, loomySupportsImage, type LoomyFallbackModel, type LoomyProduct } from './loomy-product.js'
 import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
@@ -45,6 +45,7 @@ import {
   isTransportError,
   serializeMessages,
 } from './openai-compat.js'
+import { planSessionTitleThinking } from './session-title.js'
 
 /** 本适配器注册的 provider 路由名（等价于 `LOOMY.id`）。 */
 export const PROVIDER = 'loomy'
@@ -162,8 +163,17 @@ export function parseLoomyRemoteModels(payload: unknown): LoomyRemoteModel[] {
     models.push({
       id,
       name: loomyDisplayName(rawName),
-      contextWindow: Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 0,
-      supportsImage: readInputModalities(entry).includes('image'),
+      // ⚠️⚠️ **必须过 `loomyContextWindow`**（issue IKJW31）：远端对 `spark-x`
+      // 虚报 1048576，真实墙在 262144。只改兜底表是**无效**的 —— 远端可用时
+      // 走的就是这里。判据与证据见 `loomy-product.ts` 的覆盖表注释。
+      contextWindow: Number.isFinite(contextWindow) && contextWindow > 0
+        ? loomyContextWindow(id, contextWindow)
+        : 0,
+      // ⚠️⚠️ **必须过 `loomySupportsImage`**（2026-10-14 用户报障）：远端对
+      // `qwen-3.8-max` 漏报 `input_modalities`（只给 `['text']`），照抄会让 DSH
+      // 把图投影成文本占位符、图根本发不出去。判据与证据见 `loomy-product.ts`
+      // 的覆盖表注释。
+      supportsImage: loomySupportsImage(id, readInputModalities(entry).includes('image')),
       supportsThinking: capabilities.reasoning === true,
       // ⚠️ 档位缺失时**不写这两个键**（而不是写空数组）：下游据此区分
       // 「该模型不提供档位」与「提供了但为空」。
@@ -181,10 +191,14 @@ function fallbackToRemote(model: LoomyFallbackModel): LoomyRemoteModel {
   return {
     id: model.id,
     name: model.name,
-    contextWindow: model.contextWindow,
+    // ⚠️ 兜底表的值同样过一遍覆盖表（两条路径**同一判据**，别让它们分叉 ——
+    // 覆盖表本身就是对「照抄声明值」的纠正，与值来自哪条路径无关）。
+    contextWindow: loomyContextWindow(model.id, model.contextWindow),
     // 兜底表不声明图片能力：宁可少报（用户改用文本描述），
     // 也不要报一个服务端可能不认的模态。
-    supportsImage: false,
+    // ⚠️ 但**同样要过覆盖表**（与上一行的 `contextWindow` 同一条纪律）：兜底表
+    // 起算值恒为 false，覆盖表是唯一的真相源，两条路径因此不可能分叉。
+    supportsImage: loomySupportsImage(model.id, false),
     supportsThinking: true,
     ...model.efforts !== undefined && model.efforts.length > 0
       ? { efforts: [...model.efforts] }
@@ -223,6 +237,17 @@ export interface LoomyAdapterOptions {
   product?: LoomyProduct
   /** 注入的 fetch（测试用）。 */
   fetchImpl?: typeof fetch
+  /**
+   * 远端目录**落地后**的通知回调（issue IKJVTF）。
+   *
+   * 由 `registerLoomyLlm` 注入为 `broadcastCatalogChanged(ctx)`。适配器本身
+   * 拿不到 `ctx`，故必须由接线层桥接（与 `readImage` 等回调同一模式）。
+   *
+   * ⚠️ 必要性：客户端 `ModelCatalogDirectory` 在 `status === 'ready'` 时**短路
+   * 返回缓存**，只在宿主事件上 `refresh()`。没有本回调时，冷启动首拉失败
+   * 缓存的**兜底表**会永久留在对话框里，远端目录真的落地也不重读。
+   */
+  onCatalogLoaded?: () => void
 }
 
 // ── 请求级账号轮换（2026-10-05，用户报障「余额用完一个号就卡死」）────────
@@ -326,13 +351,28 @@ export class LoomyAdapter extends LlmAdapter {
   /** 远端模型缓存（含展示名与能力）；未拉取时为 undefined。 */
   private remoteModels: LoomyRemoteModel[] | undefined
   /** 目录加载闸门：并发去重 + 失败/空结果冷却（见 `remote-catalog-gate.ts`）。 */
-  private readonly catalogGate = new RemoteCatalogGate()
+  private readonly catalogGate: RemoteCatalogGate
 
   constructor(private readonly options: LoomyAdapterOptions) {
     super()
     this.product = options.product ?? LOOMY
     this.fetchImpl = options.fetchImpl ?? fetch
     this.fallbackIndex = new Map(this.product.fallbackModels.map((model) => [model.id, model]))
+    // 目录落地后通知客户端重读（issue IKJVTF 的缺陷①）。
+    this.catalogGate = new RemoteCatalogGate(
+      options.onCatalogLoaded === undefined ? {} : { onLoaded: options.onCatalogLoaded },
+    )
+    // ⚠️ 共享骨架：门控 → 读目录 → 黑名单 → 回填 → 三态，全在 `model-catalog.ts`。
+    this.catalog = createModelCatalog(
+      { accountPool: options.accountPool },
+      {
+        product: this.product,
+        loadCatalog: () => this.loadCatalogEntries(),
+        // ⚠️ 未知 id 保守报 ['text']（宁可少报能力，也不报服务端可能不认的模态）。
+        unknownModelInputModalities: () => ['text'] as const,
+        syncCatalog: () => this.syncCatalogEntries(),
+      },
+    )
   }
 
   /**
@@ -348,10 +388,19 @@ export class LoomyAdapter extends LlmAdapter {
     return { id, name: this.product.displayName }
   }
 
+  /**
+   * ⚠️ **2026-10-08 Task 7a：三个方法收敛到共享骨架** `createModelCatalog`。
+   *
+   * 原先 `listModels` / `resolveModel` / `listAllModels` 各写一遍骨架（实测与
+   * `minimax` / `raccoon` **归一化后逐字相同**）。现在只剩 `toCatalogEntry`
+   * 这一个**本家私有**的转换，骨架（门控 → 读目录 → 黑名单 → 回填 → 三态）
+   * 由 `src/model-catalog.ts` 统一持有。
+   */
+  private readonly catalog: ModelCatalog
+
   /** 完整目录（**不套黑名单**），带最终展示名。设置页需要它渲染被关闭的模型。 */
   listAllModels(): readonly { id: string; name: string }[] {
-    const source = this.remoteModels ?? this.product.fallbackModels.map(fallbackToRemote)
-    return source.map((model) => ({ id: model.id, name: model.name }))
+    return this.catalog.listAllModels()
   }
 
   /**
@@ -378,52 +427,50 @@ export class LoomyAdapter extends LlmAdapter {
     return this.product.fallbackModels.map(fallbackToRemote)
   }
 
-  private inputModalitiesFor(model: LoomyRemoteModel | undefined): readonly ('text' | 'image')[] {
-    return model?.supportsImage === true ? ['text', 'image'] : ['text']
-  }
-
-  async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    // ⚠️ 无已登录账号时返回 `[]` → DSH 的 buildModelCatalog 把整个 provider
-    // 分组隐藏。**必须返回空数组而不能抛错**（抛错会被归入 catalog 的
-    // failures，界面上反而多一条 provider 报错）。
-    if (!await providerCatalogVisible(this.options.accountPool, this.product.id)) return []
-
-    const all = await this.loadModels()
-    const disabled = this.options.accountPool?.disabledModelsFor(this.product.id)
-    const listed = disabled === undefined || disabled.size === 0
-      ? all
-      : all.filter((model) => !disabled.has(model.id))
-
-    return listed.map((model) => ({
-      provider: this.product.id,
+  /**
+   * 把本家私有的远端/兜底条目转成共享骨架的中间结构。
+   *
+   * ⚠️ 这里是**唯一**还认识「倍率格式」与「supportsImage」的地方 ——
+   * 骨架不认识它们（各家格式不同）。
+   */
+  private toCatalogEntry(
+    model: LoomyRemoteModel,
+    fallback: LoomyFallbackModel | undefined,
+  ): CatalogEntry {
+    const reasoning = this.reasoningFor(model, fallback)
+    const contextWindow = model.contextWindow
+    return {
       id: model.id,
       // 倍率拼进 name（不是 description）：composer 的模型切换菜单只渲染 name。
       name: model.name,
-      inputModalities: this.inputModalitiesFor(model),
-    }))
+      // ⚠️ `resolveModel` 用**裸名**（不带倍率）—— 价格只属于选择列表语境。
+      bareName: splitLoomyRate(model.name).name,
+      // ⚠️ 三态：`supportsImage` 为 false 时是**明确不支持**（不是「未知」）——
+      // 本家的远端条目**总是**带该布尔，故这里恒为数组，不会是 undefined。
+      inputModalities: model.supportsImage ? ['text', 'image'] : ['text'],
+      ...contextWindow !== undefined && contextWindow > 0 ? { contextWindow } : {},
+      ...reasoning !== undefined ? { reasoning } : {},
+    }
   }
 
-  async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+  /** 本家全部条目（远端缓存 ?? 兜底表），已转成中间结构。 */
+  private async loadCatalogEntries(): Promise<readonly CatalogEntry[]> {
     const all = await this.loadModels()
-    const entry = all.find((item) => item.id === model)
-    const fallback = this.fallbackIndex.get(model)
-    // ⚠️ name **不带倍率**（与 qoder/trae 一致）：价格只属于选择列表语境。
-    const bareName = fallback !== undefined ? splitLoomyRate(fallback.name).name : model
-    const resolved: LlmResolvedModelInfo = {
-      provider,
-      id: model,
-      name: entry !== undefined ? splitLoomyRate(entry.name).name : bareName,
-      inputModalities: this.inputModalitiesFor(entry),
-    }
-    const contextWindow = entry?.contextWindow ?? fallback?.contextWindow
-    // 未知模型不编造 context（宁可让 DSH 用默认值，也不报一个假窗口）。
-    if (contextWindow !== undefined && contextWindow > 0) {
-      resolved.context = { contextWindow }
-    }
-    // 思考档位：**远端 `reasoning_efforts` 直接生成**（用户要求）。
-    const reasoning = this.reasoningFor(entry, fallback)
-    if (reasoning !== undefined) resolved.reasoning = reasoning
-    return resolved
+    return all.map((model) => this.toCatalogEntry(model, this.fallbackIndex.get(model.id)))
+  }
+
+  /** 同步视图（`listAllModels` 用，见 `ModelCatalogConfig.syncCatalog` 的说明）。 */
+  private syncCatalogEntries(): readonly CatalogEntry[] {
+    const source = this.remoteModels ?? this.product.fallbackModels.map(fallbackToRemote)
+    return source.map((model) => this.toCatalogEntry(model, this.fallbackIndex.get(model.id)))
+  }
+
+  async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    return this.catalog.listModels(_provider)
+  }
+
+  async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    return this.catalog.resolveModel(provider, model, signal)
   }
 
   /**
@@ -493,7 +540,10 @@ export class LoomyAdapter extends LlmAdapter {
     const entry = all.find((item) => item.id === options.model)
     let imageUrls: Map<string, string> | undefined
     if (imageRefs.size > 0) {
-      if (!this.inputModalitiesFor(entry).includes('image')) {
+      // ⚠️ 这里**不能**走 `this.catalog` —— 它要的是「这个模型支不支持图片」这一个
+      // 判据，而 `resolveModel` 会顺带做 name 回退/context/maxTokens/reasoning，
+      // 在**发请求前**的这条路径上多算一遍没有意义（且 `resolveModel` 是 async）。
+      if (entry?.supportsImage !== true) {
         throw new LlmError(`loomy: 模型 "${options.model}" 不支持图片输入`, 'UNSUPPORTED_CONTENT')
       }
       if (this.options.readImage === undefined) {
@@ -505,7 +555,7 @@ export class LoomyAdapter extends LlmAdapter {
       for (const [id, ref] of imageRefs) {
         /**
          * ⚠️ **此处刻意走「原图」路径，未接 `readImageRequest` 缩放桥接**
-         * （Gitee issue IKKX0T，2026-10-12 自上游 8f71268f 移植复核）。
+         * （Gitee issue IKKX0T，2026-10-12 复核）。
          *
          * 既有理由「loomy 实测 24 张全过、无证据说明它有约束」**已被推翻**：
          * issue 的独立实测给出 `413 Request Entity Too Large` / `504`，
@@ -513,11 +563,12 @@ export class LoomyAdapter extends LlmAdapter {
          * 区间**内部** —— 即当时是**侥幸通过**，不是没有约束。
          *
          * ⇒ **但当前仍不接**，理由只有一条：**边界未经本仓库复测**。
-         * 两家 fixture 量纲不同（issue 3.45 MiB/张 vs 本仓库 2.87 MiB/张），
+         * 两家 fixture 的量纲不同（issue 3.45 MiB/张 vs 本仓库 2.87 MiB/张），
          * 直接套用别家的 `imageMaxBytes` 等于写进一个没验证的猜测
-         *（本仓库规矩：拿不到阈值就不定值）。
+         * （本仓库规矩：拿不到阈值就不定值）。
          *
-         * **复测入口**：`pnpm test:e2e:image-bisect`（二分到 ≤3 张）。
+         * **复测入口**：`pnpm test:e2e:image-bisect`
+         * （`tests/e2e/image-limit-bisect.e2e.spec.ts`，二分到 ≤3 张）。
          * 复测后：① 给 `LoomyProduct.imageMaxBytes` 赋值；
          * ② 这里改为 `projectRequestImage(ref, {...})` 并保留「拿不到就回退原图」；
          * ③ 宿主侧 `index.ts` 补 `readImageRequest` 桥接；
@@ -586,8 +637,7 @@ export class LoomyAdapter extends LlmAdapter {
     const effortsForModel = (await this.loadModels()).find((m) => m.id === options.model)?.efforts
       ?? this.fallbackIndex.get(options.model)?.efforts
     /**
-     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH，
-     * 2026-10-12 自上游 0840ae0c 移植）。
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH）。
      *
      * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
      * 远端声明的默认档注入进来。本家远端 `reasoning_efforts` 实测形如
@@ -742,25 +792,23 @@ export class LoomyAdapter extends LlmAdapter {
           // ⚠️ auth 类**不写标记**：认证失败是账号态而非模型冷却，写了会把
           //    网关侧授权故障放大成「全池封 24h」（2026-10-06 事故）。
           if (!activeAccountId || !recordsLoomyRateLimit(failureClass)) return
-          // ⚠️ 落盘失败**不得冒泡**（Issue F-40，与 raccoon 同款）：标记只是
-          //    「下次别再选它」的提示，写盘失败不该把限流失败升级成整轮抛错。
           await accountPool.updateModelRateLimit(
             activeAccountId,
             options.model,
             Date.now() + (failureClass === 'rate'
               ? LOOMY_RATE_LIMIT_COOLDOWN_MS
               : LOOMY_QUOTA_COOLDOWN_MS),
-          ).catch(() => {})
+          )
         }
         await markCurrentAccount()
         const maxRotate = LOOMY_MAX_ROTATE - 1
         for (let round = 0; round < maxRotate; round++) {
-          const next = await accountPool.getAvailableAccount(
+          const next = await accountPool.getAvailableAccount<LoomyCredential>(
             this.product.id, options.model, tried,
           )
           if (!next || tried.has(next.entry.id)) break
           tried.add(next.entry.id)
-          const nextCred = next.credential as unknown as LoomyCredential
+          const nextCred = next.credential
           if (nextCred === undefined || nextCred.access_token.length === 0) break
           activeAccountId = next.entry.id
           response = await send(nextCred.access_token)
@@ -780,7 +828,7 @@ export class LoomyAdapter extends LlmAdapter {
           failureClass = classifyLoomyFailure(errorText, status)
           await markCurrentAccount()
           if (failureClass === 'other') {
-            throw new LlmError(`loomy: ${errorDetail(errorText)}`, httpErrorCode(status, errorText), { status })
+            throw new LlmError(`loomy: ${errorDetail(errorText)}`, httpErrorCode(status), { status })
           }
         }
         throw new LlmError(
@@ -791,7 +839,7 @@ export class LoomyAdapter extends LlmAdapter {
           { status },
         )
       }
-      throw new LlmError(`loomy: ${errorDetail(errorText)}`, httpErrorCode(status, errorText), { status })
+      throw new LlmError(`loomy: ${errorDetail(errorText)}`, httpErrorCode(status), { status })
     }
 
     // ⚠️ 业务失败也可能以 HTTP 200 + SSE 内嵌错误帧返回，由 consumeOpenAiSse 处理。
@@ -825,7 +873,12 @@ function resolveChunkTimeoutMs(): number {
  */
 export function registerLoomyLlm(ctx: Context, options: LoomyAdapterOptions): LoomyAdapter {
   const product = options.product ?? LOOMY
-  const adapter = new LoomyAdapter(options)
+  const adapter = new LoomyAdapter({
+    ...options,
+    // ⚠️ 注入**唯一**的广播实现（`src/catalog-broadcast.ts`），不要在这里
+    // 另写一份 emit —— 两份实现必然漂移（issue IKJVTF 的缺陷① 就是「十处全漏」）。
+    onCatalogLoaded: () => broadcastCatalogChanged(ctx),
+  })
   registerAdapterIdempotent(ctx.llm, [product.id], adapter)
   return adapter
 }

@@ -31,13 +31,14 @@
 import type {
   ContentBlock,
   FinishReason,
-  RequestMessage as Message,
+  Message,
+  RequestMessage,
   StreamChunk,
   TokenUsage,
   ToolSchema,
 } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import { normalizeHarnessMessages, type NormalizedHarnessMessage } from './message-shape.js'
+import { normalizeHarnessMessages } from './message-shape.js'
 import { createDsmlMarkerNormalizer, fixDsmlMarkers, readWithIdleTimeout, resolveToolPairing } from './sse.js'
 // ⚠️ 工具结果「有图无文」时的载体文本**只留一份实现**（`openai-compat.ts`）：
 // 本仓库已有 IKLBSH A1 的教训 —— 同义常量各写一份必然漂移。
@@ -141,7 +142,16 @@ export function canonicalArgs(args: unknown): string {
 export interface TranslateGeminiRequestOptions {
   modelId: string
   spec: GeminiModelSpec
-  messages: readonly Message[]
+  /**
+   * 待翻译的历史。
+   *
+   * ⚠️ 类型是 **`RequestMessage`**（= `Message | RequestUserInput`）而不是
+   * `Message`：0.2.0 的 `GenerateOptions.messages` 就是这个联合 —— 一次性
+   * 调用方（标题生成、子请求）可以传**无 id / 无 source** 的用户输入。
+   * 本函数的第 1 步就会把它喂给 `normalizeHarnessMessages`（按结构读取），
+   * 全程不触碰 `id` / `source`，故放宽是**如实**而非绕过。
+   */
+  messages: readonly RequestMessage[]
   system?: string
   tools?: readonly ToolSchema[]
   toolChoice?: unknown
@@ -200,7 +210,7 @@ export function translateGeminiRequest(options: TranslateGeminiRequestOptions): 
   // 用户文本下发 —— 模型看不到工具输出，表现为提前结束或循环思考。
   const normalized = normalizeHarnessMessages(
     options.messages as unknown as readonly { role: string; content?: unknown }[],
-  ) as unknown as readonly NormalizedHarnessMessage[]
+  ) as unknown as readonly Message[]
 
   // ⚠️ 步骤 2：剔除无法配对的 tool_use / tool_result（孤儿块上游同样 400）。
   const { keepCallIds, keepResultIds } = resolveToolPairing(normalized)
@@ -249,13 +259,19 @@ export function translateGeminiRequest(options: TranslateGeminiRequestOptions): 
         continue
       }
 
-      if (block.type === 'tool-result') {
-        if (!keepResultIds.has(String(block.toolCallId))) continue
-        const name = toolNames.get(String(block.toolCallId)) ?? ''
+      // ⚠️ 判据必须走**宽松读取**而不是直接 `block.type === 'tool-result'`：
+      // 0.2.0 的 `ContentBlockMap` 已删除 `'tool-result'`（它只是 ≤0.1.6 的
+      // 历史形状），直接比较会让 TS 把该分支收窄成 `never`（TS2367）并连带
+      // 报出 `toolCallId`/`content`/`isError` 不存在。此处读的是
+      // `normalizeHarnessMessages` 降级产出的**宽松块**，故按结构读取。
+      const legacy = block as { type?: unknown; toolCallId?: unknown; content?: unknown; isError?: unknown }
+      if (legacy.type === 'tool-result') {
+        if (!keepResultIds.has(String(legacy.toolCallId))) continue
+        const name = toolNames.get(String(legacy.toolCallId)) ?? ''
         // ⚠️ name 为空时**整块丢弃**：上游的 functionResponse 以 name 配对，
         // 空 name 会 400。丢了顶多少一轮工具上下文，不会打死整轮。
         if (name === '') continue
-        const inner = Array.isArray(block.content) ? block.content as readonly ContentBlock[] : []
+        const inner = Array.isArray(legacy.content) ? legacy.content as readonly ContentBlock[] : []
         /**
          * ⚠️⚠️ **工具结果内层的图片必须递归取出并提升**（Issue IKLSB8 同族落点，
          * 2026-10-14 受控实测）。
@@ -285,7 +301,7 @@ export function translateGeminiRequest(options: TranslateGeminiRequestOptions): 
           // 判据用 `innerImages.length > 0`（**有内容**）而不是「文本非空」。
           content: text.length > 0 ? text : (innerImages.length > 0 ? TOOL_RESULT_IMAGE_TEXT : text),
         }
-        if (block.isError === true) response.error = true
+        if (legacy.isError === true) response.error = true
         parts.push({ functionResponse: { name, response } })
         continue
       }
@@ -672,7 +688,7 @@ export interface ConsumeGeminiSseOptions {
    *
    * ⚠️ **必须主动掐**：上游在生成大 functionCall 参数期间可能长时间不 flush
    * 任何字节，裸 `reader.read()` 会**无限期挂起** —— 适配器的 generator
-   * 永不返回，harness 当前步骤既不出结果也不报错（见 `src/sse.ts:1-10`）。
+   * 永不返回，harness 当前步骤既不出结果也不报错（见 `src/sse.ts`）。
    */
   idleTimeoutMs?: number
   /** 首 token 单独的超时（缺省同 `idleTimeoutMs`）。 */

@@ -1,10 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
-import {
-  contextWindowKey,
-  rememberContextWindowCeiling,
-  resetLearnedContextWindows,
-} from '../../src/context-window-learn.js'
 import { AggregateAdapter, AGGREGATE_PROVIDER, maxAttemptsFor, registerAggregateLlm } from '../../src/aggregate-adapter.js'
 
 /** 造一个最小 ctx：llm.listModels 播报给定目录。 */
@@ -608,7 +602,7 @@ describe('prepareCall：真实链路 prepareCall → call.stream', () => {
         listProviders: () => [{ id: 'buddy', name: 'b' }, { id: 'codearts', name: 'c' }],
         resolveModelInfo: async (provider: string) => (provider === 'buddy'
           ? { reasoning: { efforts: [{ id: 'low' }, { id: 'high' }] } }
-          : { reasoning: { efforts: [{ id: 'on' }, { id: 'off' }] } }),
+          : { reasoning: { efforts: [{ id: 'off' }, { id: 'on' }] } }),
         stream: (options: { provider: string; reasoningEffort?: string }) => {
           seen.push({ provider: options.provider, effort: options.reasoningEffort })
           return (async function* () { yield { type: 'text', text: 'ok' } })()
@@ -660,7 +654,7 @@ describe('prepareCall：真实链路 prepareCall → call.stream', () => {
         listProviders: () => [{ id: 'buddy', name: 'b' }, { id: 'codearts', name: 'c' }],
         resolveModelInfo: async (provider: string) => (provider === 'buddy'
           ? { reasoning: { efforts: [{ id: 'low' }, { id: 'high' }] } }
-          : { reasoning: { efforts: [{ id: 'on' }, { id: 'off' }] } }),
+          : { reasoning: { efforts: [{ id: 'off' }, { id: 'on' }] } }),
         stream: (options: { provider: string; reasoningEffort?: string }) => {
           seen.push({ provider: options.provider, effort: options.reasoningEffort })
           return (async function* () {
@@ -937,6 +931,81 @@ describe('★ 探针抛 AbortError 时不得被吞成「没有可用候选」（
 
     await expect(adapter.prepareCall(AGGREGATE_PROVIDER, 'deepseek-v4-1-flash'))
       .rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('★ 同族同构：探针抛 **499 报文**（signal 未标记）也必须逃逸，不得折算成 UNUSABLE', async () => {
+    // ⚠️⚠️ 真实缺陷（2026-10-12 审计实测）：本处原先**只认** `name === 'AbortError'`，
+    //    是「同族判据分叉」的实例 —— 同一份 499 报文在 `dispatch` 里归中止、
+    //    在这里却被折算成 `UNUSABLE` ⇒ 整池候选被剔除 ⇒ 用户看到
+    //    「当前没有任何可用候选」而不是中止（M4 那个形态的新实例）。
+    //    修法：本处改为复用共享判据 `isAbortLike`。
+    // ⚠️ 关键约束：错误**不带** `name: 'AbortError'` / `code: 'ABORTED'`，
+    //    否则命中的是旧判据，第四条的覆盖是**假的**（假覆盖教训）。
+    const ctx = {
+      logger: { warn: () => {}, info: () => {}, error: () => {} },
+      llm: {
+        listProviders: () => [{ id: 'buddy', name: 'b' }],
+        listModels: async () => [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash' }],
+        resolveModelInfo: async (provider: string, id: string) => ({ provider, id }),
+        stream: () => (async function* () { /* 不应走到这里 */ })(),
+      },
+    } as never
+    const adapter = new AggregateAdapter(ctx, {
+      accountPool: {
+        disabledModelsFor: () => new Set<string>(),
+        getAvailableAccount: async () => ({ entry: { id: 'a1' }, credential: {} }),
+      } as never,
+      expiryProbe: async () => {
+        throw new Error('provider: client has aborted request HTTP_499')
+      },
+    })
+
+    const error = await adapter.prepareCall(AGGREGATE_PROVIDER, 'deepseek-v4-1-flash')
+      .then(() => undefined, (caught: { message?: string }) => caught)
+    expect(
+      error?.message,
+      '499 必须原样逃逸（不得折算成 UNUSABLE 后报「没有可用候选」）',
+    ).toContain('aborted request')
+  })
+})
+
+describe('★ 能力解析（capabilityOf）里的中止判据也必须与 isAbortLike 同构', () => {
+  /**
+   * ⚠️⚠️ 真实缺陷（2026-10-12 审计实测）：这是同族分叉的**第三处** ——
+   * 本处原先只认 `name === 'AbortError'`，499 报文会被折算成
+   * `{ efforts: [], imageCapable: false }` ⇒ 用户看到「候选渠道都不支持
+   * 图片输入」这类**与中止无关**的误导性报错，且整轮不会中止。
+   *
+   * ⚠️ 触发路径：`resolveModelInfo` **接收 signal**，中止时它会抛 —— 而它
+   *    的 throw 落在本方法的 `try` 内。故用 `resolveModelInfo` 抛 499 来打。
+   */
+  it('★ resolveModelInfo 抛 499 报文 ⇒ 必须逃逸，不得折算成「不支持图片」', async () => {
+    const ctx = {
+      logger: { warn: () => {}, info: () => {}, error: () => {} },
+      llm: {
+        listProviders: () => [{ id: 'buddy', name: 'b' }],
+        listModels: async () => [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash' }],
+        resolveModelInfo: async () => {
+          // ⚠️ 不带 name / code，只带 499 报文 —— 专门验第四条。
+          throw new Error('provider: client has aborted request HTTP_499')
+        },
+        stream: () => (async function* () { /* 不应走到这里 */ })(),
+      },
+    } as never
+    const adapter = new AggregateAdapter(ctx, {
+      accountPool: {
+        disabledModelsFor: () => new Set<string>(),
+        getAvailableAccount: async () => ({ entry: { id: 'a1' }, credential: {} }),
+      } as never,
+      expiryProbe: async () => 100,
+    })
+
+    const error = await adapter.prepareCall(AGGREGATE_PROVIDER, 'deepseek-v4-1-flash')
+      .then(() => undefined, (caught: { message?: string }) => caught)
+    expect(
+      error?.message,
+      '499 必须原样逃逸（不得折算成「不支持图片」）',
+    ).toContain('aborted request')
   })
 })
 
@@ -2437,10 +2506,7 @@ describe('★★ 上下文窗口：候选集的**最大值**（真实缺陷：�
     ), { accountPool: makePool() })
 
     const info = await adapter.resolveModel(AGGREGATE_PROVIDER, 'deepseek-v4-1-flash')
-    // ⚠️ 手机版差异（有意）：兜底值不是上游写死的 200_000，而是**动态窗口学习器**
-    //    的起步值 1_000_000（见 context-window-learn.ts 与接力文档「设计约定 3」：
-    //    拿不到供应商上限的模型走「起步给大 → 撞墙收窄」）。
-    expect(info.context?.contextWindow).toBe(1_000_000)
+    expect(info.context?.contextWindow).toBe(200_000)
     // 必须是**正整数**（DSH 的 `normalizeModelInfo` 逐字校验，非法即 INVALID_MODEL_CONTEXT）。
     expect(Number.isInteger(info.context!.contextWindow)).toBe(true)
     expect(info.context!.contextWindow).toBeGreaterThan(0)
@@ -2494,12 +2560,9 @@ describe('★★ 上下文窗口：候选集的**最大值**（真实缺陷：�
     // ⚠️ 断言上界而非等号会漏掉「重复解析」这类缺陷的方向，但用等号又太脆
     //    （将来加候选会假失败）⇒ 用**唯一候选数**这个稳定上界，并同时断言
     //    「第二次全量遍历不再新增调用」（那才是缓存是否生效的判据）。
-    // ⚠️ 手机版差异（有意）： 对  与常规模型各调一次
-    //    ，且无声明候选要经动态窗口学习器再解析一轮
-    //    ⇒ 首次遍历的解析次数为 6（上游为 3）。断言改为「首次上界」+「第二次必须全部命中缓存」。
-    expect(infoCalls.count).toBe(6)
+    expect(infoCalls.count).toBe(3)
     for (const model of listed) await adapter.resolveModel(AGGREGATE_PROVIDER, model.id)
-    expect(infoCalls.count, '第二次遍历必须全部命中缓存').toBe(6)
+    expect(infoCalls.count, '第二次遍历必须全部命中缓存').toBe(3)
   })
 
   it('★ 目录重建后窗口缓存必须失效（候选集变了 ⇒ 最大值可能变）', async () => {
@@ -2564,9 +2627,8 @@ describe('★★ 上下文窗口：候选集的**最大值**（真实缺陷：�
     const adapter = new AggregateAdapter(ctx, { accountPool: makePool() })
 
     // ① 抖动期间 ⇒ 兜底值。
-    // ⚠️ 手机版差异（有意）：兜底 = 动态窗口学习器起步值 1_000_000（约定 3）。
     expect((await adapter.resolveModel(AGGREGATE_PROVIDER, 'deepseek-v4-1-flash')).context?.contextWindow)
-      .toBe(1_000_000)
+      .toBe(200_000)
 
     // ② 上游恢复。⚠️ 这里**不能**靠 `refreshCatalog` 清缓存（那会掩盖缺陷）——
     //    必须证明「同一份目录下，下一次解析就能拿到真值」。
@@ -2630,183 +2692,5 @@ describe('★★ 上下文窗口：候选集的**最大值**（真实缺陷：�
     // 常量定义那一处是合法的；其余任何 `contextWindow: 200_000` / `200_000` 都不许。
     expect(code).not.toMatch(/contextWindow:\s*200_000/)
     expect(code).not.toMatch(/contextWindow:\s*AGGREGATE_FALLBACK_CONTEXT_WINDOW/)
-  })
-})
-
-/**
- * ★★ 方案 C 的「筛选结果」必须与「派发索引」一致（2026-10-12 复核发现的错配）。
- *
- * ## 缺陷形态（真实）
- *
- * 筛选把太窄的候选丢掉后，派发循环仍按**原列表**取元素（`targets[index]`），
- * 而保留集 `kept` 是**子集而非前缀** ⇒ 刚被判「装不下」的候选被重新派出去、
- * 真正装得下的候选永远轮不到 —— 恰好在**最需要筛选**的场景里筛了个空。
- *
- * ## 为什么既有断言抓不到
- *
- * `context-window-learn.spec.ts` 对方案 C 只做**源码文本**断言（声明行 + 循环头
- * 存在）：文本写对了、索引取错了，它照样绿 ⇒ 必须有**行为**断言。
- *
- * ## 目录建模
- *
- * **同一个模型 id 出现在每个渠道**（真实形态：同一模型跨渠道，声明窗口差两个
- * 数量级）。⚠️ 不要给每个渠道一个**不同** id：那样每个虚拟模型只有 1 个候选，
- * `maxAttemptsFor` 的尝试上限被压到 1，用例反而测不到多候选筛选。
- */
-describe('★★ 方案 C：筛选结果与派发索引一致（行为）', () => {
-  const soon = Date.now() + 1_000
-
-  function makeWindowCtx(
-    windows: Record<string, number>,
-    sent: string[],
-    failProviders: readonly string[],
-  ) {
-    return {
-      logger: { warn: () => {}, info: () => {}, error: () => {} },
-      llm: {
-        listProviders: () => Object.keys(windows).map((id) => ({ id, name: id })),
-        listModels: async () => [{ id: 'm-shared', name: 'M-shared' }],
-        resolveModelInfo: async (provider: string, id: string) => ({
-          provider,
-          id,
-          context: { contextWindow: windows[provider] },
-        }),
-        stream: (options: { provider: string; model: string }) => {
-          sent.push(`${options.provider}/${options.model}`)
-          const fail = failProviders.includes(options.provider)
-          return (async function* () {
-            if (fail) throw new Error(`上游失败(${options.provider})`)
-            yield { type: 'text' as const, text: 'ok' }
-          })()
-        },
-      },
-    } as never
-  }
-
-  /**
-   * 方案 C 用例专用的会话 id（Issue F-04）。
-   *
-   * ⚠️ 「本轮体积」自 2026-10-14 起**按会话分桶**（`lastContextTokensBySession`）：
-   * 修法前是一个进程级字段 + `Math.max`，只增不减、且跨会话串味 ⇒ 一个小会话会被
-   * 别的大会话的峰值判成「装不下」，进而抛 `CONTEXT_WINDOW_EXCEEDED` 形成压缩重试
-   * 死循环。故本组用例必须**显式带上 sessionId**（真实的 DSH 请求恒带它），
-   * 并把观测值写进对应的桶 —— 否则灌进去的值根本到不了筛选点（本组用例曾因此假红）。
-   */
-  const SPEC_SESSION_ID = 'spec-session'
-
-  function makeWindowAdapter(
-    windows: Record<string, number>,
-    sent: string[],
-    lastContextTokens: number,
-    extras: { failProviders?: readonly string[]; expiry?: Record<string, number> } = {},
-  ) {
-    const adapter = new AggregateAdapter(makeWindowCtx(windows, sent, extras.failProviders ?? []), {
-      accountPool: makePool(),
-      expiryProbe: async (provider: string) => extras.expiry?.[provider] ?? soon,
-    })
-    // 观测表是 private；本用例用它模拟「长会话已经到这个规模」，
-    // 是**唯一**的写入口（真实路径由 dispatch 收到 `usage` 时自己更新）。
-    ;(adapter as unknown as { lastContextTokensBySession: Map<string, number> })
-      .lastContextTokensBySession.set(SPEC_SESSION_ID, lastContextTokens)
-    return adapter
-  }
-
-  async function drive(adapter: AggregateAdapter) {
-    // ⚠️ 必须先播报一次目录：真实链路里 GUI 一定会先 `listModels`；
-    //    冷启动直接 `prepareCall` 时 `catalog` 仍为空 ⇒ 方案 C 静默不生效。
-    await adapter.listModels(AGGREGATE_PROVIDER)
-    const call = await adapter.prepareCall(AGGREGATE_PROVIDER, 'auto')
-    for await (const _chunk of call.stream({
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      sessionId: SPEC_SESSION_ID,
-    } as never)) {
-      // 必须真正 drain，否则 stream 从未被调用
-    }
-  }
-
-  it('★ 窄候选排在**前面**时被跳过，只发装得下的那个（修复前会误发窄候选）', async () => {
-    const sent: string[] = []
-    await drive(makeWindowAdapter(
-      { buddy: 200_000, codearts: 1_000_000 },
-      sent,
-      500_000,
-      { expiry: { buddy: soon, codearts: soon + 8_000 } },
-    ))
-    // 修复前实际派发的是 `buddy/m-shared`（临期最早的那个窄候选）。
-    expect(sent).toEqual(['codearts/m-shared'])
-  })
-
-  it('★ 保留批次里第一个失败时，切到**保留批次**的下一个（不是原列表的下一个）', async () => {
-    const sent: string[] = []
-    await drive(makeWindowAdapter(
-      { buddy: 200_000, codearts: 1_000_000, loomy: 600_000 },
-      sent,
-      500_000,
-      {
-        failProviders: ['codearts'],
-        expiry: { buddy: soon, codearts: soon + 1_000, loomy: soon + 8_000 },
-      },
-    ))
-    expect(sent).toEqual(['codearts/m-shared', 'loomy/m-shared'])
-  })
-
-  it('★★ 所有候选都装不下 ⇒ 一次都不发，主动报 CONTEXT_WINDOW_EXCEEDED（交给 DSH 压缩）', async () => {
-    const sent: string[] = []
-    const adapter = makeWindowAdapter(
-      { buddy: 200_000, codearts: 300_000 },
-      sent,
-      900_000,
-      { expiry: { buddy: soon, codearts: soon + 8_000 } },
-    )
-    const error = await drive(adapter).then(() => undefined, (caught: unknown) => caught)
-    expect(error, '必须抛出：硬发只会被上游按自己的上限静默截断').toBeDefined()
-    expect((error as { failure?: { code?: string } }).failure?.code)
-      .toBe(CONTEXT_WINDOW_EXCEEDED_CODE)
-    expect(sent, '一次都不该发出去').toEqual([])
-  })
-})
-
-/**
- * ★★ 换回宽窗口候选后，虚拟模型的对外声明必须**恢复**（2026-10-12 修正，用户实测提出）。
- *
- * ## 缺陷形态（真实）
- *
- * 学习值原先按**虚拟模型**记，并被 `applyLearnedWindow` 用来收窄对外声明 ⇒ 一个窄候选
- * 撞墙就把整个虚拟模型**粘性**压低；之后即使池里有 100 万的候选，对外仍报那个小值
- * ⇒ DSH 压缩阈值（声明 × 0.8）长期偏低 ⇒ 会话被过早压缩、宽候选的能力被白白让掉。
- * 用户原话的形态：「换回 100 万的模型后，上限会不会从 25.6 万恢复到 100 万」。
- *
- * ## 反向验证
- *
- * 把 `contextWindowFor` 里的 `const resolved = declared` 换回收窄语义（`applyLearnedWindow`），
- * 本用例即失败 —— 学习表里那个 10 万会盖住候选的 100 万。
- */
-describe('★★ 虚拟模型的对外声明不被学习值粘性压低（2026-10-12 修正）', () => {
-  it('学习表里有虚拟模型级的小值时，声明仍是候选最大值', async () => {
-    const ctx = {
-      logger: { warn: () => {}, info: () => {}, error: () => {} },
-      llm: {
-        listProviders: () => [{ id: 'buddy', name: 'b' }, { id: 'codearts', name: 'c' }],
-        listModels: async () => [{ id: 'm-shared', name: 'M-shared' }],
-        resolveModelInfo: async (provider: string, id: string) => ({
-          provider,
-          id,
-          context: { contextWindow: provider === 'buddy' ? 200_000 : 1_000_000 },
-        }),
-        stream: () => { throw new Error('本用例不应调用 stream') },
-      },
-    } as never
-    const adapter = new AggregateAdapter(ctx, { accountPool: makePool() })
-    // 目录必须先就绪：否则候选池为空、声明会退化成兜底值（那会让本用例假通过）。
-    await adapter.listModels(AGGREGATE_PROVIDER)
-    // 模拟「旧版本 / 旧持久化文档留下的**虚拟模型级**学习值」。
-    rememberContextWindowCeiling(contextWindowKey(AGGREGATE_PROVIDER, 'auto'), 100_000)
-    try {
-      const resolved = await adapter.resolveModel(AGGREGATE_PROVIDER, 'auto')
-      expect(resolved.context?.contextWindow, '声明必须回到候选最大值，而不是被学习值压住')
-        .toBe(1_000_000)
-    } finally {
-      resetLearnedContextWindows()
-    }
   })
 })

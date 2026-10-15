@@ -15,8 +15,8 @@
  * | 明细 | 无 | `prompt_tokens_details.cached_tokens` 是上者的**子集**（不是并列项） |
  *
  * DSH 侧口径见 `src/types.ts` 的注释「输入 token（未命中缓存的部分）」，
- * 以及各适配器统一在做的那一步减法（`openai-compat.ts:892`、`buddy-adapter.ts:1988`、
- * `lobsterai-adapter.ts:1488`、`llm-adapter.ts:1797`、`gemini-messages.ts:455`）——
+ * 以及各适配器统一在做的那一步减法（`openai-compat.ts`、`buddy-adapter.ts`、
+ * `lobsterai-adapter.ts`、`llm-adapter.ts`、`gemini-messages.ts`）——
  * 它们把上游**含缓存**的 `prompt_tokens` 减成 DSH 的互斥口径。
  * 网关这一跳必须**减回去**，否则就是下面的缺陷。
  *

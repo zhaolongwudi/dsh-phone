@@ -54,8 +54,8 @@ let upfrontCaptchaCount = 0
  * ⚠ 口径：描述**维度**时一律写「账号 × 模型」，`|` 只出现在这个真实 key 里。
  *
  * ⚠ 空/缺失的账号 id 归一成 `-`。这不是「消除」混淆、只是把混淆对象换成一个
- * 本仓库拿不出来的值：账号 id 在 Jet Hub RPC 创建路径上是 `src/jet-hub-rpc.ts:839`
- * 的 `${provider}-${shortId()}`（`shortId()` 为 8 位小写 hex，见同文件 `:158`），
+ * 本仓库拿不出来的值：账号 id 在 Jet Hub RPC 创建路径上是 `src/jet-hub-rpc.ts`
+ * 的 `${provider}-${shortId()}`（`shortId()` 为 8 位小写 hex，见 `jet-hub-rpc.ts` 的该助手），
  * 形如 `zcode-1a2b3c4d`，不会是单个 `-`，故冲突概率远低于直接拼字面量 `undefined`
  * （那会和「一个真的叫 `undefined` 的账号」共用同一条记忆）。
  */
@@ -75,35 +75,9 @@ export function isCaptchaKnownRequired(key: string, now: number): boolean {
   return true
 }
 
-/**
- * 本表的条目上限（Issue F-62）。
- *
- * 键是「账号 × 模型」，一个装了几十个账号、每个账号几十个模型的用户足以让
- * 这张表长到几千条 —— 而**过期条目只有被查询到才会删**（上面的惰性回收），
- * 没再被问到的账号/模型会一直留着。TTL 只有 2 分钟，故按容量兜底淘汰最旧的
- * 一条，代价上限是「多白吃一次 3007」（该 key 的语义本来就是可丢的短时记忆）。
- */
-const MAX_CAPTCHA_REQUIREMENT_ENTRIES = 512
-
 /** 记下「上游要验证」。 */
 export function noteCaptchaRequired(key: string, now: number, ttlMs: number = CAPTCHA_REQUIRED_TTL_MS): void {
-  /**
-   * ⚠️ 写入前**清扫已过期条目**（Issue F-62）：读取侧的惰性回收只覆盖
-   *「之后还被问到」的 key，而这张表的键是「账号 × 模型」—— 换号 / 换模型 /
-   * 删账号之后，旧 key 可能再也不会被查询，于是永远留在表里。
-   * 这里按**同一份过期判据**（`until <= now`）全表扫一遍：TTL 只有 2 分钟，
-   * 扫描成本 O(表大小)，而表大小由下面的容量兜底封顶。
-   */
-  for (const [existing, until] of requiredUntilMs) {
-    if (until <= now) requiredUntilMs.delete(existing)
-  }
   requiredUntilMs.set(key, now + ttlMs)
-  // 容量兜底：仍超限就按**插入序**淘汰最旧的一条（Map 保序）。
-  // 丢一条的代价上限是「该 key 多白吃一次 3007」，与「表无界增长」不可比。
-  if (requiredUntilMs.size > MAX_CAPTCHA_REQUIREMENT_ENTRIES) {
-    const oldest = requiredUntilMs.keys().next().value
-    if (oldest !== undefined) requiredUntilMs.delete(oldest)
-  }
 }
 
 /** 上游不要验证了：清掉记忆，回到「先探」。 */

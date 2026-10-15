@@ -9,7 +9,7 @@
     "5. 插件包版本与下面的 pluginVersion 不一致 ⇒ 门禁报「需复核」（改名多发生在插件发版时，这条把版本漂移变成一次显式确认）。"
   ],
   "pluginPackage": "dsh-codearts-auth",
-  "pluginVersion": "0.2.0-rc.3",
+  "pluginVersion": "0.2.0-rc.11",
   "pluginDir": "overrides/vendor/dsh-codearts-auth/plugin-src/client",
   "appConsumers": [
     "overrides/app/src/main/assets/dsh-phone.js",

@@ -51,14 +51,19 @@ describe('minimaxReasoningInfo', () => {
   // M3 是 `switchable`，实测**不发 thinking 时默认「不思考」**（两轮各 0 字符），
   // `adaptive` 则 2785+ 字符。初版只看 `effort_options`（M3 没有）
   // ⇒ 声明成「无推理等级」⇒ 用户**既不能开也不能关**。
-  it('⚠️ M3（switchable）必须声明「开启思考」与「关闭思考」**两档**', () => {
+  it('⚠️ M3（switchable）必须声明「关闭思考」与「开启思考」**两档**（强度序）', () => {
     const info = minimaxReasoningInfo(M3)
     // ⚠️ 只给 none 是**不够的**（我第一版就只给了 none）——
     // 那样用户只能关、无法开，而 M3 默认恰恰是不思考。
-    expect(info?.efforts.map((e) => e.id)).toEqual(['on', 'none'])
-    expect(info?.efforts.map((e) => e.name)).toEqual(['开启思考', '关闭思考'])
+    // ⚠️ **顺序 = 强度序（弱 → 强）**（Issue IKLIDV）：`none`(rank 0) 在 `on`(rank 5)
+    // 之前。DSH 把该数组当**展示顺序**、客户端直接 `map` 不排序 ⇒ 原写法
+    // `['on','none']` 会让「开启」落在横向档位轴的最左（左强右弱）。
+    expect(info?.efforts.map((e) => e.id)).toEqual(['none', 'on'])
+    expect(info?.efforts.map((e) => e.name)).toEqual(['关闭思考', '开启思考'])
     // ⚠️ M3 远端没有 `default_effort` ⇒ 不设 defaultEffort ⇒ 保持服务端默认
     //（实测 = 不思考）。**不要**擅自设成 'on'，那会改变用户既有行为。
+    // ⚠️ 这一条同时锁住「默认档与数组位置无关」：顺序换了，默认档仍必须是
+    // **不设**（若实现改成「拿首项当默认档」，这里会冒出 `none` 而变红）。
     expect(info?.defaultEffort).toBeUndefined()
   })
 
@@ -80,7 +85,9 @@ describe('minimaxReasoningInfo', () => {
       thinkingMode: 'switchable',
       effortOptions: ['low', 'high'],
     })
-    expect(info?.efforts.map((e) => e.id)).toEqual(['low', 'high', 'on', 'none'])
+    // ⚠️ 追加的两档按**强度序**（`none` 在 `on` 前，Issue IKLIDV）；
+    // 远端那段 `effortOptions` **保持原序**（如实镜像上游，不重排）。
+    expect(info?.efforts.map((e) => e.id)).toEqual(['low', 'high', 'none', 'on'])
     // 远端若哪天自己下了这些名字，不重复追加
     const withBoth = minimaxReasoningInfo({
       ...M31,

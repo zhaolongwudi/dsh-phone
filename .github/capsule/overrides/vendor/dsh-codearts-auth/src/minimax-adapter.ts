@@ -39,13 +39,14 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { providerCatalogVisible } from './account-pool.js'
+import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import type { AccountPool } from './account-pool.js'
-import { planSessionTitleThinking } from './session-title.js'
 import { httpErrorCode, collectImages } from './openai-compat.js'
 import { MINIMAX, MINIMAX_INFER_PATH, type MinimaxProduct } from './minimax-product.js'
 import { minimaxInferHeaders } from './minimax.js'
+import { planSessionTitleThinking } from './session-title.js'
 import {
   registerAdapterIdempotent,
 } from './llm-register-compat.js'
@@ -91,20 +92,11 @@ const MINIMAX_ADAPTIVE_ONLY_PREFIX = 'MiniMax-M3.1'
  * —— 而它**实际可以开关思考**（真机实测）。那是**功能缺失**：
  * 用户在 UI 上无法为 M3 关闭思考。
  *
- * 修法（照 Qoder `qoderEffortsFor` 的既有口径）：
- * - `efforts` 取远端 `effort_options`（只有 M3.1 有）；
- * - `thinkingMode === 'switchable'` 时**追加 `none`**（= 「关闭思考」档）
- *   —— DSH 的 `LlmModelReasoningInfo` **没有** `supportsDisable` 字段，
- *   「可关闭」就是靠 `efforts` 里出现 `none` 表达的；
- * - 两者皆无 ⇒ `undefined`（不声明）。
- *
- * ⚠️ `forced_on` 的模型**绝不**追加 `none`：M3.1 会硬 400，
- * M2.7 会被静默忽略（那会让用户以为关掉了、实际没关 —— 比不给选项更糟）。
- *
  * 修法（照客户端 `thinking.js` 的**权威词汇**）：
  * - `efforts` 取远端 `effort_options`（只有 M3.1 有）；
  * - `thinkingMode === 'switchable'` 时给出**开/关两态**：
- *   `on`（→ `thinking:{type:'adaptive'}`）与 `none`（→ `{type:'disabled'}`）。
+ *   `on`（→ `thinking:{type:'adaptive'}`）与 `none`（→ `{type:'disabled'}`）；
+ *   ⚠️ **数组顺序是 `none` 在前、`on` 在后**（强度序，见下）。
  *   ⚠️ 客户端用的就是 `on` / `off` 这两个词
  *   （`isMiniMaxM3ThinkingMode`：`value === 'on' || value === 'off'`），
  *   `off` 在 DSH 侧的惯用名是 `none`（Qoder 的「关闭思考」也用 `none`）；
@@ -114,6 +106,11 @@ const MINIMAX_ADAPTIVE_ONLY_PREFIX = 'MiniMax-M3.1'
  * 实测 M3 **不发 `thinking` 时默认「不思考」**（两轮各 0 字符），
  * 而 `adaptive` 有 **2785 / 2797** 字符。若只声明 `none`，用户**只能关、无法开**
  * —— 那比不给选项更糟（把模型的强项藏起来了）。
+ *
+ * ⚠️⚠️ **这两个档位的追加顺序是 `none` → `on`（强度序），不是 `on` → `none`**
+ *（Issue IKLIDV）：DSH 把 `reasoning.efforts` 当**展示顺序**、客户端**直接 `map`
+ * 不排序** ⇒ 原写法会让「开启」落在横向档位轴的最左（左强右弱）。
+ * 详见函数体内 `switchable` 分支的注释。
  *
  * ⚠️ `forced_on` 的模型**绝不**追加任何开关：M3.1 会硬 400，
  * M2.7 会被静默忽略（那会让用户以为关掉了、实际没关）。
@@ -131,12 +128,28 @@ export function minimaxReasoningInfo(
   if ((options === undefined || options.length === 0) && !switchable) return undefined
   const ids = [...(options ?? [])]
   if (switchable) {
-    // ⚠️ 顺序：**先 `on` 后 `none`** —— DSH 按数组顺序渲染，
-    // 「开启」应排在「关闭」之前（默认档也由 `defaultEffort` 表达，
-    // 但 M3 远端没给 `default_effort`，故把 `on` 放前面更符合直觉）。
+    // ⚠️ 顺序：**先 `none` 后 `on`**（= 强度序，弱 → 强），Issue IKLIDV。
+    //
+    // ⚠️⚠️ 原实现是**先 `on` 后 `none`**，理由是「DSH 按数组顺序渲染，把默认档
+    // 放前面更符合直觉」。那个动机只在**纵向列表**里成立：DSH 实际把该数组当
+    // **展示顺序**（`dsh-llm/lib/types/types.d.ts`：`adapter-preferred display
+    // order`），客户端**直接 `map` 不排序**（`dsh-client-ui-model-selection`）。
+    // 一旦按数组顺序铺成**横向档位轴**，`['on','none']` 就变成「左强右弱」——
+    // 「开启」贴最左、「关闭」贴最右。强度序的权威是本仓库
+    // `REASONING_EFFORT_RANK`（`none: 0` / `on: 5`）⇒ `none` 必须在前。
+    // 同一形态在 codearts（`llm-adapter.ts`）与 raccoon（`raccoon-product.ts`）
+    // 各有一处，三处已一并按同一条规则规整。
+    //
+    // ⚠️ 默认档**不靠位置**表达：M3 远端没给 `default_effort`，故它**没有**
+    // `defaultEffort`（保持服务端默认 = 实测不思考，见下）。移动位置不改变这一点。
+    //
+    // ⚠️ 远端 `effort_options` 那段**保持原序**（如实镜像上游，不重排）——
+    // 只有这一对我们自己追加的两档按强度序排。故当远端档位存在时，
+    // 整条数组**不一定全局单调**（如 M3.1 的 `default` 本就未登记强度）；
+    // 而 M3 这种「只有我们追加的两档」的情形是全局升序的。
     // 幂等：远端若哪天自己下了这几个名字，不重复追加。
-    if (!ids.includes('on')) ids.push('on')
     if (!ids.includes('none')) ids.push('none')
+    if (!ids.includes('on')) ids.push('on')
   }
   const efforts = ids.map((id) => {
     if (id === 'none') return { id: ReasoningEffortId(id), name: '关闭思考' }
@@ -173,6 +186,17 @@ export interface MinimaxAdapterOptions {
   readImage?: (attachment: unknown) => Promise<{ data: Uint8Array; mediaType: string } | undefined>
   /** 产品配置；默认 {@link MINIMAX}。 */
   product?: MinimaxProduct
+  /**
+   * 远端目录**落地后**的通知回调（issue IKJVTF）。
+   *
+   * 由 `registerMinimaxLlm` 注入为 `broadcastCatalogChanged(ctx)`。适配器本身
+   * 拿不到 `ctx`，故必须由接线层桥接（与 `readImage` 等回调同一模式）。
+   *
+   * ⚠️ 必要性：客户端 `ModelCatalogDirectory` 在 `status === 'ready'` 时**短路
+   * 返回缓存**，只在宿主事件上 `refresh()`。没有本回调时，冷启动首拉失败
+   * 缓存的**兜底表**会永久留在对话框里，远端目录真的落地也不重读。
+   */
+  onCatalogLoaded?: () => void
 }
 
 // ── 请求级账号轮换（issue IKJW32，2026-10-11）────────────────────────────
@@ -352,11 +376,32 @@ export class MinimaxAdapter extends LlmAdapter {
   private readonly product: MinimaxProduct
   private remoteModels: readonly MinimaxModelEntry[] | undefined
   /** 目录加载闸门：并发去重 + 失败/空结果冷却（见 `remote-catalog-gate.ts`）。 */
-  private readonly catalogGate = new RemoteCatalogGate()
+  private readonly catalogGate: RemoteCatalogGate
+  /**
+   * ⚠️ **2026-10-08 Task 7a：三个方法收敛到共享骨架** `createModelCatalog`。
+   * 原先 `listModels` / `resolveModel` / `listAllModels` 各写一遍骨架
+   * （实测与 `loomy` / `raccoon` 归一化后逐字相同），现在只剩 `toCatalogEntry`。
+   */
+  private readonly catalog: ModelCatalog
 
   constructor(private readonly options: MinimaxAdapterOptions) {
     super()
     this.product = options.product ?? MINIMAX
+    // 目录落地后通知客户端重读（issue IKJVTF 的缺陷①）。
+    this.catalogGate = new RemoteCatalogGate(
+      options.onCatalogLoaded === undefined ? {} : { onLoaded: options.onCatalogLoaded },
+    )
+    // ⚠️ 共享骨架（Task 7a）：门控 → 读目录 → 黑名单 → 回填 → 三态。
+    this.catalog = createModelCatalog(
+      { accountPool: options.accountPool },
+      {
+        product: this.product,
+        loadCatalog: () => this.loadCatalogEntries(),
+        // ⚠️ 未知 id 保守报 ['text']（宁可少报能力，也不报服务端可能不认的模态）。
+        unknownModelInputModalities: () => ['text'] as const,
+        syncCatalog: () => this.syncCatalogEntries(),
+      },
+    )
   }
 
   providerInfo(provider: string): LlmProviderInfo {
@@ -394,11 +439,11 @@ export class MinimaxAdapter extends LlmAdapter {
    * ⚠️ **必须同步返回数组，不能是 `async`**（真实缺陷，2026-09-29 修正）。
    *
    * 本插件 8 个既有适配器的 `listAllModels()` 全是同步返回 `readonly {...}[]`
-   * （见 `llm-adapter.ts:789`、`raccoon-adapter.ts:229` 等），
-   * `jet-hub-rpc.ts` 的接口（`:587` / `:641` 的 `ModelCatalogSource`）也是同步，
+   * （见 `llm-adapter.ts`、`raccoon-adapter.ts` 等），
+   * `jet-hub-rpc.ts` 的接口（`ModelCatalogSource` 的 `listModels` / `listAllModels`）也是同步，
    * 且两处消费者**都不 await**：
-   * - `:2041` `catalog = [...all]`
-   * - `:2125` `ids = all.map((model) => model.id)`
+   * - `catalog = [...all]`
+   * - `ids = all.map((model) => model.id)`
    *
    * 早期这里写成 `async`，返回的是 Promise —— Promise **不是** `undefined`，
    * 故两处都会走进 `all !== undefined` 分支并抛
@@ -409,13 +454,41 @@ export class MinimaxAdapter extends LlmAdapter {
    * （无调用方），一旦接线即爆发。
    *
    * ⚠️ 读缓存而非 `await loadModels()` 是**正确**的：RPC 路径在调用本方法**之前**
-   * 已先 `await llm.listModels(provider)`（`jet-hub-rpc.ts:2011`），
+   * 已先 `await llm.listModels(provider)`（`jet-hub-rpc.ts`），
    * 而 `listModels` 内部会 `await this.loadModels()` 落缓存。
-   * 与 `raccoon-adapter.ts:229-232` 逐字同构。
+   *
+   * ⚠️ **2026-10-08 Task 7a**：本条同步契约**原样上移到共享骨架**
+   * （`src/model-catalog.ts` 的 `listAllModels` + `ModelCatalogConfig.syncCatalog`），
+   * 上面这段缺陷史也随之上移；此处只剩委托。
+   * ⇒ 骨架里**同样**不能把它改成 `async`（同一个 `all is not iterable` 后果）。
    */
   listAllModels(): readonly { id: string; name: string }[] {
+    return this.catalog.listAllModels()
+  }
+
+  private toCatalogEntry(model: MinimaxModelEntry): CatalogEntry {
+    const reasoning = minimaxReasoningInfo(model)
+    const maxTokens = model.maxTokens
+    const contextWindow = model.contextWindow
+    return {
+      id: model.id,
+      name: model.name,
+      // ⚠️ 本家**不剥倍率**（`resolveModel` 也用 `name`）⇒ 不提供 `bareName`。
+      inputModalities: this.inputModalitiesFor(model),
+      ...contextWindow !== undefined && contextWindow > 0 ? { contextWindow } : {},
+      ...maxTokens !== undefined ? { maxTokens } : {},
+      ...reasoning !== undefined ? { reasoning } : {},
+    }
+  }
+
+  private async loadCatalogEntries(): Promise<readonly CatalogEntry[]> {
+    const all = await this.loadModels()
+    return all.map((model) => this.toCatalogEntry(model))
+  }
+
+  private syncCatalogEntries(): readonly CatalogEntry[] {
     const source = this.remoteModels ?? minimaxFallbackEntries(this.product)
-    return source.map((model) => ({ id: model.id, name: model.name }))
+    return source.map((model) => this.toCatalogEntry(model))
   }
 
   private inputModalitiesFor(
@@ -425,59 +498,15 @@ export class MinimaxAdapter extends LlmAdapter {
   }
 
   async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    // ⚠️ 无已登录账号时返回 `[]` → DSH 把整个 provider 分组隐藏。
-    // **必须返回空数组而不能抛错**（抛错会多一条 provider 报错）。
-    if (!await providerCatalogVisible(this.options.accountPool, this.product.id)) return []
-
-    const all = await this.loadModels()
-    const disabled = this.options.accountPool?.disabledModelsFor(this.product.id)
-    const listed = disabled === undefined || disabled.size === 0
-      ? all
-      : all.filter((model) => !disabled.has(model.id))
-
-    return listed.map((model) => ({
-      provider: this.product.id,
-      id: model.id,
-      name: model.name,
-      inputModalities: this.inputModalitiesFor(model),
-    }))
+    return this.catalog.listModels(_provider)
   }
 
   async resolveModel(
     provider: string,
     model: string,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    const all = await this.loadModels()
-    const entry = all.find((item) => item.id === model)
-    const resolved: LlmResolvedModelInfo = {
-      provider,
-      id: model,
-      name: entry?.name ?? model,
-      inputModalities: this.inputModalitiesFor(entry),
-    }
-    // ⚠️ 未知模型不编造 context（宁可让 DSH 用默认值，也不报一个假窗口）
-    if (entry !== undefined && entry.contextWindow > 0) {
-      resolved.context = { contextWindow: entry.contextWindow }
-    }
-    // ⚠️ 远端非法值必须过滤：0/负数/NaN 会让 DSH 抛 INVALID_MODEL_MAX_TOKENS，
-    // **整轮对话起不来**（不是降级，是崩）
-    // ⚠️ 先取出局部变量再判：`entry.maxTokens` 是可选属性，直接写
-    // `Number.isSafeInteger(entry.maxTokens) && entry.maxTokens > 0` 时
-    // `Number.isSafeInteger` 带 `number` 形参，**不做**类型收窄，`strict` 下
-    // 第二个条件会报 TS18048（'entry.maxTokens' is possibly 'undefined'）。
-    // 取出局部变量后 `!== undefined` 即可正常收窄，判据本身（safe integer + > 0）
-    // 与 brief 完全一致；`raccoon-adapter.ts` 的 `positiveMaxTokens` 同款写法。
-    const maxTokens = entry?.maxTokens
-    if (maxTokens !== undefined && Number.isSafeInteger(maxTokens) && maxTokens > 0) {
-      resolved.defaultMaxTokens = maxTokens
-    }
-    // ⚠️ 只有 M3.1-Flash-Preview 有档位；其余返回 undefined 表示不声明
-    if (entry !== undefined) {
-      const reasoning = minimaxReasoningInfo(entry)
-      if (reasoning !== undefined) resolved.reasoning = reasoning
-    }
-    return resolved
+    return this.catalog.resolveModel(provider, model, signal)
   }
 
   /** 兼容 0.1.1-rc.2 的 `prepareCall` shim（与其余适配器同款）。 */
@@ -526,7 +555,6 @@ export class MinimaxAdapter extends LlmAdapter {
         ) ?? ''
       } catch { /* 反查失败不阻断主路径：轮换退化为「不标记」 */ }
     }
-
 
     const entry = (await this.loadModels()).find((item) => item.id === options.model)
 
@@ -580,14 +608,14 @@ export class MinimaxAdapter extends LlmAdapter {
       : String(options.reasoningEffort)
     const declared = entry === undefined ? undefined : minimaxReasoningInfo(entry)
     /**
-     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH，
-     * 2026-10-12 自上游 0840ae0c 移植）。
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH）。
      *
      * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**。若照常让模型
      * 思考，思考会把 64 个 token 吃满、正文 0 字符 ⇒ `dsh-session-title-llm`
      * 直接拒绝，标题永远停在 fallback。
      *
-     * ⚠️ **本家关不关得掉要看模型**，这正是「决策共享、细节各家自留」的形态：
+     * ⚠️ **本家关不关得掉要看模型**（见 `minimaxReasoningInfo` 的表格），
+     * 这正是「决策共享、细节各家自留」要处理的形态：
      * - **M3**（`switchable`，档位表里有我们追加的 `none`）→ **关得掉**；
      * - **M3.1-Flash-Preview**（`forced_on`）→ **关不掉**：传 `disabled` 会硬 400
      *   （`2013`），故只能走抬预算兜底；
@@ -766,15 +794,13 @@ export class MinimaxAdapter extends LlmAdapter {
       // ⚠️ auth 类**不写标记**：认证失败是账号态而非模型冷却，写了会把网关侧
       //    授权故障放大成「全池封 24h」（2026-10-06 事故，见文件头的语义表）。
       if (activeAccountId === '' || !recordsMinimaxRateLimit(failureClass)) return
-      // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：标记只是「下次别再选它」的提示，
-      //    写盘失败（磁盘满 / 权限）不该把限流失败升级成整轮抛错。
       await accountPool.updateModelRateLimit(
         activeAccountId,
         options.model,
         Date.now() + (failureClass === 'rate'
           ? MINIMAX_RATE_LIMIT_COOLDOWN_MS
           : MINIMAX_QUOTA_COOLDOWN_MS),
-      ).catch(() => {})
+      )
     }
 
     /**
@@ -808,8 +834,7 @@ export class MinimaxAdapter extends LlmAdapter {
       if (streamError !== undefined) throw streamError
       // ⚠️ 402 是**余额不足**，必须原样透出 —— 它是最常见的真实失败，
       // 归成 SERVER/AUTH 会让用户看不到「去充值」这个唯一有效动作。
-      // ⚠️ 传**原始报文**：400 要再判一次上下文超限（见 `httpErrorCode`）。
-      const code = status === 402 ? 'QUOTA_EXCEEDED' : httpErrorCode(status, errorText)
+      const code = status === 402 ? 'QUOTA_EXCEEDED' : httpErrorCode(status)
       throw new LlmError(
         `minimax: HTTP ${status}${errorText === '' ? '' : ` — ${errorText.slice(0, 500)}`}`,
         code,
@@ -850,17 +875,12 @@ export class MinimaxAdapter extends LlmAdapter {
 
       const maxRotate = MINIMAX_MAX_ROTATE - 1
       for (let round = 0; round < maxRotate; round++) {
-        const next = await accountPool.getAvailableAccount(
+        const next = await accountPool.getAvailableAccount<MinimaxCredential>(
           this.product.id, options.model, tried,
         )
         if (!next || tried.has(next.entry.id)) break
         tried.add(next.entry.id)
-        // ⚠️ 手机版的 `getAvailableAccount` **未泛型化**（上游在 Phase 6 的
-        // account-pool 重构里才加了类型参数），凭据类型是
-        // `CodeArtsCredential | BuddyCredential` 联合，与 `MinimaxCredential`
-        // 无充分重叠 ⇒ 经 `unknown` 转换（与 loomy / raccoon 逐字同款）。
-        // 运行时安全性由 provider 过滤保证：查询用 `MINIMAX.id`，取到的必是 minimax 凭据。
-        const nextCredential = next.credential as unknown as MinimaxCredential | undefined
+        const nextCredential = next.credential
         /**
          * ⚠️ 池里的凭据是**裸 `JSON.parse`**（`AccountPool.getAvailableAccount`
          * 不做形状校验），手工编辑过的备份 / 损坏条目可能是 `{}`。初版写成
@@ -909,7 +929,12 @@ export function registerMinimaxLlm(
   options: MinimaxAdapterOptions,
 ): MinimaxAdapter {
   const product = options.product ?? MINIMAX
-  const adapter = new MinimaxAdapter(options)
+  const adapter = new MinimaxAdapter({
+    ...options,
+    // ⚠️ 注入**唯一**的广播实现（`src/catalog-broadcast.ts`），不要在这里
+    // 另写一份 emit —— 两份实现必然漂移（issue IKJVTF 的缺陷① 就是「十处全漏」）。
+    onCatalogLoaded: () => broadcastCatalogChanged(ctx),
+  })
   registerAdapterIdempotent(ctx.llm, [product.id], adapter)
   return adapter
 }

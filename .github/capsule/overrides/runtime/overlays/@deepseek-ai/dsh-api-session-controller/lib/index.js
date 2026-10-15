@@ -4,18 +4,18 @@ import z from "@deepseek-ai/schemastery";
 import { AssistantStreamAccumulator, ReasoningEffortId, assistantStreamChunks, createUserMessage, errorChain, freezeMessage } from "@deepseek-ai/dsh-llm";
 import { canOpenNativePath, nativeFileApplications, nativeFileManager, openNativeAssociatedPath, openNativeFileApplication, revealNativePath } from "@deepseek-ai/dsh-native-command";
 import { SessionQueryError } from "@deepseek-ai/dsh-session-query";
-import { Remote, RemoteError, TypertRemoteService, remoteErrorOf } from "@deepseek-ai/dsh-typert-protocol";
+import { Remote, RemoteError, TypertRemoteService, principalOf, remoteErrorOf } from "@deepseek-ai/dsh-typert-protocol";
+import { canonicalClientTimeZone } from "@deepseek-ai/dsh-util-time";
+import { assertNever } from "@deepseek-ai/dsh-util-values";
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
-import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { randomUUID } from "node:crypto";
 import { brandString } from "@deepseek-ai/dsh-brand";
+import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { AttachmentError } from "@deepseek-ai/dsh-attachment";
 import { buildForkSeed } from "@deepseek-ai/dsh-session/fork";
 import { SessionLogOffset, SessionSeq, isAppendSurfaceEvent } from "@deepseek-ai/dsh-session";
 import { SessionTitleInvalidError } from "@deepseek-ai/dsh-session-title";
-import { canonicalClientTimeZone } from "@deepseek-ai/dsh-util-time";
-import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { Deque } from "@deepseek-ai/dsh-deque";
 import { performance } from "node:perf_hooks";
 import { scheduler } from "node:timers/promises";
@@ -106,18 +106,18 @@ var ApiSessionCwdConflict = class extends Error {
 		this.existingCwd = existingCwd;
 	}
 };
-/** Explicit-id creation attempted to adopt a Session under another preset. */
+/** Reuse of a Session named an Agent preset while the deployment composes no preset roster. */
 var ApiSessionPresetConflict = class extends Error {
 	sessionId;
 	requestedPreset;
-	existingPreset;
-	constructor(sessionId, requestedPreset, existingPreset) {
-		super(existingPreset === void 0 ? `session "${sessionId}" records no agent preset and cannot be adopted under "${requestedPreset}"` : `session "${sessionId}" runs agent preset "${existingPreset}", not "${requestedPreset}"`);
+	constructor(sessionId, requestedPreset) {
+		super(`the deployment composes no agent preset roster, so session "${sessionId}" cannot run preset "${requestedPreset}"`);
 		this.sessionId = sessionId;
 		this.requestedPreset = requestedPreset;
-		this.existingPreset = existingPreset;
 	}
 };
+/** A blank Session chosen for reuse started a turn before this Host acquired its writer. */
+var ApiSessionStartedSinceObserved = class extends Error {};
 /**
 * Test whether generic Session routing must leave an identity to subagent routing.
 * @param ctx - Host context carrying the Agent ownership registry.
@@ -176,20 +176,20 @@ async function inspectApiSession(ctx, sessionId, signal) {
 		throw error;
 	}
 }
-/** ⚠️ Issue F-63：内存里的永久删除标记上限。超出后按插入顺序淘汰最旧项（调用方账本在启动时重新灌入）。 */
+/** ISSUE F-63：内存里的永久删除标记上限。超出后按插入顺序淘汰最旧项（调用方账本在启动时重新灌入）。 */
 const MAX_TRACKED_DELETED_IDS = 4096;
 /** Owns every operation that may create, resume, or configure a Web Agent. */
 var ApiSessionAgentController = class {
 	ctx;
 	ownedHandles = new Map();
-	/** Session ids hidden as permanently deleted; bounded by {@link MAX_TRACKED_DELETED_IDS}. */
+	/** Session ids hidden as permanently deleted; bounded by MAX_TRACKED_DELETED_IDS. */
 	deletedIds = new Set();
 	deletingIds = new Set();
 	async deletionLease(ids) {
 		for (const id of ids) if (this.deletingIds.has(id)) throw new Error("聊天正在删除，请稍后重试");
 		for (const id of ids) this.deletingIds.add(id);
 		try {
-			await Promise.all(ids.flatMap(id => [this.resumes.get(id), this.creations.get(id)]).filter(Boolean));
+			await Promise.all(ids.flatMap(id => [this.resumes.get(id), this.claims.get(id)]).filter(Boolean));
 			for (const id of ids) {
 				const agent = this.ctx.agents.get(id);
 				if (agent?.status === "running") throw new Error("请先停止聊天中正在运行的任务");
@@ -198,7 +198,7 @@ var ApiSessionAgentController = class {
 			for (const id of ids) { const handle = this.ownedHandles.get(id); if (handle) { await handle.dispose(); this.ownedHandles.delete(id); } }
 			return () => {
 				for (const id of ids) this.deletingIds.delete(id);
-				/* ⚠️ Issue F-10：release() 由调用方的 finally 同步调用，确认必须后台跑且自兜错。 */
+				/* ISSUE F-10：release() 由调用方的 finally 同步调用，确认必须后台跑且自兜错。 */
 				this.confirmPermanentDeletion(ids).catch((error) => {
 					this.ctx.logger.warn(`session-controller: permanent-deletion confirmation failed: ${errorChain(error)}`);
 				});
@@ -206,10 +206,8 @@ var ApiSessionAgentController = class {
 		} catch (error) { for (const id of ids) this.deletingIds.delete(id); throw error; }
 	}
 	retainHandle(handle) { this.ownedHandles.set(handle.agent.id, handle); return handle.agent; }
-	/**
-	* Record ids as permanently deleted, keeping the hide set bounded.
-	* @param ids - ids the durable deletion ledger claims are gone.
-	*/
+	/** Record ids as permanently deleted, keeping the hide set bounded.
+	* @param ids - ids the durable deletion ledger claims are gone. */
 	markPermanentlyDeleted(ids) {
 		for (const id of ids) {
 			this.deletedIds.delete(id);
@@ -219,8 +217,8 @@ var ApiSessionAgentController = class {
 	}
 	/**
 	* Confirm one finished deletion attempt against the persistence layer.
-	* ⚠️ Issue F-10：调用方在 cleanup **之前**就调用 markPermanentlyDeleted，于是 cleanup 中途抛错时
-	* list()/assertAvailable 会永久把它当作已删除，而日志/投影/附件仍在磁盘上（"隐藏了但数据还在"）。
+	* ISSUE F-10：调用方在 cleanup 之前就调用 markPermanentlyDeleted，于是 cleanup 中途抛错时
+	* list()/assertAvailable 会永久把它当作已删除，而日志/投影/附件仍在磁盘上（隐藏了但数据还在）。
 	* 删除租约释放后核对一次：只要存储里仍能查到该会话，就撤回隐藏标记，让它保持可见（可打开、可重试删除）。
 	* @param ids - ids released by the finished deletion lease.
 	*/
@@ -234,7 +232,7 @@ var ApiSessionAgentController = class {
 			try {
 				stored = await persistence.stat(id);
 			} catch (error) {
-				/* ⚠️ Issue F-10：无法证实删除时保持隐藏（宁可不误报"未删除"，也不复活真正已删的会话）。 */
+				/* ISSUE F-10：无法证实删除时保持隐藏（宁可不误报未删除，也不复活真正已删的会话）。 */
 				this.ctx.logger.warn(`session-controller: cannot confirm permanent deletion of "${id}"; keeping it hidden: ${errorChain(error)}`);
 				continue;
 			}
@@ -244,13 +242,13 @@ var ApiSessionAgentController = class {
 		}
 	}
 	assertAvailable(id) {
-		/* ⚠️ Issue F-33：删除租约进行中的会话**还不是**永久删除 —— 旧判据把它也报成
-		   "was permanently deleted"，调用方据此得到不可重试的永久结论（见 §3.4 的调用链）。 */
+		/* ISSUE F-33：删除租约进行中的会话还不是永久删除 —— 旧判据把它也报成
+		   was permanently deleted，调用方据此得到不可重试的永久结论。 */
 		if (this.deletingIds.has(id)) throw new Error("聊天正在删除，请稍后重试");
 		if (this.deletedIds.has(id)) throw new ApiSessionNotFound(`session "${id}" was permanently deleted`);
 	}
 	resumes = /* @__PURE__ */ new Map();
-	creations = /* @__PURE__ */ new Map();
+	claims = /* @__PURE__ */ new Map();
 	selections = /* @__PURE__ */ new WeakMap();
 	imageAdmissionChains = /* @__PURE__ */ new WeakMap();
 	/** @param ctx - Host context carrying Agent, model, persistence, and Typert services. */
@@ -316,36 +314,27 @@ var ApiSessionAgentController = class {
 		}
 	}
 	/**
-	* Resolve one requested identity, creating or resuming it once.
-	* @param sessionId - requested Session identity.
-	* @param cwd - directory the Session must own.
-	* @param checkPersistedIdentity - whether to inspect a cold identity before creation.
-	* @param presetId - optional Agent preset the Session must own.
-	* @returns the matching live ordinary Agent.
+	* Create a Session for a new conversation, reusing the named blank Session
+	* while it is still reusable. A reused Session runs the requested preset, or
+	* the configured default when the request names none; the preset it recorded
+	* is not resolved, and a change is logged as `agent-preset/selected` before
+	* the Agent is published. A named Session that has started a turn, fails the
+	* caller's placement rule, or is written by another owner stays unchanged,
+	* and a new Session is created instead. Requests naming one identity run in
+	* arrival order, including their preset resolution, and check the named
+	* Session's directory and ownership before resolving the preset.
+	* @param request - optional Session to reuse, directory, preset, and placement rule.
+	* @returns the reused or created Session and the preset it ran when this request finished.
+	* @throws ApiSessionCwdConflict when the named Session belongs to another directory.
+	* @throws ApiSessionSubagentOwnership when subagent routing owns the named Session.
+	* @throws RemoteError `agent-preset/not-found` or `agent-preset/invalid` for the requested or default preset.
+	* @throws ApiSessionPresetConflict when no roster is composed and the request names a preset for a reused Session.
 	*/
-	async ensureSession(sessionId, cwd, checkPersistedIdentity, presetId) {
-		this.assertAvailable(sessionId);
-		let creation = this.creations.get(sessionId);
-		if (creation === void 0) {
-			creation = this.createOrAdopt(sessionId, cwd, checkPersistedIdentity, presetId).catch((error) => {
-				const live = this.ctx.agents.get(sessionId);
-				if (live !== void 0) {
-					if (hasApiSessionSubagentOwner(this.ctx, live.session, live)) throw new ApiSessionSubagentOwnership(sessionId);
-					return live;
-				}
-				const attached = this.ctx.sessions.get(sessionId);
-				if (attached !== void 0 && hasApiSessionSubagentOwner(this.ctx, attached, void 0)) throw new ApiSessionSubagentOwnership(sessionId);
-				throw error;
-			}).finally(() => {
-				this.creations.delete(sessionId);
-			});
-			this.creations.set(sessionId, creation);
-		}
-		const agent = await creation;
-		if (hasApiSessionSubagentOwner(this.ctx, agent.session, agent)) throw new ApiSessionSubagentOwnership(sessionId);
-		if (presetId !== void 0) this.assertPresetUnchanged(sessionId, presetId, this.presetForSession(agent.session));
-		if (agent.session.header.cwd !== cwd) throw new ApiSessionCwdConflict(sessionId, cwd, agent.session.header.cwd);
-		return agent;
+	async createSession(request) {
+		if (request.sessionId !== void 0) this.assertAvailable(request.sessionId);
+		const named = request.sessionId;
+		if (named === void 0) return this.created(await this.createMinted(request.cwd, await this.composeAgent(request.agentPreset)));
+		return this.inOrder(named, async () => this.created(await this.claim(named, request)));
 	}
 	/**
 	* Install or return the Session-local model selection used by prompt assembly.
@@ -483,44 +472,118 @@ var ApiSessionAgentController = class {
 			setup: composition.setup
 		}));
 	}
-	async createOrAdopt(sessionId, cwd, checkPersistedIdentity, presetId) {
+	async inOrder(sessionId, operation) {
+		const result = (this.claims.get(sessionId) ?? Promise.resolve()).then(operation);
+		const settled = result.then(() => void 0, () => void 0);
+		this.claims.set(sessionId, settled);
+		try {
+			return await result;
+		} finally {
+			if (this.claims.get(sessionId) === settled) this.claims.delete(sessionId);
+		}
+	}
+	/** @returns the reused Session, a new Session under `sessionId` when none is stored, or a new Session under a minted identity. */
+	async claim(sessionId, request) {
 		const attached = this.ctx.sessions.get(sessionId);
 		const live = this.ctx.agents.get(sessionId);
 		if (attached !== void 0 && hasApiSessionSubagentOwner(this.ctx, attached, live)) throw new ApiSessionSubagentOwnership(sessionId);
-		if (live !== void 0) return live;
-		if (checkPersistedIdentity) try {
+		if (live !== void 0) {
+			if (live.session.header.cwd !== request.cwd) throw new ApiSessionCwdConflict(live.id, request.cwd, live.session.header.cwd);
+			const composition = await this.composeAgent(request.agentPreset);
+			return await this.reuseLive(live, request, composition) ?? this.createMinted(request.cwd, composition);
+		}
+		let observation;
+		try {
+			observation = await this.ctx.sessionQuery.observeSession(sessionId);
+		} catch (error) {
+			if (!(error instanceof SessionQueryError) || error.code !== "SESSION_QUERY_SESSION_NOT_FOUND") throw error;
+			return this.createAgent(sessionId, request.cwd, await this.composeAgent(request.agentPreset));
+		}
+		let reusable;
+		{
 			const env_3 = {
 				stack: [],
 				error: void 0,
 				hasError: false
 			};
 			try {
-				const observation = __addDisposableResource$4(env_3, await this.ctx.sessionQuery.observeSession(sessionId), false);
-				if (hasApiSessionSubagentOwner(this.ctx, { header: observation.header }, void 0)) throw new ApiSessionSubagentOwnership(sessionId);
-				if (observation.header.cwd !== cwd) throw new ApiSessionCwdConflict(sessionId, cwd, observation.header.cwd);
-				const storedPreset = this.presetForObservation(observation);
-				this.assertPresetUnchanged(sessionId, presetId, storedPreset);
-				const composition = await this.composeAgent(storedPreset);
-				return this.retainHandle(await this.ctx.agents.resume({
-					resumeSessionId: sessionId,
-					agentOptions: this.agentOptions(),
-					setup: composition.setup
-				}));
+				const observed = __addDisposableResource$4(env_3, observation, false);
+				if (hasApiSessionSubagentOwner(this.ctx, { header: observed.header }, void 0)) throw new ApiSessionSubagentOwnership(sessionId);
+				if (observed.header.cwd !== request.cwd) throw new ApiSessionCwdConflict(sessionId, request.cwd, observed.header.cwd);
+				reusable = request.reusable(sessionId) && !observed.events.some((event) => event.type === "turn/start");
 			} catch (e_3) {
 				env_3.error = e_3;
 				env_3.hasError = true;
 			} finally {
 				__disposeResources$4(env_3);
 			}
-		} catch (error) {
-			if (!(error instanceof SessionQueryError) || error.code !== "SESSION_QUERY_SESSION_NOT_FOUND") throw error;
 		}
+		const composition = await this.composeAgent(request.agentPreset);
+		if (!reusable) return this.createMinted(request.cwd, composition);
+		this.assertPresetApplicable(sessionId, request.agentPreset);
+		try {
+			return this.retainHandle(await this.ctx.agents.resume({
+				resumeSessionId: sessionId,
+				agentOptions: this.agentOptions(),
+				setup: this.reuseSetup(composition)
+			}));
+		} catch (error) {
+			if (error instanceof ApiSessionStartedSinceObserved) return this.createMinted(request.cwd, composition);
+			if (!(error instanceof Error) || error.name !== "SessionAlreadyOwnedError") throw error;
+			return this.ctx.agents.get(sessionId) === void 0 ? this.createMinted(request.cwd, composition) : this.claim(sessionId, request);
+		}
+	}
+	/** @returns the live blank Session under the requested preset, or undefined when it cannot be reused. */
+	async reuseLive(live, request, composition) {
+		if (!request.reusable(live.id) || !this.isBlank(live.session)) return void 0;
+		this.assertPresetApplicable(live.id, request.agentPreset);
+		const current = this.presetForSession(live.session);
+		const presets = this.ctx.get("agentPresets");
+		const target = composition.agentPreset;
+		if (presets === void 0 || target === void 0 || target === current) return live;
+		try {
+			await presets.select(live, target);
+		} catch (error) {
+			if (remoteErrorOf(error)?.code !== "agent-preset/locked") throw error;
+			return;
+		}
+		return live;
+	}
+	/** Setup that re-checks blankness under the acquired writer, then records a preset change before publication. */
+	reuseSetup(composition) {
+		return async (agentCtx, agent) => {
+			if (!this.isBlank(agent.session)) throw new ApiSessionStartedSinceObserved();
+			const commit = await composition.setup(agentCtx, agent);
+			const target = composition.agentPreset;
+			if (target !== void 0 && this.presetForSession(agent.session) !== target) agent.session.append("agent-preset/selected", { agentPreset: target });
+			return commit;
+		};
+	}
+	/** Whether no turn has started, by the predicate the preset registry's `select` enforces. */
+	isBlank(session) {
+		const boundary = this.ctx.sessionProjections.stateOf(session, "turnBoundary");
+		return boundary === void 0 || boundary.openTurnStartSeq === null && boundary.lastTurn === 0;
+	}
+	/** Without a roster, reuse cannot apply a named preset. */
+	assertPresetApplicable(sessionId, requested) {
+		if (requested === void 0 || this.ctx.get("agentPresets") !== void 0) return;
+		throw new ApiSessionPresetConflict(sessionId, requested);
+	}
+	created(agent) {
+		return {
+			agent,
+			agentPreset: this.presetForSession(agent.session)
+		};
+	}
+	createMinted(cwd, composition) {
+		return this.createAgent(brandString(`session-${randomUUID()}`), cwd, composition);
+	}
+	async createAgent(sessionId, cwd, composition) {
 		try {
 			await mkdir(cwd, { recursive: true });
 		} catch (error) {
 			throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error });
 		}
-		const composition = await this.composeAgent(presetId);
 		return this.retainHandle(await this.ctx.agents.create({
 			sessionId,
 			agentOptions: this.agentOptions(),
@@ -549,10 +612,6 @@ var ApiSessionAgentController = class {
 	presetForObservation(observation) {
 		if (observation.projections === void 0) throw new Error("api-session: Agent activation requires a projected Session observation");
 		return observation.projections.values.agentPreset ?? void 0;
-	}
-	assertPresetUnchanged(sessionId, requested, existing) {
-		if (requested === void 0 || requested === existing) return;
-		throw new ApiSessionPresetConflict(sessionId, requested, existing);
 	}
 };
 function agentModelSelection(selection) {
@@ -720,6 +779,11 @@ var __disposeResources$3 = (function(SuppressedError) {
 	var e = new Error(message);
 	return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
 });
+/**
+* Whether prompt content carries non-whitespace text or an attachment.
+* @param content - submitted or edited prompt parts.
+* @returns false for content the Agent must not receive.
+*/
 function hasPromptContent(content) {
 	return content.some((part) => part.type !== "text" || part.text.trim().length > 0);
 }
@@ -753,25 +817,31 @@ var SessionCommandController = class {
 		this.defaultCwd = defaultCwd;
 	}
 	/**
-	* Create or idempotently adopt one ordinary Session.
-	* @param request - requested identity, location, and Agent preset.
-	* @returns the Session identity and resolved preset when configured.
+	* Create one ordinary Session for a new conversation, reusing the named
+	* blank Session while it is an unarchived member of the requested Workspace.
+	* @param request - optional blank Session to reuse, location, and Agent preset.
+	* @returns the created or reused Session identity and its preset when configured.
 	*/
 	async create(request) {
 		if (request.workspaceId !== void 0 && request.cwd !== void 0) throw new RemoteError("gateway/bad-request", "session.create accepts workspaceId or cwd, not both", {});
-		const sessionId = request.sessionId ?? brandString(`session-${randomUUID()}`);
 		let workspace;
 		if (request.workspaceId !== void 0) {
 			workspace = this.ctx.workspaceRegistry.get(request.workspaceId);
 			if (workspace === void 0) throw new RemoteError("workspace/not-found", `workspace "${request.workspaceId}" not found`, { workspaceId: request.workspaceId });
 		}
 		const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd;
-		let adopted;
+		let created;
 		try {
-			adopted = await this.agents.ensureSession(sessionId, cwd, request.sessionId !== void 0, request.agentPreset);
+			created = await this.agents.createSession({
+				...request.sessionId === void 0 ? {} : { sessionId: request.sessionId },
+				cwd,
+				...request.agentPreset === void 0 ? {} : { agentPreset: request.agentPreset },
+				reusable: (sessionId) => !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId) && (workspace === void 0 || workspace.sessionIds.includes(sessionId))
+			});
 		} catch (error) {
-			this.rejectCreation(sessionId, error);
+			this.rejectCreation(error);
 		}
+		const sessionId = created.agent.id;
 		if (workspace !== void 0) try {
 			await workspace.attachSession(sessionId);
 		} catch (error) {
@@ -780,10 +850,9 @@ var SessionCommandController = class {
 				workspaceId: workspace.id
 			});
 		}
-		const agentPreset = this.agents.presetForSession(adopted.session);
 		return {
 			sessionId,
-			...agentPreset === void 0 ? {} : { agentPreset }
+			...created.agentPreset === void 0 ? {} : { agentPreset: created.agentPreset }
 		};
 	}
 	/**
@@ -917,21 +986,15 @@ var SessionCommandController = class {
 		}
 	}
 	/**
-	* Reject empty content, then admit one prompt after Agent and attachment validation.
-	* @param request - Session identity, prompt content, source metadata, and delivery mode.
+	* Admit one prompt after Agent and attachment validation; the Remote method
+	* has already validated the content and built the durable message source.
+	* @param request - Session identity, prompt content, and delivery mode.
+	* @param source - the `user-rpc` source recorded on the accepted message.
 	* @returns acknowledgement that the Agent accepted the prompt.
 	*/
-	async prompt(request) {
-		if (!hasPromptContent(request.content)) throw new RemoteError("gateway/bad-request", "prompt content must include non-whitespace text or an attachment", {});
-		const clientTimeZone = request.clientTimeZone === void 0 ? void 0 : canonicalClientTimeZone(request.clientTimeZone);
-		if (request.clientTimeZone !== void 0 && clientTimeZone === void 0) throw new RemoteError("session/invalid-time-zone", "clientTimeZone must be UTC or a valid IANA Area/Location name", { value: request.clientTimeZone });
+	async prompt(request, source) {
 		const agent = await this.resolveAgent(request.sessionId);
 		if (hasPromptRequest(agent, request.requestId)) return { accepted: true };
-		const source = {
-			kind: "user",
-			rpcId: request.requestId,
-			...clientTimeZone === void 0 ? {} : { clientTimeZone }
-		};
 		const hasImage = request.content.some((part) => part.type === "image");
 		const admit = async () => {
 			try {
@@ -1077,13 +1140,11 @@ var SessionCommandController = class {
 		if ("error" in found) throw found.error;
 		return found.agent;
 	}
-	rejectCreation(sessionId, error) {
+	rejectCreation(error) {
 		if (remoteErrorOf(error) !== void 0) throw error;
-		if (error instanceof Error && error.name === "SessionAlreadyOwnedError") throw new RemoteError("session/writer-held", error.message, { sessionId });
 		if (error instanceof ApiSessionPresetConflict) throw new RemoteError("agent-preset/conflict", error.message, {
 			sessionId: error.sessionId,
-			requestedPreset: error.requestedPreset,
-			...error.existingPreset === void 0 ? {} : { existingPreset: error.existingPreset }
+			requestedPreset: error.requestedPreset
 		});
 		if (error instanceof ApiSessionCwdConflict) throw new RemoteError("session/conflict", error.message, {
 			sessionId: error.sessionId,
@@ -1091,7 +1152,7 @@ var SessionCommandController = class {
 			...error.existingCwd === void 0 ? {} : { existingCwd: error.existingCwd }
 		});
 		if (error instanceof ApiSessionSubagentOwnership) throw apiSessionSubagentOwnershipError(error.sessionId);
-		throw new RemoteError("gateway/internal", `failed to create session "${sessionId}": ${String(error)}`, {});
+		throw new RemoteError("gateway/internal", `failed to create session: ${String(error)}`, {});
 	}
 	async readSessionState(sessionId) {
 		const attached = this.ctx.sessions.get(sessionId);
@@ -2647,6 +2708,15 @@ var __disposeResources = (function(SuppressedError) {
 	var e = new Error(message);
 	return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
 });
+/**
+* Read the Session resource a history address names: the Session itself, or
+* the child Session whose transcript a subagent address reads.
+* @param request - history request carrying the durable address.
+* @returns the Session whose access the read requires.
+*/
+function addressedSession(request) {
+	return request.address.kind === "session" ? request.address.sessionId : request.address.childSessionId;
+}
 /** Host service backing the generated `ctx.remote.session` namespace. */
 let SessionController = (() => {
 	let _classSuper = TypertRemoteService;
@@ -2688,8 +2758,14 @@ let SessionController = (() => {
 			_attachment_decorators = [Remote("attachment")];
 			_updateQueue_decorators = [Remote("updateQueue")];
 			_cancel_decorators = [Remote("cancel")];
-			_page_decorators = [Remote("page")];
-			_follow_decorators = [Remote({ mode: "stream" })];
+			_page_decorators = [Remote({
+				name: "page",
+				resources: { session: addressedSession }
+			})];
+			_follow_decorators = [Remote({
+				mode: "stream",
+				resources: { session: addressedSession }
+			})];
 			_projections_decorators = [Remote("projections")];
 			_control_decorators = [Remote({ mode: "stream" })];
 			__esDecorate(this, null, _list_decorators, {
@@ -2915,6 +2991,7 @@ let SessionController = (() => {
 			"fileUploads",
 			"fs",
 			"llm",
+			"remoteAccess",
 			"sessions",
 			"sessionProjections",
 			"sessionQuery",
@@ -2943,6 +3020,7 @@ let SessionController = (() => {
 		*/
 		constructor(ctx, config, internals = {}) {
 			super(ctx, "sessionController", { namespace: "session" });
+			ctx.typert.resources.register("session", { field: "sessionId" });
 			const resolved = SessionController.Config(config);
 			installModelSelectionProjection(ctx);
 			this.agents = new ApiSessionAgentController(ctx);
@@ -3053,27 +3131,35 @@ let SessionController = (() => {
 		* @returns visible Session summaries ordered by activity.
 		*/
 		async list(_request, signal) {
-			return { items: (await this.listState.list(signal)).filter(s => !this.agents.deletedIds.has(s.sessionId)) };
+			return { items: (await this.listState.list(signal)).filter((item) => !this.agents.deletedIds.has(item.sessionId)).filter((item) => this.ctx.remoteAccess.allows({
+				kind: "session",
+				id: item.sessionId
+			})) };
 		}
 		/**
-		* Search visible Session content without resuming an Agent.
+		* Search visible Session content without resuming an Agent. A non-owner
+		* receives only the hits whose Session `allows()` admits; `hasMore`
+		* describes the bounded result before that filtering.
 		* @param request - literal message-content query.
 		* @param signal - cancellation for list and search reads.
 		* @returns authorized bounded Session search results.
 		*/
 		async search(request, signal) {
-			// ⚠️ Issue F-32：`list()` 过滤 deletedIds，`search()` 却不过滤 ⇒ 同一失败窗口下已被声明
+			// ISSUE F-32：list() 过滤 deletedIds，search() 却不过滤，同一失败窗口下已被声明
 			// 永久删除的会话仍能通过内容检索命中（隐私口径不一致）。这里与 list() 对称过滤。
 			const result = await this.listState.search(request.query, signal);
 			return {
 				...result,
-				items: result.items.filter(item => !this.agents.deletedIds.has(item.sessionId))
+				items: result.items.filter((item) => !this.agents.deletedIds.has(item.sessionId)).filter((item) => this.ctx.remoteAccess.allows({
+					kind: "session",
+					id: item.sessionId
+				}))
 			};
 		}
 		/**
-		* Create or idempotently adopt one ordinary Session.
-		* @param request - requested identity, location, and Agent preset.
-		* @returns the Session identity and resolved preset when configured.
+		* Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.
+		* @param request - optional blank Session to reuse, location, and Agent preset.
+		* @returns the created or reused Session identity and its preset when configured.
 		*/
 		create(request) {
 			return this.commands.create(request);
@@ -3203,9 +3289,19 @@ let SessionController = (() => {
 		* @param signal - caller cancellation before prompt admission begins.
 		* @returns acknowledgement that the Agent accepted the prompt.
 		*/
-		prompt(request, signal) {
+		async prompt(request, signal) {
 			signal.throwIfAborted();
-			return this.commands.prompt(request);
+			if (!hasPromptContent(request.content)) throw new RemoteError("gateway/bad-request", "prompt content must include non-whitespace text or an attachment", {});
+			const clientTimeZone = request.clientTimeZone === void 0 ? void 0 : canonicalClientTimeZone(request.clientTimeZone);
+			if (request.clientTimeZone !== void 0 && clientTimeZone === void 0) throw new RemoteError("session/invalid-time-zone", "clientTimeZone must be UTC or a valid IANA Area/Location name", { value: request.clientTimeZone });
+			const principal = principalOf(this.ctx.invocation);
+			const source = {
+				kind: "user",
+				rpcId: request.requestId,
+				...clientTimeZone === void 0 ? {} : { clientTimeZone },
+				...principal === void 0 ? {} : { principal }
+			};
+			return this.commands.prompt(request, source);
 		}
 		/**
 		* Read one image proven reachable from the addressed Session log.
@@ -3313,8 +3409,31 @@ let SessionController = (() => {
 		* @param signal - cancellation owned by the Remote stream carrier.
 		* @returns one complete baseline followed by live replacement frames.
 		*/
-		control(signal) {
-			return this.controlState.control(signal);
+		async *control(signal) {
+			for await (const frame of this.controlState.control(signal)) switch (frame.type) {
+				case "baseline": {
+					const projections = Object.fromEntries(Object.entries(frame.value.projections).filter(([sessionId]) => this.ctx.remoteAccess.allows({
+						kind: "session",
+						id: sessionId
+					})));
+					yield {
+						type: "baseline",
+						value: {
+							...frame.value,
+							projections
+						}
+					};
+					break;
+				}
+				case "projection":
+					if (this.ctx.remoteAccess.allows({
+						kind: "session",
+						id: frame.sessionId
+					})) yield frame;
+					break;
+				/* v8 ignore next -- closed control-frame union. */
+				default: assertNever(frame);
+			}
 		}
 	};
 })();

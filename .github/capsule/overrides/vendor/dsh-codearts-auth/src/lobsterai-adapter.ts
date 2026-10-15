@@ -27,20 +27,13 @@ import {
   LlmAdapter, LlmError,
   ReasoningEffortId,
 } from '@deepseek-ai/dsh-llm'
-import { ToolCallId as CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
-import { AccountPool, providerCatalogVisible } from './account-pool.js'
+import { AccountPool } from './account-pool.js'
+import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
-import { settingsNamespaceFor } from './settings-compat.js'
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import { parseRateLimitError } from './llm-adapter.js'
-// ⚠️ 只复用**错误码映射**这两个函数（本仓库红线：同一语义不得两套判据）。
-// 序列化与 SSE 仍用本文件自己的实现，见 `openai-compat.ts` 模块头
-// 「既有适配器（buddy / lobsterai）刻意不改用它」那一段 —— 那条约束针对的是
-// 约 200 行的协议层逻辑，不含这两个小函数。
-// ⚠️ `sseFailureCode`（2026-10-11 补）：流内失败的码此前在本文件固定写 `SERVER`，
-// 是**第三份**同义判据 —— 上游以「HTTP 200 + 流内错误帧」下发上下文超限时，
-// 直连 lobsterai 的长会话照样每轮报废（归成 SERVER 不触发压缩链）。
-import { httpErrorCode, sseFailureCode } from './openai-compat.js'
 import {
   LOBSTERAI_CHAT_PATH,
   LOBSTERAI_MODELS_PATH,
@@ -68,7 +61,7 @@ import {
 } from './llm-register-compat.js'
 import { reportLedgerAccount } from './token-ledger.js'
 import { planSessionTitleThinking } from './session-title.js'
-// ⚠️ `detail` 那条腿**只留一份实现**（`openai-compat.ts`）：本仓库多份同义的
+// ⚠️ `detail` 那条腿**只留一份实现**（`openai-compat.ts`）：本仓库 6 份同义的
 // `errorDetail` 各写一条判据必然漂移（IKLBSH A1）。
 import { detailFieldText, TOOL_RESULT_IMAGE_TEXT } from './openai-compat.js'
 
@@ -364,6 +357,17 @@ export interface LobsteraiAdapterOptions {
   ) => Promise<{ data: Uint8Array; mediaType: string } | undefined>
   /** 产品配置；默认 {@link LOBSTERAI}。 */
   product?: LobsteraiProduct
+  /**
+   * 远端目录**落地后**的通知回调（issue IKJVTF）。
+   *
+   * 由 `registerLobsteraiLlm` 注入为 `broadcastCatalogChanged(ctx)`。适配器本身
+   * 拿不到 `ctx`，故必须由接线层桥接（与 `readImage` 等回调同一模式）。
+   *
+   * ⚠️ 必要性：客户端 `ModelCatalogDirectory` 在 `status === 'ready'` 时**短路
+   * 返回缓存**，只在宿主事件上 `refresh()`。没有本回调时，冷启动首拉失败
+   * 缓存的**兜底表**会永久留在对话框里，远端目录真的落地也不重读。
+   */
+  onCatalogLoaded?: () => void
 }
 
 /** 将消息内容载荷展平为纯文本字符串。 */
@@ -513,47 +517,11 @@ function serializeMessages(
    */
   const flushToolImages = (own?: Array<Record<string, unknown>>): void => {
     const ownParts = own ?? []
-    const hasImages = pendingToolImages.length > 0
-    if (!hasImages && ownParts.length === 0) return
-    /**
-     * ⚠️⚠️ **只在真的有挂起的工具结果图片时才重排顺序**（手机版对上游实现的收窄）。
-     *
-     * 上游此处**无条件**把图排到文本之前。本仓库实测：那会翻转**普通贴图**
-     *（无工具结果）的既有顺序 —— `[text, image]` 变成 `[image, text]`，
-     * 使既有 spec 的 2 条断言变红（buddy-adapter.spec.ts 的
-     * `stream sends user images as inline image_url parts` 与
-     * `贴图这一轮会自动重看目录`；lobsterai 同型）。
-     *
-     * 顺序本身**不影响模型能否看见图片**（上游注释亦称「两种顺序实测都能被看到」），
-     * 故这里按最小改动原则收窄：无挂图时 `own` **原样发出**（旧行为逐字节不变），
-     * 只有确实要「图与提问合条」时才做图前置的重排。
-     */
-    if (!hasImages) {
-      // ⚠️⚠️ **纯文本 parts 数组会被上游以 `model_param_invalid` 400 拒收整个请求**
-      //    （Issue 第九轮修复的自伤面，实测形态 `content:[{type:'text'},{type:'text'}]`）。
-      //    `combined` 一旦把「上一条延后正文」与「本条正文」合并就必然是 parts 形态；
-      //    只要此刻没有挂图，就会原样落到这里 ⇒ 坏历史每轮重放 = **会话报废**。
-      //    故**全为 text 时 join 回字符串**（与原实现的字符串形态等义）。
-      //    ⚠️ 含有非 text 的 part（本条自带的顶层图）时**不能** join：那会丢图。
-      const allText = ownParts.every((part) => part.type === 'text')
-      wire.push({
-        role: 'user',
-        content: allText ? ownParts.map((part) => String(part.text)).join('') : ownParts,
-      })
-      return
-    }
+    if (pendingToolImages.length === 0 && ownParts.length === 0) return
     // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
     const ownImages = ownParts.filter((part) => part.type !== 'text')
     const ownText = ownParts.filter((part) => part.type === 'text')
-    // ⚠️⚠️ **纯图无文本的独立 user 条，模型看不见**（Issue IKLIFH 的漏网形态，与上游
-    //    IKLSB8 同族）：本条挂图却没有任何自身文本时（典型：请求以「工具结果带图」
-    //    收尾，后面再没有提问可搭车），wire 上会产出 `content:[{type:'image_url'}]`
-    //    的纯图条 —— 按本项目实测表即 ❌「不支持识别图片」形态，而上游**不报错**
-    //    （HTTP 200）⇒ 用户误判成模型没有视觉能力。
-    //    ⇒ 无自身文本时补回说明文本，让图始终与一段文字同在一条消息里。
-    //    ⚠️ 仅在本条真的没有文本时补：已有文本时**逐字节不变**（不改既有 wire 形态）。
-    const ownTextOrHint = ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]
-    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownTextOrHint] })
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
     pendingToolImages = []
   }
 
@@ -617,21 +585,8 @@ function serializeMessages(
     // | 含工具结果（deferred） | 本条内容也留到**下一条** user 消息，与挂图合并发出   |
     //
     // ⚠️ 含工具结果时**整条延后**：OpenAI 兼容协议要求 tool 消息**紧跟**其
-    // assistant `tool_calls`，中间插任何消息都会 400。
-    // ⚠️⚠️ **延后判据必须看「有没有挂图 / 有没有延后正文」，不能只看「本条有没有
-    // 工具结果」**（Issue IKLIFH 补修，2026-10-14；上游 `32681a8b` 只修了 buddy，
-    // 本仓库三处一起改）。原判据 `toolResults.length > 0` 在
-    // 「tool 结果 → 一条无工具结果的 user（『好的』）→ 真正的提问」这一真实序列上
-    // 判错：中间那条把 `pendingToolImages` 与 `pendingOwnParts` **一起 flush 掉并
-    // 单独发出**，真正的提问随后成了**纯字符串** user 消息 ⇒ 图与问重新分处两条，
-    // **恰好复现 IKLIFH 要消灭的形态**。触发前提：工具结果后跟多于一条 user 消息。
-    //
-    // ⚠️ 「有挂图」还必须覆盖「历史上一条延后的正文」：那种情况下
-    // `pendingOwnParts` 非空而 `pendingToolImages` 已空，若只看后者就会把正文
-    // 提前发出、同样与后续提问分处两条。
+    // assistant `tool_calls`，中间插任何 user 消息都会 400。
     const deferred = toolResults.length > 0
-      || pendingToolImages.length > 0
-      || pendingOwnParts !== undefined
     // ⚠️ 本条同时是上一条延后内容的「搭车机会」：`pendingOwnParts` 里的正文
     // 必须与本条内容、挂起图片**一起**发出一条。
     //
@@ -639,23 +594,7 @@ function serializeMessages(
     // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
     // 拒收整个请求（实测）。
     const hasImage = parts !== undefined
-    // ⚠️⚠️ **条件必须把 \`pendingOwnParts\` 也算进来**（手机版修掉的一处**真实数据丢失**，
-    //    上游同段逐字节相同、同样存在）：
-    //
-    //    上一条 user 消息含工具结果时，它的**自身正文**被延后到 \`pendingOwnParts\`；
-    //    若本条既没有挂起图片、自己也没有图（\`pendingToolImages.length === 0 && !hasImage\`），
-    //    上面这个条件恒为 false ⇒ \`combined\` 是 undefined ⇒
-    //    \`flushToolImages(undefined)\` 因「无挂图且 own 为空」**提前 return**
-    //    ⇒ 那份延后正文**从未被发出，静默丢失**。
-    //
-    //    可达性：harness 的真实形状就是「工具结果搭载在一条 user 消息里，而那条
-    //    消息可以同时带用户自己的正文」（见 \`message-shape.ts\` 的降级规则：
-    //    \`role:'tool'\` 降级后 content 只有 tool-result 块，但**混合形态** ——
-    //    user 消息里 text 与 tool-result 并存 —— 是 ≤0.1.6 的常规形状）。
-    //    实测（本仓库行为探针）：正文与顶层图片双双消失，模型看不到。
-    //
-    //    ⇒ 判据改成「有挂图 **或** 本条有图 **或** 有延后正文」。
-    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage || pendingOwnParts !== undefined
+    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage
       ? [
         ...(pendingOwnParts ?? []),
         ...(parts ?? (text.length > 0 ? [{ type: 'text', text }] : [])),
@@ -702,7 +641,7 @@ function serializeMessages(
         content: resultText,
       })
     }
-    // ⚠️⚠️ **这里刻意不 flush**（Issue IKLIFH 的关键时序）：图片此刻刚由上面
+  // ⚠️⚠️ **这里刻意不 flush**（Issue IKLIFH 的关键时序）：图片此刻刚由上面
     // 的 `pendingToolImages.push` 入队，若在此发出就会**单独成一条** user
     // 消息，而提问在再下一条 ⇒ 上游让模型「看不见」。留给下一条 user 消息搭车。
   }
@@ -778,22 +717,15 @@ function buildLobsteraiFailure(input: LobsteraiFailureInput): LlmError {
     return new LlmError(`${prefix}（${detail}）`, 'QUOTA_EXCEEDED', { status })
   }
 
-  // ⚠️ **流内失败**（HTTP 200 + 流内错误帧）不能用 `httpErrorCode(status)`：
-  //    状态码是 200，那条映射只会得到 `HTTP_200`。此前这里固定写 `SERVER`，
-  //    于是「上游以流内帧下发上下文超限」被归成 SERVER ⇒ 不触发 DSH 的压缩恢复链，
-  //    直连 lobsterai 的长会话越过窗口后**每轮报废**。
-  //    改用共享的 `sseFailureCode`（与 HTTP 层**同一判据**；非超限时仍为 SERVER）。
-  const code = fromStream ? sseFailureCode(text) : httpErrorCode(status, text)
-
   if (exhausted) {
     return new LlmError(
       `lobsterai: 模型 ${model} 所有账号均不可用（${detail}）`,
-      code,
+      fromStream ? 'SERVER' : httpErrorCode(status),
       { status },
     )
   }
 
-  return new LlmError(`lobsterai: ${detail}`, code, { status })
+  return new LlmError(`lobsterai: ${detail}`, fromStream ? 'SERVER' : httpErrorCode(status), { status })
 }
 
 /** 从错误体提取可读 detail 文本。 */
@@ -804,7 +736,7 @@ function errorDetail(body: string): string {
       typeof data.code === 'number' || typeof data.code === 'string' ? `code=${String(data.code)}` : undefined,
       typeof data.message === 'string' ? data.message : undefined,
       typeof data.msg === 'string' ? data.msg : undefined,
-      // ⚠️ 上游代理的 {"error":"…","detail":"<真实原因>"} 形态（IKLBSH A1）。
+      // ⚠️ 上游代理的 `{"error":"…","detail":"<真实原因>"}` 形态（IKLBSH A1）。
       // 判据只留一份实现（`openai-compat.ts` 的 `detailFieldText`）；必须是最后一条腿。
       detailFieldText(data),
     ].filter((value): value is string => value !== undefined)
@@ -813,6 +745,15 @@ function errorDetail(body: string): string {
     // 非 JSON 错误体
   }
   return body
+}
+
+/** 将 HTTP 状态码映射为 harness 错误码。 */
+function httpErrorCode(status: number): string {
+  if (status === 401 || status === 403) return 'AUTH'
+  if (status === 429) return 'RATE_LIMIT'
+  if (status === 400) return 'INVALID_REQUEST'
+  if (status >= 500) return 'SERVER'
+  return `HTTP_${status}`
 }
 
 /**
@@ -857,7 +798,13 @@ export class LobsteraiAdapter extends LlmAdapter {
    * 目录加载闸门：并发去重 + 失败/空结果冷却。
    * 依据见 `src/remote-catalog-gate.ts`（首屏「加载模型巨长」的实测归因）。
    */
-  private readonly catalogGate = new RemoteCatalogGate()
+  private readonly catalogGate: RemoteCatalogGate
+  /**
+   * ⚠️ **2026-10-08 Task 7c：三个方法收敛到共享骨架** `createModelCatalog`。
+   * 原先 `listModels` / `resolveModel` / `listAllModels` 各写一遍骨架，
+   * 现在只剩 `toCatalogEntry`（本家私有形状 + wire/展示名分离的档位）。
+   */
+  private readonly catalog: ModelCatalog
   /** 远端下发的模型元数据（id → 条目），listModels/resolveModel 共用。 */
   private remoteMeta: ReadonlyMap<string, LobsteraiRemoteModel> = new Map()
   /** 产品级兜底模型索引（`product.fallbackModels` 的 id → 条目）。 */
@@ -867,8 +814,24 @@ export class LobsteraiAdapter extends LlmAdapter {
     super()
     this.product = options.product ?? LOBSTERAI
     this.fetchImpl = options.fetchImpl ?? fetch
+    // 目录落地后通知客户端重读（issue IKJVTF 的缺陷①）。
+    this.catalogGate = new RemoteCatalogGate(
+      options.onCatalogLoaded === undefined ? {} : { onLoaded: options.onCatalogLoaded },
+    )
     this.fallbackIndex = new Map(
       (this.product.fallbackModels ?? []).map((model) => [model.id, model]),
+    )
+    // ⚠️ 共享骨架（Task 7c）：门控 → 读目录 → 黑名单 → 回填 → 三态。
+    this.catalog = createModelCatalog(
+      { accountPool: options.accountPool },
+      {
+        product: this.product,
+        loadCatalog: () => this.loadCatalogEntries(),
+        syncCatalog: () => this.syncCatalogEntries(),
+        // ⚠️ 未知 id 保守报 `['text']`（见 `inputModalitiesFor`：
+        // 「宁可少报能力，也不要报一个服务端不认的模态」）。
+        unknownModelInputModalities: () => ['text'] as const,
+      },
     )
   }
 
@@ -989,55 +952,75 @@ export class LobsteraiAdapter extends LlmAdapter {
    * 设置页必须渲染被关闭的模型（否则用户无法重新打开），而 `listModels` 会按
    * 黑名单过滤掉它们 —— RPC 层只能凭裸 id 补回，展示名与倍率随之丢失
    * （用户报障：「关闭的就没有显示倍率」）。详见 `model.list` 端点的注释。
+   *
+   * ⚠️ **2026-10-08 Task 7c**：骨架（含上面这条理由）已上移到共享实现
+   * `src/model-catalog.ts`，此处只剩委托。
    */
   listAllModels(): readonly { id: string; name: string }[] {
-    const source = this.remoteModels ?? this.staticFallbackModels()
-    return source.map((model) => ({ id: model.id, name: displayNameFor(model) }))
+    return this.catalog.listAllModels()
   }
 
-  async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    // ⚠️ 门控放在 `ensureRemoteModels()` **之前**：没有已登录账号时连远端目录都
-    // 不必拉。返回空数组 → DSH 的 `buildModelCatalog` 把整个 provider 分组隐藏。
-    // ⚠️ 必须返回 `[]` 而**不能抛错**（抛错会被归入 catalog 的 `failures`）。
-    if (!await providerCatalogVisible(this.options.accountPool, this.product.id)) return []
-    await this.ensureRemoteModels()
-    const source = this.remoteModels ?? this.staticFallbackModels()
-    // 用户在 Jet Hub 关闭的模型（黑名单制：不在表里即默认打开）。
-    const disabled = this.options.accountPool?.disabledModelsFor(this.product.id)
-    const listed = disabled === undefined || disabled.size === 0
-      ? source
-      : source.filter((model) => !disabled.has(model.id))
-    return listed.map((model) => ({
-      provider: this.product.id,
+  /**
+   * 把本家条目转成共享骨架的中间结构。
+   *
+   * ⚠️ 本家三处**真实差异**：
+   * 1. `contextWindow` 远端权威值优先、兜底表估值次之（见 `contextWindowFor`）；
+   * 2. `maxTokens` **仅当远端声明时**才带（不编造默认值）；
+   * 3. `reasoning` 的 `id` 用 **wire 值 `openclawLevel`**、`name` 用**产品侧
+   *    `level`** —— 两者来源不同，是本家最容易搞错的地方（见 `reasoningFor`）。
+   */
+  private toCatalogEntry(model: LobsteraiRemoteModel): CatalogEntry {
+    const contextWindow = this.contextWindowFor(model.id)
+    const maxTokens = this.remoteMeta.get(model.id)?.maxTokens
+    const reasoning = this.reasoningFor(model.id)
+    return {
       id: model.id,
       // 倍率写进 name（**不是** description）：composer 的模型切换菜单只渲染
       // `name`，description 仅用于 /model 弹窗。见 displayNameFor 的说明。
       name: displayNameFor(model),
-      ...model.description !== undefined ? { description: model.description } : {},
-      // 远端 supportsImage 权威；未声明时保守报 text（见 inputModalitiesFor）。
+      // ⚠️ `resolveModel` 用**元数据里的 name**（不带倍率）⇒ 显式提供 `bareName`。
+      bareName: this.remoteMeta.get(model.id)?.name
+        ?? this.fallbackIndex.get(model.id)?.name
+        ?? model.name,
+      // ⚠️ 远端 `supportsImage` 权威；未声明时**保守报 `['text']`**（不是省略）
+      // —— 见 `inputModalitiesFor`：宁可少报能力，也不要报一个服务端不认的模态。
       inputModalities: this.inputModalitiesFor(model.id),
-    }))
+      ...model.description !== undefined ? { description: model.description } : {},
+      ...contextWindow !== undefined ? { contextWindow } : {},
+      ...maxTokens !== undefined ? { maxTokens } : {},
+      ...reasoning !== undefined ? { reasoning } : {},
+    }
   }
 
-  async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+  private async loadCatalogEntries(): Promise<readonly CatalogEntry[]> {
     await this.ensureRemoteModels()
-    const remoteName = this.remoteMeta.get(model)?.name
-    const resolved: LlmResolvedModelInfo = {
-      provider,
-      id: model,
-      name: remoteName ?? this.fallbackIndex.get(model)?.name ?? model,
-      inputModalities: this.inputModalitiesFor(model),
-    }
-    // 上下文窗口：远端权威值优先，兜底表估值次之（见 contextWindowFor）。
-    const contextWindow = this.contextWindowFor(model)
-    if (contextWindow !== undefined) resolved.context = { contextWindow }
-    // 单次输出上限：仅当远端声明时才带（不编造默认值）。
-    const maxTokens = this.remoteMeta.get(model)?.maxTokens
-    if (maxTokens !== undefined) resolved.defaultMaxTokens = maxTokens
-    // 思考档位：远端 thinkingConfig 权威（见 reasoningFor 的 wire 值说明）。
-    const reasoning = this.reasoningFor(model)
-    if (reasoning !== undefined) resolved.reasoning = reasoning
-    return resolved
+    const source = this.remoteModels ?? this.staticFallbackModels()
+    return source.map((model) => this.toCatalogEntry(model))
+  }
+
+  /**
+   * 同步视图（`listAllModels` 用）。
+   *
+   * ⚠️ **不能** `await ensureRemoteModels()`（同步契约）—— 读 `remoteModels`
+   * 缓存，未落地时回退静态兜底表（这正是原实现的语义）。
+   */
+  private syncCatalogEntries(): readonly CatalogEntry[] {
+    const source = this.remoteModels ?? this.staticFallbackModels()
+    return source.map((model) => this.toCatalogEntry(model))
+  }
+
+  async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    return this.catalog.listModels(_provider)
+  }
+
+  /**
+   * 解析模型元信息。
+   *
+   * ⚠️ 原实现里的三处判据（context / maxTokens / reasoning）现已收敛到
+   * `toCatalogEntry`；骨架的 `resolveModel` 只做回填与「不声明未知」。
+   */
+  async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    return this.catalog.resolveModel(provider, model, signal)
   }
 
   /**
@@ -1287,9 +1270,6 @@ export class LobsteraiAdapter extends LlmAdapter {
         // 若在抠不到时直接跳过记录，UI 上就不会出现任何限流标记，
         // 「重测/重置」按钮也就无从操作。
         const parsed = parseRateLimitError(lastText, options.model)
-        // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：标记只是「下次别再选它」的
-        //    提示，写盘失败（磁盘满 / 权限）不该把限流失败升级成整轮抛错。
-        //    处置与 `gemini-adapter.ts` 的同名调用逐字同源。
         await this.options.accountPool!.updateModelRateLimit(
           currentAccountId,
           parsed?.modelId ?? options.model,
@@ -1298,7 +1278,7 @@ export class LobsteraiAdapter extends LlmAdapter {
           // 「1 小时后」兜底 —— 与它自己 JSON 路径下的 fallback 同一口径，
           // 也与本插件「标记只是快照、可主动重测」的语义一致。
           parsed?.resetTimeMs ?? Date.now() + LOBSTERAI_RATE_LIMIT_FALLBACK_MS,
-        ).catch(() => {})
+        )
       }
 
       // 无账号池（或策略判定不该轮转）：如实报错，不做换号。
@@ -1329,7 +1309,7 @@ export class LobsteraiAdapter extends LlmAdapter {
       // （它们不是限流，不该留徽章），刚失败的账号仍是池里排序第一，
       // 不排除就会拿回同一个账号、命中下面的 `tried.has` 而**立即 break**
       // —— 换号形同虚设。对齐 Go 的 `PickExcluding(tried)`（`pool.go:131`）。
-      const next = await this.options.accountPool.getAvailableAccount(
+      const next = await this.options.accountPool.getAvailableAccount<LobsteraiCredential>(
         this.product.id, options.model, tried,
       )
       if (!next || tried.has(next.entry.id)) {
@@ -1339,7 +1319,7 @@ export class LobsteraiAdapter extends LlmAdapter {
         })
       }
       tried.add(next.entry.id)
-      credential = next.credential as LobsteraiCredential
+      credential = next.credential
       currentAccountId = next.entry.id
       response = await this.send(credential, body, options)
     }
@@ -1568,7 +1548,7 @@ export class LobsteraiAdapter extends LlmAdapter {
             // 改为收尾无条件调用 `splitThinkTaggedContent`。
             if (!proseLoopDetected) {
               // ⚠️ **先归一化再累积**（2026-10-13，见 sse.ts 注释）：坏标记
-              //    若不修，宿主解析不了，工具调用会被当成正文。
+              //    `<｜｜DSML｜｜` 若不修，宿主解析不了 ⇒ 工具调用当正文。
               const fixedDelta = dsmlFix.push(textDelta)
               block.text += fixedDelta
               if (fixedDelta.length > 0) {
@@ -1621,10 +1601,7 @@ export class LobsteraiAdapter extends LlmAdapter {
             // 只允许非空名字覆盖：后续分片带空串 "" 会清空首个分片解析出的工具名，
             // 表现为 `unknown tool ""`。
             if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
-              // ⚠️ 存进去的必须是**下发值**（Issue F-52，与 `openai-compat.ts`
-              //    同源同修）：闸门 `hasUsableToolName` 用 `trim()` 判可用，而
-              //    此前存原样值 ⇒ `name=" read_image "` 带着空白下发到 wire。
-              block.name = call.function.name.trim()
+              block.name = call.function.name
             }
             const fragment = call.function?.arguments ?? ''
             block.text += fragment
@@ -1640,7 +1617,7 @@ export class LobsteraiAdapter extends LlmAdapter {
               yield {
                 type: 'tool-call-delta',
                 index: block.index,
-                id: CallId(callId),
+                id: ToolCallId(callId),
                 name: block.name!,
                 argumentsDelta: block.text,
               }
@@ -1649,7 +1626,7 @@ export class LobsteraiAdapter extends LlmAdapter {
             yield {
               type: 'tool-call-delta',
               index: block.index,
-              id: CallId(callId),
+              id: ToolCallId(callId),
               ...block.name !== undefined ? { name: block.name } : {},
               argumentsDelta: fragment,
             }
@@ -1718,7 +1695,7 @@ export class LobsteraiAdapter extends LlmAdapter {
         index,
         block: {
           type: 'tool-call',
-          id: CallId(block.callId ?? ''),
+          id: ToolCallId(block.callId ?? ''),
           name: block.name!,
           // 仅把「无参数工具下发的空分片」补成 {}；**残缺参数保持原样**，
           // 由 max-tokens 判定触发重试 —— 把残缺 JSON 补成 {} 会伪造出
@@ -1907,7 +1884,12 @@ function displayNameFor(model: LobsteraiRemoteModel): string {
  */
 export function registerLobsteraiLlm(ctx: Context, options: LobsteraiAdapterOptions): LobsteraiAdapter {
   const product = options.product ?? LOBSTERAI
-  const adapter = new LobsteraiAdapter(options)
+  const adapter = new LobsteraiAdapter({
+    ...options,
+    // ⚠️ 注入**唯一**的广播实现（`src/catalog-broadcast.ts`），不要在这里
+    // 另写一份 emit —— 两份实现必然漂移（issue IKJVTF 的缺陷① 就是「十处全漏」）。
+    onCatalogLoaded: () => broadcastCatalogChanged(ctx),
+  })
   registerAdapterIdempotent(ctx.llm, [product.id], adapter)
   // 返回实例：Jet Hub「显示列表」需要 `listAllModels()`（不受黑名单影响、
   // 带最终展示名/倍率）。`ctx.llm` 不透传自定义方法，须由调用方持有引用。

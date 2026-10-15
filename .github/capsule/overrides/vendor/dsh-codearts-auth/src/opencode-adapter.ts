@@ -1,5 +1,3 @@
-import { accountQuotaError, hasStreamOutput, streamError } from './account-failover.js'
-import { afterAccount } from './account-rotation.js'
 /**
  * 某模型的输入模态（`LlmModelInfo` / `LlmResolvedModelInfo` 共用）。
  *
@@ -51,7 +49,7 @@ import {
   getOpencodeCapabilitiesSync, opencodeEffortName, supportsOpencodeImage,
   type OpencodeModelCapability,
 } from './opencode-capability.js'
-import { buildProxyDispatcher } from './opencode-proxy.js'
+import { proxyFetch } from './opencode-proxy.js'
 import { consumeOpenAiSse, collectImages, httpErrorCode, serializeMessages } from './openai-compat.js'
 import { registerAdapterIdempotent } from './llm-register-compat.js'
 import { reportLedgerAccount } from './token-ledger.js'
@@ -133,26 +131,13 @@ export async function loadOpencodeCatalog(
   } catch {
     entries = OPENCODE_FALLBACK_MODELS
   }
-  /**
-   * ⚠️ **顺手回收已过期的**其他槽条目（Issue F-61）。
-   *
-   * 本表此前只判 TTL、**从不删条目**：被删除的账号（或换掉的槽）留下的条目
-   * 会永久驻留，而每个条目挂着一整份目录数组。TTL 到期即无人再需要它
-   *（读取路径本来就是「过期就重新拉」），故在**写入这一处**按同一个 TTL 清扫。
-   * 迭代中 `delete` 在 Map 上是安全的（规范保证）。
-   */
-  const now = Date.now()
-  for (const [key, value] of catalogCache) {
-    if (key !== slot.id && now - value.at >= ttlMs) catalogCache.delete(key)
-  }
-  catalogCache.set(slot.id, { at: now, entries })
+  catalogCache.set(slot.id, { at: Date.now(), entries })
   return entries
 }
 
 export interface OpencodeAdapterOptions {
   /** 取当前槽序列（账号池顺序 + 匿名槽末位）。 */
   identitySlots: () => Promise<readonly IdentitySlot[]>
-  isLimited?: (slotId: string, modelId: string) => boolean
   /** 拉远端目录；缺省时直接用兜底表。 */
   fetchRemoteCatalog?: OpencodeCatalogFetcher
   /** 用户模型黑名单。 */
@@ -223,7 +208,6 @@ export function opencodeRetryAfterMs(
 }
 
 export class OpencodeAdapter extends LlmAdapter {
-  private readonly lastSlots = new Map<string, string>()
   constructor(private readonly options: OpencodeAdapterOptions) {
     super()
   }
@@ -351,7 +335,7 @@ export class OpencodeAdapter extends LlmAdapter {
       resolved.reasoning = {
         efforts: capability.efforts.map((effort) => ({
           // ⚠️ `id` 是**品牌类型**（`ReasoningEffortId`），必须经它的构造函数 ——
-          // 与 Qoder 同款（`src/qoder-adapter.ts:581`）。
+          // 与 Qoder 同款（`src/qoder-adapter.ts`）。
           id: ReasoningEffortId(effort),
           // ⚠️ 没有官方中文的档位（models.dev 会下发 `minimal` / `xhigh` 等
           // Qoder 那份表里没有的值）**回退到 id 本身** —— 宁可显示英文原值，
@@ -387,7 +371,7 @@ export class OpencodeAdapter extends LlmAdapter {
  * 3. 收费模型**不经匿名槽**（匿名凭证只认免费模型，见 `pickSlot`）。
  */
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const slots = (await this.options.identitySlots()).filter(slot => !this.options.isLimited?.(slot.id, options.model))
+    const slots = await this.options.identitySlots()
     if (slots.length === 0) {
       throw new LlmError('opencode: 没有可用通道', 'MISSING_CREDENTIAL')
     }
@@ -407,9 +391,7 @@ export class OpencodeAdapter extends LlmAdapter {
     const limited: string[] = []
 
     for (;;) {
-      const last = this.lastSlots.get(options.model)
-      const ordered = last ? [...slots.filter(s => s.id === last), ...afterAccount(slots, last).filter(s => s.id !== last)] : slots
-      const slot = pickSlot(ordered, options.model, tried)
+      const slot = pickSlot(slots, options.model, tried)
       if (slot === undefined) {
         // 全 tried ⇒ 每个槽都试过一次。收费模型走到这里通常是「没有账号槽」。
         throw new LlmError(
@@ -417,31 +399,26 @@ export class OpencodeAdapter extends LlmAdapter {
           'QUOTA_EXCEEDED',
         )
       }
-      this.lastSlots.set(options.model, slot.id)
       tried.add(slot.id)
       // Token 账本（第 2 期）：回报「本笔请求实际使用的槽」（匿名槽 = 'anonymous'）。
       reportLedgerAccount(OPENCODE.id, slot.id)
 
       let delivered = false
-      const buffered: StreamChunk[] = []
       try {
         for await (const chunk of this.streamVia(slot, options)) {
-          const error = streamError(chunk)
-          if (!delivered && error && accountQuotaError(error)) throw error
-          delivered ||= hasStreamOutput(chunk)
-          if (delivered || error) { yield* buffered.splice(0); yield chunk }
-          else buffered.push(chunk)
+          // ⚠️ **任何 chunk 产出都算「已交付」**：本仓库的 `StreamChunk` 联合
+          // （`block-start` / `*-delta` / `block-end` / `usage` / `finish`）里
+          // **没有**「内容之前的前置事件」—— 原设计假设有个 `start` 事件，
+          // 实际类型里不存在（tsc 直接报 TS2367 点破了它）。既然不存在，
+          // 区分「前置」与「内容」就无从谈起，保守取「一律算交付」：
+          // 宁可漏掉一次可切换的机会，也绝不重放（重放会让用户看到重复输出）。
+          delivered = true
+          yield chunk
         }
-        yield* buffered
         return
       } catch (error) {
         if (delivered) throw error
-        if (error instanceof LlmError && error.code === 'QUOTA_EXCEEDED') {
-          if (!accountQuotaError(error)) throw error
-          await this.options.markLimited?.(slot.id, options.model, Date.now() + 24 * 60 * 60_000)
-          limited.push(`${slot.id}(额度耗尽)`)
-          continue
-        }
+        if (error instanceof LlmError && error.code === 'QUOTA_EXCEEDED') throw error
 
         const info = classifyOpencodeFailure(error)
         if (info.kind === 'free_tier') {
@@ -456,8 +433,7 @@ export class OpencodeAdapter extends LlmAdapter {
           this.options.warn?.(
             `opencode: 免费通道被 FreeTierError 拒绝 —— 检查 session id 形状（应为 ses_ + 12hex + 14base62）：${info.detail}`,
           )
-          // ⚠️⚠️ **错误码绝不能取 `AUTH`**（真实缺陷，Gitee issue IKLBSH 归位，
-          //     2026-10-14 自上游移植）。
+          // ⚠️⚠️ **错误码绝不能取 `AUTH`**（真实缺陷，Gitee issue IKLBSH 归位）。
           //
           // `AUTH` 会让 DSH 客户端**丢弃本条 message、换成固定文案「API 密钥无效」**
           //（`dsh-client-ui-chat/lib/client.js` 的 `failureMessage`；判据与
@@ -469,7 +445,8 @@ export class OpencodeAdapter extends LlmAdapter {
           // 库内实测取证（866 个会话，`scripts/tmp-scan-iklbsh.mjs`）：两条真实
           // `turn/end` 失败事件的 code 就是 `AUTH`，message 正是本函数写的那句
           // `opencode: HTTP 403 — {"type":"error","error":{"type":"FreeTierError",…}}`
-          // —— 即本条缺陷**在真实流量上发生过**（会话 `session-d7c80d34`，2026-10-02）。
+          // —— 即本条缺陷**在真实流量上发生过**（会话
+          // `session-d7c80d34`，2026-10-02）。
           //
           // 取下 `PERMISSION_DENIED`：① 客户端不替换它，文案完整送达；
           // ② `dead-model-store` 的 `IGNORED_CODES` 收它，模型**不会**被误记成
@@ -561,14 +538,13 @@ export class OpencodeAdapter extends LlmAdapter {
     const imageUrls = await this.resolveImageUrls(options.model, options.messages)
     const messages = serializeMessages(options.messages, imageUrls)
     /**
-     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策
-     *（issue IKKVDH，2026-10-12 自上游 0840ae0c 移植）。
+     * 会话自动命名（`purpose: 'session-title'`）的思考与预算决策（issue IKKVDH）。
      *
      * DSH 用 **64 token** 发标题请求且**不传 `reasoningEffort`**，而宿主会把
      * `normalizeEfforts` 声明的默认档注入进来。本家的档位来自 models.dev
      * `reasoning_options`：`effort` 形态给原值、`toggle` 形态给
      * `['none','low']`（含 `none`）⇒ 声明了 `none` 的模型关得掉；
-     * `budget_tokens` 形态**不声明档位** ⇒ 只能抬预算兜底。
+     * `budget_tokens` 形态**不声明档位**（见 `normalizeEfforts`）⇒ 只能抬预算兜底。
      */
     const titlePlan = planSessionTitleThinking({
       purpose: options.purpose,
@@ -603,11 +579,12 @@ export class OpencodeAdapter extends LlmAdapter {
       headers,
       body: JSON.stringify(payload),
       ...options.signal !== undefined ? { signal: options.signal } : {},
-      // ⚠️ per-request dispatcher：只让本 provider 的这次请求走该账号的出口，
-      // **不动全局**（两个插件抢全局槽位会互相短路整个路由层）。
-      ...slot.proxy === undefined ? {} : { dispatcher: buildProxyDispatcher(slot.proxy) as never },
     }
-    const response = await fetch(`${OPENCODE.baseUrl}${OPENCODE.chatPath}`, init)
+    // ⚠️ 走 `proxyFetch` 而不是裸 `fetch`：有代理时它会把请求交给**与
+    // dispatcher 同源**的 undici fetch。用全局 fetch 会造成跨实例 handler
+    // 契约冲突（Node 22/24 上恒失败），详见 `opencode-proxy.ts` 的 `proxyFetch`。
+    // 它内部处理「无代理时退回全局 fetch」，故这里不再自行分支。
+    const response = await proxyFetch(`${OPENCODE.baseUrl}${OPENCODE.chatPath}`, init, slot.proxy)
     if (!response.ok) {
       // ⚠️ **必须先读体**：Zen 的限流语义（`GoUsageLimitError`）在响应体里，
       // 而 body 只能读一次 —— 读了不传下去，轮换层就只能按状态码猜，
@@ -618,8 +595,7 @@ export class OpencodeAdapter extends LlmAdapter {
       const retryAfterMs = retryAfterMsFromResponse(response.headers)
       throw new LlmError(
         `opencode: HTTP ${response.status} — ${text.slice(0, 300)}`,
-        // ⚠️ 传**原始报文**：400 要再判一次上下文超限（见 `httpErrorCode`）。
-        httpErrorCode(response.status, text),
+        httpErrorCode(response.status),
         {
           status: response.status,
           // ⚠️ 走 dsh-llm 的**官方契约**字段（`LlmErrorOptions`）：

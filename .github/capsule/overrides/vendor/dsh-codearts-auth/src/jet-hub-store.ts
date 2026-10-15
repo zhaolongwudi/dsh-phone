@@ -115,6 +115,21 @@ export interface JetHubState {
    */
   gatewayEnabled?: boolean
   /**
+   * 渠道原生搜索总开关（`false` = 全部搜索回官方 provider）。
+   *
+   * 「原生搜索」指支持它的渠道（CodeBuddy / WorkBuddy）用**自己后端的搜索接口**
+   * （`/agenttool/v1/search` 与 `/agenttool/v1/webfetch`）；关掉后这些渠道也回落到
+   * DeepSeek 官方搜索（需要 `DEEPSEEK_API_KEY`）。
+   *
+   * ⚠️ 与 `gatewayEnabled` 同级、**可以**住在这里：老版本代码整体重写 `state.json`
+   * 时会丢掉本键，后果仅仅是**回到原生搜索**，用户再关一次即可 —— 没有任何
+   * 不可逆后果（对照 `loomyPermanentLocked` 的不可逆性，那才需要独立文档）。
+   *
+   * 缺键语义为**启用**：老用户升级后行为与升级前一致（原生搜索本就是新功能，
+   * 默认开启才符合「装上就能用」）。
+   */
+  nativeWebSearchEnabled?: boolean
+  /**
    * 供应商自定义显示顺序（「供应商开关」弹窗的拖拽排序，2026-10-06）。
    *
    * ⚠️ 与 `gatewayEnabled` 同级、**可以**住在这里：老版本代码整体重写
@@ -154,6 +169,7 @@ const jetHubSchema = Schema.object({
   disabledModels: Schema.dict(Schema.any()).default({}),
   loomyPermanentLocked: Schema.boolean().default(false),
   gatewayEnabled: Schema.boolean().default(true),
+  nativeWebSearchEnabled: Schema.boolean().default(true),
   providerOrder: Schema.array(Schema.string()).default([]),
 })
 
@@ -168,6 +184,22 @@ const jetHubSchema = Schema.object({
  * 任何一次读取失败都变成「网关被静默关闭」，而用户根本不知道自己关过它。
  */
 export function sanitizeGatewayEnabled(raw: unknown): boolean {
+  return raw !== false
+}
+
+/**
+ * 归一化「渠道原生搜索」总开关。
+ *
+ * 判据与 {@link sanitizeGatewayEnabled} **逐字同构**，理由也同向：
+ * **只有显式 `false` 才算关闭**，其余（缺键 / `true` / 字符串 / 对象 / 数组）
+ * 一律按启用处理。
+ *
+ * ⚠️ 方向不能反。文档缺失、被手工编辑成脏值、或老版本代码整体重写时丢了本键，
+ * 都必须**回到默认启用** —— 反过来（只认 `true`）会让任何一次读取失败都变成
+ * 「原生搜索被静默关闭」，用户根本不知道自己关过它，只会看到搜索突然开始
+ * 要 API Key。
+ */
+export function sanitizeNativeWebSearchEnabled(raw: unknown): boolean {
   return raw !== false
 }
 
@@ -191,46 +223,6 @@ export function sanitizeProviderOrder(raw: unknown): string[] {
   }
   return result
 }
-
-/**
- * 判定一个「限流解禁时刻」是否为**可用的毫秒时间戳**。
- *
- * ## ⚠️⚠️ 这是读写两侧**共用的唯一谓词**（真实缺陷，独立审计实测证伪）
- *
- * 原先读取侧（{@link sanitizeAccounts} 的 `sanitizeModelRateLimits`）判据是
- * 「有限正数」，而写入侧（`AccountPool.updateModelRateLimit`）只拒 `!Number.isFinite`
- * —— 两处**并不同源**，且读取侧的上界**不够严**：
- *
- * `1e308` 是「有限正数」，能穿过过滤落进池；而它**超出 `Date` 的合法范围**
- * （上界 ±8.64e15）。后果是下次该 (账号, 模型) 真撞限流时，
- * `updateModelRateLimit` 里 `new Date(current).toISOString()` 抛
- * **`RangeError: Invalid time value`** —— 而 17 个 `updateModelRateLimit` 调用点里
- * **16 个没有 try**（llm-adapter ×3、各 adapter、account-probe ×3），异常直接冒到
- * 推理路径与「重测」路径。
- *
- * 可达输入是**手工编辑过的备份文件**（正是本模块要防的那类输入）：
- * `modelRateLimits: {"glm-5.2": 1e308}`。
- *
- * ⇒ 判据收敛到本函数一处，读写两侧都调它。**不要再各写一份**。
- *
- * 上界取 `8.64e15`（`Date` 的最大毫秒值，`8640000000000000`）：
- * 超过它的值 `new Date(v).getTime()` 为 `NaN`，任何 `toISOString()` 都会抛。
- *
- * @param value 待判定的值（任意类型，非数字一律 false）。
- * @returns 是否是「可安全交给 `new Date()` 的毫秒时间戳」。
- */
-export function isValidResetAtMs(value: unknown): value is number {
-  // 只认有限数字：`NaN` / `Infinity` / 字符串 / `null` 一律 false。
-  if (typeof value !== 'number' || !Number.isFinite(value)) return false
-  // ⚠️ 必须 > 0：`0` 与负数在选号判据里等价于「不受限」（见 sanitizeModelRateLimits
-  // 的注释），且 UI 的 `hasAnyLimit` 只看键是否存在 —— 详见 D2 的取舍说明。
-  if (value <= 0) return false
-  // ⚠️ 上界：超出 Date 范围的有限数会让 `new Date(v).toISOString()` 抛 RangeError。
-  return value <= MAX_DATE_MS
-}
-
-/** `Date` 可表示的最大毫秒值（±8.64e15）。 */
-export const MAX_DATE_MS = 8_640_000_000_000_000
 
 /**
  * 归一化「锁定永久积分」开关表。
@@ -333,25 +325,164 @@ export function sanitizeAggregateRejections(raw: unknown): AggregateRejectionMap
  * 判据刻意保守：只保留同时具备 `id` / `provider` / `credentialRef` 三个非空
  * 字符串的条目 —— 缺任何一个都无法解析凭据，留着只会在选号时反复失败。
  * 其余字段按原样透传（`enabled` / `modelRateLimits` 等由下游各自判空）。
+ *
+ * ## ⚠️⚠️ 必须按 `id` 去重（真实缺陷，对抗审计实测证伪）
+ *
+ * `id` 是账号的**唯一键**：`updateAccount` / `removeAccount` / `reorderAccounts`
+ * 全都 `findIndex(a => a.id === id)`，只命中**第一条**。池里出现两条同 id 时，
+ * 第二条**永远改不动、删不掉**（幽灵账号）。
+ *
+ * 原先只有 `mergeAccounts` 内部去重，而 `replaceAll`（备份导入的**默认模式**）
+ * 不去重 ⇒ 一份手工编辑过的备份即可把两条同 id 写进池里。后果实测**远不止**
+ * 幽灵账号：沉底函数按 id 匹配会写出 `undefined` 空洞，使该 provider 的
+ * `getAvailableAccount` / `listAccounts` 全部抛错（整条推理链崩），且空洞经
+ * `JSON.stringify` 变 `null`、重启后被本函数丢弃 ⇒ **账号永久丢失**。
+ *
+ * ⚠️⚠️ **去重有「两层」，缺一不可**（第二层是独立审计实测证伪后补的）：
+ *
+ * 1. **本函数（归一化层）**：清洗**入口**数据 —— 后端载入、`replaceAll`、
+ *    `mergeAccounts` 都经它。
+ * 2. **`AccountPool.writeAccounts`（唯一写入收口点）**：`addAccount` 等路径
+ *    **不经过本函数**（它直接 `writeAccounts([...readAccounts(), entry])`），
+ *    而 `addAccount` 有 20+ 个调用点（各 `*-auth.ts` 登录落库、`account.create`、
+ *    `opencode-rpc`、`ensureDefaultAnonymousSlot`）⇒ 只靠本层，「池里两条同 id」
+ *    **仍可达**。
+ *
+ * ⚠️ 本层**不能**声称「写盘时自愈」：`updateAccount` / `setAccountsEnabled` /
+ * `clearModelRateLimits` / `updateModelRateLimit` / `setOpencodeProxy` 等
+ * 8 条写路径都**不调本函数**。真正让「历史遗留重复条目」自愈的是**载入路径**
+ * （两种后端的 `load()` 都经本函数），以及 `writeAccounts` 的收口去重。
+ *
+ * 保留**首次出现**的条目（与「先到先得」的直觉一致；重复条目的字段差异
+ * 不合并 —— 无法判断哪份更新，合并反而会造出谁都没写过的混合体）。
  */
 export function sanitizeAccounts(raw: unknown): ProviderAccountEntry[] {
   if (!Array.isArray(raw)) return []
   const accounts: ProviderAccountEntry[] = []
+  // 已见过的 id：重复条目直接丢弃（见上方注释）。
+  const seenIds = new Set<string>()
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
     const candidate = entry as Partial<ProviderAccountEntry>
     if (typeof candidate.id !== 'string' || candidate.id.length === 0) continue
     if (typeof candidate.provider !== 'string' || candidate.provider.length === 0) continue
     if (typeof candidate.credentialRef !== 'string' || candidate.credentialRef.length === 0) continue
+    if (seenIds.has(candidate.id)) continue
+    seenIds.add(candidate.id)
+    /**
+     * ⚠️ **限流标记必须先过滤再落定，且必须放在 `...candidate` 之后**
+     * （真实缺陷，对抗审计实测证伪）。
+     *
+     * 备份文件是用户可编辑的输入，而 `modelRateLimits` 原先**原样透传**。
+     * 非数字脏值（`'not-a-number'` / `null` / 负数）会让 UI 与宿主**判据分叉**：
+     *   - UI（`jet-hub.js`）：`v > Date.now()` ⇒ 对 `'not-a-number'` 为 `false`
+     *     ⇒ **不显示**「限额中」；
+     *   - 宿主（`getAvailableAccount`）：`now >= resetAt` 亦为 `false`
+     *     ⇒ 判为**受限**、选号时**排除**该账号。
+     * ⇒ 用户看到「这个号完全正常」，而宿主永远不用它 —— 正是本项目反复出现的
+     * 「显示与行为分叉」缺陷形态。
+     *
+     * 判据与 `updateModelRateLimit` 的写入守卫一致（只接受有限正数毫秒时间戳）。
+     *
+     * ⚠️ **展开顺序是这条修复的关键**：`{ ...candidate, modelRateLimits: <过滤后> }`
+     * —— 若写成 `{ ...candidate, ...sanitizeModelRateLimits(...) }` 且**放在
+     * `...candidate` 之前**，`candidate` 里的原始（脏的）`modelRateLimits` 会把
+     * 过滤结果**整个覆盖回去**，修复静默失效（本文件第一版正是如此，被新写的
+     * 用例当场抓红）。故这里显式写键名并置于展开之后。
+     */
+    const limits = sanitizeModelRateLimits(candidate.modelRateLimits)
     accounts.push({
       ...candidate,
       enabled: candidate.enabled !== false,
       refreshable: candidate.refreshable !== false,
       nickname: typeof candidate.nickname === 'string' ? candidate.nickname : candidate.id,
       createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
+      // 无有效项时写 `undefined`：`JSON.stringify` 会整个丢弃该键，
+      // 故落盘/传输形态与「从未有过标记」完全一致（不留 `{}` 噪音）。
+      modelRateLimits: limits,
     } as ProviderAccountEntry)
   }
   return accounts
+}
+
+/**
+ * 判定一个「限流解禁时刻」是否为**可用的毫秒时间戳**。
+ *
+ * ## ⚠️⚠️ 这是读写两侧**共用的唯一谓词**（真实缺陷，独立审计实测证伪）
+ *
+ * 原先读取侧（{@link sanitizeAccounts} 的 `sanitizeModelRateLimits`）判据是
+ * 「有限正数」，而写入侧（`AccountPool.updateModelRateLimit`）只拒 `!Number.isFinite`
+ * —— 两处**并不同源**，且读取侧的上界**不够严**：
+ *
+ * `1e308` 是「有限正数」，能穿过过滤落进池；而它**超出 `Date` 的合法范围**
+ * （上界 ±8.64e15）。后果是下次该 (账号, 模型) 真撞限流时，
+ * `updateModelRateLimit` 里 `new Date(current).toISOString()` 抛
+ * **`RangeError: Invalid time value`** —— 而 17 个 `updateModelRateLimit` 调用点里
+ * **16 个没有 try**（llm-adapter ×3、各 adapter、account-probe ×3），异常直接冒到
+ * 推理路径与「重测」路径。
+ *
+ * 可达输入是**手工编辑过的备份文件**（正是本模块要防的那类输入）：
+ * `modelRateLimits: {"glm-5.2": 1e308}`。
+ *
+ * ⇒ 判据收敛到本函数一处，读写两侧都调它。**不要再各写一份**。
+ *
+ * 上界取 `8.64e15`（`Date` 的最大毫秒值，`8640000000000000`）：
+ * 超过它的值 `new Date(v).getTime()` 为 `NaN`，任何 `toISOString()` 都会抛。
+ *
+ * @param value 待判定的值（任意类型，非数字一律 false）。
+ * @returns 是否是「可安全交给 `new Date()` 的毫秒时间戳」。
+ */
+export function isValidResetAtMs(value: unknown): value is number {
+  // 只认有限数字：`NaN` / `Infinity` / 字符串 / `null` 一律 false。
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false
+  // ⚠️ 必须 > 0：`0` 与负数在选号判据里等价于「不受限」（见 sanitizeModelRateLimits
+  // 的注释），且 UI 的 `hasAnyLimit` 只看键是否存在 —— 详见 D2 的取舍说明。
+  if (value <= 0) return false
+  // ⚠️ 上界：超出 Date 范围的有限数会让 `new Date(v).toISOString()` 抛 RangeError。
+  return value <= MAX_DATE_MS
+}
+
+/** `Date` 可表示的最大毫秒值（±8.64e15）。 */
+export const MAX_DATE_MS = 8_640_000_000_000_000
+
+/**
+ * 过滤 `modelRateLimits` 的脏值；无有效项时返回 `undefined`。
+ *
+ * 只保留 {@link isValidResetAtMs} 认可的条目（有限、正、且在 `Date` 范围内）。
+ *
+ * ⚠️ **不过滤已过期的时间戳**：过期标记由 `sweepExpiredRateLimits` 清理，
+ * 且 UI 需要看到它们（`hasAnyLimit` 靠它渲染「重置」按钮）。
+ *
+ * ## ⚠️ 为什么 `0` 也被丢弃（以及这条取舍的代价）
+ *
+ * **选号侧**：`getAvailableAccount` / `allAccountsRateLimitedForModel` /
+ * `listAvailableCredentials` 的判据都是
+ * `resetAt === undefined || resetAt === 0 || now >= resetAt` ⇒ `0` 与负数都等价于
+ * 「不受限」，故丢弃它们**不改变选号行为**。
+ *
+ * ⚠️ **但 UI 侧还有第二套判据**（`plugin-src/client/jet-hub.js` 的 `hasAnyLimit`
+ * = `Object.keys(modelRateLimits).length > 0`）—— 它**只看键是否存在**，用来决定
+ * 「重置 / 重测」按钮是否可点。若池里原本只有 `{m: 0}`，本函数把整个键写 `undefined`
+ * ⇒ `hasAnyLimit` 从 `true` 翻成 `false` ⇒ **用户无法再手动解禁**。
+ *
+ * 可达性：`0` 只可能来自**手工编辑的备份**（正常运行写入的都是
+ * `Date.now() + cooldown` 或 `nextUtc8DayStartMs()`，恒为正）。
+ * 取舍：保留 `0` 会让选号侧多一个「等价于不受限」的噪音键，但能保住 UI 的自救入口；
+ * 丢弃它则相反。**当前选择丢弃**（与「只留真实有效的标记」一致），
+ * 若将来收到「重置按钮变灰」的报障，改这里（`value >= 0`）**并同时**改 UI 判据，
+ * 不要只改一侧 —— 那是本项目「一文件两套同义判据」的事故形态。
+ */
+function sanitizeModelRateLimits(raw: unknown): Record<string, number> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const limits: Record<string, number> = {}
+  for (const [modelId, value] of Object.entries(raw as Record<string, unknown>)) {
+    // 模型 id 必须非空字符串（与选号侧 `modelId.length === 0` 跳过限流的约定一致）。
+    if (modelId.length === 0) continue
+    // ⚠️ 判据走共享谓词（读写同源），不要再内联 `isFinite && > 0`。
+    if (!isValidResetAtMs(value)) continue
+    limits[modelId] = value
+  }
+  return Object.keys(limits).length > 0 ? limits : undefined
 }
 
 /** 老契约后端：数据仍在 settings 文档里（与 ≤0.1.6 完全一致）。 */
@@ -368,6 +499,7 @@ class SettingsStore implements JetHubStore {
         aggregateRejections?: unknown
         loomyPermanentLocked?: unknown
         gatewayEnabled?: unknown
+        nativeWebSearchEnabled?: unknown
         providerOrder?: unknown
       }
       | undefined
@@ -381,6 +513,8 @@ class SettingsStore implements JetHubStore {
       loomyPermanentLocked: value.loomyPermanentLocked === true,
       // 老文档没这个键 → 启用，与升级前行为一致。
       gatewayEnabled: sanitizeGatewayEnabled(value.gatewayEnabled),
+      // 老文档没这个键 → 启用（原生搜索本就是新功能，默认开启才符合「装上就能用」）。
+      nativeWebSearchEnabled: sanitizeNativeWebSearchEnabled(value.nativeWebSearchEnabled),
       // 老文档没这个键 → 空数组（未自定义），展示侧按声明顺序渲染。
       providerOrder: sanitizeProviderOrder(value.providerOrder),
     }
@@ -405,6 +539,14 @@ class SettingsStore implements JetHubStore {
       loomyPermanentLocked: state.loomyPermanentLocked === true,
       // 开关丢失只会让网关回到默认启用（可逆），故接受老版本重写时丢掉本键。
       gatewayEnabled: state.gatewayEnabled !== false,
+      // ⚠️ **必须带上本键**（真实缺陷，PR95 审计实测证伪）：
+      //    `replace` 是**整体替换**语义 —— 漏掉本键会让用户明确关闭的「渠道原生
+      //    搜索」在**任何**一次账号/黑名单/网关/顺序写入时被抹掉，
+      //    重启后**静默回到原生搜索**（用户无从察觉，正是本键加进来时那条
+      //    「只有显式 false 才算关闭」要守的东西）。
+      //    探针实测（老契约后端）：`setNativeWebSearchEnabled(false)` 的
+      //    replace 载荷里根本没有本键，新实例读回 `true`。
+      nativeWebSearchEnabled: state.nativeWebSearchEnabled !== false,
       // 顺序丢失只会回到声明顺序（可逆，重拖一次即恢复），同理接受丢失。
       providerOrder: state.providerOrder ?? [],
     })
@@ -457,7 +599,9 @@ class MemoryStore implements JetHubStore {
  * 依据 `src/product.ts` 与各 `*-product.ts` 的 `id` 字段：
  * `codearts` / `buddy` / `workbuddy` / `lobsterai` / `qoder` / `qodercn`
  * / `trae` / `cline` / `loomy` / `raccoon` / `minimax` / `zcode`
- * / `opencode` / `gemini`。
+ * / `opencode` / `gemini` / `officeace` / `accio`。
+ * ⚠️ 这行清单必须与**下面那张表的实际项数**一致（2026-10-13 合并审计：
+ *    此前它漏了 `officeace` —— 表里有、清单里没有，属注释失实）。
  */
 const REF_PREFIX_TO_PROVIDER: ReadonlyArray<readonly [string, string]> = [
   ['CODEARTS', 'codearts'],
@@ -472,7 +616,6 @@ const REF_PREFIX_TO_PROVIDER: ReadonlyArray<readonly [string, string]> = [
   ['RACCOON', 'raccoon'],
   // ⚠️ 第 12 个 provider（上游 2026-10-02 合并）—— 曾漏加，见上方注释 ②。
   ['MINIMAX', 'minimax'],
-  ['AUTOCLAW', 'autoclaw'],
   ['ZCODE', 'zcode'],
   // ⚠️ 第 13 个 provider（opencode，2026-10-01）—— 与上面 minimax 同款坑：
   // 漏加会让「恢复备份」认不出 opencode 账号（见上方注释 ②）。
@@ -484,6 +627,15 @@ const REF_PREFIX_TO_PROVIDER: ReadonlyArray<readonly [string, string]> = [
   // `tests/unit/jet-hub-store.spec.ts` 的「恢复表覆盖客户端 PROVIDERS 的全部
   // provider（从真实清单派生）」用例锁死 —— 合并新增 provider 前**先跑它**。
   ['GEMINI', 'gemini'],
+  // ⚠️ 第 15 个 provider（officeace，2026-10-12）—— 同款坑第 **四** 次。
+  // 漏加 = `OFFICEACE_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
+  //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
+  ['OFFICEACE', 'officeace'],
+  // ⚠️ 第 16 个 provider（accio，2026-10-13）—— 同款坑第 **五** 次
+  //（⚠️ 与 officeace **同一次合并**并入，两者各算一次复发）。
+  // 漏加 = `ACCIO_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
+  //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
+  ['ACCIO', 'accio'],
 ]
 
 /** 账号凭据 ref 形态：`{PREFIX}_ACCOUNT_{HEX}`（前缀由单一真相源派生）。 */
@@ -498,6 +650,26 @@ const ACCOUNT_REF_RE = new RegExp(
     .sort((a, b) => b.length - a.length)
     .join('|')})_ACCOUNT_([0-9A-Fa-f]{6,})$`,
 )
+
+/**
+ * 由账号凭据 ref 反推 provider；不是账号 ref 形态时返回 `undefined`。
+ *
+ * 用途是**合并导入的「ref 占用」检查**（`src/backup.ts`）：备份里被采纳账号引用的
+ * ref 若已被本机**另一个**账号占用，回写它会静默覆盖本机凭据。调用方需要知道
+ * 该 ref 归属哪个 provider 才能判断「占用它的那条账号是不是同一个号」。
+ *
+ * ⚠️ 判据与 {@link accountFromCredentialRef} **同源**（同一个正则、同一张表）——
+ * 不要再写第二份「前缀 → provider」映射，本项目已有「一文件两套同义判据」的事故史。
+ * ⚠️ 单凭据回退 ref（`CODEARTS_ACCESS_TOKEN` / `BUDDY_ACCESS_TOKEN` 等）不含
+ * `_ACCOUNT_`，故返回 `undefined` —— 它们不是账号 ref，调用方应自行决定如何处理。
+ */
+export function providerOfAccountRef(ref: string): string | undefined {
+  const match = ACCOUNT_REF_RE.exec(ref)
+  if (match === null) return undefined
+  const prefix = match[1]
+  if (prefix === undefined) return undefined
+  return REF_PREFIX_TO_PROVIDER.find(([candidate]) => candidate === prefix)?.[1]
+}
 
 /**
  * 从 `.credentials.yaml` 的 `refs:` 段提取 ref 名（**只取键名，不读值**）。
@@ -521,22 +693,6 @@ function extractCredentialRefNames(text: string): string[] {
     if (match?.[1] !== undefined) names.push(match[1])
   }
   return names
-}
-
-/**
- * 从账号凭据 ref 提取 provider 前缀对应的 provider id；非账号 ref 返回 `undefined`。
- * （移植自 Gitee 原作者 04de37c1；`backup.ts` 的合并导入用它做第⑤层
- * 「ref 前缀必须与本条 provider 一致」校验。）
- *
- * ⚠️ 与 `accountFromCredentialRef` **同源**：同一个 `ACCOUNT_REF_RE` +
- * 同一张 `REF_PREFIX_TO_PROVIDER` 表 —— 不另写一份前缀映射。
- */
-export function providerOfAccountRef(ref: string): string | undefined {
-  const match = ACCOUNT_REF_RE.exec(ref)
-  if (match === null) return undefined
-  const prefix = match[1]
-  if (prefix === undefined) return undefined
-  return REF_PREFIX_TO_PROVIDER.find(([candidate]) => candidate === prefix)?.[1]
 }
 
 /** 由一个账号凭据 ref 合成账号条目（昵称缺失时退回账号 id）。 */
@@ -585,6 +741,7 @@ class FileStore implements JetHubStore {
         aggregateRejections?: unknown
         loomyPermanentLocked?: unknown
         gatewayEnabled?: unknown
+        nativeWebSearchEnabled?: unknown
         providerOrder?: unknown
       }
       return {
@@ -596,6 +753,8 @@ class FileStore implements JetHubStore {
         loomyPermanentLocked: value.loomyPermanentLocked === true,
         // 老文档没这个键 → 启用，与升级前行为一致。
         gatewayEnabled: sanitizeGatewayEnabled(value.gatewayEnabled),
+        // 老文档没这个键 → 启用，与升级前行为一致。
+        nativeWebSearchEnabled: sanitizeNativeWebSearchEnabled(value.nativeWebSearchEnabled),
         // 老文档没这个键 → 空数组（未自定义），展示侧按声明顺序渲染。
         providerOrder: sanitizeProviderOrder(value.providerOrder),
       }
@@ -645,6 +804,8 @@ class FileStore implements JetHubStore {
         loomyPermanentLocked: false,
         // 恢复出的文档本来就不含任何开关信息 → 启用（与全新安装一致）。
         gatewayEnabled: true,
+        // 同上：恢复出的文档不含原生搜索开关信息 → 启用（与全新安装一致）。
+        nativeWebSearchEnabled: true,
         // 凭据文件里也没有顺序信息 → 空数组（未自定义，与全新安装一致）。
         providerOrder: [],
       }
@@ -677,7 +838,7 @@ class FileStore implements JetHubStore {
  * 同一目录。PR !66 曾把它放宽成可选、并在 `dead-model-store` 里传 `undefined` ——
  * 那会**跳过优先级更高的 `profileContext.home`**，在 profile home 与 `$DSH_HOME`
  * 不相等时把失效表写到另一个目录，造成「账号池在 A、失效表在 B」的分裂，
- * 正是 `permanent-lock-store.ts:129-133` 明确警告过必须避免的情况。
+ * 正是 `permanent-lock-store.ts` 明确警告过必须避免的情况。
  */
 export function resolveJetHubHome(ctx: Context): string | undefined {
   const override = process.env.DSH_JET_HUB_STATE_DIR

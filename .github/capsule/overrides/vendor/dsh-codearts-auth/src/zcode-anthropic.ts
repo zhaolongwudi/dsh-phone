@@ -37,7 +37,7 @@
  */
 
 import type { StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
-import { LlmError, ToolCallId as CallId } from '@deepseek-ai/dsh-llm'
+import { LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { createDsmlMarkerNormalizer, fixDsmlMarkers, readWithIdleTimeout } from './sse.js'
 
 /** Anthropic 内容块（本实现用到的子集）。 */
@@ -653,7 +653,7 @@ export async function* consumeAnthropicSse(
         yield {
           type: 'tool-call-delta',
           index,
-          id: CallId(block.callId),
+          id: ToolCallId(block.callId),
           ...block.name.length > 0 ? { name: block.name } : {},
           argumentsDelta: partial,
         }
@@ -780,7 +780,7 @@ export async function* consumeAnthropicSse(
       index: block.index,
       block: {
         type: 'tool-call',
-        id: CallId(block.callId),
+        id: ToolCallId(block.callId),
         name: block.name,
         arguments: args,
       },

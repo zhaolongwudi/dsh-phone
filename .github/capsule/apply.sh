@@ -221,7 +221,7 @@ grep -q "R.color.ds_" app/src/main/java/com/dshphone/MainActivity.kt || { echo "
 #      失效形态很隐蔽：文件铺过去了，但版本号仍是旧值 ⇒ pnpm 装回旧引擎，
 #      而构建照样成功，只有设备上跑的是旧引擎（「静默退回」）。
 #      故在此把「铺的是 alpha.2」钉成硬断言。
-ENGINE_VER_EXPECT='0.2.1-alpha.2'
+ENGINE_VER_EXPECT='0.2.1-alpha.3'
 grep -q "\"@deepseek-ai/dsh\": \"$ENGINE_VER_EXPECT\"" runtime/package.json \
   || { echo "::error::runtime/package.json 未指向 $ENGINE_VER_EXPECT（覆盖失效，会装回旧引擎）"; exit 1; }
 grep -q "'@deepseek-ai/dsh-llm': $ENGINE_VER_EXPECT" runtime/pnpm-workspace.yaml \
@@ -242,11 +242,36 @@ grep -q "materializeAndroid" runtime/overlays/@deepseek-ai/dsh-session-persisten
 #      （启动日志只有一行 "skipping profile bundle: ..."）⇒ 设备上 Jet Hub 整块消失，
 #      构建、类型检查、单测全绿。与 §5.9 的 runtime 覆盖失效是同一类「静默退回」，
 #      故同样钉成构建期硬断言；修复文件 = overrides/vendor/dsh-codearts-auth/package.json。
-VENDOR_MANIFEST='vendor/dsh-codearts-auth/package.json'
-for peer in dsh-llm dsh-commands dsh-credentials; do
-  grep -q "\"@deepseek-ai/$peer\": \"$ENGINE_VER_EXPECT\"" "$VENDOR_MANIFEST" \
-    || { echo "::error::$VENDOR_MANIFEST 的 $peer peer 未同步到 $ENGINE_VER_EXPECT（设备上 Jet Hub 会被引擎静默跳过）"; exit 1; }
-done
+#      ⚠️ **2026-10-15 改造**：原判据是「peer 精确串等于 $ENGINE_VER_EXPECT」。
+#      随后 Gitee rc.11 把 peer 改成**宽松范围**（`^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1`）——
+#      实测该范围对 alpha.3 判定为 **true**，且**天然抗引擎升级**（不必每次升版都改 peer），
+#      是上游的改进。精确串比对会把它误判为失配 ⇒ 被迫退回精确钉版，反而丢掉该设计。
+#      故改为与 §5.97 同源：**调用引擎自身的判据**判定兼容性，而不是比字符串。
+#      （判据权威 = `evaluatePluginCompatibility`，见 scripts/check-plugin-peers.mjs 文件头。）
+VENDOR_MANIFEST="vendor/dsh-codearts-auth/package.json"
+node -e '
+  const fs = require("node:fs");
+  const path = process.argv[1];
+  const expect = process.argv[2];
+  const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+  const peers = manifest.peerDependencies ?? {};
+  // 收集全部 @deepseek-ai/dsh* 的 peer 声明，逐个交给 semver 判定
+  const targets = Object.entries(peers).filter(([name]) => name === "@deepseek-ai/dsh" || name.startsWith("@deepseek-ai/dsh-"));
+  if (targets.length === 0) { console.error("::error::" + path + " 没有任何 @deepseek-ai/dsh* 的 peer 声明（引擎门禁无从判定）"); process.exit(1); }
+  let semver;
+  for (const c of ["semver", process.env.DSH_TREE ? process.env.DSH_TREE + "/node_modules/semver" : "", "/data/data/com.dshphone/files/tree/node_modules/semver"]) {
+    if (!c) continue;
+    try { semver = require(c); break; } catch { /* 下一个 */ }
+  }
+  if (semver === undefined) { console.error("::error::找不到 semver（无法判定 peer 兼容性）：导出 DSH_TS/DSH_TREE 或装在设备树"); process.exit(1); }
+  let bad = 0;
+  for (const [name, range] of targets) {
+    const ok = typeof range === "string" && range.trim() !== "" && semver.satisfies(expect, range, { includePrerelease: true });
+    if (!ok) { console.error("::error::" + path + " 的 " + name + " peer 范围 " + JSON.stringify(range) + " 不匹配引擎 " + expect + "（设备上 Jet Hub 会被引擎静默跳过）"); bad++; }
+  }
+  if (bad > 0) process.exit(1);
+  console.log("✓ " + path + " 的 " + targets.length + " 条 dsh* peer 均兼容引擎 " + expect);
+' "$VENDOR_MANIFEST" "$ENGINE_VER_EXPECT"
 # 5.97) **同类地雷的泛化扫描**（2026-10-14 同日追加）。
 #      §5.95 只钉住了 Jet Hub 一个包，但事故的**成因是普遍的**：任何会被引擎当插件
 #      加载的包，只要 peerDependencies 里 @deepseek-ai/dsh* 钉了一个**精确旧版**，
@@ -448,10 +473,28 @@ grep -qF -e "setWebContentsDebuggingEnabled(false)" app/src/main/java/com/dshpho
 #   跑在**胶囊模板**上（真相源）；运行期那份同 F-01，一致时才断言。
 grep -qF -e "CAPSULE_ARTIFACT_GATE_REQUIRED" .github/capsule/build-apk.yml
 grep -qF -e "check-capsule-artifacts.mjs" .github/capsule/build-apk.yml
-if [ -f .github/workflows/build-apk.yml ] \
-   && cmp -s .github/capsule/build-apk.yml .github/workflows/build-apk.yml; then
-  grep -qF -e "CAPSULE_ARTIFACT_GATE_REQUIRED" .github/workflows/build-apk.yml
-  grep -qF -e "check-capsule-artifacts.mjs" .github/workflows/build-apk.yml
+if [ -f .github/workflows/build-apk.yml ]; then
+  if cmp -s .github/capsule/build-apk.yml .github/workflows/build-apk.yml; then
+    grep -qF -e "CAPSULE_ARTIFACT_GATE_REQUIRED" .github/workflows/build-apk.yml
+    grep -qF -e "check-capsule-artifacts.mjs" .github/workflows/build-apk.yml
+  elif ! grep -qF -e "check-capsule-artifacts.mjs" .github/workflows/build-apk.yml \
+    && ! grep -qF -e "CAPSULE_ARTIFACT_GATE_REQUIRED" .github/workflows/build-apk.yml \
+    && grep -qF -e "no-debuggable.gradle" .github/workflows/build-apk.yml; then
+    # ⚠️ 运行期**既不是**胶囊模板、**也不含**补跑点，但它确实是本仓库的 workflow
+    #    ⚠️ 判据用「含 `no-debuggable.gradle`」而不是「含 `capsule/apply.sh`」：前者
+    #    （实测上游原版 0 命中、胶囊模板 2 命中），后者上游原版也有（1 命中）⇒ 用它会把
+    #    「尚未 sync 的干净检出」误判成「门禁被改坏」（有牙测试 C 场景实测）。
+    #    三者同时成立才判为「本仓库的 workflow 被人改过、且补跑点没了」。
+    #    「本仓库的 workflow 被人改过、且补跑点没了」）。
+    #    这与 F-01 的「尚未 sync」不同：那是合法的中间态；这里是**门禁被改坏**。
+    #    若不硬失败，CI 会全绿地失去 F-68 产物一致性门禁（apply.sh 内那次调用不带
+    #    REQUIRED、CI 上必然打印「⏭ 跳过」，补跑点是它唯一的真实执行点）。
+    echo "::error::.github/workflows/build-apk.yml 既不是胶囊模板、也没有 F-68 补跑点（check-capsule-artifacts.mjs / CAPSULE_ARTIFACT_GATE_REQUIRED）。"
+    echo "::error::该门禁在 CI 上的唯一执行点就是那个补跑步骤 —— 它消失等于门禁全绿地失效。"
+    echo "::error::修复：用 .github/capsule/build-apk.yml 覆盖运行期那份（sync-upstream 会做），或把补跑步骤补回。"
+    exit 1
+  fi
+  # 其余情形（运行期是上游原版、尚未 sync）与 F-01 同款：由上面的 warning 提示，不硬失败。
 fi
 #
 # —— F-02 / F-17 破坏性操作确认按钮文案 + `alert()` 接管 ——

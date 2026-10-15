@@ -532,16 +532,6 @@ interface AccountProfile {
 const profiles = new Map<string, AccountProfile>()
 let nextOrdinal = 1
 
-/**
- * 本表的条目上限（Issue F-62）。
- *
- * 键是账号 id，而**只有 `resetZcodeDiagnostics()`（单测专用）才会清表** ——
- * 账号被删除、被改名之后，它的画像会一直留在进程里，与账号池的实际规模脱钩。
- * 画像只是排障信息（序号 / 计数 / 最近成功），丢一条的代价是那个账号下次
- * 出现时重新分配序号，故按容量兜底即可。
- */
-const MAX_ZCODE_PROFILES = 512
-
 /** 空/缺失的账号 id 归一成 `-`（与 `captchaRequirementKey` 同口径）。 */
 function normalizeKey(accountId: string | undefined): string {
   return accountId === undefined || accountId === '' ? '-' : accountId
@@ -568,16 +558,6 @@ export function accountOrdinal(accountId: string | undefined): number {
   }
   nextOrdinal += 1
   profiles.set(key, profile)
-  /**
-   * ⚠️ 容量兜底（Issue F-62）：新建画像时若已超上限，按**插入序**淘汰最旧的
-   * 一条（Map 保序 ⇒ 就是最早分配序号的账号）。取舍刻意不对称：画像缺失只会
-   * 让那个账号重新拿一个序号（诊断文案里的一行数字），而表无界增长会一直吃内存。
-   */
-  if (profiles.size > MAX_ZCODE_PROFILES) {
-    const oldest = profiles.keys().next().value
-    // 只在自己不是那条最旧记录时删（否则刚建的画像会被自己删掉）。
-    if (oldest !== undefined && oldest !== key) profiles.delete(oldest)
-  }
   return profile.ordinal
 }
 

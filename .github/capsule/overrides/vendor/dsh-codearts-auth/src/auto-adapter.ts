@@ -61,7 +61,7 @@ import { translateReasoningEffort } from './reasoning-ladder.js'
 // 语义两套实现」的红线）与全部真实缺陷记录见该文件模块头。**不要**在本文件另写一份。
 import { NEVER, UNUSABLE, pickSoonestProvider, priceFactorFromName } from './aggregate-core.js'
 export { pickSoonestProvider, priceFactorFromName } from './aggregate-core.js'
-// 「目标收下请求却零输出」的判据与目标级冷却（issue IKJW31 的 B 方案，移植自 Gitee）。
+// 「目标收下请求却零输出」的判据与目标级冷却（issue IKJW31 的 B 方案）。
 // ⚠️ 判据的**唯一权威**在那个模块（纯函数、零 IO）；本文件只负责接线。
 import {
   emptyZeroOutputProbe,
@@ -77,7 +77,6 @@ import {
 // **薄委托**（只提供 auto 的取号方式）。四个 `*Expiry` 折算函数 Task 7 已**搬移**到
 // 那里（不是复制）—— 两份同义实现必然漂移（AGENTS.md 首条判据的静默失效）。
 import { createExpiryProbe } from './aggregate-expiry.js'
-import { activeRoutes } from './active-route.js'
 
 /** 注册到 ctx.llm 的 provider 路由，也是 providerInfo().id（DSH 校验二者相等）。 */
 export const AUTO_PROVIDER = 'jet-hub-auto'
@@ -183,6 +182,8 @@ export class AutoAdapter extends LlmAdapter {
    * ⚠️ **纯内存、进程内、不落盘**：它优化的是「本次运行内别再三连撞同一堵墙」，
    * 重启后重新试探是**正确**行为 —— 用户可能已升级插件、上游可能已扩容，
    * 落盘只会让一次误判跨重启生效。
+   * ⚠️ 语义与账号池的 `modelRateLimits` **不同**：那些记在**账号**上，本表记在
+   * **目标**（provider + model）上 —— 越墙换账号无用（账号无关），换目标才有用。
    */
   private zeroOutputCooldowns: ZeroOutputCooldownMap = new Map()
 
@@ -329,6 +330,11 @@ export class AutoAdapter extends LlmAdapter {
     return this.lastExpiryAt
   }
 
+  /** 目录里永远只有一个 auto（真实模型由选型决定，不在此暴露）。 */
+  async listModels(): Promise<readonly LlmModelInfo[]> {
+    return [AUTO_MODEL_INFO]
+  }
+
   /**
    * **不套黑名单**的全量目录 —— 与其余适配器的同名方法同约定。
    *
@@ -340,11 +346,6 @@ export class AutoAdapter extends LlmAdapter {
    */
   listAllModels(): readonly { id: string; name: string }[] {
     return [{ id: AUTO_MODEL_INFO.id, name: AUTO_MODEL_INFO.name }]
-  }
-
-  /** 目录里永远只有一个 auto（真实模型由选型决定，不在此暴露）。 */
-  async listModels(): Promise<readonly LlmModelInfo[]> {
-    return [AUTO_MODEL_INFO]
   }
 
   /**
@@ -379,9 +380,6 @@ export class AutoAdapter extends LlmAdapter {
       name: AUTO_MODEL_INFO.name,
       ...(AUTO_MODEL_INFO.description === undefined ? {} : { description: AUTO_MODEL_INFO.description }),
       inputModalities: ['text', 'image'],
-      // 2026-10-11 复盘：曾改 1_000_000，用户澄清兜底不该一刀切（5 家候选声明各异），
-      // 恢复上游/Gitee 原值 200_000。auto 的动态窗口化（复用聚合 contextWindowFor 口径）
-      // 留待用户确认需求后再立项。
       context: { contextWindow: 200_000 },
     }
   }
@@ -443,13 +441,21 @@ export class AutoAdapter extends LlmAdapter {
         if (!(await this.providerSupportsImages(provider))) continue
         let expiry = await this.expiryOf(provider, signal)
         // 目录空/模型全关 ⇒ 该 provider 不可调用，不能当改道目标（PR !69 审计实测）。
-        const imgModel = await this.firstModelOf(provider)
-        if (imgModel === undefined) {
+        const model = await this.firstModelOf(provider)
+        if (model === undefined) {
           expiry = UNUSABLE
-        } else if (!await this.hasUsableAccountFor(provider, imgModel, signal)) {
-          // ⚠️ 改道路径同样要按将要派发的模型复核可用性（移植自 Gitee 2026-10-07
-          //    修复，同型缺陷的第三处实例）：一个「支持图片但额度已尽」的渠道
-          //    仍会被选成 imageTarget ⇒ 带图请求发出去必然失败。
+        } else if (!await this.hasUsableAccountFor(provider, model, signal)) {
+          // ⚠️⚠️ **改道路径同样要按将要派发的模型复核可用性**（真实缺陷，2026-10-07
+          //    独立审计实测证伪 —— 同型缺陷的**第三处实例**）。
+          //
+          // 主选型路径（`selectProvider`）已补该复核，但**改道路径原先漏了**：
+          // 一个「支持图片但额度已尽」的渠道仍会被选成 imageTarget ⇒ 带图请求
+          // 发出去必然失败。可达性真实：buddy 既声明 `['text','image']`
+          //（`buddy-adapter.ts`）**又**会写 `modelRateLimits`（见其 `updateModelRateLimit` 调用）。
+          //
+          // ⚠️ 同一缺陷在本文件已修过主路径、在 `aggregate-adapter.ts` 修过建池路径
+          //    —— 这是第三处。**修同型缺陷时必须把同一文件里的所有实例一起找出来**，
+          //    否则就会留下这种「修了一处、漏了另一处」。
           expiry = UNUSABLE
         }
         entries.push([provider, expiry])
@@ -545,7 +551,7 @@ export class AutoAdapter extends LlmAdapter {
       expiryAt = await this.expiryOf(choice.provider, signal)
     } catch (error) {
       // ⚠️ 先让中止原样逃逸（四条判据与 `hasUsableAccountFor` 逐格同构 ——
-      //    含第四条「上游网关 499 口径」，2026-10-12 自上游 8e5e39e6 移植：
+      //    含第四条「上游网关 499 口径」，2026-10-12 审计实测补全：
       //    本处原先只有 name/code 两条，同一份 499 报文会被吞成「倒计时缺席」）。
       signal?.throwIfAborted()
       if (error !== null && typeof error === 'object') {
@@ -600,7 +606,7 @@ export class AutoAdapter extends LlmAdapter {
    * - `unknown` → 请求值是未登记的怪名字，**删掉该字段**并 warn：让上游按默认
    *   走，比抛错打断整轮对话更可取（用户改个档位不该让整个任务失败）。
    *
-   * ## ★ 零输出撞墙的改道（B 方案，移植自 Gitee）
+   * ## ★ 零输出撞墙的改道（B 方案）
    *
    * 判据在 `zero-output-guard.ts`（**唯一权威**）：`max-tokens` **且零输出**。
    * ⚠️ 必须同时要求零输出 —— 有输出的 `max-tokens` 是「正常答到半截撞了输出
@@ -610,8 +616,10 @@ export class AutoAdapter extends LlmAdapter {
    * ⚠️ **已透出帧的处理**：零输出意味着 `textDelta` 从未出现，而
    * `block-start` 只在有内容时才发（`openai-compat.ts`）⇒ 这一轮唯一
    * 可能已透出的只有 `usage` 帧，而它对 `BlockAssembler` 是**覆盖式**赋值
-   * ⇒ 重发安全。故这里**不必缓冲整个流**。一旦某天有适配器在零内容时
-   * 也发 `block-start`，本条注释的前提即失效 —— 那时必须先缓冲再改道。
+   * ⇒ 重发安全。故这里**不必缓冲整个流**（那会把透传改成带前瞻的缓冲，属更大的
+   * 改动面，与 `aggregate-adapter.ts` 里「延迟 block-start」那条已知代价同类）。
+   * 一旦某天有适配器在零内容时也发 `block-start`，本条注释的前提即失效 ——
+   * 那时必须先缓冲再改道。
    */
   private async *dispatch(
     target: DispatchTarget,
@@ -639,17 +647,6 @@ export class AutoAdapter extends LlmAdapter {
       //    本就按 `typeof === 'number'` 判空，故这里原样带着即可。
       ...(target.expiryAt === undefined ? { expiryAt: this.lastExpiryAt } : { expiryAt: target.expiryAt }),
     }
-    /**
-     * ⚠️⚠️ **在「转发一开始」就记下真实目标**（供客户端实时读数）。
-     * （胶囊接线，手机版特有；Gitee 原版无。async generator 下首次迭代即执行，
-     * 仍先于 `ctx.llm.stream` 调用 —— 「请求发出前」的语义保持。改道后对新目标
-     * 再记一次，回答的正是「实际发往谁」。）
-     *
-     * ⚠️ 写入时机是**请求发出前**（不是「成功之后」）—— 它回答的是「此刻在用什么」，
-     * 而聚合那张 `activeProviderByModel` 回答的是「该看哪个渠道的余额」，
-     * 后者必须成功才写。两者判据不同，见 `active-route.ts` 模块头的对照表。
-     */
-    activeRoutes.record(AUTO_PROVIDER, target.provider, target.model)
     const requested = options.reasoningEffort
     const base = { ...options, provider: target.provider, model: target.model }
     const forwarded = this.withTranslatedEffort(target, base, requested)
@@ -669,15 +666,16 @@ export class AutoAdapter extends LlmAdapter {
           nextExclude.add(zeroOutputKey(target.provider, target.model))
           this.ctx.logger?.warn?.(
             `[jet-hub-auto] ${target.provider}（${target.model}）收下请求却零输出`
-            + `（疑似声明窗口虚高），已改道到 ${next.provider}（${next.model}）重发；`
+            + `（疑似声明窗口虚高，如 loomy 的 spark-x 曾虚报 1M），`
+            + `已改道到 ${next.provider}（${next.model}）重发；`
             + `该目标在 ${Math.round(ZERO_OUTPUT_COOLDOWN_MS / 60_000)} 分钟内不再被选`,
           )
           // ⚠️ 参数顺序：第三参是 `viaImageFallback`（我的徽标改动），
-          //    第四参才是上游的 `exclude`（避免无限改道）。
-          //    合并时这里若退回成 `dispatch(next, options, nextExclude)` —— 那会把
-          //    `Set` 传给 `viaImageFallback`（truthy）⇒ 徽标给**零输出改道**的目标
-          //    误标「（图）」，而它根本没走带图路径。
-          yield* this.dispatch(next, options, false, nextExclude)
+    //    第四参才是上游的 `exclude`（避免无限改道）。
+    //    合并时这里曾退回成 `dispatch(next, options, nextExclude)` —— 那会把
+    //    `Set` 传给 `viaImageFallback`（truthy）⇒ 徽标给**零输出改道**的目标
+    //    误标「（图）」，而它根本没走带图路径。
+    yield* this.dispatch(next, options, false, nextExclude)
           return
         }
         // 没有下一个候选：**如实透出**这轮的终止帧（不吞掉失败、不伪造成功）。
@@ -712,9 +710,10 @@ export class AutoAdapter extends LlmAdapter {
     // 选回自己（同 provider 同 model）没有意义 —— 那会立刻再撞一次同一堵墙。
     if (picked.provider === current.provider && picked.model === current.model) return undefined
     // ⚠️ 必须经 `dispatchTargetOf` 解析**新目标的档位**：换目标后档位语义跟着变，
-    //    直接把 `AutoChoice` 当目标用会漏掉翻译。
+    //    直接把 `AutoChoice` 当目标用会漏掉翻译（编译期就拦住了，见本行）。
     return await this.dispatchTargetOf(picked, options.signal)
   }
+
   /**
    * 按目标档位表翻译 `reasoningEffort`，返回可交给 `ctx.llm.stream` 的选项。
    *
@@ -800,8 +799,9 @@ export class AutoAdapter extends LlmAdapter {
      * ⚠️⚠️ 缓存命中前必须复核「该目标是否已进零输出冷却」（issue IKJW31 的 B 方案）。
      *
      * 不查的后果是**冷却形同虚设**：选型缓存 60 秒，而冷却 10 分钟 ⇒ 每个请求都会
-     * 先按缓存**撞一次同一堵墙**（撞完才在 `dispatch` 里改道）。⇒ 冷却中的缓存项
-     * **视为过期**，落到下面重新选型。
+     * 先按缓存**撞一次同一堵墙**（撞完才在 `dispatch` 里改道）。报障实测的
+     * t14/t15/t16 三连撞正是这个形态 —— 而「别再撞同一堵墙」正是本方案的**全部
+     * 价值**。⇒ 冷却中的缓存项**视为过期**，落到下面重新选型。
      *
      * ⚠️ 判据复用 `isTargetCoolingDown`（**唯一权威**在 `zero-output-guard.ts`），
      *    不在这里另写一份时刻比较。
@@ -842,20 +842,36 @@ export class AutoAdapter extends LlmAdapter {
    * 初版会让它拿到请求再发出一个必然 404 的模型 id。故排序时就把这类 provider
    * 当作 `UNUSABLE` 剔除，顺位让给下一个候选（而不是整体放弃 auto）。
    *
-   * ## ⚠️⚠️ 还必须按 `modelOf` 返回的**真实模型**复核账号可用性（移植自 Gitee 2026-10-07）
+   * ## ⚠️⚠️ 还必须按 `modelOf` 返回的**真实模型**复核账号可用性（真实缺陷，2026-10-07）
    *
-   * 「额度耗尽」在账号池里是**按 modelId 记账**的（`entry.modelRateLimits[modelId]`），
-   * 而折算取号用的模型键**未必等于**这里要派发的模型（生产装配下共享探针取
-   * 「目录第一个」，`firstModelOf` 是「按倍率挑最便宜」——两者可能不同，
-   * 按 modelId 的限流过滤会整体失效）。故这里对将要派发的模型显式复核
-   * {@link hasUsableAccountFor}。
+   * 「额度耗尽」在账号池里是**按 modelId 记账**的
+   *（`entry.modelRateLimits[modelId]`；codearts 的 benefit 免费额度耗尽就写在那里，
+   * `llm-adapter.ts`），而折算取号用的模型键**未必等于**这里要派发的模型：
+   *
+   * | 消费者 | 折算取号用的键 | 实际派发 |
+   * |---|---|---|
+   * | `AutoAdapter` 自建探针（单测/未注入时） | `firstModelOf`（按倍率挑最便宜） | 同一个 ✓ |
+   * | **生产装配**（`index.ts` 注入 `sharedExpiryProbe`） | **`models[0]?.id`** | **`firstModelOf`** ✗ |
+   *
+   * ⚠️ 生产装配下两者**不同**：共享探针的 `firstModelIdOf` 是「取目录第一个」
+   *（见 `index.ts` 那段「共享带来的语义松弛」注释），而 `firstModelOf` 是
+   * 「按倍率挑最便宜」。实测（探针，2026-10-07）：目录为
+   * `[glm-5.3-flash, Deepseek-V4.1-Flash · x0.1]`、账号在 `deepseek-v4.1-flash`
+   * 上额度已尽时，auto 仍选中 `codearts/deepseek-v4.1-flash` —— 因为折算问的是
+   * `glm-5.3-flash`（未被标记），按 modelId 的过滤**整体失效**。
+   *
+   * ⚠️ 这**推翻**了 `index.ts` 那句「共享的松弛已核实无害」：该注释
+   * 假设「`probeModel` 不参与折算结果、故与派发无关」，但它**参与账号池的
+   * 限流过滤** —— 而那正是「这个模型还能不能用」的判据。故这里必须显式复核。
    */
   async selectProvider(
     signal?: AbortSignal,
     modelOf?: (provider: string) => Promise<string | undefined>,
     /**
      * 已尝试过、本次请求内**不得再选**的目标（`` `${provider}\u0000${model}` ``）。
-     * 零输出改道用它顺位换下一个 provider；默认空集 ⇒ 既有调用方行为不变。
+     *
+     * ⚠️ B 方案的改道（`stream` 闭包里的零输出重试）用它顺位换下一个 provider。
+     * 默认空集 ⇒ 既有调用方行为**逐字节不变**。
      */
     exclude?: ReadonlySet<string>,
   ): Promise<AutoChoice | undefined> {
@@ -869,17 +885,22 @@ export class AutoAdapter extends LlmAdapter {
         if (model === undefined) {
           expiry = UNUSABLE
         } else if (!await this.hasUsableAccountFor(provider, model, signal)) {
-          // 该 provider 在**将要派发的那个模型**上没有可用账号（额度已尽/限流中）
-          // ⇒ 剔除，顺位让给下一个候选。否则请求发出去必然失败。
+          // ⚠️ 该 provider 在**将要派发的那个模型**上没有可用账号（额度已尽/限流中）
+          //    ⇒ 剔除，顺位让给下一个候选。否则请求发出去必然失败。
           expiry = UNUSABLE
         } else if (exclude?.has(zeroOutputKey(provider, model)) === true) {
           // 本次请求内已经撞过它的墙 ⇒ 顺位换下一个（B 方案）。
           expiry = UNUSABLE
         } else if (isTargetCoolingDown(this.zeroOutputCooldowns, provider, model, now)) {
           // ⚠️ **跨请求**的目标级冷却（issue IKJW31 的 B 方案）：该目标近期
-          //    「收下请求却零输出」，在一段时间内别再选它。
+          //    「收下请求却零输出」，在一段时间内别再选它 —— 否则 `AUTO_CHOICE_TTL_MS`
+          //    的 60 秒选型缓存会让**后续每个请求**都重新撞同一堵墙（报障实测
+          //    t14/t15/t16 三连撞正是这个形态）。
+          //
           // ⚠️ 用既有 `UNUSABLE` 哨兵剔除（**不新造「冷却」概念**）：排序/兜底
-          //    规则因此完全复用。到期即自动解除 ⇒ 无需清理任务。
+          //    规则因此完全复用，不必在 `pickSoonestProvider` 里加分支。
+          // ⚠️ 到期即自动解除（判据取 `until > now`）⇒ 无需清理任务，也不会
+          //    把一次误判永久固化（这是本仓库在 `refreshable` 单向门上踩过的坑）。
           this.ctx.logger?.warn?.(
             `[jet-hub-auto] ${provider}（${model}）近期出现过「收下请求却零输出」`
             + `（疑似声明窗口虚高），本次暂时跳过；到期自动恢复`,
@@ -904,17 +925,24 @@ export class AutoAdapter extends LlmAdapter {
    * 该 provider 在**指定模型**上是否还有可用账号（额度未耗尽 / 未在限流中）。
    *
    * ⚠️ 判据交给账号池（`getAvailableAccount` 按 `modelRateLimits[modelId]` 过滤）
-   * —— 不在这里另写一份「额度是否耗尽」的判据（那会是同一语义两套实现）。
+   * —— 不在这里另写一份「额度是否耗尽」的判据（那会是同一语义两套实现，
+   * 本仓库对此有明确红线）。
    *
-   * ⚠️ 三条边界（移植自 Gitee，与 `aggregate-adapter.ts` 的 `filterByModelAvailability`
-   * 逐格同构）：
+   * ⚠️ 三条边界（与 `aggregate-adapter.ts` 的 `filterByModelAvailability` **逐格同构**）：
    * - 池未实现该方法 ⇒ **视为可用**（跳过过滤）：大量既有单测桩只实现
-   *   `disabledModelsFor`，判成不可用会让所有桩用例「零候选」。
+   *   `disabledModelsFor`，判成不可用会让所有桩用例「零候选」。宁可少筛一层，
+   *   不可把整池误剔除。
    * - 查询抛错 ⇒ **视为可用**：一次池查询异常不该让渠道整体消失。
-   * - ⚠️ **中止必须原样逃逸**：判据取三条 —— `signal.aborted` /
-   *   `name === 'AbortError'` / `code === 'ABORTED'` / 🔴 `message` 含 `aborted request|HTTP_?499`（上游
- *   网关 499 口径，2026-10-11 与 aggregate 侧同步补——同族判据必须逐格同构）。不要只判 `name`：
-   *   别的调用方可能只设 `code`，只判 `name` 会把中止吞成「视为可用」并继续发请求。
+   * - ⚠️ **中止必须原样逃逸**：判据取**四条**（与 `aggregate-adapter.ts` 的
+   *   `isAbortLike` 同构）—— `signal.aborted` / `name === 'AbortError'` /
+   *   `code === 'ABORTED'` / 🔴 `message` 含 `aborted request|HTTP_?499`（上游
+   *   网关 499 口径，2026-10-11 与 aggregate 侧同步补——同族判据必须逐格同构）。
+   *
+   *   ⚠️⚠️ **不要只判 `name`**（我上一版正是这么写的，注释还声称「同口径」，
+   *   被对抗审计实测证伪）：`aggregate-adapter.ts` 的 `abortError()` 会**同时**
+   *   设 `name` 与 `code`，但别的调用方可能只设 `code` —— 那时只判 `name` 会把
+   *   中止**吞成「视为可用」并继续发请求**，正是本仓库反复记录的那类缺陷。
+   *   （当前生产装配下该形态不可达，但「同族判据必须逐格同构」是硬要求。）
    */
   private async hasUsableAccountFor(
     provider: string,
@@ -931,8 +959,8 @@ export class AutoAdapter extends LlmAdapter {
       return available !== null && available !== undefined
     } catch (error) {
       signal?.throwIfAborted()
-      // 四条判据，与 `aggregate-adapter.ts` 的 `isAbortLike` 逐字同构
-      //（第四条 = 上游网关 499 口径，2026-10-11 同步补，见该处注释）。
+      // ⚠️ 四条判据，与 `aggregate-adapter.ts` 的 `isAbortLike` 逐字同构
+      //    （第四条 = 上游网关 499 口径，2026-10-11 同步补，见该处注释）。
       if (error !== null && typeof error === 'object') {
         const candidate = error as { name?: unknown; code?: unknown; message?: unknown }
         if (candidate.name === 'AbortError' || candidate.code === 'ABORTED') throw error
@@ -956,9 +984,9 @@ export class AutoAdapter extends LlmAdapter {
    *
    * ⚠️⚠️ **必须带真实 modelId 取号，不能传空串**（真实缺陷，PR !69 审计实测）：
    * `getAvailableAccount` 对空 modelId 直接 `return true` 跳过限流过滤
-   * （`account-pool.ts:1049-1055`），而候选顺序就是**用户的手动顺序**
-   * （`:1057`）⇒ 空串取回的是「手动序第一个启用账号」，**哪怕它此刻正在限流**。
-   * 本仓库在 `index.ts:598-600` 已为同一坑留下过成文警告，这里是同一个缺陷的第二实例。
+   * （`account-pool.ts`），而候选顺序就是**用户的手动顺序**
+   * （手动序即候选数组的返回序）⇒ 空串取回的是「手动序第一个启用账号」，**哪怕它此刻正在限流**。
+   * 本仓库在 `index.ts` 已为同一坑留下过成文警告，这里是同一个缺陷的第二实例。
    *
    * 后果是多账号池的真实场景：手动序第一个号额度已烧完（折算 `NEVER`）、第二个号还有
    * 9 天后作废的额度 ⇒ auto 只看到第一个号 ⇒ 该 provider 被判成「无临期」而排到最后，
@@ -1060,26 +1088,6 @@ export function registerAutoLlm(ctx: Context, options: AutoAdapterOptions): Auto
   return adapter
 }
 
-/**
- * 「auto 现在会选谁」——按临期判据算出当前胜者（供用量徽标等外部消费）。
- *
- * ⚠️ 与 {@link AutoAdapter.selectProvider} 是**同一套判据**（每个 provider 用
- * `getAvailableAccount` 确认可用性 + 各家余额端点折算最早失效时刻），但走的是
- * **独立实例**：徽标轮询不该与选型缓存互相踩（选型有 60 秒缓存且随请求刷新，
- * 徽标是 60 秒轮询、隐藏页跳过 —— 两者的节奏本来就该解耦）。
- *
- * ## ⚠️⚠️ 聚合 provider 的用量徽标**不用本函数**（2026-10-07 定，规格 §6.5）
- *
- * 本函数是**预测**语义（预检余额、算临期胜者），且**有自己的网络成本**。
- * 而聚合徽标取的是**真实历史** —— `AggregateAdapter` 在**实际转发成功时**记下的
- * 渠道（`activeProvider()`，纯内存读）。两者在以下情况会**不一致**：
- * 预测的胜者可能因上游失败而被切换掉，于是「预测的渠道」与「实际用的渠道」不同。
- * 用户明确选择了真实历史（显示一个错的渠道比不显示更误导）。
- *
- * ⇒ 全仓**零调用方**是本函数的现状，**保留它是有意的**（不删，避免越界改动
- * PR !69 的成果）。若要给聚合徽标接线，用 `aggregate.activeProvider`，
- * **不要**改成调本函数。
- */
 /** 「auto 现在会选谁」的预测结果（供用量徽标在**尚无真实历史**时兜底显示）。 */
 export interface CurrentAutoWinner {
   provider: string
@@ -1088,6 +1096,30 @@ export interface CurrentAutoWinner {
   expiryAt: number
 }
 
+/**
+ * 「auto 现在会选谁」——按临期判据算出当前胜者（供用量徽标等外部消费）。
+ *
+ * ⚠️ 与 {@link AutoAdapter.selectProvider} 是**同一套判据**（每个 provider 用
+ * `getAvailableAccount` 确认可用性 + 各家余额端点折算最早失效时刻），但走的是
+ * **独立实例**：徽标轮询不该与选型缓存互相踩（选型有 60 秒缓存且随请求刷新，
+ * 徽标是 60 秒轮询、隐藏页跳过 —— 两者的节奏本来就该解耦）。
+ *
+ * ## ⚠️ 用途：**只在「还没有真实历史」时**兜底
+ *
+ * 本函数是**预测**语义，且**有自己的网络成本**（会对每个候选渠道打一次余额接口）。
+ * ⇒ `usage.badge` 的调用序必须是：**先**读 `AutoAdapter.lastDecision`（真实历史，
+ * 零成本、零误差），只有它 `undefined`（插件刚重启、还没发过任何请求）时才回退到这里。
+ *
+ * ⚠️ 绝不可以在有历史时也用它：预测的胜者可能因上游失败/带图改道而被换掉，
+ * 于是「预测的渠道」与「实际用的渠道」不同 —— 徽标是止损工具，显示错人比
+ * 不显示更危险（用户原话「以为在用 A，实际在烧 B」）。
+ *
+ * ## ⚠️⚠️ 聚合 provider 的用量徽标**不用本函数**（2026-10-07 定，规格 §6.5）
+ *
+ * 聚合徽标取的是**真实历史** —— `AggregateAdapter` 在**实际转发成功时**记下的
+ * 渠道（`activeProvider()`，纯内存读）。若要给聚合徽标接线，用
+ * `aggregate.activeProvider`，**不要**改成调本函数。
+ */
 export async function pickCurrentAutoProvider(
   ctx: Context,
   options: AutoAdapterOptions,

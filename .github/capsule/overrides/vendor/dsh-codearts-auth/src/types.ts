@@ -54,14 +54,37 @@ export interface ProviderAccountEntry {
   credentialRef: string
   /** 创建时间（毫秒时间戳） */
   createdAt: number
-  /** 凭据过期时间（毫秒时间戳），用于展示 */
+  /**
+   * 凭据过期时间（毫秒时间戳），用于展示。
+   *
+   * ⚠️ **不保证是 `Date` 可表示的值**（最终审计登记的「同族未加固格」）：
+   * 本字段来自**用户可编辑的备份文件**，而 `sanitizeAccounts` **不过滤它**
+   * （与 `modelRateLimits` 不同 —— 那个已由 `isValidResetAtMs` 加固，见
+   * `src/jet-hub-store.ts`）。故池里可能存在 `1e308` 这类超出 `Date` 范围的值。
+   *
+   * 当前**无崩溃可达**（已核实）：唯一对它调 `new Date()` 的是
+   * `src/raccoon-auth.ts` 的 `refreshAll`，而那条分支被 `isRaccoonExpired(credential)`
+   * 门控 —— 那个判据从**凭据**算过期、不读池值 ⇒ 池里坏值不可达；
+   * 客户端 `jet-hub.js` 的判据是 `typeof === 'number' && > 0 && <= Date.now()`，
+   * 对 `1e308` 恒 false，也安全。
+   *
+   * ⚠️ **但这是「补了 A 格、漏了同族 B 格」的形态**：将来若有人把某处判据改成读
+   * 池值，或在 UI 里加 `new Date(account.expiresAt)` 的格式化，就会与
+   * `modelRateLimits` 那个 `RangeError` 缺陷**完全同型**地炸。
+   * ⇒ 新增读取点前先确认值域，或**在此处统一加固**（加过滤）。
+   */
   expiresAt?: number
   /** 是否可静默续期 */
   refreshable: boolean
-  /** 每个模型的重置时间，key=模型ID（毫秒时间戳） */
+  /**
+   * 每个模型的重置时间，key=模型ID（毫秒时间戳）。
+   *
+   * ⚠️ 值域由 `isValidResetAtMs`（`src/jet-hub-store.ts`）保证：**有限、正、
+   * 且在 `Date` 范围内**（上界 8.64e15）。任何写入/读取点都必须走该谓词，
+   * 不要内联 `Number.isFinite(v) && v > 0` —— 那会漏掉「超出 Date 范围」这一格，
+   * 导致 `new Date(v).toISOString()` 抛 `RangeError`（真实缺陷，见该谓词注释）。
+   */
   modelRateLimits?: Record<string, number>
-  /** ZCode当前账号明确选择的额度来源；未设置保留旧自动策略。 */
-  zcodeSource?: string
   /**
    * TRAE 签到设备轮换代次（仅 `trae` provider 使用）。
    *
@@ -120,7 +143,7 @@ export interface ProviderAccountStatus extends ProviderAccountEntry {
    * 自己的 credential ref 里读出来**的派生值，故属于「状态」而非「存储」。
    *
    * 为什么不写回池：凭据可能被用户在别处更新（换账号名）、且池的
-   * `sanitizeAccounts`（`src/jet-hub-store.ts:173-191`）只保留
+   * `sanitizeAccounts`（`src/jet-hub-store.ts`）只保留
    * `id`/`provider`/`credentialRef` 三个字段，写进去也会被丢掉。
    */
   accountName?: string
@@ -155,8 +178,6 @@ export interface RpcListAccountsResponse {
 
 export interface RpcCreateAccountRequest {
   provider: string
-  /** 显式添加另一个账号时启动新授权，保留默认本机凭据复用。 */
-  newAccount?: boolean
   /**
    * 手机号（**仅 Loomy 需要**）。
    *
@@ -177,6 +198,18 @@ export interface RpcCreateAccountRequest {
    * 行为必须逐字节不变。
    */
   zcodeProvider?: 'bigmodel' | 'zai'
+  /**
+   * 登录区域（**仅 Accio 需要**）。
+   *
+   * ⚠️ **gateway 与区域无关**（`phoenix-gw.alibaba.com` 两个区域同一个），
+   * 区域只决定**登录页域名**（`'cn'` → `www.accio-ai.com`，
+   * `'global'` → `zh.accio.com`）。它会被写进凭据并随续期保留。
+   *
+   * ⚠️ 来自**客户端自报**的 RPC 载荷（无 schema 校验）⇒ 必须过
+   * `normalizeAccioRegion` 白名单，未登记值回落 `'cn'`（与 `zcodeProvider`
+   * 同因，issue IKJLK3 E2）。
+   */
+  accioRegion?: 'cn' | 'global'
 }
 export interface RpcCreateAccountResponse {
   accountId: string
@@ -412,7 +445,12 @@ export interface RpcCreditsStatusResponse {
 export interface RpcCreditsClaimAllRequest {
   provider: string
   /**
-   * 是否同时执行成长中心任务（buddy / workbuddy 专有）。
+   * 是否同时执行成长中心任务（**CodeBuddy 中国版专有**）。
+   *
+   * ⚠️ **不是**「buddy / workbuddy 专有」：WorkBuddy（国际版）后端**根本没有**
+   * 成长中心（contributor 在 !62 复审中实测确认：无任务列表、无 claim 端点），
+   * `src/provider-credits.ts` 只给 `buddy` 挂 `afterClaim`。
+   * 客户端那侧 `GROWTH_TASK_PROVIDERS` 同样只含 `buddy`（决定按钮渲不渲染）。
    *
    * ⚠️ **缺省为 `false`，且必须保持这样**：`credits.claimAll` 同时是「每日首次
    * 启动自动签到」的执行体（见 `src/auto-checkin.ts` 的 `claim` 回调），而成长
@@ -935,7 +973,7 @@ export interface RpcModelSetDisabledResponse {
   provider: string
   disabledModels: Record<string, boolean>
   /**
-   * 「本次操作没有它看上去那么有效」的说明（Issue IKJW33，2026-10-12 自上游移植）。
+   * 「本次操作没有它看上去那么有效」的说明（Issue IKJW33）。
    *
    * ⚠️ **缺省 = 无警告**，不是空数组 —— 与全仓「未知不编造」的约定一致，
    * 也让既有调用方（只读 `disabledModels`）逐字节不受影响。
@@ -943,15 +981,18 @@ export interface RpcModelSetDisabledResponse {
    * ## 为什么需要它
    *
    * 对**已从上游目录消失**的模型 id 调开关时，旧实现返回「成功 1」却
-   * **什么都没发生、且没有任何警告**：脚本与 AI 助手据此以为开关生效了。
+   * **什么都没发生、且没有任何警告**：脚本与 AI 助手据此以为开关生效了
+   * （issue 作者本人就据此误判过一次，回查目录才发现是空操作）。
    *
    * ⚠️ **为什么是 warnings 而不是 `ok:false` + `not-found`**（issue 的原始建议
    * 未被采纳，两个理由）：
+   *
    * 1. **打开方向是幽灵条目的唯一清理路径**：`model.setAllDisabled` 的注释已立
-   *    此约定 ——「曾被关闭、后来从服务端目录下线」的历史死键**只能靠打开方向
-   *    清掉**。按目录拒绝会让这些键永远留在配置里。
+   *    此约定 —— 「曾被关闭、后来从服务端目录下线」的历史死键**只能靠打开方向
+   *    清掉**。按目录拒绝会让这些键永远留在配置里，正好加重 issue 抱怨的第 2 条。
    * 2. **目录可能读不出来**（凭据过期 / 远端故障）：此时若按「不在目录」拒绝，
    *    用户会连开关都动不了。
+   *
    * ⇒ **照常写入**（既有语义逐字节不变），只在响应里说明真相。
    */
   warnings?: string[]
@@ -1013,50 +1054,9 @@ export interface RpcAggregateRejectionsResponse {
  *
  * ⚠️ `provider` 为 `null` 表示**无历史**（尚未发过任何请求 / 插件重启后内存清空）
  * ⇒ 客户端**不渲染**徽标（规格 §6.3 的 P4）。**不做预测**。
- *
- * ⚠️ `model` 是**新增的可选字段**（用户 2026-10-09 报障：「`auto` 只显示在用哪个厂商，
- * 没显示具体用哪个模型」）：`auto` 的显示名不认识具体模型，只看渠道的话用户无从知道
- * 这次回答是谁给的。值是该渠道的**真实 modelId**（转发时用的那个）。
- * **老客户端会忽略它**（只读 `provider`）⇒ 加字段不破坏兼容；客户端要把它显示出来，
- * 需改 `plugin-src/client/` 并重新打包。
  */
 export interface RpcAggregateActiveProviderResponse {
   provider: string | null
-  /** 「上次实际转发成功的**具体模型**」（真实 modelId）；无历史时为 `null`。 */
-  model?: string | null
-}
-
-/**
- * RPC: 路由型 provider「本次实际发往的真实目标」响应（供输入区实时读数）。
- *
- * 覆盖 `aggregate`（聚合 · 跨渠道）与 `jet-hub-auto`（Auto · 临期优先 · 整池）两家 ——
- * 它们在模型选择器里都只显示一个**虚拟**名字，用户看不到真实的渠道与模型。
- *
- * ## ⚠️ 与 {@link RpcAggregateActiveProviderResponse} 的**判据不同**（不要合并）
- *
- * | 端点 | 语义 | 写入时机 |
- * |---|---|---|
- * | `aggregate.activeProvider` | 上次实际**成功**的渠道 + 模型 | 整轮跑完 |
- * | `router.activeRoute`（本响应） | **本次正在发往**的目标 | 转发一开始 |
- *
- * 前者服务于**余额徽标**（显示一个刚失败、已无额度的渠道会误导）⇒ 必须成功才写；
- * 后者服务于**「当前在用什么」**，等整轮跑完才更新就失去实时性。两者在「请求进行中」
- * 这一窗口内必然不同，这是规格如此。
- *
- * ## ⚠️ 还覆盖了 `jet-hub-auto`
- *
- * `aggregate.activeProvider` 只认识聚合；`jet-hub-auto` 走本端点才有读数
- *（它的真实目标此前只出现在 `model.name` 里，且客户端无从读取）。
- *
- * ⚠️ `provider` / `model` 为 `null` 表示**无历史**（尚未发过任何请求 / 插件重启后
- * 内存清空）⇒ 客户端显示占位文案。**不预测、不编造**。
- */
-export interface RpcActiveRouteResponse {
-  provider: string | null
-  /** 该渠道下的真实 modelId（不是虚拟键，如 `auto`）。 */
-  model: string | null
-  /** 记录时刻（毫秒时间戳）；无历史时为 `null`。 */
-  at: number | null
 }
 
 /**
@@ -1380,6 +1380,27 @@ export interface RpcGatewaySetEnabledRequest {
   enabled: boolean
 }
 
+/** RPC: 「渠道原生搜索」开关的读取响应。 */
+export interface RpcNativeSearchGetEnabledResponse {
+  /** `true` = 支持原生搜索的渠道走自己后端的搜索接口；`false` = 全部回官方搜索。 */
+  enabled: boolean
+}
+
+/** RPC: 「渠道原生搜索」开关写入请求。 */
+export interface RpcNativeSearchSetEnabledRequest {
+  enabled: boolean
+}
+
+/**
+ * RPC: 「渠道原生搜索」开关写入响应。
+ *
+ * ⚠️ 回传的是**落盘后重读的值**，不是请求里的值 —— 与 `gateway.setEnabled`
+ * 同取向：客户端一律以后端回传为准，不做乐观更新。
+ */
+export interface RpcNativeSearchSetEnabledResponse {
+  enabled: boolean
+}
+
 /**
  * RPC: 网关凭据信息。
  *
@@ -1505,7 +1526,7 @@ export interface RpcBackupExportResponse {
 }
 
 /**
- * 导入模式。（移植自 Gitee 原作者 04de37c1）
+ * 导入模式。
  *
  * - `replace`：**整体替换**账号池与模型黑名单（还原快照）。既有的「恢复」行为。
  * - `merge`：**只追加**——按 id 判重，已存在的账号跳过；**不碰**模型黑名单、
@@ -1515,15 +1536,6 @@ export interface RpcBackupExportResponse {
  * 文件格式的一部分 —— 同一份备份文件既可整体还原也可合并追加。
  */
 export type BackupImportMode = 'replace' | 'merge'
-
-/** RPC: 导出备份请求。 */
-export interface RpcBackupExportRequest {
-  /**
-   * 只导出这些账号 id（单独导出某个账号时传**一个**元素）。
-   * 缺省 / 空数组 = 导出全部账号。
-   */
-  accountIds?: string[]
-}
 
 /** RPC: 导入备份请求。 */
 export interface RpcBackupImportRequest {
@@ -1537,6 +1549,15 @@ export interface RpcBackupImportRequest {
   mode?: BackupImportMode
 }
 
+/** RPC: 导出备份请求。 */
+export interface RpcBackupExportRequest {
+  /**
+   * 只导出这些账号 id（单独导出某个账号时传**一个**元素）。
+   * 缺省 / 空数组 = 导出全部账号。
+   */
+  accountIds?: string[]
+}
+
 /** RPC: 导入备份响应。 */
 export interface RpcBackupImportResponse {
   /** 写入的凭据条数。 */
@@ -1544,7 +1565,7 @@ export interface RpcBackupImportResponse {
   /** 写入的账号数（合并模式下 = 实际新增的账号数）。 */
   accountsImported: number
   /**
-   * 合并模式下因 id 已存在而**跳过**的账号 id。（移植自 Gitee）
+   * 合并模式下因 id 已存在而**跳过**的账号 id。
    * `replace` 模式恒为空数组。
    */
   accountsSkipped: string[]
@@ -1578,6 +1599,18 @@ export interface RpcBackupStatusResponse {
   accounts: number
   /** 缺 `expiresAt` 的账号条目数（疑似自动恢复产物）。 */
   withoutExpiry: number
+  /**
+   * 当前账号池的账号摘要（**可选**）：导出弹窗据此渲染「勾选要导出的账号」。
+   *
+   * ⚠️ 只含展示所需的字段，**不含任何凭据内容** —— 用户勾选时不需要看到
+   * 密钥，多传一份只会扩大泄漏面。
+   */
+  accountList?: Array<{
+    id: string
+    provider: string
+    nickname: string
+    enabled: boolean
+  }>
 }
 
 /**
@@ -1798,9 +1831,13 @@ export interface RpcUsageTokenLedgerResponse {
 export interface RpcUsageTokenLedgerHistoryRequest {
   /**
    * 只看最近 N 天（**含今天**，UTC+8 日界）；省略 = 全部历史
-   * （服务端钳到 `TOKEN_LEDGER_HISTORY_MAX_DAYS`）。
+   * （服务端钳到 `TOKEN_LEDGER_HISTORY_MAX_DAYS`）。自选范围可传 fromDay / toDay。
    */
   sinceDays?: number
+  /** 自选日期范围起点（UTC+8 日键，含当日）；与 toDay 配合使用。 */
+  fromDay?: string
+  /** 自选日期范围终点（UTC+8 日键，含当日）；与 fromDay 配合使用。 */
+  toDay?: string
 }
 
 /** 历史日聚合响应（形状直透，不另造平行类型）。 */
@@ -1808,6 +1845,16 @@ export interface RpcUsageTokenLedgerHistoryResponse {
   history: TokenLedgerHistoryDay[]
   /** 所选窗口的合计（按日累加，均值按全部样本 Σ/份数计算）。 */
   totals: Omit<TokenLedgerModelRow, 'model'>
+}
+
+/** RPC: 删除某一天的历史日累计；不影响进程内 Token 明细。 */
+export interface RpcUsageTokenLedgerDeleteDayRequest {
+  day: string
+}
+
+export interface RpcUsageTokenLedgerDeleteDayResponse {
+  day: string
+  deleted: true
 }
 
 /**

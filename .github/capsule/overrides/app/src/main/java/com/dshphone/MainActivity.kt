@@ -55,6 +55,12 @@ class MainActivity : Activity() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    /** ⚠️ Issue F-28：顶部栏与其中的按钮要能在**配置变化时重刷配色**（系统深色切换时
+        Activity 因 configChanges 不再重建，只在 onCreate 读一次颜色会让深色模式下
+        原生壳仍是浅色 token）。故提升为字段而非局部变量。 */
+    private var topBar: LinearLayout? = null
+    /** 顶部栏里用 `ds_accent` 着色的按钮（与 topBar 一同重刷）。 */
+    private val topBarAccentViews = mutableListOf<TextView>()
     private lateinit var statusDot: TextView
     private lateinit var statusText: TextView
     private lateinit var modeButton: TextView
@@ -200,6 +206,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad / 2, pad, pad / 2)
             gravity = Gravity.CENTER_VERTICAL
         }
+        topBar = bar
         statusDot = TextView(this).apply { text = "○"; textSize = 16f }
         statusText = TextView(this).apply {
             textSize = 12f
@@ -214,7 +221,7 @@ class MainActivity : Activity() {
             setTextColor(getColor(R.color.ds_accent))
             setPadding(pad, 0, 0, 0)
             setOnClickListener { action() }
-        }
+        }.also { topBarAccentViews.add(it) }
         bar.addView(statusDot)
         bar.addView(statusText)
         bar.addView(mini("账号", {
@@ -488,6 +495,11 @@ class MainActivity : Activity() {
         super.onConfigurationChanged(newConfig)
         // 旋转后系统栏（尤其横屏的左右挖孔）与 IME 高度都会变，重新触发一次 inset 分发。
         window.decorView.requestApplyInsets()
+        /* ⚠️ Issue F-28：`uiMode` 在本 manifest 的 configChanges 里 ⇒ 系统深色切换时
+           Activity **不会重建**，而顶部栏配色只在 onCreate 读一次 ⇒ 深色下原生壳仍是
+           浅色 token。这里按新配置重刷（`getColor` 会解析 values-night 下的同名资源）。 */
+        topBar?.setBackgroundColor(getColor(R.color.ds_bg))
+        for (view in topBarAccentViews) view.setTextColor(getColor(R.color.ds_accent))
         Log.i(TAG, "配置变化：orientation=${newConfig.orientation} uiMode=${newConfig.uiMode}")
     }
 

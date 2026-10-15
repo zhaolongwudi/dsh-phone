@@ -394,6 +394,10 @@ function apply(ctx, config = {}) {
 				id: registry.start({
 					kind: "bash",
 					label: args.command,
+					toolCall: {
+						callId: exec.callId,
+						rootCallId: exec.rootCallId
+					},
 					...exec.agent ? { owner: exec.agent.id } : {},
 					output: processSources(() => proc),
 					run: () => {

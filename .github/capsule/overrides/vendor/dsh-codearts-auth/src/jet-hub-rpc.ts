@@ -1,8 +1,9 @@
 /**
  * Jet Hub 多账号管理的 RPC 端点注册。
  *
- * 新 Connection 使用独立 RPC 通道 /jet-hub → /jet-hub/manage；
- * 旧 Fetch 注册器同时保留 /api/jet-hub，兼容旧客户端。
+ * 使用 DSH 的 connection.fetch.register() 模式注册 HTTP API 端点，
+ * 与 dsh-im 的 registerManagementRpc 一致。
+ * 通道名 jet-hub → 路径 /api/jet-hub
  * 端点方法：account.list / account.create / account.update / account.delete /
  *           account.reorder / account.refresh / account.retest / account.retestAll /
  *           account.test / account.reset / account.resetAll / login.poll /
@@ -17,10 +18,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
+import { openIncognitoWindow } from './login.js'
 import { AccountPool } from './account-pool.js'
 import { AUTO_PROVIDER as AUTO_PROVIDER_ID } from './auto-adapter.js'
 import { resolveAutoBadgeRewrite, type AutoBadgeState } from './auto-badge.js'
-import { activeRoutes } from './active-route.js'
+import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import { isGatewayEnabled } from './openai-gateway/config.js'
 import { collectGatewayEffortViews, collectGatewayModels, toGatewayModelIds, type GatewayModelSource } from './openai-gateway/models.js'
 import {
@@ -45,28 +47,30 @@ import { RACCOON } from './raccoon-product.js'
 import type { RaccoonAuth } from './raccoon-auth.js'
 import type { ZcodeAuth } from './zcode-auth.js'
 import { ZCODE } from './zcode-product.js'
-import { zcodeSources } from './zcode-sources.js'
 import type { ZcodeCredential } from './zcode.js'
 import { phoneFromUserId, isUsableZcodeCredential } from './zcode.js'
-import type { ZcodeBalanceResult } from './zcode-upstream.js'
 import { ZCODE_LOGIN_PROVIDER, type ZcodeLoginProvider } from './zcode-login.js'
 import type { RaccoonCredential } from './raccoon.js'
 import type { StartedRaccoonLoginFlow } from './raccoon-login-page.js'
 import { MINIMAX } from './minimax-product.js'
 import type { MinimaxAuth, StartedMinimaxLoginFlow } from './minimax-auth.js'
 import { isMinimaxRefreshable, minimaxCredentialExpiresAtMs } from './minimax.js'
-import type { MinimaxCredential } from './minimax.js'
-import {
-  claimMinimaxDailyCheckin,
-  fetchMinimaxCreditBalance,
-  fetchMinimaxSigninStatus,
-} from './minimax-credits.js'
 import { GEMINI, geminiAccountLabel, geminiCredentialExpiresAtMs, isGeminiRefreshable } from './gemini.js'
-import type { GeminiCredential } from './gemini.js'
 import type { GeminiAuth, StartedGeminiLoginFlow } from './gemini-auth.js'
-import { fetchGeminiCreditBalance } from './gemini-credits.js'
-import { LOOMY_TASK_POINTS, LOOMY_TASK_TITLES } from './loomy-onboarding.js'
+// OfficeAce（华为 MaaS 云端直连）：面板状态探测 / 登录流程 / 余额查询所需的
+// 产品配置与鉴权模块（协议逆向见 `officeace-auth.ts` 模块头）。
+import { OFFICEACE, OFFICEACE_MODELS } from './officeace-product.js'
+import type * as OfficeAceAuthModule from './officeace-auth.js'
+/** 以模块命名空间为类型（`startLogin` / `pollLoginCode` / `fetchSubscriptionSummary` 等纯函数）。 */
+type OfficeAceAuth = typeof OfficeAceAuthModule
+import type { AccioAuth } from './accio-auth.js'
+import { normalizeAccioRegion, type StartedAccioLogin } from './accio-auth.js'
+import { ACCIO } from './accio-product.js'
 import { LOBSTERAI } from './lobsterai-product.js'
+import { PROVIDER_REGISTRY, descriptorOf } from './provider-registry.js'
+import { createProviderCredits, creditsOf } from './provider-credits.js'
+import { createProviderOnboarding, onboardingOf } from './provider-onboarding.js'
+import type { ProviderCallContext, ProviderCredits, ProviderOnboarding } from './provider-runtime.js'
 import { QODER, QODER_CN, type QoderProduct } from './qoder-product.js'
 import { TRAE } from './trae-product.js'
 import { CLINE } from './cline-product.js'
@@ -86,10 +90,16 @@ import type { QoderCredential } from './qoder.js'
 import { claimQoderDailyCheckin, fetchQoderCreditBalance } from './qoder-credits.js'
 import { isTraeRefreshable, traeCredentialExpiresAtMs, traeDisplayNickname } from './trae.js'
 import type { TraeCredential } from './trae.js'
-import { fetchClineCreditBalance } from './cline-credits.js'
 import { fetchClineUsageLimits } from './cline-quota.js'
 import { clineUpstreamOf, readClineRequestHistory } from './cline-request-log.js'
-import { readTokenLedger, readTokenLedgerDayMap, readTokenLedgerHistory, TOKEN_LEDGER_HISTORY_MAX_DAYS } from './token-ledger.js'
+import {
+  deleteTokenLedgerDay,
+  isValidTokenLedgerDayKey,
+  readTokenLedger,
+  readTokenLedgerDayMap,
+  readTokenLedgerHistory,
+  TOKEN_LEDGER_HISTORY_MAX_DAYS,
+} from './token-ledger.js'
 import {
   clineCredentialExpiresAtMs,
   isClineRefreshable,
@@ -107,27 +117,43 @@ import {
   type ClaimOutcome,
   type CreditBalance,
 } from './credits.js'
-import { CODEBUDDY, WORKBUDDY, productById, type BuddyProduct } from './product.js'
-import { runGrowthTaskCompletions } from './buddy-growth.js'
+import { CODEBUDDY, productById, type BuddyProduct } from './product.js'
+import { collectBuddyGrowth } from './buddy-growth.js'
+/**
+ * ⚠️ **`collectBuddyGrowth` 已搬到 `src/buddy-growth.ts`**（2026-10-08 Task 4），
+ * 并在此**原样再导出**以保持既有调用点与用例的 import 路径不变。
+ *
+ * 搬家的理由（不是洁癖）：它是 `credits.afterClaim` 的实现，而 `afterClaim`
+ * 由 `src/provider-credits.ts` 的能力表提供。留在本文件会让那张表必须 import
+ * 本文件 ⇒ `provider-credits.ts ⇄ jet-hub-rpc.ts` **循环 import**（本文件已经
+ * import 前者）。搬到 `buddy-growth.ts` 后依赖是单向的：
+ * `jet-hub-rpc.ts` → `provider-credits.ts` → `buddy-growth.ts`。
+ *
+ * ⚠️ **本再导出是过渡形态**，不是接口：新代码应直接从 `buddy-growth.js` 取。
+ * 它由 `tests/unit/buddy-growth.spec.ts` 的 import 覆盖（唯一的生产消费者是
+ * `src/provider-credits.ts`，它**直接从 `buddy-growth.js` 取**，不经过本文件）。
+ *
+ * ⚠️ **2026-10-08 修正（Task 4 复审 Finding 1）**：本 import 原先还捎带了一个
+ * 成长引擎的**死 import**（本文件零调用），本条注释一度把它写成「本文件与成长
+ * 引擎的接缝」—— 那会让「谁调用成长引擎」这个问题在本文件里得到一个**假答案**。
+ * 现已删除该名字，并改正本注释：本文件**不持有**任何成长引擎入口，成长任务的
+ * 唯一生产入口是 `provider-credits.ts` 的 `afterClaim`（由 `credits.claimAll`
+ * 消费）。别再回到这里找。
+ */
+export { collectBuddyGrowth }
 
 /**
- * 有成长中心任务可做的 provider —— **只有 CodeBuddy 中国版**。
+ * ⚠️ **`GROWTH_CAPABLE_PROVIDERS` 已删除**（2026-10-08 Task 4）。
  *
- * 列成显式白名单而不是「凡 BuddyProduct 都行」，是为了让 `buddy.growthTasks` 对
- * zcode 之类**不读 BuddyProduct** 的渠道也不成立 —— 否则直接调用会对每个账号白发
- * 一轮串行请求。客户端的能力表（`credits-capabilities.js`）是是否渲染按钮的权威，
- * 本表是服务端的第二道守卫。
+ * 它原是一张手抄的 `Set([CODEBUDDY.id])`，与客户端的能力表平行存在。现由
+ * **能力表本身**回答「哪家有成长中心」：`runtime.credits?.afterClaim !== undefined`
+ *（`src/provider-credits.ts` 只给 buddy 挂 `afterClaim`）—— 与 Task 1b 同一个理由：
+ * 消除平行副本，让「哪家有成长中心」由能力注册表说了算。
  *
- * ⚠️ **`workbuddy`（国际版）不在此表**：contributor 在 !62 复审中实测确认
- * `www.workbuddy.ai` 后端**根本没有成长中心**（无任务列表、无 claim 端点）——
- * 不是「未实测」，是**该产品没有这个功能**。故 `WORKBUDDY` 上的 `claimBase` /
- * `webBase` 也只是为共享 `BuddyProduct` 类型而填的占位，不会被本模块读取。
- *
- * ⚠️ 此表与客户端的 `GROWTH_TASK_PROVIDERS`（`plugin-src/client/jet-hub.js`）
- * 必须**同时**改：客户端决定是否传 `runTasks`，本表决定是否受理，只改一处会
- * 让另一处静默失效（多传不会被受理 / 少传则永远不触发）。
+ * ⚠️ 客户端那一侧（`GROWTH_TASK_PROVIDERS`，决定是否传 `runTasks`）**仍然存在且必须存在**：
+ * 它决定「按钮渲不渲染」，而服务端这里决定「受不受理」。两处的**取值来源**现在
+ * 都是能力声明，不再有第三份手抄名单。
  */
-const GROWTH_CAPABLE_PROVIDERS: ReadonlySet<string> = new Set([CODEBUDDY.id])
 
 /**
  * 整轮成长任务的时间预算缺省值（毫秒）。
@@ -137,85 +163,13 @@ const GROWTH_CAPABLE_PROVIDERS: ReadonlySet<string> = new Set([CODEBUDDY.id])
  * 宿主 RPC 的超时（该上界由 dsh 侧决定，本插件不可见也不可控）。
  */
 const DEFAULT_ROUND_BUDGET_MS = 30 * 60 * 1000
-/**
- * 单账号的成长中心任务执行，转成 RPC 明细。
- *
- * 僵尸账号（凭据被外部删除 ⇒ 上游回 401/403）归 `error` 提示但**不计入 failed**：
- * 它的处置是「重新登录」，与「任务真的推不动」完全不同。签到侧已把这类账号归
- * `inactive`（`collectClaimResults` 的 `凭据未配置` 分支同义），成长侧须一致 ——
- * 否则同一个僵尸条目在两处会给出互相矛盾的判定。
- *
- * @param budgetMs 透传给 `runGrowthTaskCompletions`；`undefined` 由其取缺省 10 分钟。
- */
-export async function collectBuddyGrowth(
-  credential: BuddyCredential,
-  product: BuddyProduct,
-  entry: ProviderAccountEntry,
-  budgetMs: number | undefined,
-  roundDeadlineAt: number | undefined,
-): Promise<RpcBuddyGrowthAccountResult> {
-  // 整轮预算已耗尽 ⇒ 该账号**不再发起任何成长请求**。
-  //
-  // ⚠️ 签到侧已经跑完（afterClaim 在 claim 之后调用），所以这里返回的只是成长
-  // 明细，不影响该账号的签到判定。逐项标 `failed` 会让整条提示染黄，而这不是
-  // 任何账号的过错 —— 故用 `ok:true` + `error` 说明「本轮没轮到它」。
-  if (roundDeadlineAt !== undefined && Date.now() >= roundDeadlineAt) {
-    return {
-      accountId: entry.id, nickname: entry.nickname,
-      ok: true, completed: 0, clientOnly: 0, failed: 0,
-      claimedCount: 0, claimedCredit: 0, timedOut: true, tasks: [],
-      error: '本轮时间预算已用尽，未执行成长任务（再点一次即可继续）',
-    }
-  }
-  let report: Awaited<ReturnType<typeof runGrowthTaskCompletions>>
-  try {
-    report = await runGrowthTaskCompletions(credential, product, fetch, { budgetMs })
-  } catch (error) {
-    return {
-      accountId: entry.id, nickname: entry.nickname,
-      ok: false, completed: 0, clientOnly: 0, failed: 0,
-      claimedCount: 0, claimedCredit: 0, timedOut: false, tasks: [],
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
-  // 凭据失效的判据：逐项 message 里出现「凭据已失效」。它与「任务失败」是
-  // 两回事 —— 前者要重新登录，后者是判据推不动。
-  const expired = report.results.some((r) => /凭据已失效/.test(r.message))
-  return {
-    accountId: entry.id, nickname: entry.nickname,
-    // 僵尸账号视作「无需再管」，不把整条提示染成失败。
-    ok: report.ok || expired,
-    completed: report.completed,
-    clientOnly: report.clientOnly,
-    failed: expired ? 0 : report.failed,
-    claimedCount: report.claimedCount,
-    claimedCredit: report.claimedCredit,
-    timedOut: report.timedOut,
-    tasks: report.results,
-    ...(expired ? { error: '凭据已失效，请在 Jet Hub 重新登录该账号' } : {}),
-  }
-}
 import {
   captchaDemand,
   putSuppliedParam,
 } from './captcha-supply.js'
 import { ZCODE_CAPTCHA_FALLBACK, type ZcodeCaptchaConfig } from './zcode-captcha.js'
 import { buildCarrierPageHtml } from './zcode-carrier-page.js'
-import {
-  claimLobsteraiDailyCheckin,
-  fetchLobsteraiCreditBalance,
-} from './lobsterai-credits.js'
-import {
-  claimCodeArtsDailyCheckin,
-  fetchCodeArtsAccountInfoDetailed,
-} from './codearts-credits.js'
-import {
-  claimTraeDailyCheckin,
-  fetchTraeCheckinStatus,
-  fetchTraeCreditBalance,
-} from './trae-credits.js'
-import {
-  pickTestModel,
+import { pickTestModel,
   resetAccount,
   resetAllAccounts,
   retestAccount,
@@ -223,9 +177,6 @@ import {
   testAccount,
 } from './account-probe.js'
 import { exportBackup, importBackup } from './backup.js'
-// Phase 5（移植自 Gitee）：目录变更广播的唯一实现（本文件的 broadcastCatalogChanged
-// 委托到这里；同 tick 合并 / microtask 防重入 / 防广播风暴，见模块头）。
-import { broadcastCatalogChanged } from './catalog-broadcast.js'
 import { handleOpencodeRpc } from './opencode-rpc.js'
 import { clearDeadModels, deadModelIdsFor } from './dead-model-store.js'
 import { OPENCODE } from './opencode-product.js'
@@ -238,9 +189,7 @@ import type {
   RpcBackupImportResponse,
   RpcBackupStatusResponse,
   RpcListAccountsRequest,
-  RpcListAccountsResponse,
   RpcCreateAccountRequest,
-  RpcCreateAccountResponse,
   RpcPollLoginRequest,
   RpcPollLoginResponse,
   RpcUpdateAccountRequest,
@@ -249,7 +198,6 @@ import type {
   RpcGetProviderOrderResponse,
   RpcSetProviderOrderRequest,
   RpcRefreshAccountRequest,
-  RpcRefreshAccountResponse,
   RpcRetestAccountRequest,
   RpcRetestAllRequest,
   RpcTestAccountRequest,
@@ -260,9 +208,7 @@ import type {
   RpcCreditsStatusResponse,
   RpcCreditsClaimAllRequest,
   RpcCreditsClaimAllResponse,
-  RpcBuddyGrowthTasksRequest,
   RpcBuddyGrowthAccountResult,
-  RpcBuddyGrowthTasksResponse,
   RpcCreditsClaimSummary,
   RpcCreditsBalancesRequest,
   RpcCreditsBalanceExtra,
@@ -271,7 +217,6 @@ import type {
   RpcClineQuotaResponse,
   RpcClineRequestLogRequest,
   RpcClineRequestLogResponse,
-  RpcCreditsClaimAccountResult,
   RpcSendSmsRequest,
   RpcSendSmsResponse,
   RpcSubmitSmsRequest,
@@ -292,7 +237,6 @@ import type {
   RpcAggregateClearRejectedRequest,
   RpcAggregateRejectionsResponse,
   RpcAggregateActiveProviderResponse,
-  RpcActiveRouteResponse,
   RpcAggregateExpiryOrderResponse,
   RpcModelSetAllDisabledRequest,
   RpcModelSetAllDisabledResponse,
@@ -306,19 +250,23 @@ import type {
   RpcProviderSetEnabledResponse,
   RpcGatewayStatusResponse,
   RpcGatewaySetEnabledRequest,
+  RpcNativeSearchGetEnabledResponse,
+  RpcNativeSearchSetEnabledRequest,
+  RpcNativeSearchSetEnabledResponse,
   RpcGatewayModel,
   RpcCaptchaDemandResponse,
   RpcCaptchaCarrierUrlResponse,
   RpcCaptchaContributeRequest,
   RpcCaptchaContributeResponse,
   RpcUsageBadgeRequest,
-  RpcUsageBadgeResponse,
   RpcUsageBadgePreferenceRequest,
   RpcUsageBadgePreferenceResponse,
   RpcUsageTokenLedgerRequest,
   RpcUsageTokenLedgerResponse,
   RpcUsageTokenLedgerHistoryRequest,
   RpcUsageTokenLedgerHistoryResponse,
+  RpcUsageTokenLedgerDeleteDayRequest,
+  RpcUsageTokenLedgerDeleteDayResponse,
   RpcUsageAutoCheckinRequest,
   RpcUsageAutoCheckinResponse,
   ProviderStatus,
@@ -535,14 +483,23 @@ export function buildRaccoonNickname(
  * 仍未登记的渠道（CodeArts / Qoder / Cline / Raccoon / Minimax / ZCode / Gemini /
  * OpenCode）：余额响应里没有逐包到期时间，或根本没有资源包列表 ——
  * 分不出两桶，登记进来只会多一个无效开关。
+ *
+ * ## ⚠️ 2026-10-08 起从 `PROVIDER_REGISTRY` 派生
+ *
+ * 原先这是一份手抄 `Set`，而客户端 `supportsPermanentLock` 读的是 registry 的
+ * `permanentLock` 字段 ⇒ **两处必须一致**（不一致会出现「按钮渲染出来了，
+ * 点了却报 bad-request」）。现在两侧同出一个字段，不再可能漂移。
+ * 上面那张「分桶依据」表已随值迁移到 registry 里各条的注释。
+ *
+ * ⚠️ **本常量是模块级、但这里安全**：它只读 `PROVIDER_REGISTRY`（Task 1 的
+ * **静态数据**），**不读 runtime 注册表** —— 后者要到 `apply()` 才填充，
+ * 模块级求值会得到空集（`WIRED_EXPIRY_PROVIDERS` 那条注释记的正是这个陷阱，
+ * 但那里是**刻意**保持常量的，理由见 `aggregate-expiry.ts`）。
+ * 判据是「读的是不是静态数据」，不是「是不是模块级常量」。
  */
-export const PERMANENT_LOCK_PROVIDERS: ReadonlySet<string> = new Set([
-  LOOMY.id,
-  CODEBUDDY.id,
-  WORKBUDDY.id,
-  LOBSTERAI.id,
-  TRAE.id,
-])
+export const PERMANENT_LOCK_PROVIDERS: ReadonlySet<string> = new Set(
+  PROVIDER_REGISTRY.filter((d) => d.permanentLock === true).map((d) => d.id),
+)
 
 /**
  * 汇总一次批量领取的结果。
@@ -634,7 +591,13 @@ export interface CreditsEndpointDeps<
    * **不能**混进 `claim` 本身 —— `claim` 的返回类型是 `ClaimOutcome`，装不下
    * 22 项任务的逐项判据。
    *
-   * 只有 buddy / workbuddy 注入；其余 provider 不传，行为逐字不变。
+   * ⚠️ **只有 buddy 注入**（`workbuddy` 后端没有成长中心，见 `src/product.ts`
+   * 的 `WORKBUDDY` 注释）；其余 provider 不传，行为逐字不变。
+   *
+   * ⚠️ 2026-10-08（Task 4）：**「哪家有成长中心」不再由本文件的手抄集合判定**
+   *（原 `GROWTH_CAPABLE_PROVIDERS` 已删除），改由「该家是否提供
+   * `ProviderCredits.afterClaim`」回答。本钩子仍是**同一个骨架接缝**，
+   * 只是调用侧的门控换成了能力表。
    */
   afterClaim?: (
     credential: TCredential,
@@ -681,10 +644,15 @@ export interface CreditsEndpointDeps<
    * CodeBuddy 系拆成「查状态 + 领取」两个独立端点，先查可以省掉一次无效的
    * 领取请求（活动未开 / 今天已领时直接短路）。
    *
-   * LobsterAI 的领取流程**自身就是多步的**（slot → context → check_in），
-   * `claimedToday` / `actions` 判断已在内部完成并会返回对应的
-   * `already-claimed` / `inactive`，外部再查一次纯属重复请求 ——
-   * 故它传 `false` 跳过预检，直接交给 `claim`。
+   * ⚠️ **本骨架只认这个布尔，不认 provider**：各家的取值由能力表给出
+   *（`ProviderCredits.precheckStatus`，见 `src/provider-runtime.ts` 的完整
+   * 「哪家 true / 哪家 false 及各自实测理由」）。本文件**不重复那张表**
+   * —— 一处语义两套判据必然漂移（本仓库首条红线）。
+   *
+   * ⚠️ 调用方若省略它，骨架会回落到**默认的 buddy 式** `fetchCheckinStatus`。
+   * 对**没有同构状态端点**的渠道（如 loomy）那是**发错端点的必然失败请求** ——
+   * 故那些家**必须显式传 `false`**，而不是靠「没配 fetchStatus 就会跳过」这种
+   * 想当然的推断（骨架不看 `fetchStatus` 是否存在）。
    */
   precheckStatus?: boolean
   /**
@@ -1026,6 +994,441 @@ function providerIdsOf(
 }
 
 /**
+ * 注册 Jet Hub 管理 API 端点。
+ *
+ * `connection` 服务只存在于 Web bundle；这里用**惰性注入**而非插件级静态
+ * `inject`，因此在 headless / CLI profile 下本模块正常加载、只是不注册端点，
+ * 而不是把整个插件树卡在 pending（那会让 profile 启动直接失败）。
+ */
+/**
+ * 各 provider auth 实例的**共同部分**（结构化类型），使 `authOf` 不必依赖
+ * 各家具体类（逐个 import 会把它们全拖进依赖图）。
+ *
+ * ⚠️ **名字里的 `JetHub` 比实际语义窄（2026-10-08 独立复审 M-5 实测）**：
+ * 本接口有两个**不同层次**的使用方，第二个并不在 JetHub RPC 里 ——
+ *
+ * | 成员 | 谁在用 |
+ * |---|---|
+ * | `refreshAccountCredential` | **`jet-hub-rpc.ts` 自己**（`account.refresh` 端点，实测该文件里有真调用） |
+ * | `refreshAll` | **`index.ts` 的 runtime 注册循环**（填 `ProviderRuntime.auth.refreshAll`，即 `wiredRefreshTargets()` 的派生依据）。实测本文件里**只有声明、零调用** |
+ *
+ * ⇒ 读到这里别以为 `refreshAll` 有 JetHub 调用方；它的价值是「让注册循环能用
+ * 一个统一的形状遍历各家的实例」。**没有改名**是刻意的：改名要动 `index.ts` 的
+ * import 与类型标注，而收益只是名字更准；**语义澄清写在这里即可**。
+ */
+export interface JetHubAuthLike {
+  refreshAccountCredential(refName: string, pool: AccountPool, accountId: string): Promise<void>
+  /**
+   * 批量续期该 provider 的全部账号。
+   *
+   * ⚠️ 2026-10-08（Task 10）：`index.ts` 的注册循环用它填
+   * `ProviderRuntime.auth.refreshAll`，而后者是 `wiredRefreshTargets()` 的派生依据。
+   * 实测各家签名**完全一致**（`(pool) => Promise<void>`）⇒ 无需逐家适配。
+   */
+  refreshAll(pool: AccountPool): Promise<void>
+}
+
+/**
+ * 各 provider 的 auth 实例（`registerJetHubRpc` 的命名对象形参）。
+ *
+ * ⚠️ **键必须是 provider id，不是变量名**：
+ * - provider id 是 `qodercn`（无连字符、全小写），而 `index.ts` 里的**变量名**
+ *   是 `qoderCn`。若键用变量名，`authOf(auths, 'qodercn')` 就**查不到**中国版
+ *   （键 `qoderCn` ≠ id `qodercn`），症状是「中国版账号续期报
+ *   `Unknown provider: qodercn`」—— 与本仓库历史上的 `workbuddy` 漏接是同一形态。
+ * - 键用 id 后，`account.refresh` 可以直接 `authOf(auths, entry.provider)` 分派。
+ *
+ * ⇒ 调用点写 `qodercn: qoderCn`（**键是 id、值是变量**），这是刻意的。
+ *
+ * ⚠️ **每个字段都必须保留具体类型**（不要都改成 `JetHubAuthLike`）——
+ * 那会丢掉「全部键必须都在」的类型检查，而「漏接一个 provider 就编译不过」
+ * 正是本次改名的核心价值。
+ *
+ * ⚠️ **刻意不写「N 个字段」**：条数随 provider 增删必然腐坏（本仓库已多次
+ * 记录「注释里的数字先烂」），且「数字对不上」会让人怀疑整段约定。
+ * 权威条数以本接口的字段为准，一致性由
+ * `tests/unit/zcode-wiring.spec.ts` 的「接口键 === 调用点键」锁死。
+ */
+export interface JetHubAuths {
+  readonly codearts: CodeArtsAuth
+  readonly buddy: BuddyAuth
+  readonly workbuddy: BuddyAuth
+  readonly lobsterai: LobsteraiAuth
+  readonly qoder: QoderAuth
+  /** ⚠️ 键是 **provider id**（`qodercn`），值是 `index.ts` 里的 `qoderCn` 实例。 */
+  readonly qodercn: QoderAuth
+  readonly trae: TraeAuth
+  readonly cline: ClineAuth
+  readonly loomy: LoomyAuth
+  readonly raccoon: RaccoonAuth
+  readonly minimax: MinimaxAuth
+  readonly zcode: ZcodeAuth
+  readonly gemini: GeminiAuth
+  /**
+   * OfficeAce（华为 ModelArts MaaS 云端直连）。
+   *
+   * ⚠️ 值是 **auth 模块命名空间**（`import * as officeaceAuth`），不是 Service 实例
+   * —— 该模块导出的是纯函数（`startLogin` / `pollLoginCode` / `completeLogin` /
+   * `fetchSubscriptionSummary`），没有类实例。见 `officeace-auth.ts` 模块头。
+   */
+  readonly officeace: OfficeAceAuth
+  readonly accio: AccioAuth
+}
+
+/**
+ * 按 provider id 取 auth 实例。
+ *
+ * ⚠️ **键是 provider id**（`qodercn`），不是变量名（`qoderCn`）——
+ * 这是 `JetHubAuths` 的接口约定（见其注释）。
+ *
+ * ⚠️ 用 `Object.hasOwn` 而非 `in`：`in` 会命中原型链上的键（如 `'constructor'`），
+ * 把 `entry.provider` 为怪值时误判成「有该 provider」。
+ */
+export function authOf(auths: JetHubAuths, provider: string): JetHubAuthLike | undefined {
+  if (!Object.hasOwn(auths, provider)) return undefined
+  return (auths as unknown as Record<string, JetHubAuthLike>)[provider]
+}
+
+/**
+ * ⚠️ 2026-10-08 改：各 provider 形参从**位置传参**改为**命名对象**（`auths`）。
+ *
+ * 原注释记录「历史上已因少传/插队错位复发 **6 次**」—— 位置参数天生有这个缺陷
+ *（改签名顺序、插一个新 provider 都会静默错位，而症状是「某个 provider 在用
+ * 另一个 provider 的凭据续期」）。命名对象让错位在**类型层面不可能**，
+ * 且新增 provider 只加一个键。
+ *
+ * ## ⚠️ 积分能力表**不是形参**（2026-10-08 设计复审 C1）
+ *
+ * Task 3 初版曾在本函数末尾加**第 5 个形参** `credits?: Readonly<Record<string,
+ * ProviderCredits>>`，现已删除。三条理由（复审报告 `.superpowers/sdd/
+ * task-3-design-eval.md` §4/§6）：
+ *
+ * 1. **它在生产路径上不承载任何信息** —— `src/index.ts` 传进来的正是
+ *    `createProviderCredits({ loomy, raccoon, zcode })`，而这三个实例就是本函数
+ *    形参 `auths` 里的 `loomy` / `raccoon` / `zcode`；`registerJetHubEndpoints`
+ *    自己现造的那份**逐字节等价**。删掉实参生产行为不变 ⇒ 它是**纯测试接缝**，
+ *    而「形参一侧 === 生产分派」这件事**没有任何测试守着**。
+ * 2. **它重开了 Task 9 刚关掉的门** —— 一个可选的**位置**形参：在它之前插入
+ *    任何新的可选形参，调用点 `(…, modelAdapters, creditsTable)` 就会**静默**
+ *    把表落进新形参（本仓库实测复发 6 次的位置错位形态）。`modelAdapters` 与
+ *    `credits` 值类型不同，互换会被 `tsc` 抓到，但**插入**不会。
+ * 3. ⇒ 改为**从 `auths` 派生**（见 `registerJetHubEndpoints` 里的 `credits`），
+ *    签名回到 4 个形参。
+ *
+ * ⚠️ **全局注册表（`ProviderRuntime.credits`）仍然保留且必须保留** —— 那是
+ * Task 5 的 `aggregate-expiry.ts` / Task 8 的 `account-probe.ts` 这类
+ * **拿不到 `auths` 形参**的跨模块消费点的唯一入口，由 `src/index.ts` 的
+ * `registerProviderRuntime` 挂上。它与本函数现造的表**同源同构**
+ *（同一个工厂、同一批实例），只是消费方不同。
+ *
+ * ⚠️ 端点级「表真的驱动分派」的测试改由模块替身注入
+ *（`tests/unit/credits-runtime-parity.spec.ts` 的 `vi.mock('provider-credits')`）——
+ * 断言仍打在**端点响应**上，判别力与原形参方案逐条等价。
+ */
+export function registerJetHubRpc(
+  ctx: Context,
+  pool: AccountPool,
+  /** ⚠️ 命名对象，不是位置参数。键是 provider id（见 `JetHubAuths`）。 */
+  auths: JetHubAuths,
+  /**
+   * provider → 适配器实例（可选）。
+   *
+   * 用于「显示列表」拿到**不受用户黑名单影响**的全量目录（`listAllModels`），
+   * 使被关闭的模型也能显示正确的展示名（含倍率），而不是退化成裸 id。
+   * 省略时退化为只用 `ctx.llm.listModels()` 的历史行为。
+   */
+  modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+): void {
+  ctx.inject(['connection'], (connectionCtx) => {
+    registerJetHubEndpoints(connectionCtx as Context, pool, auths, modelAdapters)
+  })
+}
+
+/**
+ * 「显示列表」所需的最小适配器接口：能给出**不套用户黑名单**的完整目录。
+ *
+ * 只声明用到的方法（结构化类型），避免让本模块依赖五个具体适配器类。
+ */
+export interface ModelCatalogSource {
+  listAllModels(): readonly { id: string; name: string; isFree?: boolean }[]
+  /**
+   * 聚合目录（**可选** —— 只有聚合适配器实现它）。
+   *
+   * ⚠️ 必须是**只读且零余额查询**的（规格 §8.3）：面板挂载时会调它。
+   * 其余 14 家不实现本方法，故这里声明为可选（结构化类型，不影响它们）。
+   */
+  describeCatalog?(force?: boolean, signal?: AbortSignal): Promise<Array<{
+    canonicalId: string
+    name: string
+    candidates: Array<{
+      provider: string
+      realId: string
+      realName: string
+      price: number
+      viaPatch: boolean
+      rejected: boolean
+    }>
+  }>>
+  /**
+   * 清空选型缓存（**可选** —— 只有聚合适配器实现它）。
+   *
+   * ⚠️ 改了拒绝表之后调它可立即释放内存。但**正确性不依赖它**：
+   * 聚合适配器的缓存键含拒绝表指纹，故改了表就自动不命中旧条目
+   *（见 `AggregateAdapter.rejectionFingerprint`）。
+   */
+  clearChoiceCache?(): void
+  /**
+   * 目录健康快照（**可选** —— 只有目录来自**多个外部来源**的适配器实现它，
+   * 目前只有 `cline`：它的 `cline-pass/*` 条目与图片能力**只由 models.dev 提供**，
+   * 而那是 5.39 MB 的外部站点、经常拉不到）。
+   *
+   * ⚠️ 必须**零 IO**：`provider.status` 在设置页挂载时对**每个**供应商都会调它，
+   * 一旦它触发网络请求，首屏会被拖慢（本端点全程只用同步内存副本正是为此）。
+   * ⚠️ 抛错会被调用点吞掉（诊断不得反噬主流程），故实现方可以放心地
+   * 「读到什么就报什么」。
+   */
+  describeCatalogHealth?(): CatalogHealth
+  /**
+   * 清空**临期折算缓存**（**可选** —— 只有聚合适配器实现它）。
+   *
+   * ## ⚠️⚠️ 为什么领取（claim）之后必须调它（真实缺陷，对抗审计实测证伪，2026-10-07）
+   *
+   * `createExpiryProbe` 的折算缓存（TTL 60 秒）**也缓存 `UNUSABLE`** —— 这是刻意的
+   * （见 `aggregate-expiry.ts` 的 `cacheAndReturn`：一个渠道「现在没账号」60 秒内不会变）。
+   *
+   * 但 `UNUSABLE` 现在**新增了一个来源**：`zcodeExpiry` 把「余额为 0」判成 `UNUSABLE`
+   *（修掉「额度已尽仍被 auto 选中」的真实缺陷）。而 zcode 的每日赠送额度**要先领取
+   * 才进 `balances` 桶** ⇒ 于是出现这个时序：
+   *
+   * 1. 用户请求 → 余额 0 → 写入 `UNUSABLE`（缓存 60 秒）；
+   * 2. 用户去面板点「一键领取」→ **领取成功、余额进桶**；
+   * 3. 用户立刻用 auto → **仍命中第 1 步的 `UNUSABLE`** ⇒ 报「没有任何可用候选」。
+   *
+   * ⇒ 用户会以为「签到没用」或「auto 坏了」，而账号其实已经好了。
+   *
+   * ⚠️ 旧实现不会暴露这个问题：它那时在「余额 0 但有可领活动」时返回**当日**
+   *（可当选），根本不写 `UNUSABLE`。是本次收窄**引入了**这个时序。
+   *
+   * ⚠️ 已有的两个清理入口（`pool.onAccountAdded` 与拒绝表变更）**都不覆盖领取** ——
+   * 领取既不新增账号、也不改拒绝表。故必须在领取成功后**显式**清一次。
+   */
+  clearExpiryCache?(): void
+  /**
+   * 「上次**实际**转发成功的渠道」（**可选** —— 只有聚合适配器实现它）。
+   *
+   * ⚠️ 必须是**纯内存读、零网络零余额查询**（规格 §6.3 的 P2）：用量徽标在
+   * **门控阶段**就要拿到它（重定向必须发生在 `supportsCreditBalance` 门控之前），
+   * 查网络会让外层渲染抖动。
+   *
+   * @param canonicalId - 省略时返回「最近一次任意虚拟模型的转发渠道」。
+   */
+  activeProvider?(canonicalId?: string): string | null
+  /**
+   * 「按临期排序」用的候选到期时刻（**可选** —— 只有聚合适配器实现它）。
+   *
+   * ⚠️ 这是**唯一**会做余额探测的面板方法，**只在用户显式点「按临期排序」时**调用
+   *（`describeCatalog` 的零查询契约不受影响，见那里的注释）。
+   */
+  describeExpiryOrder?(signal?: AbortSignal): Promise<Record<string, number>>
+  /**
+   * auto 的**实际转发历史**与选型入口（**可选** —— 只有 `jet-hub-auto` 实现它）。
+   *
+   * ## ⚠️ 为什么放在 `modelAdapters` 表里，而不是给 `registerJetHubRpc` 加一个位置参数
+   *
+   * 那个函数是**位置传参**，其形参列表有成文警告「历史上已因少传/插队错位复发 6 次」，
+   * 且 `zcode-wiring.spec.ts` 有一条**派生式不变量**：
+   * 「客户端 `PROVIDERS` 条数 + 1 == 形参个数」。
+   * 加第 17 个位置参数会直接打破它（实测：10 条接线断言同时变红），而那条不变量
+   * 正是为了防「中间某个 provider 位置错位 = 拿 A 的实例当 B 用」这类真实故障。
+   *
+   * ⇒ 走**按 id 键控**的 `modelAdapters` 表：加一个键不影响任何位置，也不影响
+   *   那条不变量（它只数形参）。聚合 provider 同样在这张表里（见 `index.ts`）。
+   *
+   * ⚠️ 返回类型复用 `auto-badge.ts` 的 `AutoBadgeState`（**唯一权威**）——
+   *    在 `usage.badge` 里再声明一份同样的形状必然漂移。
+   */
+  autoState?(): AutoBadgeState
+}
+
+/**
+ * 广播「模型目录可能已变化」。
+ *
+ * ⚠️ 实现已抽到 `src/catalog-broadcast.ts`（issue IKJVTF）：那里是**唯一**的
+ * 广播实现，十个适配器的「远端目录落地」也走它。此前本文件另有一份
+ * `try { ctx.emit(...) } catch`，与适配器侧完全独立 —— 两份实现必然漂移，
+ * 故现改为同名导入。
+ *
+ * ## 为什么改黑名单后必须广播
+ *
+ * 否则「关闭后选择器里仍能看到该模型，重启后才消失」（真实缺陷，用户报障）。
+ * 根因在客户端而非适配器：`dsh-client-ui-model-selection` 的
+ * `ModelCatalogDirectory` 把 `modelCatalog` 响应存进一个 `status === 'ready'`
+ * 即**短路返回缓存**的 store，只在四个转发的宿主事件上 `refresh()`：
+ * `llm/adapters-updated` / `settings/document-updated` /
+ * `credentials/record-updated` / `credentials/reference-updated`。
+ *
+ * 0.1.7 起黑名单落在插件自有文档 `$DSH_HOME/jet-hub/state.json`（不再经 settings
+ * 文档，见 jet-hub-store.ts），因此写开关**不会**触发上述任何一个事件 → 客户端
+ * 一直复用旧目录，直到重启（`connection/reset` → `resetGeneration()`）才重拉。
+ *
+ * 四者中 `llm/adapters-updated` 最贴合：按契约它是**无载荷**的「目录可能变了，
+ * 请重新读 listModels」通知（dsh-llm README：*consumers re-read the registries*），
+ * 正是这里要表达的语义。它也在 `API_REMOTE_FORWARDED_EVENTS` 白名单里，故会真的
+ * 送达浏览器。不改变拓扑，故 dsh-llm 的 invariant 监听（对每个 provider 读一次
+ * `retryPolicy`）必然通过，不会误报 INVARIANT。
+ *
+ * ⚠️ **通知失败不能反噬已经落盘的开关**：否则用户看到「切换失败」而实际已生效，
+ * 再点一次又因幂等而看似「无效」，比不提示更难排查。故 `catalog-broadcast.ts`
+ * 自行吞掉异常只记日志。
+ */
+
+/**
+ * `fullCatalogIds` 的返回值。
+ *
+ * ⚠️ **刻意是「部分成功」的形状**，因为三个调用点对目录的**完整度要求不同**
+ *（这是本函数不能再返回单一 `{ ids } | { error }` 的原因）：
+ *
+ * | 调用点 | 需求 | 对「远端那一半缺失」的动作 |
+ * |---|---|---|
+ * | `model.setAllDisabled` | **必须完整**（要写黑名单） | 判 `complete`：**拒绝且不落盘** |
+ * | `provider.setEnabled` | **远端读成功即可**（要写黑名单） | 判 `remoteError`：读失败**拒绝**；读到但为空**照常关闭** |
+ * | `account.test` | **尽力而为**（只要一个 id 就能测） | 用拿到的那些照常测 |
+ *
+ * ⚠️ `provider.setEnabled` 刻意**不**与 `model.setAllDisabled` 同判据：
+ * 前者是**供应商级**开关，「远端读到但为空」（无账号门控）时并集只剩适配器
+ * 兜底表，而该供应商本来就没有账号 ⇒ 模型选择器里一条都选不到，用兜底表写黑名单
+ * 不会造成「显示已关闭而模型仍可选」；若按 `complete` 拒绝，**无账号的供应商
+ * 将永远无法关闭**。后者是模型级批量操作，语义上要求目录完整，维持原判据。
+ * ⚠️ 两者共用 {@link fullCatalogIds}（目录来源只此一处），差异只在失败时的动作。
+ */
+interface FullCatalogResult {
+  /** **并集**（适配器目录 ∪ 远端目录），已去重。 */
+  ids: string[]
+  /**
+   * **远端目录读出且非空**（即「完整目录」）。
+   *
+   * ⚠️ 它**不能**被就地替换成「`ids` 是否为空」：冷缓存下适配器兜底表会让
+   * `ids` 看起来非空，而它只是**子集**。
+   *
+   * ⚠️ 它刻意**合并了两种**「目录不完整」形态：
+   *
+   * 1. **远端读失败**（超时 / 抛错 / 无 llm 服务）⇒ 见 {@link remoteError}；
+   * 2. **远端读到但为空** —— `createModelCatalog` 在「无已登录账号」时门控
+   *    返回 `[]`，含义是「**看不到**」而**不是**「该 provider 一个模型都没有」。
+   *    ⚠️ 此时适配器兜底表**仍可能有内容**，照它写「关闭全部」的黑名单就是
+   *    **同一个缺陷的另一个入口**（实测：远端 `[]` + 兜底表 1 条 ⇒ 「关闭全部」
+   *    只关那 1 条并返回成功）。⚠️ 这一种**没有** `remoteError`（它不是错误）。
+   *
+   * ⚠️⚠️ **调用方按各自语义选择判据，不要盲目统一**（两个写黑名单的端点
+   * **刻意不同判据**，理由见 {@link FullCatalogResult} 的表）：
+   *
+   * - `model.setAllDisabled`（模型级批量）⇒ 判 **`complete`**，不完整即拒绝；
+   * - `provider.setEnabled`（供应商级）⇒ 判 **`remoteError`**，因为形态 2 下
+   *   该供应商没有账号、模型选择器本就选不到任何东西，用兜底表落盘是自洽的，
+   *   且按 `complete` 拒绝会让无账号供应商**永远无法关闭**；
+   * - `readableCatalogIds`（提示层）⇒ 判 `complete`，不完整即放弃核对。
+   */
+  complete: boolean
+  /**
+   * 目录不完整的**原因**；仅当是「远端读失败」时有值。
+   *
+   * ⚠️ 为 `undefined` 而 `complete === false` ⇒ 就是上面第 2 种形态
+   *（远端读到但为空）。`provider.setEnabled` 据此决定「照常关闭」，
+   * 提示层据此放弃核对。
+   */
+  remoteError?: string
+}
+
+/**
+ * 取某 provider 的**模型 id**（两个目录来源的并集），供「关闭全部」「关闭供应商」
+ * 与「测试账号选模型」共用。
+ *
+ * ## ⚠️⚠️ 并集是必须的，不能「优先 `listAllModels()`」（真实缺陷）
+ *
+ * 本仓库有两个「目录」来源，**并不总是同源**：
+ *
+ * | 来源 | 形态 |
+ * |---|---|
+ * | `modelAdapters[provider].listAllModels()` | 不套黑名单；**冷缓存下是编译期兜底表（子集）** |
+ * | `llm.listModels(provider)` | **真实远端目录 − 黑名单**；异步、可能失败 |
+ *
+ * 原实现是「**优先** `listAllModels()`，只要它存在就短路、根本不看 `listModels()`」，
+ * 而冷缓存下兜底表是**子集**（`model-catalog.ts` 的 `cached ?? config.syncCatalog()`；
+ * 实测 `cline` 冷缓存只有 **3** 条，远端有 **460** 条）⇒ 两个关闭方向都会写出
+ * **只含兜底表条目**的黑名单，而端点返回「成功」：
+ *
+ * - `model.setAllDisabled`：用户以为整个供应商已关闭，而**几百个模型仍可选**；
+ * - `provider.setEnabled`：更重 —— `provider.status` 的 `closed` 判据是
+ *   `total > 0 && disabled === total`，而 `total` 也取自 `listAllModels()`
+ *   ⇒ 界面**显示为已关闭**，对话框里那几百条却**仍能选中**。这正是该端点注释里
+ *   列为**必须避免**的「账号全停用但模型仍可见」形态的镜像。
+ *
+ * 用户报障路径**恰恰是冷缓存**（脚本/设置页首次打开就点「关闭全部」）。
+ * ⚠️ 既有注释其实早已立下约定「失败时**不落盘** —— 否则会写入一个不完整的
+ * 黑名单，用户看到『关了一半』且无从判断原因」，但 `listAllModels()` 冷缓存返回
+ * 子集时它**不算失败**，于是绕过了那条守卫。并集把那个缺口补上。
+ *
+ * ## ⚠️ 适配器那一半**不能丢**（即使远端成功）
+ *
+ * `listModels()` 会把**已被用户关闭**的模型过滤掉，而适配器目录带着它们。
+ * 漏掉会让 `provider.setEnabled` 的 `ids.length === 0` 判据在「全部已关闭」时
+ * 误判成「没有可关闭的模型」而拒绝操作。
+ *
+ * ## ⚠️ 与 `readableCatalogIds` 的分工：**目录来源只此一处**
+ *
+ * 两者共用本函数取目录，区别只在**失败时的动作**：写黑名单的调用方**拒绝操作**，
+ * 提示层（`readableCatalogIds`）**放弃核对**。
+ * ⚠️ **不要在这里或那里再各写一份目录来源逻辑** —— 本仓库踩过「一文件两套同义
+ * 判据必然先腐坏一套」（IKJW33 修复时实测出内层判据在生产路径上不可达）。
+ *
+ * ⚠️ **远端读取带超时**（{@link CATALOG_READ_TIMEOUT_MS}）：这是写操作的前置读取，
+ * 不能把用户点开关的等待无限拉长。
+ *
+ * @param ctx - 取 `llm` 服务用。
+ * @param modelAdapters - 设置页目录来源（并集的一半，同步、不产生网络请求）。
+ * @param provider - 目标 provider。
+ * @returns 见 {@link FullCatalogResult}（**部分成功**是合法结果）。
+ */
+async function fullCatalogIds(
+  ctx: Context,
+  modelAdapters: Readonly<Record<string, ModelCatalogSource>> | undefined,
+  provider: string,
+): Promise<FullCatalogResult> {
+  // ── 来源一：适配器目录（同步；但**冷缓存下是兜底子集**）──
+  // ⚠️ 它抛错**不独自决定成败**：远端那一半仍可能成功，故单独吞掉。
+  const adapterIds: string[] = []
+  try {
+    for (const model of modelAdapters?.[provider]?.listAllModels() ?? []) adapterIds.push(model.id)
+  } catch {
+    /* 适配器异常不该让整个读取失败：远端目录仍可用 */
+  }
+
+  // ── 来源二：远端真实目录（权威；冷缓存下会真发一次拉取）──
+  const llm = llmServiceOf(ctx)
+  if (llm === undefined) {
+    // ⚠️ 远端拿不到 ⇒ 只剩兜底子集 ⇒ **不可用于写黑名单**（`complete: false`）。
+    return { ids: adapterIds, complete: false, remoteError: 'llm 服务不可用' }
+  }
+  let remoteIds: string[]
+  try {
+    remoteIds = (await withTimeout(llm.listModels(provider), CATALOG_READ_TIMEOUT_MS))
+      .map((model) => model.id)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    return { ids: adapterIds, complete: false, remoteError: `读取模型列表失败：${reason}` }
+  }
+
+  // ⚠️⚠️ **远端读到但为空 ⇒ 同样不可用于写黑名单**（`complete: false`，且**无**
+  // `remoteError` —— 它不是错误）。含义是「看不到」（无账号门控），不是
+  // 「该 provider 一个模型都没有」；此时适配器兜底表仍可能有内容，照它写黑名单
+  // 就是同一个缺陷的另一个入口（见 `FullCatalogResult.complete` 的长注释）。
+  return {
+    ids: [...new Set([...adapterIds, ...remoteIds])],
+    complete: remoteIds.length > 0,
+  }
+}
+
+/**
  * 核对目录时的读取预算（毫秒）。
  *
  * 开关是**写操作**，不该被远端目录拉取拖住（见 `readableCatalogIds` 的注释）。
@@ -1129,6 +1532,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  *    `[]`（门控隐藏整个 provider）⇒ 空目录意味着「看不到」而非「全部下架」；
  * 3. **`llm` 服务缺失**：拿不到远端目录，无从核对。
  *
+ * ⚠️ **目录来源取自 `fullCatalogIds`，本函数不自己再取一遍** ——
+ * 两处各写一份「哪个来源优先」的判据，就是本仓库踩过的
+ * 「一文件两套同义判据必然先腐坏一套」（那次实测出内层判据在生产路径上**不可达**）。
+ * 这里只负责把它的**失败**翻译成「放弃核对」（提示层错了不如不说），
+ * 而两个关闭方向把同一个失败翻译成「拒绝操作」（写黑名单必须完整）。
+ *
  * ⚠️ **必须带超时**：`listModels()` 在**冷缓存**下会真的发一次远端拉取
  *（`loadCatalog()`），于是「开关」这个原本纯本地的写操作多了一条网络依赖。
  * 开关**绝不能**被远端拖住 —— 用户点一下开关却转圈几十秒，比少一条提示糟得多。
@@ -1148,22 +1557,17 @@ async function readableCatalogIds(
   modelAdapters: Readonly<Record<string, ModelCatalogSource>> | undefined,
   provider: string,
 ): Promise<ReadonlySet<string> | undefined> {
-  // ⚠️ **目录来源取自 `fullCatalogIds`，本函数不自己再取一遍** ——
-  // 两处各写一份「哪个来源优先」的判据，就是本仓库踩过的
-  // 「一文件两套同义判据必然先腐坏一套」（IKJW33 修复时实测出内层判据在生产路径上**不可达**）。
-  // 这里只负责把它的**失败**翻译成「放弃核对」（提示层错了不如不说），
-  // 而两个关闭方向把同一个失败翻译成「拒绝操作」（写黑名单必须完整）。
   const catalog = await fullCatalogIds(ctx, modelAdapters, provider)
   // ⚠️⚠️ **目录不可用 ⇒ 整体放弃核对**（判 `complete`，它同时覆盖
-  // 「远端读失败」与「远端读到但为空」两种形态）。
+  // 「远端读失败」与「远端读到但为空」两种形态 —— 见该字段的长注释）。
   // 不得退化成「只用 listAllModels 兜底表」：那会退回第一版的大面积误报。
+  // 提示层错了不如不说。
   if (!catalog.complete) return undefined
   const known = new Set(catalog.ids)
   // ⚠️ 并回「被关着」的 id —— **必须在 await 之后读**（理由见函数头）。
   // ⚠️ `fullCatalogIds` 的并集**已含**适配器目录里那些被关闭的 id，
   // 但**不含**「既不在适配器目录、也不在远端目录」的历史死键（那些只存在于
   // 黑名单里）。它们必须并回来：打开方向正是清理它们的唯一路径。
-  // ⚠️ 并回「被关着」的 id —— **必须在 await 之后读**（理由见函数头）。
   for (const [id, disabled] of Object.entries(pool.listDisabledModels(provider))) {
     if (disabled === true) known.add(id)
   }
@@ -1203,334 +1607,78 @@ function catalogWarnings(
     : `${id} 不在当前模型目录，且黑名单里没有它 —— 本次没有产生任何变更${hint(id)}。`)
 }
 
-/**
- * 注册 Jet Hub 管理 API 端点。
- *
- * `connection` 服务只存在于 Web bundle；这里用**惰性注入**而非插件级静态
- * `inject`，因此在 headless / CLI profile 下本模块正常加载、只是不注册端点，
- * 而不是把整个插件树卡在 pending（那会让 profile 启动直接失败）。
- */
-export function registerJetHubRpc(
-  ctx: Context,
-  pool: AccountPool,
-  codearts: CodeArtsAuth,
-  buddy: BuddyAuth,
-  workbuddy: BuddyAuth,
-  lobsterai: LobsteraiAuth,
-  qoder: QoderAuth,
-  /** Qoder **中国版**实例（与 `qoder` 同协议、不同 product；RPC 分支按注册表分派）。 */
-  qoderCn: QoderAuth,
-  trae: TraeAuth,
-  cline: ClineAuth,
-  loomy: LoomyAuth,
-  raccoon: RaccoonAuth,
-  /** MiniMax Code **中国版**实例（OAuth 设备码 + PKCE，与 Qoder 同型但协议不同）。 */
-  minimax: MinimaxAuth,
-  zcode: ZcodeAuth,
-  /**
-   * Gemini（Google Cloud Code Assist 免费线）实例（本地回调 OAuth）。
-   *
-   * ⚠️ **必须排在最后一个 provider 形参位**（即 `zcode` 之后、`modelAdapters`
-   * 之前）：本仓库全部 `registerJetHubRpc` 调用点都是**位置传参**，历史上已因
-   * 少传/插队错位复发 6 次。新 provider 一律**追加**在末尾，既有的 14 个调用点
-   * 才不用逐个补占位。
-   */
-  gemini: GeminiAuth,
-  /**
-   * provider → 适配器实例（可选）。
-   *
-   * 用于「显示列表」拿到**不受用户黑名单影响**的全量目录（`listAllModels`），
-   * 使被关闭的模型也能显示正确的展示名（含倍率），而不是退化成裸 id。
-   * 省略时退化为只用 `ctx.llm.listModels()` 的历史行为。
-   */
-  modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
-): void {
-  ctx.inject(['connection'], (connectionCtx) => {
-    registerJetHubEndpoints(
-      connectionCtx as Context, pool, codearts, buddy, workbuddy, lobsterai,
-      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini, modelAdapters,
-    )
-  })
-}
-
-/**
- * 「显示列表」所需的最小适配器接口：能给出**不套用户黑名单**的完整目录。
- *
- * 只声明用到的方法（结构化类型），避免让本模块依赖五个具体适配器类。
- */
-export interface ModelCatalogSource {
-  handleRpc?(method: string, payload: unknown): Promise<unknown | undefined>
-  listAllModels(): readonly { id: string; name: string; isFree?: boolean }[]
-  /**
-   * 聚合目录（**可选** —— 只有聚合适配器实现它）。
-   *
-   * ⚠️ 必须是**只读且零余额查询**的（规格 §8.3）：面板挂载时会调它。
-   * 其余 14 家不实现本方法，故这里声明为可选（结构化类型，不影响它们）。
-   */
-  describeCatalog?(force?: boolean, signal?: AbortSignal): Promise<Array<{
-    canonicalId: string
-    name: string
-    candidates: Array<{
-      provider: string
-      realId: string
-      realName: string
-      price: number
-      viaPatch: boolean
-      rejected: boolean
-    }>
-  }>>
-  /**
-   * 清空选型缓存（**可选** —— 只有聚合适配器实现它）。
-   *
-   * ⚠️ 改了拒绝表之后调它可立即释放内存。但**正确性不依赖它**：
-   * 聚合适配器的缓存键含拒绝表指纹，故改了表就自动不命中旧条目
-   *（见 `AggregateAdapter.rejectionFingerprint`）。
-   */
-  clearChoiceCache?(): void
-  /**
-   * 目录健康快照（**可选** —— 只有目录来自**多个外部来源**的适配器实现它，
-   * 目前只有 `cline`：它的 `cline-pass/*` 条目与图片能力**只由 models.dev 提供**，
-   * 而那是 5.39 MB 的外部站点、经常拉不到）。
-   *
-   * ⚠️ 必须**零 IO**：`provider.status` 在设置页挂载时对**每个**供应商都会调它，
-   * 一旦它触发网络请求，首屏会被拖慢（本端点全程只用同步内存副本正是为此）。
-   * ⚠️ 抛错会被调用点吞掉（诊断不得反噬主流程），故实现方可以放心地
-   * 「读到什么就报什么」。
-   */
-  describeCatalogHealth?(): CatalogHealth
-  /**
-   * 「上次**实际**转发成功的渠道」（**可选** —— 只有聚合适配器实现它）。
-   *
-   * ⚠️ 必须是**纯内存读、零网络零余额查询**（规格 §6.3 的 P2）：用量徽标在
-   * **门控阶段**就要拿到它（重定向必须发生在 `supportsCreditBalance` 门控之前），
-   * 查网络会让外层渲染抖动。
-   *
-   * @param canonicalId - 省略时返回「最近一次任意虚拟模型的转发渠道」。
-   */
-  activeProvider?(canonicalId?: string): string | null
-  /**
-   * 「上次实际转发成功的**渠道 + 具体模型**」（**可选** —— 只有聚合适配器实现它）。
-   *
-   * ⚠️ 与 {@link activeProvider} 同源、同一提交点、同样**纯内存零网络**。
-   * 用途：`auto` 只显示渠道时用户不知道具体跑的是哪个模型（用户 2026-10-09 报障）。
-   * ⚠️ 老实现可能只有 `activeProvider` ⇒ 调用方必须容忍它缺席（回落到只给渠道）。
-   */
-  activeTarget?(canonicalId?: string): { provider: string; realId: string } | null
-  /**
-   * 「按临期排序」用的候选到期时刻（**可选** —— 只有聚合适配器实现它）。
-   *
-   * ⚠️ 这是**唯一**会做余额探测的面板方法，**只在用户显式点「按临期排序」时**调用
-   *（`describeCatalog` 的零查询契约不受影响，见那里的注释）。
-   */
-  describeExpiryOrder?(signal?: AbortSignal): Promise<Record<string, number>>
-  /**
-   * auto 的**实际转发历史**与选型入口（**可选** —— 只有 `jet-hub-auto` 实现它）。
-   *
-   * ## ⚠️ 为什么放在 `modelAdapters` 表里，而不是给 `registerJetHubRpc` 加一个位置参数
-   *
-   * 那个函数是**位置传参**，其形参列表有成文警告「历史上已因少传/插队错位复发 6 次」，
-   * 且 `zcode-wiring.spec.ts` 有一条**派生式不变量**：
-   * 「客户端 `PROVIDERS` 条数 + 1 == 形参个数」。
-   * 加第 17 个位置参数会直接打破它（实测：10 条接线断言同时变红），而那条不变量
-   * 正是为了防「中间某个 provider 位置错位 = 拿 A 的实例当 B 用」这类真实故障。
-   *
-   * ⇒ 走**按 id 键控**的 `modelAdapters` 表：加一个键不影响任何位置，也不影响
-   *   那条不变量（它只数形参）。聚合 provider 同样在这张表里（见 `index.ts`）。
-   *
-   * ⚠️ 返回类型复用 `auto-badge.ts` 的 `AutoBadgeState`（**唯一权威**）——
-   *    在 `usage.badge` 里再声明一份同样的形状必然漂移。
-   */
-  autoState?(): AutoBadgeState
-}
-
-/**
- * 广播「模型目录可能已变化」。
- *
- * ⚠️ **改黑名单后必须调用**，否则「关闭后选择器里仍能看到该模型，重启后才消失」
- * （真实缺陷，用户报障）。根因在客户端而非适配器：
- * `dsh-client-ui-model-selection` 的 `ModelCatalogDirectory` 把 `modelCatalog`
- * 响应存进一个 `status === 'ready'` 即**短路返回缓存**的 store，只在三个转发的
- * 宿主事件上 `refresh()`：`llm/adapters-updated` / `settings/document-updated`
- * / `credentials/reference-updated`。
- *
- * 0.1.7 起黑名单落在插件自有文档 `$DSH_HOME/jet-hub/state.json`（不再经 settings
- * 文档，见 jet-hub-store.ts），因此写开关**不会**触发上述任何一个事件 → 客户端
- * 一直复用旧目录，直到重启（`connection/reset` → `resetGeneration()`）才重拉。
- *
- * 三者中 `llm/adapters-updated` 最贴合：按契约它是**无载荷**的「目录可能变了，
- * 请重新读 listModels」通知（dsh-llm README：*consumers re-read the registries*），
- * 正是这里要表达的语义。它也在 `API_REMOTE_FORWARDED_EVENTS` 白名单里，故会真的
- * 送达浏览器。不改变拓扑，故 dsh-llm 的 invariant 监听（对每个 provider 读一次
- * `retryPolicy`）必然通过，不会误报 INVARIANT。
- *
- * ⚠️ **通知失败不能反噬已经落盘的开关**：否则用户看到「切换失败」而实际已生效，
- * 再点一次又因幂等而看似「无效」，比不提示更难排查。
- *
- * Phase 5 起实现**收敛到唯一实现** `catalog-broadcast.ts`（移植自 Gitee）：
- * 同 tick 合并 + `queueMicrotask` 派发防重入 + emit 后清标记防广播风暴，
- * 语义细节见该模块头。本文件所有调用点不变。
- */
-
-/**
- * `fullCatalogIds` 的返回值。
- *
- * ⚠️ **刻意是「部分成功」的形状**，因为三个调用点对目录的**完整度要求不同**
- *（这是本函数不能再返回单一 `{ ids } | { error }` 的原因）：
- *
- * | 调用点 | 需求 | 对「远端那一半缺失」的动作 |
- * |---|---|---|
- * | `model.setAllDisabled` | **必须完整**（要写黑名单） | 判 `complete`：**拒绝且不落盘** |
- * | `provider.setEnabled` | **远端读成功即可**（要写黑名单） | 判 `remoteError`：读失败**拒绝**；读到但为空**照常关闭** |
- * | `account.test` | **尽力而为**（只要一个 id 就能测） | 用拿到的那些照常测 |
- *
- * ⚠️ `provider.setEnabled` 刻意**不**与 `model.setAllDisabled` 同判据：
- * 前者是**供应商级**开关，「远端读到但为空」（无账号门控）时并集只剩适配器
- * 兜底表，而该供应商本来就没有账号 ⇒ 模型选择器里一条都选不到，用兜底表写黑名单
- * 不会造成「显示已关闭而模型仍可选」；若按 `complete` 拒绝，**无账号的供应商
- * 将永远无法关闭**。后者是模型级批量操作，语义上要求目录完整，维持原判据。
- * ⚠️ 两者共用 {@link fullCatalogIds}（目录来源只此一处），差异只在失败时的动作。
- */
-interface FullCatalogResult {
-  /** **并集**（适配器目录 ∪ 远端目录），已去重。 */
-  ids: string[]
-  /**
-   * **远端目录读出且非空**（即「完整目录」）。
-   *
-   * ⚠️ 它**不能**被就地替换成「`ids` 是否为空」：冷缓存下适配器兜底表会让
-   * `ids` 看起来非空，而它只是**子集**。
-   *
-   * ⚠️ 它刻意**合并了两种**「目录不完整」形态：
-   *
-   * 1. **远端读失败**（超时 / 抛错 / 无 llm 服务）⇒ 见 `remoteError`；
-   * 2. **远端读到但为空** —— 目录在「无已登录账号」时门控返回 `[]`，含义是
-   *    「**看不到**」而**不是**「该 provider 一个模型都没有」。
-   *    ⚠️ 此时适配器兜底表**仍可能有内容**，照它写「关闭全部」的黑名单就是
-   *    **同一个缺陷的另一个入口**（实测：远端 `[]` + 兜底表 1 条 ⇒ 「关闭全部」
-   *    只关那 1 条并返回成功）。⚠️ 这一种**没有** `remoteError`（它不是错误）。
-   *
-   * ⚠️⚠️ **调用方按各自语义选择判据，不要盲目统一**（两个写黑名单的端点
-   * **刻意不同判据**，理由见 {@link FullCatalogResult} 的表）：
-   *
-   * - `model.setAllDisabled`（模型级批量）⇒ 判 **`complete`**，不完整即拒绝；
-   * - `provider.setEnabled`（供应商级）⇒ 判 **`remoteError`**，因为形态 2 下
-   *   该供应商没有账号、模型选择器本就选不到任何东西，用兜底表落盘是自洽的，
-   *   且按 `complete` 拒绝会让无账号供应商**永远无法关闭**；
-   * - `readableCatalogIds`（提示层）⇒ 判 `complete`，不完整即放弃核对。
-   */
-  complete: boolean
-  /**
-   * 目录不完整的**原因**；仅当是「远端读失败」时有值。
-   *
-   * ⚠️ 为 `undefined` 而 `complete === false` ⇒ 就是上面第 2 种形态
-   *（远端读到但为空）。`provider.setEnabled` 据此决定「照常关闭」，
-   * 提示层据此放弃核对。
-   */
-  remoteError?: string
-}
-
-/**
- * 取某 provider 的**模型 id**（两个目录来源的并集），供「关闭全部」「关闭供应商」
- * 与「测试账号选模型」共用。
- *
- * ## ⚠️⚠️ 并集是必须的，不能「优先 `listAllModels()`」（真实缺陷，Issue IKJW33 相邻）
- *
- * 本仓库有两个「目录」来源，**并不总是同源**：
- *
- * | 来源 | 形态 |
- * |---|---|
- * | `modelAdapters[provider].listAllModels()` | 不套黑名单；**冷缓存下是编译期兜底表（子集）** |
- * | `llm.listModels(provider)` | **真实远端目录 − 黑名单**；异步、可能失败 |
- *
- * 原实现是「**优先** `listAllModels()`，只要它存在就短路、根本不看 `listModels()`」，
- * 而冷缓存下兜底表是**子集**（实测 `cline` 冷缓存只有 **3** 条，远端有 **460** 条）
- * ⇒ 两个关闭方向都会写出**只含兜底表条目**的黑名单，而端点返回「成功」：
- *
- * - `model.setAllDisabled`：用户以为整个供应商已关闭，而**几百个模型仍可选**；
- * - `provider.setEnabled`：更重 —— `provider.status` 的 `closed` 判据是
- *   `total > 0 && disabled === total`，而 `total` 也取自 `listAllModels()`
- *   ⇒ 界面**显示为已关闭**，对话框里那几百条却**仍能选中**。
- *
- * 用户报障路径**恰恰是冷缓存**（脚本/设置页首次打开就点「关闭全部」）。
- * ⚠️ 既有注释其实早已立下约定「失败时**不落盘**」，但 `listAllModels()` 冷缓存
- * 返回子集时它**不算失败**，于是绕过了那条守卫。并集把那个缺口补上。
- *
- * ## ⚠️ 适配器那一半**不能丢**（即使远端成功）
- *
- * `listModels()` 会把**已被用户关闭**的模型过滤掉，而适配器目录带着它们。
- * 漏掉会让 `provider.setEnabled` 的 `ids.length === 0` 判据在「全部已关闭」时
- * 误判成「没有可关闭的模型」而拒绝操作。
- *
- * ## ⚠️ 与 `readableCatalogIds` 的分工：**目录来源只此一处**
- *
- * 两者共用本函数取目录，区别只在**失败时的动作**：写黑名单的调用方**拒绝操作**，
- * 提示层（`readableCatalogIds`）**放弃核对**。
- *
- * ⚠️ **远端读取带超时**（`CATALOG_READ_TIMEOUT_MS`）：这是写操作的前置读取，
- * 不能把用户点开关的等待无限拉长。
- */
-async function fullCatalogIds(
-  ctx: Context,
-  modelAdapters: Readonly<Record<string, ModelCatalogSource>> | undefined,
-  provider: string,
-): Promise<FullCatalogResult> {
-  // ── 来源一：适配器目录（同步；但**冷缓存下是兜底子集**）──
-  // ⚠️ 它抛错**不独自决定成败**：远端那一半仍可能成功，故单独吞掉。
-  const adapterIds: string[] = []
-  try {
-    for (const model of modelAdapters?.[provider]?.listAllModels() ?? []) adapterIds.push(model.id)
-  } catch {
-    /* 适配器异常不该让整个读取失败：远端目录仍可用 */
-  }
-
-  // ── 来源二：远端真实目录（权威；冷缓存下会真发一次拉取）──
-  const llm = llmServiceOf(ctx)
-  if (llm === undefined) {
-    // ⚠️ 远端拿不到 ⇒ 只剩兜底子集 ⇒ **不可用于写黑名单**（`complete: false`）。
-    return { ids: adapterIds, complete: false, remoteError: 'llm 服务不可用' }
-  }
-  let remoteIds: string[]
-  try {
-    remoteIds = (await withTimeout(llm.listModels(provider), CATALOG_READ_TIMEOUT_MS))
-      .map((model) => model.id)
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return { ids: adapterIds, complete: false, remoteError: `读取模型列表失败：${reason}` }
-  }
-
-  // ⚠️⚠️ **远端读到但为空 ⇒ 同样不可用于写黑名单**（`complete: false`，且**无**
-  // `remoteError` —— 它不是错误）。含义是「看不到」（无账号门控），不是
-  // 「该 provider 一个模型都没有」。
-  return {
-    ids: [...new Set([...adapterIds, ...remoteIds])],
-    complete: remoteIds.length > 0,
-  }
-}
-
-/** 注册 Jet Hub 管理 API，兼容 Connection 的新 RPC 注册器与旧 Fetch 注册器。 */
+/** 注册 Jet Hub 管理 API 端点。使用 ctx.connection.fetch.register() 注册 HTTP POST 端点。 */
 function registerJetHubEndpoints(
   ctx: Context,
   pool: AccountPool,
-  codearts: CodeArtsAuth,
-  buddy: BuddyAuth,
-  workbuddy: BuddyAuth,
-  lobsterai: LobsteraiAuth,
-  qoder: QoderAuth,
-  qoderCn: QoderAuth,
-  trae: TraeAuth,
-  cline: ClineAuth,
-  loomy: LoomyAuth,
-  raccoon: RaccoonAuth,
-  minimax: MinimaxAuth,
-  zcode: ZcodeAuth,
-  gemini: GeminiAuth,
+  auths: JetHubAuths,
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
 ): void {
+  // ⚠️ 解构一次，函数体其余部分**逐字不动** —— 这样本次改动的 diff 面最小，
+  //    评审能一眼看出「只是换了个入口」。
+  //
+  // ⚠️ **`qodercn` 必须重命名绑定**：`JetHubAuths` 的键是 provider id
+  //   （`qodercn`），而函数体内部一直用变量名 `qoderCn`。用 `qodercn: qoderCn`
+  //   把 id 键绑到本地名，**函数体一个字都不用改**。
+  //   ⚠️ 若写成 `qoderCn`（键=变量名）会**编译失败**（接口没有该键）——
+  //   那正是我们要的：键必须是 id，否则 `authOf(auths, provider)` 查不到中国版。
+  const {
+    codearts, buddy, workbuddy, lobsterai, qoder,
+    qodercn: qoderCn,
+    trae, cline, loomy, raccoon, minimax, zcode, gemini, accio,
+  } = auths
+  /**
+   * 积分能力表。
+   *
+   * ⚠️ **从 `auths` 现造，没有第 5 个形参**（2026-10-08 设计复审 C1，见
+   * `registerJetHubRpc` 的注释）：三家（loomy / raccoon / zcode）的余额查询走
+   * **本次注册持有的 auth 实例**上的方法（它们可能带注入的 `fetchImpl`），
+   * 其余走自由函数。这正是 `src/index.ts` 显式传参时用的**同一批实例**，
+   * 故生产行为与传参时代**逐字节等价**。
+   *
+   * ⚠️ 结构化类型收窄在**这里**完成（不是把 `ProviderCreditsDeps` 放宽到
+   * `unknown`）：`JetHubAuths` 的字段是三个具体 auth 类，它们**天然**满足
+   * `ProviderCreditsDeps` 只要求的那三个方法 —— 无需 `as`，改坏签名会被 `tsc` 抓到。
+   */
+  const credits: Readonly<Record<string, ProviderCredits>> = createProviderCredits({
+    loomy, raccoon, zcode,
+    // ⚠️ **`credits.claimAll` 走的就是这张表**（Task 4 起），故 LobsterAI 的
+    //    `clientVersion` 必须在这里也接上：它是签到接口的**必填** query 参数，
+    //    且要**动态**解析（带 TTL 缓存）—— 漏掉它会让签到退回产品的兜底常量，
+    //    而兜底值可能已过期（那正是「集中在此避免三处各自拉取」要防的）。
+    //    用惰性调用（不能先 await 成常量：缓存过期后拿到新版本这件事会失效）。
+    lobsteraiClientVersion: () => lobsterai.resolveClientVersion(),
+  })
+  /**
+   * **一次性奖励**能力表（Loomy 新手任务 / raccoon 登录奖励）。
+   *
+   * ⚠️ 与 `credits` 同法：从 `auths` 现造、**没有第 5 个形参**（理由见
+   * `registerJetHubRpc` 的注释与设计复审 C1）。两家都走**实例方法**
+   *（实例可能带注入的 `fetchImpl`），与 `src/index.ts` 用的是**同一批实例**。
+   *
+   * ⚠️ 只有 loomy 需要传实例（raccoon 也传，因为它的领取/状态在实例上）。
+   */
+  const onboarding: Readonly<Record<string, ProviderOnboarding>> = createProviderOnboarding({
+    loomy,
+    raccoon,
+  })
+  /**
+   * 传给各家 credits 实现的调用上下文。
+   *
+   * ⚠️ 与 Task 5/8 的 `ProviderCallContext` **同形但不同源**：本函数在
+   * `registerJetHubEndpoints` 的闭包里，持有的是**本次注册的** ctx / pool，
+   * 而全局注册表那条路要等 `index.ts` 装配。两者的字段含义一致
+   *（凭据解析 / 日志 / 账号池），故实现侧只需一个形状。
+   */
+  const callContext: ProviderCallContext = {
+    resolveCredential: (refName) => ctx.credentials.resolve(credentialRef(refName)),
+    warn: (message) => ctx.logger?.warn?.(message),
+    accountPool: pool,
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const connection = (ctx as any).connection ?? ctx.get('connection')
-  const legacyFetch = typeof connection?.fetch?.register === 'function'
-  const channelRpc = typeof connection?.rpc?.handle === 'function'
-  if (!legacyFetch && !channelRpc) {
-    ctx.logger.warn('[jet-hub] Connection management transport not available, RPC endpoints not registered')
+  if (!connection || typeof connection.fetch?.register !== 'function') {
+    ctx.logger.warn('[jet-hub] connection.fetch not available, RPC endpoints not registered')
     return
   }
 
@@ -1584,11 +1732,19 @@ function registerJetHubEndpoints(
    *
    * - loomy / zcode：没有 refresh 端点，其 `refreshAccountCredential` 做的是
    *   **有效性探测**，拿来当续期用只会白发请求；
-   * - opencode：匿名通道，无凭据可续。
+   * - opencode：匿名通道，无凭据可续（且它**不在** `JetHubAuths` 里）。
    *
-   * ⚠️ 手机版形态：**没有** `authOf` 查表（上游 provider 抽象重构属 Phase 6），
-   * 分派走与 `account.refresh` 端点**同一份** else-if 链的键 ——
-   * 键集合与 `JetHubAuths` 的键一致（去掉 loomy / zcode）。
+   * ⚠️ 本集合的**成员关系**必须与 `JetHubAuths` 的键一致，**只去掉 loomy / zcode**
+   * 这两家「设计上没有 refresh 端点」的（opencode 根本不在 `JetHubAuths` 里）——
+   * 合并 2026-10-08 的 provider 抽象重构后用 {@link authOf} 查表，
+   * 故这里只是**能力判据**（该不该尝试自愈），不是分派表本身。
+   *
+   * ⚠️⚠️ **这个「只去掉两家」的方向此前没有守卫**（2026-10-12 复审实测）：
+   * `credits-balance-self-heal.spec.ts` 原先只锁「本集合 ⊆ `JetHubAuths` 的键」
+   * （挡住假 id），**反向没有** —— 于是新 provider 进了 `JetHubAuths` 却忘了
+   * 登记到这里时**全绿**，而它的过期账号**永不自愈**（issue IKKHL5 的形态：
+   * 积分行报「未登录」而上游其实只需一次 refresh）。现该文件已补上反向用例
+   * （逐键点名 + 显式豁免表），新增 provider 漏登记会**点名变红**。
    */
   const SELF_HEAL_REFRESHABLE_PROVIDERS: ReadonlySet<string> = new Set([
     'codearts',
@@ -1602,32 +1758,48 @@ function registerJetHubEndpoints(
     RACCOON.id,
     MINIMAX.id,
     GEMINI.id,
+    // ⚠️ officeace（2026-10-13 审计补）：STS 寿命**约 2 小时**，正落在
+    // 「睡眠/挂起恢复后到定时器补触发那一轮之间」这个窗口内 ⇒ 漏登记的症状
+    // 与 issue IKKHL5 逐字相同（卡片红「已过期」+ 积分行 HTTP 401 + 窗口内
+    // 无手动自救），且**日志零字**。
+    // 同款陷阱已发生过一次（accio），见 `docs/agent-notes/providers-accio.md`
+    // 的「接线陷阱（新 provider 通用）」。⚠️ 它有真实 refresh 端点
+    // （`officeace-auth.ts` 的 `doRefreshCredential` 打华为 STS），故不属于豁免。
+    OFFICEACE.id,
+    // ⚠️ accio **有** refresh 端点（`accio-auth.ts` 的 `refreshCredential`）且
+    // 池内 `expiresAt` 确实会被写 ⇒ 不属 loomy / zcode 那类豁免。
+    // 漏登记的后果是「凭据明明能续，面板却报未登录」（2026-10-12 复审发现）。
+    ACCIO.id,
   ])
 
   /**
    * 自愈的**在飞去重**表（key = 账号 id）—— 同一账号的并发自愈共享同一次续期。
    *
-   * ⚠️ **必须有**（对抗审计实测证实的真实缺陷）：积分端点是**用户可反复触发**的
-   * （客户端 `loadCredits` 有四个调用点：面板挂载、签到成功后、领取成功后、
-   * 「刷新积分」按钮，且**没有重入闸门**；用量徽标每 60 秒轮询
-   * `usageBadge.read` 也走同一个 `handleMethod('credits.balances')`）。
+   * ⚠️ **必须有**（对抗审计实测证实的真实缺陷）：本端点是**用户可反复触发**的
+   * （客户端 `plugin-src/client/jet-hub.js` 的 `loadCredits` 有四个调用点：
+   * 面板挂载、签到成功后、领取成功后、「刷新积分」按钮，且**没有重入闸门** ——
+   * 对比 `claimCredits` 的 `claimInFlightRef`；按钮的 `disabled: creditsLoading`
+   * 是异步 state，连点两次即并发）。宿主还有第二条独立入口：用量徽标每 60 秒
+   * 轮询 `usageBadge.read` → 同一个 `handleMethod('credits.balances')`。
    *
-   * 而**续期会轮换 refresh_token**（AGENTS.md 记过 codearts 那次「三条续期入口
+   * 而**续期会轮换 refresh_token**（`AGENTS.md` 记过 codearts 那次「三条续期入口
    * 并发消费同一份 refresh_token，1 个成功、其余 invalid_grant」的事故），
    * 并发自愈存在「后写的把先写的新 token 覆盖成已失效旧 token」的风险。
    *
    * ⚠️ 本表只防**进程内、本入口**的并发。跨入口（定时器 `refreshAll`、按需续期）
-   * 与跨进程的互斥由各家自己兜（codearts / gemini 有 per-ref `SerialQueue`）。
+   * 与跨进程的互斥由各家自己兜（codearts / gemini 有 per-ref `SerialQueue`，
+   * 其余几家是既有状态，非本次引入）。
    */
   const balanceHealInFlight = new Map<string, Promise<void>>()
 
   /**
-   * 自愈的续期分派：**与 `account.refresh` 端点同一份键集合**。
+   * 自愈的续期分派：**复用 `account.refresh` 同一处查表**（{@link authOf}）。
    *
-   * ⚠️ 手机版形态：上游走 `authOf(auths, provider)` 查表，手机版仍是逐实例
-   * 形参 —— 与其新建一张平行表（两份分派必然先腐坏一套），不如直接引用
-   * `account.refresh` case 里那份 switch 的同一批实例。键集合必须与
-   * `SELF_HEAL_REFRESHABLE_PROVIDERS` 一致。
+   * ⚠️ 2026-10-10（issue IKKHL5 合并 master）：本函数原先自己持一张
+   * `provider → auth 实例` 的 switch。合并时发现 master 的 provider 抽象重构
+   *（Task 2）已把 `account.refresh` 的那张 switch 收成 `authOf(auths, provider)`
+   * ——**正是本函数当初想要的「分派只能有一份」**。故这里改为直接调它，
+   * 而不是留两份平行实现（留两份就是本函数注释开头警告的那个缺陷本身）。
    *
    * ⚠️ 仍然**不含 `enabled` 判据**（AGENTS.md 铁律）：停用只影响自动选号。
    */
@@ -1636,35 +1808,12 @@ function registerJetHubEndpoints(
     credentialRefName: string,
     accountId: string,
   ): Promise<void> => {
-    switch (provider) {
-      case 'codearts':
-        return await codearts.refreshAccountCredential(credentialRefName, pool, accountId)
-      case 'buddy':
-        return await buddy.refreshAccountCredential(credentialRefName, pool, accountId)
-      case 'workbuddy':
-        return await workbuddy.refreshAccountCredential(credentialRefName, pool, accountId)
-      case LOBSTERAI.id:
-        return await lobsterai.refreshAccountCredential(credentialRefName, pool, accountId)
-      case QODER.id:
-      case QODER_CN.id:
-        // 同协议族：按 provider 找到对应实例（与 account.refresh 同判据，
-        // **不要**图省事写 `qoder.refresh...` —— CN 账号会去刷国际版凭据）。
-        return await requireQoderFamily(provider).auth.refreshAccountCredential(credentialRefName, pool, accountId)
-      case TRAE.id:
-        return await trae.refreshAccountCredential(credentialRefName, pool, accountId)
-      case CLINE.id:
-        return await cline.refreshAccountCredential(credentialRefName, pool, accountId)
-      case RACCOON.id:
-        return await raccoon.refreshAccountCredential(credentialRefName, pool, accountId)
-      case MINIMAX.id:
-        return await minimax.refreshAccountCredential(credentialRefName, pool, accountId)
-      case GEMINI.id:
-        return await gemini.refreshAccountCredential(credentialRefName, pool, accountId)
-      default:
-        // SELF_HEAL_REFRESHABLE_PROVIDERS 已过滤；走到这里说明「名单说可续、
-        // 实际没注册」—— 真异常，必须留痕。
-        throw new Error(`Unknown provider: ${provider}`)
-    }
+    const auth = authOf(auths, provider)
+    // ⚠️ 抛错还是跳过由**调用方**决定：自愈侧先用
+    // {@link SELF_HEAL_REFRESHABLE_PROVIDERS} 过滤，故走到这里为空说明
+    // 「本以为是可续期的，实际没注册」—— 那是真异常，必须留痕。
+    if (auth === undefined) throw new Error(`Unknown provider: ${provider}`)
+    await auth.refreshAccountCredential(credentialRefName, pool, accountId)
   }
 
   /**
@@ -1674,16 +1823,18 @@ function registerJetHubEndpoints(
    *
    * 系统睡眠/挂起数小时后恢复，**宿主进程全程没退出**，于是
    * `state.json` 里的 `expiresAt`（= 上次续期时刻 + 令牌寿命）落在过去，
-   * 而客户端判据只有一次本地比较 ⇒ 卡片显示红色「已过期 · 自动续期」；
+   * 而客户端判据只有一次本地比较（`plugin-src/client/jet-hub.js` 的
+   * `account.expiresAt <= Date.now()`）⇒ 卡片显示红色「已过期 · 自动续期」；
    * `credits.balances` 又只 resolve 凭据后直连上游、**全程不续期**
    * ⇒ 积分行报「账户信息查询失败：HTTP 401」。该窗口内**没有任何手动
    * 自救手段**（「重测」的 refresh 是刻意 no-op）。
    *
-   * ## 为什么这一层是对症的
+   * ## 为什么这一层是对症的（而不是 issue 建议的 A：墙钟跳变检测）
    *
-   * 实测：libuv 定时器基于**单调时钟**，睡眠时长 > interval 时**恢复瞬间就补触发**
-   * 一轮；所以「睡几小时」并不需要墙钟检测来抢救。真正的缺口是**恢复后的第一轮
-   * 要等最多一个 interval**，而短寿命 provider（minimax 1h / codearts 2h /
+   * 实测（`NtSuspendProcess` 真实挂起 8 秒 = 等比 4 小时）：libuv 定时器基于
+   * **单调时钟**，睡眠时长 > interval 时**恢复瞬间就补触发**一轮；所以
+   * 「睡几小时」并不需要墙钟检测来抢救。真正的缺口是**恢复后的第一轮要等
+   * 最多一个 interval**，而短寿命 provider（minimax 1h / codearts 2h /
    * raccoon 3h）在这个窗口里必然显示「已过期」。
    *
    * 本函数让**积分查询这个用户主动发起的动作**自带续期：不必等定时器，
@@ -1691,26 +1842,38 @@ function registerJetHubEndpoints(
    */
   const healExpiredAccountBeforeBalance = async (
     entry: ProviderAccountEntry,
-    /** 「现在」的注入点（只供测试；见 healExpiredAccounts 的说明）。 */
+    /** 「现在」的注入点（只供测试；见 {@link healExpiredAccounts} 的说明）。 */
     now: () => number = Date.now,
   ): Promise<void> => {
     // ⚠️ 判据与客户端**逐字一致**（同一个表达式），否则会出现「面板说没过期、
     // 这里却发续期请求」或反之的无谓请求。
-    // ⚠️ **`typeof` 检查不是冗余**：`expiresAt` 可从**用户可编辑的备份文件**导入，
+    //
+    // ⚠️ **`typeof` 检查不是冗余**（对抗审计实测的测试盲区）：`expiresAt` 可从
+    // **用户可编辑的备份文件**导入，而 `sanitizeAccounts` **不过滤**该字段。
     // 池里若是数字字符串 `'1791559805000'`：保留 `typeof` → 不续期
-    // （与客户端判据一致）；删掉则被 JS 强制转换判为过期 → 宿主与 UI **行为分叉**。
+    // （与客户端判据一致）；删掉 `typeof` 则被 JS 强制转换判为过期 →
+    // 宿主与 UI **行为分叉**。
     const expired = typeof entry.expiresAt === 'number'
       && entry.expiresAt > 0
       && entry.expiresAt <= now()
-    // ⚠️ **不判 `entry.refreshable`**：那个布尔是**凭据材料的镜像**、可能被误标，
-    // 误标过一次就永不自愈。各家 `refreshAccountCredential` 内部自己按凭据材料
-    // 判断能否续期（缺 refresh_token 时抛「请重新登录」），由它给出真终态。
+    // ⚠️ **不判 `entry.refreshable`**（issue IKKHL5 建议 C 的原文写的是
+    // 「已过期且 refreshable」）：那个布尔是**凭据材料的镜像**、可能被误标，
+    // 而本插件已有一条铁律——误标过一次就永不自愈（见 AGENTS.md「账号池的
+    // refreshable 只是凭据材料的镜像」）。各家 `refreshAccountCredential`
+    // 内部自己按凭据材料判断能否续期（缺 refresh_token 时抛「请重新登录」），
+    // 由它给出真终态；这里不预判。
     if (!expired) return
     // ⚠️ **设计上没有续期能力的渠道静默跳过**（不抛错、不记日志）：
-    // 用异常表达「跳过」会让每次刷新面板都留下一条误导性告警。
+    // 用异常表达「跳过」会让每次刷新面板都留下一条误导性告警（loomy 的池内
+    // `expiresAt` 是本地按 14 天推算的固定值，14 天后必然过期 ⇒ 确定可达）。
+    // 详见 {@link SELF_HEAL_REFRESHABLE_PROVIDERS}。
     if (!SELF_HEAL_REFRESHABLE_PROVIDERS.has(entry.provider)) return
 
-    // ⚠️ **在飞去重**：同一账号的并发自愈共享同一次续期请求（见 balanceHealInFlight）。
+    // ⚠️ **在飞去重**：同一账号的并发自愈共享同一次续期请求。
+    // 积分端点与领取端点都会被用户反复触发（连点「刷新积分」/「一键领取」、
+    // 徽标每 60 秒轮询走同一条 `handleMethod`），而续期**会轮换 refresh_token**，
+    // 并发会让「后写的把先写的新 token 覆盖成已失效的旧 token」。
+    // 详见 {@link balanceHealInFlight}。
     const existing = balanceHealInFlight.get(entry.id)
     if (existing !== undefined) {
       await existing
@@ -1725,7 +1888,7 @@ function registerJetHubEndpoints(
         // 直连上游必然 401，让整条积分行报「续期失败：…」反而比原来的
         // 「账户信息查询失败：HTTP 401」更难懂。照常往下走、由上游给出真原因。
         // ⚠️ 文案**刻意不写「余额」**：本函数已同时服务 `credits.balances`
-        // 与 `credits.claimAll` 两个端点。
+        // 与 `credits.claimAll` 两个端点，「照常查余额」在领取路径上是错的。
         ctx.logger?.warn?.(
           `[jet-hub] 积分操作前的自愈续期失败（账号 ${entry.id}，照常继续）：`
           + `${error instanceof Error ? error.message : String(error)}`,
@@ -1736,12 +1899,16 @@ function registerJetHubEndpoints(
     balanceHealInFlight.set(entry.id, task)
     try {
       // ⚠️ **必须 `await`**：本函数的存在意义就是「**先续期、再查余额**」——
-      // 不 await 就等于没修（对抗审计实测：改成 void task 后测试全绿，
-      // 说明该顺序语义原先没有任何守护）。
+      // 不 await 就等于没修（对抗审计实测：改成 `void task` 后 12 条测试全绿，
+      // 说明该顺序语义原先没有任何守护；现已由
+      // `credits-balance-self-heal.spec.ts` 的「顺序」用例锁住）。
       await task
     } finally {
-      // ⚠️ 必须在 `finally` 里删除：续期失败时也要放行下一次自愈。
-      // ⚠️ 只删自己这一条（值比较），避免把「后来者刚建的新 task」误删。
+      // ⚠️ 必须在 `finally` 里删除：续期失败时也要放行下一次自愈，
+      // 否则一次失败会把该账号的自愈**永久焊死**（与 `SerialQueue` 的
+      // 「失败也必须放行下一个」同一条教训）。
+      // ⚠️ 只删自己这一条：并发时后来者读到的是同一个 task，删掉的也应是它
+      //（用值比较而不是无条件 delete，避免把「后来者刚建的新 task」误删）。
       if (balanceHealInFlight.get(entry.id) === task) {
         balanceHealInFlight.delete(entry.id)
       }
@@ -1751,36 +1918,50 @@ function registerJetHubEndpoints(
   /**
    * 自愈的**整轮预算**（毫秒）。
    *
-   * ⚠️ **必须有**：本自愈是**逐账号顺序 await，每个账号一个真实 HTTP 续期**，
-   * 而各家 `AbortSignal.timeout` 是 20~60 秒。池里 39 个账号全过期且全部超时时，
+   * ⚠️ **必须有**（对抗审计实测的真实缺陷）：本自愈是**逐账号顺序 await，
+   * 每个账号一个真实 HTTP 续期**，而各家 `AbortSignal.timeout` 是
+   * 20~60 秒（codearts / buddy / raccoon 60s，lobsterai / qoder / trae /
+   * cline / minimax 30s，gemini 20s）。池里 39 个账号全过期且全部超时时，
    * 最坏 **39 × 60s ≈ 39 分钟**，而这发生在**用户点一下就等**的
-   * `credits.balances` / `credits.claimAll` 入口上（徽标还会每 60 秒轮询）。
+   * `credits.balances` / `credits.claimAll` 入口上（徽标还会每 60 秒轮询
+   * 走同一个 `handleMethod`）。
+   *
+   * 原有的 `DEFAULT_ROUND_BUDGET_MS`（30 分钟）**管不到这里** —— 它只在
+   * `collectClaimResults` 的成长任务路径（`afterClaim`）里被消费。
    * 若不设闸门，症状会从「积分行报 HTTP 401」**恶化成「整个端点超时、
    * 余额与领取结果一起丢」** —— 比原缺陷更糟。
    *
    * ⚠️ 语义与 `collectClaimResults` 的 `roundBudgetMs` 保持一致：
-   * 到点后**停止继续自愈、但不失败**（余下账号留给下一轮/定时器）。
+   * 到点后**停止继续自愈、但不失败**（余下账号留给下一轮/定时器），
+   * 因为「没来得及续期」远好于「整个端点拿不到任何结果」。
    */
   const SELF_HEAL_ROUND_BUDGET_MS = 60_000
 
   /**
    * 逐账号**顺序**执行自愈（供 `credits.balances` 与 `credits.claimAll` 共用）。
    *
-   * ⚠️ **必须串行、不得改 `Promise.all`**：「顺序执行避免并发触发风控」是
-   * 本端点的既有约定（见 `collectCreditBalances` 的注释）；并发续期还有
-   * 轮换 token 的覆盖风险。
-   * ⚠️ **受 `SELF_HEAL_ROUND_BUDGET_MS` 约束**：到点即停，余下账号交给下一轮。
+   * ⚠️ **必须串行、不得改 `Promise.all`**（对抗审计实测的测试盲区：改成并行后
+   * 测试全绿，而「顺序执行避免并发触发风控」是本端点的既有约定，见
+   * `collectCreditBalances` 的注释；并发续期还有轮换 token 的覆盖风险）。
+   * 由 `credits-balance-self-heal.spec.ts` 的**双账号**顺序用例锁住
+   *（单账号时串行与并行不可区分 —— 那正是它当初漏掉的原因）。
+   *
+   * ⚠️ **受 {@link SELF_HEAL_ROUND_BUDGET_MS} 约束**：到点即停，余下账号
+   * 交给下一轮（见该常量的说明 —— 不能让自愈把端点本身拖超时）。
    * ⚠️ 预算判据在**每个账号之前**检查：已经开始的续期不打断
-   * （它有自己的 20~60 秒超时兜底）。
+   *（它有自己的 20~60 秒超时兜底），故实际耗时上界是
+   * `预算 + 单个续期超时`，而不是「预算 + N × 超时」。
    */
   const healExpiredAccounts = async (
     accounts: readonly ProviderAccountEntry[],
     /**
-     * 「现在」的注入点。⚠️ **只供测试**注入确定时刻 —— 生产不传即用 `Date.now()`。
+     * 「现在」的注入点。⚠️ **只供测试**注入确定时刻 ——
+     * 生产不传即用 `Date.now()`。
      *
-     * 存在的理由：`<=` 边界用例若在自己体内取 `Date.now()`，而 heal 内部
-     * **再调一次**，两者跨毫秒才检出 ⇒ 实测单文件 20 次只有 10 次变红、
-     * 全量 CI 下 0 检出。注入 now 后边界判定变得确定。
+     * 存在的理由（对抗审计实测的高危点）：`<=` 边界用例原先在自己体内取
+     * `const now = Date.now()`，而 heal 内部**再调一次** `Date.now()`，
+     * 两者跨毫秒才检出 ⇒ 实测单文件 20 次只有 **10 次**变红（50%），
+     * 全量 CI 下 **0 检出**。注入 now 后边界判定变得确定。
      */
     now: () => number = Date.now,
   ): Promise<void> => {
@@ -1800,14 +1981,58 @@ function registerJetHubEndpoints(
 
   /**
    * Loomy 短信登录的中间状态（账号 id → { phone, msgid }）。
-  /**
-   * Loomy 短信登录的中间状态（账号 id → { phone, msgid }）。
    *
    * 为什么放内存而不是凭据存储：msgid 是**一次性的中间态**（5 分钟有效），
    * 登录完成后即无意义；写进 `ctx.credentials` 会污染凭据命名空间，
    * 且它不含任何秘密（不能用于认证）。
    */
   const pendingSmsMsgid = new Map<string, { phone: string; msgid: string }>()
+
+  /**
+   * OfficeAce 登录的中间状态（账号 id → `{ state, codeVerifier, dpopPrivateJwk }`）。
+   *
+   * 华为云 OAuth 需要三件东西跨「发起登录」与「轮询取码」两次 RPC 保持：
+   * - `state`：云侧签发的一次性状态（**必须**来自 `POST /v1/claw/auth/state`，
+   *   自制 state 会在轮询时 404 —— 实测踩过）；
+   * - `codeVerifier`：PKCE 原文（换 token 时用）；
+   * - `dpopPrivateJwk`：DPoP 的 ES256 私钥（换 token 时签名，且**刷新要复用**）。
+   *
+   * ⚠️ 放内存而不落盘：`state` 与 `code` 都是**分钟级一次性**凭据，登录完成即无意义；
+   *    落盘只会留下无用的秘密副本。真正需要持久化的凭据在 `persistLogin` 之后
+   *    由 **DSH 凭据库**接管（按 `credentialRef` 索引，见 `officeace-auth.ts`）。
+   *
+   * ⚠️ `credentialRef` **必须跟着走**：登录完成时按它把凭据写进**这一个账号**
+   *    的槽位。缺了它，新凭据就落到公共 `session.json` 覆盖了别人（2026-10-13）。
+   */
+  type PendingOfficeAceState = {
+    state: string
+    codeVerifier: string
+    dpopPrivateJwk: import('./officeace-auth.js').DpopPrivateJwk
+    credentialRef: string
+  }
+
+  const pendingOfficeAceState = new Map<string, PendingOfficeAceState>()
+
+  /**
+   * OfficeAce 交换的**单飞表**（accountId → 正在进行的交换结果）。
+   *
+   * ## 为什么必须有（2026-10-14 独立审计查出的净回归）
+   *
+   * 客户端 `plugin-src/client/jet-hub.js` 的 `setInterval(..., 1000)` **没有
+   * in-flight 闸门**（只挡「再点一次新建」），而一次交换含多次网络往返
+   *（取 code → 换 token → modelInfo → 落库），通常远超 1 秒 ⇒ **两拍重叠几乎必然**。
+   * 同一个 `code` 只能换一次，于是后一拍必然失败 —— 若各拍独立走失败收尾，
+   * 后一拍会把**前一拍刚登好的账号与凭据删掉**（实测：修前池 `[]` + 凭据键 `[]`，
+   * 而正确的结局是一次成功登录）。
+   *
+   * ⇒ 后一拍**复用**前一拍的 promise，而不是各自去换。
+   * ⚠️ 这只覆盖「真正重叠」的那一段；**顺序**重放同一条 code（前一次已结束）
+   * 仍会走到失败分支，由 `hasOfficeAceCredential` 那道护栏兜住 —— 两道都要在。
+   */
+  const officeAceExchangeInFlight = new Map<
+    string,
+    Promise<{ done: boolean; success?: boolean; error?: string }>
+  >()
 
   /**
    * 登录**终态失败**记录（账号 id → `{ message, at }`；`message` 即下发给前端的原文）。
@@ -1822,10 +2047,9 @@ function registerJetHubEndpoints(
    * （5 分钟是客户端自己的轮询上限，不是服务端超时），用户分不清是网络问题、
    * 账号未开通服务、自己关掉了弹窗，还是插件 bug。
    *
-   * 实测代价（issue 附件）：上游 OfficeAce 因「账号未订阅 ModelArts MaaS」失败时，
+   * 实测代价（issue 附件）：OfficeAce 因「账号未订阅 ModelArts MaaS」失败时，
    * 云侧早已用 `HTTP 200 + subscription:null` 讲清原因，而用户只能看到转圈 ——
-   * 报告方为此改宿主代码加文件日志才定位。手机版无 OfficeAce，但**十余家
-   * provider 的后台登录失败走的是同一条静默路径**，缺陷同型。
+   * 报告方为此改宿主代码加文件日志才定位。
    *
    * ## 生命周期
    *
@@ -1835,9 +2059,9 @@ function registerJetHubEndpoints(
    * `failLogin` 先同步记原因、再异步删条目，故「记录已写、条目未删」的窗口里
    * 也必须能报出终态。
    *
-   * ⚠️ **读后不删**（与 `pendingSmsMsgid` 的一次性中间态不同）：终态原因
+   * ⚠️ **读后不删**（与 `pendingOfficeAceState` 的一次性中间态不同）：终态原因
    * 要**幂等**——客户端 1 秒一次轮询、`setInterval` 的异步回调可能重叠，若
-   * 「读到即清」，一次丢包/慢响应就把唯一一次原因吃掉，又退回静默转圈。
+   * 「读到即清」，一次丢包/慢响应就把唯一次原因吃掉，又退回静默转圈。
    * 记录按**账号 id** 索引，而 id 由 `account.create` 每次新生成（`shortId()`），
    * 不存在「旧记录被下一次登录读到」的可能，故保留无害。过期与容量由
    * `LOGIN_FAILURE_TTL_MS` / `LOGIN_FAILURE_LIMIT` 兜住。
@@ -1853,8 +2077,8 @@ function registerJetHubEndpoints(
    * ⚠️ 必须**远大于任何可能的「同时在轮询的登录数」**：淘汰会把一条**仍在被轮询**
    * 的失败记录挤掉 ⇒ 那条登录退回静默（只剩客户端超时文案兜底）。客户端同一时刻
    * 只允许一轮登录（`pollRef` 闸门），但 `login.poll` 可被外部脚本调用 ——
-   * 上游独立审计实测「连做 65 次失败登录」即可触发 64 上限的淘汰。真正的内存
-   * 边界是 `LOGIN_FAILURE_TTL_MS`（30 分钟），上限只是护栏。
+   * 独立审计实测「连做 65 次失败登录」即可触发 64 上限的淘汰。真正的内存边界
+   * 是 `LOGIN_FAILURE_TTL_MS`（30 分钟），上限只是护栏。
    */
   const LOGIN_FAILURE_LIMIT = 256
 
@@ -1862,7 +2086,8 @@ function registerJetHubEndpoints(
    * 归一化异常为可读文案。
    *
    * ⚠️ **必须显式挡 `undefined` / `null`**：`String(undefined)` 不报错，会拼出
-   * 字面量 `"undefined"` —— 那会让用户看到「登录失败：undefined」这种零线索文案。
+   * 字面量 `"undefined"`（`docs/agent-notes/misc.md` §2 记过同型缺陷）——
+   * 那会让用户看到「登录失败：undefined」这种零线索文案。
    */
   function loginReasonText(reason: unknown): string {
     if (reason === undefined || reason === null) return '未知错误'
@@ -1873,8 +2098,8 @@ function registerJetHubEndpoints(
   /**
    * 终端失败对用户可见的文案。
    *
-   * ⚠️ **只此一处构造**：首次报出（各 provider 的失败收尾）与后续轮询读表，
-   * 必须是**逐字相同**的一句话 —— 两处各写一份必然漂移，
+   * ⚠️ **只此一处构造**：首次报出（各 provider 的失败收尾 / OfficeAce 的交换失败）
+   * 与后续轮询读表，必须是**逐字相同**的一句话 —— 两处各写一份必然漂移，
    * 用户会看到「第一次说 A、再点一次说 B」。
    */
   function loginFailureMessage(reason: unknown): string {
@@ -1937,78 +2162,56 @@ function registerJetHubEndpoints(
   /**
    * 这次登录**是否已经真的成了**（该账号的凭据已落库）。
    *
-   * ## 为什么失败收尾必须先问这一句（上游 2026-10-14 两轮独立审计查出的**净回归**）
+   * ## 为什么失败收尾必须先问这一句（2026-10-14 两轮独立审计查出的**净回归**）
    *
    * 各 provider 后台 `.then` 里，**记账**（`pool.updateAccount` → `state.json` 落盘）
    * 排在**凭据落盘之后**；而 `AccountPool` 的落盘失败会**抛错**
    *（`account-pool.ts` 的 `writeAccounts` —— 本仓库自己记过「落盘抛错时账号
    * **已经是可用状态**」）。于是「登录其实成了、只是记账失败」会走进 `.catch`
    * ⇒ `failLogin` ⇒ **删号 + 报「登录失败」**，用户被误导去重新登录
-   *（同一个上游账号会变成两条）。
+   *（同一个上游账号会变成两条）。红队实测：codearts 一支在 `credentials.set`
+   * 之后让 `updateAccount` 抛错，修前回 `success:true`，改后回 `success:false`
+   * 而账号与凭据其实都在。
    *
    * ⇒ 判据：**凭据在 ⇒ 这次登录就是成了**。`failLogin` 据此把「登录真的失败」与
    * 「登录成功后的记账失败」分开（后者只记日志，不删号、不报失败）。
    *
-   * ⚠️⚠️ **返回三态**（Issue F-50，不可逆方向）：`true` 已落库 / `false` 确实没落库 /
-   * `'unknown'` **读不到凭据存储、状态未知**。第三态与 `poolEntryOf` 的保守分支同源
-   * —— 见下方实现里那段说明（读失败若被当成「没落库」，就会删掉一次可能已成功的登录）。
-   *
-   * @returns `true` = 凭据已落库；`false` = 确实没有；`'unknown'` = 读失败（未知）。
+   * ⚠️ 这个判据**只此一处实现**：OfficeAce 那条一度另写了一份同义判据 ——
+   * 一个文件两套同义判据必然漂移（`docs/agent-notes/misc.md` §1）。
    */
-  async function loginCredentialLanded(accountId: string): Promise<boolean | 'unknown'> {
+  async function loginCredentialLanded(accountId: string): Promise<boolean> {
     const refs = new Set<string>()
     const entry = poolEntryOf(accountId)
     if (entry !== undefined && entry !== 'unknown') refs.add(entry.credentialRef)
-    /**
-     * ⚠️⚠️ **读失败 ≠ 不存在**（Issue F-50）。
-     *
-     * 判据原先写作 `.catch(() => undefined)`，把「凭据存储读失败」与「这个 ref 没有
-     * 凭据」合并成同一个 `undefined`。而本函数的返回值直接决定 `failLogin` 是否
-     * **删账号 + unset 凭据**（不可逆）⇒ 一次读取抖动就会把一次**可能已经成功**的
-     * 登录销毁。故读失败时**不返回 false**，而是返回 `'unknown'` 交给调用方走保守分支
-     * （与 {@link poolEntryOf} 的「读不到时不删」同口径）。
-     */
-    let unreadable = false
+    // OfficeAce 的凭据按 `pending.credentialRef ?? entry.credentialRef` 落库 ⇒ 两个都查
+    //（正常路径同值；改造期存量数据可能只有其一）。
+    const pending = pendingOfficeAceState.get(accountId)
+    if (pending !== undefined) refs.add(pending.credentialRef)
     for (const name of refs) {
       if (name.length === 0) continue
-      let resolved: { value: string } | undefined
-      try {
-        resolved = await ctx.credentials.resolve(credentialRef(name))
-      } catch {
-        unreadable = true
-        continue
-      }
+      const resolved = await ctx.credentials.resolve(credentialRef(name)).catch(() => undefined)
       if (resolved !== undefined && resolved.value.length > 0) return true
     }
-    return unreadable ? 'unknown' : false
+    return false
   }
 
   /**
    * 登录失败的**统一收尾**：先判「其实是否已经成功」→ 真失败才记终态 + 删占位条目。
    *
    * 十余处 provider 后台 `.catch()` 都走这里，**不要各自手写两行** ——
-   * 漏接的那一家会继续静默转圈（计数断言锁死接线）。
+   * 漏接的那一家会继续静默转圈（计数断言锁死接线），而「失败不留幽灵账号」
+   * 这条腿也**只由这里**保证（除 raccoon 外没有任何行为用例覆盖它）。
    *
    * @returns 需要报给前端的失败文案；**`undefined` = 这次登录其实已经成功**
    *（凭据已落库，只是后续记账失败）—— 调用方**不得**把它当作失败。
    */
   async function failLogin(accountId: string, error: unknown): Promise<string | undefined> {
-    const landed = await loginCredentialLanded(accountId)
-    if (landed === true) {
+    if (await loginCredentialLanded(accountId)) {
       ctx.logger.warn(
         `[jet-hub] ${accountId} 登录已拿到凭据、后续记账失败（按成功处理：不记失败、不删账号）：`
         + `${loginReasonText(error)}`,
       )
       return undefined
-    }
-    if (landed === 'unknown') {
-      // ⚠️ 凭据存储**读不到**（不是「没有」）：状态未知 ⇒ 只记终态、**不删账号**
-      //（Issue F-50，不可逆方向；与下面 poolEntryOf 的 'unknown' 分支同口径）。
-      ctx.logger.warn(
-        `[jet-hub] ${accountId} 登录收尾时读不到凭据存储（状态未知），已记终态但**不删账号**（宁可留卡片）：`
-        + `${loginReasonText(error)}`,
-      )
-      return recordLoginFailure(accountId, error)
     }
     const entry = poolEntryOf(accountId)
     if (entry === 'unknown') {
@@ -2024,15 +2227,129 @@ function registerJetHubEndpoints(
       return recordLoginFailure(accountId, new Error('该账号条目已被删除（可能是你手动删掉了它）'))
     }
     const message = recordLoginFailure(accountId, error)
-    void pool.removeAccount(accountId).catch((removeError: unknown) => {
-      // ⚠️ **不得静默吞掉**（Issue F-49）：删号失败会让这张「登录失败」的卡片留在池里
-      //    （占位条目 = 无凭据的幽灵账号），而这里原先零日志 —— 用户看不到、排查也无线索。
-      ctx.logger.warn(
-        `[jet-hub] ${accountId} 登录失败后删除占位条目失败（该卡片会残留，可在面板手动删除）：`
-        + `${loginReasonText(removeError)}`,
-      )
-    })
+    void pool.removeAccount(accountId).catch(() => {})
     return message
+  }
+
+  /**
+   * 跑完一次 OfficeAce 交换：取 code → 换 token → 落库 → 回填账号条目。
+   * 返回 `login.poll` 的 value（**由调用方包进 `{ ok: true, value }`**）。
+   *
+   * ⚠️⚠️ **三段式：交换 / 落库 / 回填各有自己的失败语义**
+   *（2026-10-14 独立审计查出的**净回归**，真实缺陷，**别退回单 `try`**）。
+   *
+   * 拆开之前：一个 `try` 罩住 `completeLogin` + `persistLogin` +
+   * `pool.updateAccount`，catch 一律当「code 过期 / 交换失败」并 `failLogin`
+   * （= **删账号**，而 `AccountPool.removeAccount` 会连带 unset 凭据）。
+   * 两个真实可达的后果（都已实测）：
+   *
+   * ① **回填**（`updateAccount`）抛错 ⇒ 凭据**已经写好**，却连账号带凭据一起被删：
+   *    池 `[]` + 凭据键 `[]` + 前端看到「登录失败」。
+   * ② **两拍重叠** ⇒ 后一拍必然换失败（同一 code 只能用一次），却把**前一拍刚登好的
+   *    账号与凭据删掉**：修前实测池 `[]` + 凭据键 `[]` + 持续报失败，
+   *    而正确的结局是一次成功登录。
+   *
+   * ⇒ 判据：**凭据在 ⇒ 这次登录就是成了**（与 `login.poll` 的成功判据同源），
+   * 此后任何一步失败都**不许**再删号/删凭据。
+   */
+  async function exchangeOfficeAceLogin(
+    accountId: string,
+    entry: { credentialRef: string },
+    pending: PendingOfficeAceState,
+  ): Promise<{ done: boolean; success?: boolean; error?: string }> {
+    const code = await auths.officeace.pollLoginCode(pending.state).catch(() => undefined)
+    if (code === undefined) {
+      // 未就绪（用户还没完成授权）：继续轮询。
+      return { done: false }
+    }
+    const exchanged = await auths.officeace
+      .completeLogin(code, pending.codeVerifier, pending.dpopPrivateJwk)
+      .then(
+        (credential) => ({ ok: true as const, credential }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+    if (!exchanged.ok) {
+      /**
+       * ⚠️ **失败收尾统一走 `failLogin`**（它内部先判「凭据是否其实已落库」）：
+       * 并发的另一拍可能**已经用同一个 code 换成功**（本拍拿到的错误恰恰是
+       * 「code 已被使用」）⇒ 那种情况下 `failLogin` 返回 `undefined`，
+       * 我们必须按成功回，**绝不能删号/删凭据**。这与上面的单飞表是**两道**，
+       * 缺一不可：单飞只挡真正重叠的那一段，顺序重放（前一次已结束）要这道兜。
+       *
+       * code 过期 / 交换失败：授权 code 一次性，保留 state 继续轮询没有意义
+       *（云侧不会再给新 code）—— 清中间态，用户需重新发起登录。
+       */
+      const failure = await failLogin(accountId, exchanged.error)
+      pendingOfficeAceState.delete(accountId)
+      if (failure === undefined) return { done: true, success: true }
+      /**
+       * ⚠️⚠️ **失败是业务终态，必须 `done:true` + `success:false`**
+       *（Gitee issue IKLI7J 根因 1，真实缺陷）。
+       *
+       * 原先是 `{done:false, error}` —— 意图是「把原因交给前端」，
+       * 但**前端在 `!pollRes.done` 时直接 `return`**（它只判 `done`），
+       * ⇒ 这句唯一指路的原因（本例是「账号未订阅 ModelArts MaaS」）
+       * 从未到达用户眼前，只剩 5 分钟静默转圈。
+       * 实测取证：本仓库探针跑真 `registerJetHubRpc`，交换失败时第 1 次
+       * 轮询确实回 `{done:false,error}`、第 2 次起连 `error` 都没有
+       *（`pendingOfficeAceState` 已删 ⇒ 退化成普通 `{done:false}`）。
+       *
+       * ⚠️ 只把 `done` 改成 `true` 还不够、也**不能**只改前端：
+       * 两侧必须同改（前端不判 `success` 就仍读不到原因）。
+       * ⚠️ `failLogin` **顺手删掉占位条目**：授权 code 一次性、state 已清，
+       * 该条目永远不会再拿到凭据 —— 与其余十二家的失败收尾一致
+       *（原先不删，用户会看到一张「凭据未配置」的幽灵卡片）。
+       */
+      return { done: true, success: false, error: failure }
+    }
+    const credential = exchanged.credential
+    pendingOfficeAceState.delete(accountId)
+    /**
+     * ⚠️ **落库走 DSH 凭据库（标准范式）**：与 gemini / raccoon /
+     *    minimax 的 `persistLogin(credential, { refName })` 同款 ——
+     *    凭据按 `credentialRef` 索引 ⇒ 每个账号一份，互不覆盖。
+     *    这是号池多账号能成立的根（自己写 session.json 的版本
+     *    必然串号，2026-10-13 改造）。
+     *
+     * ⚠️ 它抛错**不等于没落库**（可能写成功后才抛，例如凭据库实现了写后校验）
+     *    ⇒ 先看凭据在不在，**只有确实没有凭据**才判失败。
+     */
+    let accountLabel = credential.accountId ?? ''
+    try {
+      const persisted = await auths.officeace.persistLogin(credential, {
+        refName: pending.credentialRef ?? entry.credentialRef,
+        credentials: ctx.credentials as never,
+      })
+      accountLabel = persisted.accountId ?? credential.accountId ?? ''
+    } catch (error) {
+      // ⚠️ `persistLogin` 抛错**不等于没落库**（可能写成功后才抛）⇒ 交给
+      //    `failLogin` 的通用判据（它先看凭据是否已落库）；返回 `undefined`
+      //    就说明凭据在 ⇒ 按成功继续。
+      const failure = await failLogin(accountId, error)
+      if (failure !== undefined) return { done: true, success: false, error: failure }
+    }
+    /**
+     * **回填展示字段**：失败**不改变登录结论**（凭据已落盘），只记日志。
+     *
+     * ⚠️ 池里的 `refreshable` / `expiresAt` 是凭据的镜像，下一轮 `refreshAll`
+     *    对账会自愈（见 `src/expiry-sync.ts`），故这里**绝不**因回填失败去删账号。
+     */
+    try {
+      await pool.updateAccount(accountId, {
+        nickname: accountLabel.length > 0 ? `OfficeAce ${accountLabel.slice(0, 8)}` : accountId,
+        refreshable: true,
+        // ⚠️ **必须回填 expiresAt**（与 gemini / zcode 同款）：漏写时
+        //    卡片「有效期」永远显示「未知」（真实症状 2026-10-13，
+        //    用户重登成功后面板仍显示未知）。STS 寿命 2 小时，
+        //    `credential.expiresAt` 是 ISO 字符串。
+        expiresAt: new Date(credential.expiresAt).getTime(),
+      })
+    } catch (error) {
+      ctx.logger.warn(
+        `[jet-hub] officeace 登录成功但回填账号条目失败（凭据已在，不判失败）：${String(error)}`,
+      )
+    }
+    return { done: true, success: true }
   }
 
   /**
@@ -2052,7 +2369,7 @@ function registerJetHubEndpoints(
    * 把它计为「跳过」。客户端的能力表（`credits-capabilities.js`）仍是唯一权威。
    *
    * ⚠️ 「有账号的渠道」由账号池派生（`pool.listAllAccounts()` 只是同步内存副本
-   * 的异步外壳），不遍历 12 个渠道里没账号的那些 —— 那些调下去只会拿到空结果。
+   * 的异步外壳），不遍历**没有账号**的那些渠道 —— 那些调下去只会拿到空结果。
    */
   const autoCheckin = createAutoCheckin({
     store: createAutoCheckinStore(ctx),
@@ -2061,7 +2378,13 @@ function registerJetHubEndpoints(
       return [...new Set(accounts.map((entry) => entry.provider))].sort()
     },
     claim: (provider) =>
-      handleMethod('credits.claimAll', { provider }) as Promise<BadgeRpcResult<RpcCreditsClaimAllResponse>>,
+      handleMethod('credits.claimAll', { provider }).then((result) => {
+        // ⚠️ 自动签到路径**绕过**了 RPC 请求入口那处清理（它直接调 `handleMethod`）
+        //    ⇒ 必须在这里也清一次，否则「启动时自动签到成功 → 用户马上用 auto」
+        //    仍会撞上缓存里的 `UNUSABLE`（见 `ModelCatalogSource.clearExpiryCache`）。
+        modelAdapters?.['aggregate']?.clearExpiryCache?.()
+        return result as BadgeRpcResult<RpcCreditsClaimAllResponse>
+      }),
     warn: (message) => ctx.logger?.warn?.(message),
   })
   // 启动时排定一轮（延迟 30s；内部自己判开关与「今天是否已跑」）。
@@ -2078,8 +2401,9 @@ function registerJetHubEndpoints(
    * 用量徽标读数服务（宿主侧 TTL 缓存 + 只保留启用账号 + 附加订阅读数）。
    *
    * ⚠️ **取数直接复用内部 `handleMethod`**，不另写 provider 分派：
-   * `credits.balances` 的 12 条分支（含 codearts 的「Token 计费账户」文案、
-   * zcode 的逐桶折算等）是唯一口径，复制一份必然漂移。
+   * `credits.balances` 的分派（Task 3 后是 `credits` 表查表 + opencode / qoder
+   * 两个特例；此前是 12 段 `if`）是唯一口径 —— 含 codearts 的
+   * 「Token 计费账户」文案、zcode 的逐桶折算等，复制一份必然漂移。
    * 第三个参数是 `AbortSignal` 且在当前实现里未被使用，故这里传 `undefined`
    *（该形参是下划线命名 = 有意未用）。
    *
@@ -2099,26 +2423,7 @@ function registerJetHubEndpoints(
     warn: (message) => ctx.logger?.warn?.(message),
   })
 
-  // rc.8 已移除 fetch.register，且内置 RPC 已占用唯一的 /api 拦截器。
-  // 插件注册独立通道，由宿主执行同源/回环检查并解析传输信封。
-  if (channelRpc) {
-    connection.rpc.handle('/jet-hub',
-      async (endpoint: string, payload: unknown, signal: AbortSignal) => {
-        const call = payload as Record<string, unknown> | null
-        if (endpoint !== 'manage' || !call || typeof call.method !== 'string'
-          || !Object.prototype.hasOwnProperty.call(call, 'payload')) {
-          return { ok: false, error: { code: 'gateway/bad-request', message: 'Invalid Jet Hub management request.', details: {} } }
-        }
-        try {
-          return normalizeRpcResult(await handleMethod(call.method, call.payload, signal))
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          ctx.logger.warn(`[jet-hub] ${call.method} failed: ${message}`)
-          return { ok: false, error: { code: 'jet-hub/handler-failed', message, details: {} } }
-        }
-      }, { authority: 'loopback' })
-  } else {
-    const route = {
+  connection.fetch.register({
     path: JET_HUB_API_PATH,
     methods: ['POST'],
     requestBody: 'buffered' as const,
@@ -2140,10 +2445,9 @@ function registerJetHubEndpoints(
 
       const rpcId = typeof message.rpcId === 'string' ? message.rpcId : 'invalid-request'
       const call = message.payload as Record<string, unknown> | undefined
-      const endpoint = new URL(request.url).pathname === '/jet-hub/manage' ? 'manage' : JET_HUB_ENDPOINT
       if (
         message.type !== 'client-request' || typeof message.rpcId !== 'string'
-        || message.method !== endpoint
+        || message.method !== JET_HUB_ENDPOINT
         || !call || typeof call.method !== 'string'
         || !Object.prototype.hasOwnProperty.call(call, 'payload')
       ) {
@@ -2152,6 +2456,13 @@ function registerJetHubEndpoints(
 
       try {
         const result = await handleMethod(call.method as string, call.payload, request.signal)
+        // ⚠️ 领取成功后清**临期折算缓存**（见 `ModelCatalogSource.clearExpiryCache`
+        //    的长注释）：zcode 的每日额度要先领取才进 `balances` 桶，而「余额为 0」
+        //    现在会被折算成 `UNUSABLE` 并被缓存 60 秒 ⇒ 不清就会让用户「签到成功了，
+        //    但 60 秒内 auto 仍说没有可用候选」。
+        if (call.method === 'credits.claimAll') {
+          modelAdapters?.['aggregate']?.clearExpiryCache?.()
+        }
         return reply(rpcId, result)
       } catch (error) {
         // 必须返回规范的 RPC 错误响应（而不是裸 500 文本），
@@ -2164,11 +2475,7 @@ function registerJetHubEndpoints(
         })
       }
     },
-    }
-    connection.fetch.register(route)
-    // 旧宿主也接收独立通道，旧版客户端的 /api/jet-hub 地址仍保留。
-    connection.fetch.register({ ...route, path: '/jet-hub/manage' })
-  }
+  })
 
   /**
    * 载体页要用的 captcha 配置：**远端优先、拉不到就兜底**。
@@ -2214,8 +2521,7 @@ function registerJetHubEndpoints(
    * ⚠ 只读、无凭据：这条 GET 不接收任何参数，输出里不含 JWT / token；
    *   产出的 param 由 guest 自己经 `captcha.contribute` 回传，**不**经这条路由。
    */
-  // 这条旧 GET 仅供手工诊断；运行时载体使用独立回环服务器。
-  if (legacyFetch) connection.fetch.register({
+  connection.fetch.register({
     path: CAPTCHA_CARRIER_PATH,
     methods: ['GET'],
     requestBody: 'buffered' as const,
@@ -2250,7 +2556,7 @@ function registerJetHubEndpoints(
    * 账号池（`jet-hub/state.json`）的条目只有 `id`/`provider`/`nickname`/
    * `credentialRef` 等字段，**没有**账号名与手机号 —— 它们在**凭据**里
    * （`user_info.displayName` 与由 17 位 `user_id` 派生的手机号）。
-   * 且 `sanitizeAccounts`（`src/jet-hub-store.ts:173-191`）只保留三个字段，
+   * 且 `sanitizeAccounts`（`src/jet-hub-store.ts`）只保留三个字段，
    * 写回池也会被丢掉。故每次列表时从**各账号自己的 ref** 现读。
    *
    * ## ⚠ 只对 zcode 做，且逐条独立失败
@@ -2305,73 +2611,6 @@ function registerJetHubEndpoints(
   }
 
   /**
-   * 把上游余额**逐桶**映射成 `CreditBalance`。
-   *
-   * ## 为什么必须逐桶（而不是只取首桶）
-   *
-   * `CreditBalance` 的形状是 `{total, packages[], expiredTotal?}` 这类**积分包**
-   * 结构，而 ZCode 是「按模型分的 token 额度池」。上游一个 resource bucket
-   * = 一个模型一段额度，故**一个桶一个包**。
-   *
-   * ⚠ 旧实现只取 `buckets[0]`（经 `result.planName`）拼**一个**包，但
-   * `balance.total` 用的是 `result.remaining`（**全桶汇总**）—— 多桶账号下
-   * 那个包的数字比它自己的 `totalUnits` 还大，自相矛盾，且其余模型的额度
-   * 被**静默丢掉**，用户看不出「GLM-5.3 与 GLM-5.3-Flash 各剩多少」。
-   *
-   * ## 空桶的兜底
-   *
-   * 上游可能一个桶都不给（实测企业版之外仍有账号只有 0 桶）。此时**不能**返回
-   * 空 `packages`（前端会显示成「没有额度」而不是「查不到」），故给一个具名占位包，
-   * 让 UI 至少能显示「0 / 0」并带上 `result.planName`。
-   */
-  function buildZcodeBalance(result: ZcodeBalanceResult): CreditBalance {
-    const packages: CreditBalance['packages'] = result.buckets.map((bucket) => {
-      const remaining = bucket.availableUnits ?? bucket.remainingUnits ?? 0
-      const total = bucket.totalUnits ?? 0
-      return {
-        name: bucket.showName ?? result.planName ?? 'ZCode 免费额度',
-        // ⚠ 单位是 **token**（不是 credit）—— 如实标注，
-        // 避免用户以为 ZCode 有 1 亿积分。
-        unit: 'token',
-        remaining,
-        total,
-        used: Math.max(0, total - remaining),
-        active: true,
-        // ZCode 的额度按日刷新（`period: 'one_time'` 的活动包到点失效），
-        // 故周期起止都留空，只用 `expiredTime` 给到期时刻。
-        cycleStartTime: '',
-        cycleEndTime: '',
-        expiredTime: bucket.expiresAt !== undefined
-          ? new Date(bucket.expiresAt * 1000).toISOString()
-          : (result.expiresAt !== undefined ? new Date(result.expiresAt * 1000).toISOString() : ''),
-      }
-    })
-    if (packages.length === 0) {
-      packages.push({
-        name: result.planName ?? 'ZCode 免费额度',
-        unit: 'token',
-        remaining: result.remaining,
-        total: result.total,
-        used: Math.max(0, result.total - result.remaining),
-        active: true,
-        cycleStartTime: '',
-        cycleEndTime: '',
-        expiredTime: result.expiresAt !== undefined
-          ? new Date(result.expiresAt * 1000).toISOString()
-          : '',
-      })
-    }
-    return {
-      // 仍是**全桶汇总**，与 `packages` 逐项之和一致（`fetchZcodeBalance` 的
-      // `:251-260` 就是这么累加的）。
-      total: result.remaining,
-      // ZCode 不在同一响应里区分「已失效包」，故为 0。
-      expiredTotal: 0,
-      packages,
-    }
-  }
-
-  /**
    * 分发端点方法到对应的处理器。
    *
    * ⚠️ **opencode 的方法在此之前先试一次**（2026-10-02 修）。
@@ -2391,22 +2630,45 @@ function registerJetHubEndpoints(
       const handled = await handleOpencodeRpc(ctx, pool, method, payload)
       if (handled !== undefined) return handled
     }
-    const autoclawResult = await modelAdapters?.autoclaw?.handleRpc?.(method, payload)
-    if (autoclawResult !== undefined) return autoclawResult
     switch (method) {
-      case 'zcode.sources': {
-        const req = payload as { accountId: string; refresh?: boolean }
-        return { ok: true, value: await zcodeSources(ctx, pool).list(req.accountId, req.refresh === true) }
-      }
-      case 'zcode.selectSource': {
-        const req = payload as { accountId: string; sourceId: string }
-        if (typeof req.sourceId !== 'string') throw new Error('额度来源参数无效')
-        await zcodeSources(ctx, pool).select(req.accountId, req.sourceId)
-        return { ok: true, value: { selected: req.sourceId } }
-      }
       case 'account.list': {
         const req = payload as RpcListAccountsRequest
         const accounts = await pool.listAccounts(req.provider)
+        // ⚠️ OfficeAce 自愈回填（2026-10-13 修正）：`expiresAt` 回填是后加的
+        //    （`6fb110f`），修复前登录留下的池条目缺这个字段 ⇒ 卡片恒显示
+        //    「未知」且不会自己补上。列表时若发现缺失，从凭据文件读真实
+        //    有效期补上并**写回池**（一次性自愈，之后走正常的登录/续期回填）。
+        //
+        // ⚠️⚠️ **必须逐账号按 ref 读凭据**（2026-10-13 审计修正，原为广播缺陷）：
+        //    原实现调 `readOfficeAceCredential()`（**无 ref** ⇒ 读共享的
+        //    `session.json`，即「最后一次登录的那个账号」）再把同一个值写给
+        //    **所有**缺 `expiresAt` 的账号 ⇒ 多账号下 A 的有效期显示成 B 的，
+        //    方向还可能相反（把好账号显示成已过期）。
+        //    这是 AGENTS.md「位置/键错位」防线复发的那一类（已复发 7 次）。
+        if (req.provider === OFFICEACE.id && accounts.some((a) => a.expiresAt === undefined)) {
+          for (const account of accounts) {
+            if (account.expiresAt !== undefined) continue
+            // ⚠️ 逐账号 resolve：该账号自己的 `credentialRef`（**不是** ref 名）。
+            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
+              .catch(() => null)
+            if (!resolved) continue
+            let expiresAt = Number.NaN
+            try {
+              // ⚠️ `expiresAt` 是 STS 的 ISO 8601 字符串（不是数值时间戳 ——
+              //    华为这侧没有 buddy / accio 那条秒/毫秒混淆，故无需归一化）。
+              const credential = JSON.parse(resolved.value) as { expiresAt?: unknown }
+              if (typeof credential.expiresAt === 'string') {
+                expiresAt = Date.parse(credential.expiresAt)
+              }
+            } catch { /* 凭据不是合法 JSON ⇒ 跳过该账号 */ }
+            // ⚠️ 解析不出来就**跳过这个账号**（绝不广播、也绝不写 NaN：
+            // `updateAccount` 落盘时 `JSON.stringify` 会整个丢弃 `undefined`，
+            // 写 NaN 则会让卡片显示「已过期」——两者都比「显示未知」更糟）。
+            if (!Number.isFinite(expiresAt) || expiresAt <= 0) continue
+            account.expiresAt = expiresAt
+            void pool.updateAccount(account.id, { expiresAt }).catch(() => undefined)
+          }
+        }
         return { ok: true, value: { accounts: await enrichAccountIdentity(accounts, req.provider) } }
       }
 
@@ -2473,10 +2735,7 @@ function registerJetHubEndpoints(
           // 阻塞数十秒后才返回 URL，弹窗必被拦截并返回 null，前端兜底逻辑
           // 便执行 `window.location.href = loginUrl`，把整个设置页跳走
           // ——用户报的「主页面直接跳转过去了」正是此因。
-          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51）：与 loomy / raccoon /
-          // minimax / gemini 的已验证形态一致。否则后台流程先落定时，它的
-          // `pool.updateAccount` 会打在一个**还没登记的条目**上（回填丢失）；而启动
-          // 失败时还得把条目删掉（下面的 catch），不留幽灵账号。
+          const started = await codearts.startLogin({ refName })
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2488,14 +2747,6 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
-          let started
-          try {
-            started = await codearts.startLogin({ refName })
-          } catch (error) {
-            // 启动失败：删掉占位条目，不留幽灵账号。
-            void pool.removeAccount(id).catch(() => {})
-            throw error
-          }
           started.result.then(async (loginResult) => {
             const credential = parseCodeArtsCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2516,7 +2767,7 @@ function registerJetHubEndpoints(
         } else if (provider === LOBSTERAI.id) {
           // LobsterAI 与 codearts 同款：回调式登录 + 两步式返回，
           // 理由见上面的 codearts 分支（弹窗拦截导致主页面被跳转）。
-          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
+          const started = await lobsterai.startLogin({ refName })
           await pool.addAccount({
             id,
             provider: LOBSTERAI.id,
@@ -2526,14 +2777,6 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
-          let started
-          try {
-            started = await lobsterai.startLogin({ refName })
-          } catch (error) {
-            // 启动失败：删掉占位条目，不留幽灵账号。
-            void pool.removeAccount(id).catch(() => {})
-            throw error
-          }
           started.result.then(async (loginResult) => {
             const credential = parseLobsteraiCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2557,7 +2800,7 @@ function registerJetHubEndpoints(
           // ⚠️ 分支内一律用 `product` / `auth`，**不要**出现 `QODER` 字面量 ——
           // 否则中国版会拿国际版的域名与 client_id 发请求。
           const { product, auth } = requireQoderFamily(provider)
-          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
+          const started = await auth.startLogin({ refName })
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2569,14 +2812,6 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
-          let started
-          try {
-            started = await auth.startLogin({ refName })
-          } catch (error) {
-            // 启动失败：删掉占位条目，不留幽灵账号。
-            void pool.removeAccount(id).catch(() => {})
-            throw error
-          }
           started.result.then(async (loginResult) => {
             const credential = parseQoderCredential(loginResult.access)
             // ⚠️ 设备码轮询响应**不带 `user_name`**，故 `credential.nickname` 恒为空
@@ -2608,7 +2843,7 @@ function registerJetHubEndpoints(
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === TRAE.id) {
           // TRAE 回调式登录 + 两步式返回（与 LobsterAI / codearts 同因）。
-          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
+          const started = await trae.startLogin({ refName })
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2620,14 +2855,6 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
-          let started
-          try {
-            started = await trae.startLogin({ refName })
-          } catch (error) {
-            // 启动失败：删掉占位条目，不留幽灵账号。
-            void pool.removeAccount(id).catch(() => {})
-            throw error
-          }
           started.result.then(async (loginResult) => {
             const credential = parseTraeCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2653,9 +2880,7 @@ function registerJetHubEndpoints(
           // `POST {workOsBase}/user_management/authorize/device` 拿到设备码，
           // 才能返回 loginUrl（Qoder 的 URL 是纯本地构造的）。那只是一次
           // 快速 POST，仍远快于浏览器手势窗口，故两步式的理由与 Qoder 一致。
-          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51）：Cline 的 `startLogin` 内部
-          // 要发一次 WorkOS 设备码请求（有网络往返），后台流程先落定的窗口比其它
-          // 分支更宽。理由同 codearts 分支。
+          const started = await cline.startLogin({ refName })
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2667,14 +2892,6 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
-          let started
-          try {
-            started = await cline.startLogin({ refName })
-          } catch (error) {
-            // 启动失败：删掉占位条目，不留幽灵账号。
-            void pool.removeAccount(id).catch(() => {})
-            throw error
-          }
           started.result.then(async (loginResult) => {
             const credential = parseClineCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2874,7 +3091,16 @@ function registerJetHubEndpoints(
            * `loginResult` 分支里的 `findAccountIdByIdentityField`）——
            * 判据是插件自己拿到的 `user_id`，不再依赖本机文件。
            */
-          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
+          const started = await zcode.startLogin({
+            refName,
+            // ⚠️ 缺省 `'bigmodel'`（既有行为不变）；`'zai'` 走 chat.z.ai 国际版。
+            // ⚠️ 必须过白名单（真实修复，Gitee issue IKJLK3 E2）：`req` 是**客户端
+            //   自报**的（RPC 载荷没有 schema 校验），原先只做 `?? 'bigmodel'` 兜底，
+            //   任何其它字符串都会被原样送进 `startZcodeLogin` → 打到一个不存在的
+            //   授权端点，表现为「授权页打不开 / 轮询到超时」这类难以定位的失败。
+            //   未登记值一律回落到缺省渠道并记日志（不报错，见下）。
+            provider: normalizeZcodeLoginProvider(req.zcodeProvider),
+          })
           // 先登记占位条目（无凭据），使前端 `login.poll` 能立即看到该账号；
           // 登录成功后再回填昵称。失败则删除占位条目。
           await pool.addAccount({
@@ -2887,23 +3113,6 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
-          let started
-          try {
-            started = await zcode.startLogin({
-              refName,
-              // ⚠️ 缺省 `'bigmodel'`（既有行为不变）；`'zai'` 走 chat.z.ai 国际版。
-              // ⚠️ 必须过白名单（真实修复，Gitee issue IKJLK3 E2）：`req` 是**客户端
-              //   自报**的（RPC 载荷没有 schema 校验），原先只做 `?? 'bigmodel'` 兜底，
-              //   任何其它字符串都会被原样送进 `startZcodeLogin` → 打到一个不存在的
-              //   授权端点，表现为「授权页打不开 / 轮询到超时」这类难以定位的失败。
-              //   未登记值一律回落到缺省渠道并记日志（不报错，见下）。
-              provider: normalizeZcodeLoginProvider(req.zcodeProvider),
-            })
-          } catch (error) {
-            // 启动失败：删掉占位条目，不留幽灵账号。
-            void pool.removeAccount(id).catch(() => {})
-            throw error
-          }
           started.result.then(async (saved) => {
             /**
              * ★★ **重复账号去重**（真实缺陷，2026-10-02）。
@@ -3029,6 +3238,131 @@ function registerJetHubEndpoints(
           })
 
           return { ok: true, value: { accountId: id, loginUrl: geminiStarted.loginUrl } }
+        } else if (provider === OFFICEACE.id) {
+          /**
+           * OfficeAce（华为 ModelArts MaaS）走**华为云 OAuth（PKCE + DPoP）**，
+           * 全程**不依赖 OfficeAce 客户端**（协议逆向见 `officeace-auth.ts` 模块头）。
+           *
+           * ⚠️ 两步式（同 zcode / gemini）：`window.open` 只在用户手势窗口内有效，
+           * 等授权完成才返回 URL 会被浏览器拦截 —— 这里先返回 authorizeUrl，
+           * 后台轮询 `code` 再换 token（`login.poll` 里做）。
+           *
+           * ⚠️ 华为 SSO 通常**自动重定向**（无需扫码 / 无需输密码），用户开页即完成。
+           *
+           * ⚠️ `state` **必须**用云侧签发的那一个（`POST /v1/claw/auth/state`）：
+           * 自制 state 会在轮询时 404（实测踩过）。`codeVerifier` 与 `dpopPrivateJwk`
+           * 与 state 同批生成，必须一起暂存到 `pendingOfficeAceState` 供 `login.poll` 使用。
+           */
+          await pool.addAccount({
+            id,
+            provider: OFFICEACE.id,
+            nickname: id,
+            enabled: true,
+            credentialRef: refName,
+            refreshable: false,
+            createdAt: Date.now(),
+          })
+
+          let started: Awaited<ReturnType<OfficeAceAuth['startLogin']>>
+          try {
+            started = await auths.officeace.startLogin()
+          } catch (error) {
+            void pool.removeAccount(id).catch(() => {})
+            const reason = error instanceof Error ? error.message : String(error)
+            throw new Error(`无法启动 OfficeAce 登录（华为云授权状态获取失败）：${reason}`)
+          }
+          pendingOfficeAceState.set(id, {
+            state: started.state,
+            codeVerifier: started._internal.codeVerifier,
+            dpopPrivateJwk: started._internal.dpopPrivateJwk,
+            // ⚠️ **必须带上 ref**：`completeLogin` 按它分文件落盘。缺省会让
+            //    新账号的凭据写进公共 `session.json`，覆盖其他账号的凭据
+            //    （多账号共存的前提，2026-10-13 改造）。
+            credentialRef: refName,
+          })
+
+          // ⚠️ **宿主侧直接拉起无痕窗口**（2026-10-13，用户要求）：
+          //    华为 authui 会静默复用浏览器已有会话 ⇒ 带 cookie 打开授权页
+          //    看不到登录框 ⇒ 「新建账号」永远只能建出同一个号。无痕窗口是
+          //    全新 cookie jar，天然无会话，且**不碰用户日常浏览器里的
+          //    华为云控制台会话**（对比 `authui/logout`：它的作用域是整个
+          //    域，会连带登出控制台）。实测依据见 `login.ts` 的
+          //    `openIncognitoWindow` 注释。
+          //
+          // ⚠️ 客户端**无法**自己做这件事：`window.open` 不能请求无痕模式
+          //    （那是进程级启动参数），故必须由宿主 `spawn` 浏览器可执行文件。
+          //
+          // ⚠️ 打开失败（读不到默认浏览器 / spawn 失败）时返回 `false`，
+          //    客户端据此回退到自己的 `window.open` —— 保持原行为不变，
+          //    不让「换个打开方式」变成「开不了窗口」。
+          const incognitoOpened = openIncognitoWindow(started.authorizeUrl)
+
+          return {
+            ok: true,
+            value: { accountId: id, loginUrl: started.authorizeUrl, incognitoOpened },
+          }
+        } else if (provider === ACCIO.id) {
+          /**
+           * Accio（阿里）走**浏览器回调式 OAuth 2.0 + PKCE**（本地
+           * `createServer` 监听 `127.0.0.1` 的 `/api/oauth/callback`）。
+           *
+           * ⚠️ 与 codearts / lobsterai / gemini 同型：**必须先返回 URL 再等结果**
+           * —— `window.open` 只在用户手势窗口内有效，等授权完成才返回 URL 会让
+           * 弹窗被拦截（AGENTS.md 记过 CodeArts 的同类缺陷）。
+           *
+           * ## ⚠️⚠️ 本分支**刻意不调 `pool.addAccount`**（与其余十家**相反**）
+           *
+           * 既有模式是「RPC 登记占位条目、`auth.startLogin` 不碰池」（本文件
+           * 十余处；gemini 的 `startLogin()` 甚至不接收 `pool`）。而
+           * `AccioAuth.startLogin` **自己**登记占位条目（见
+           * `accio-auth.ts` 的 `startLoginFlow`：它要保证「返回 loginUrl 时占位
+           * 条目已就位」，否则前端 `login.poll` 会先看到一个不存在的账号）。
+           *
+           * ⇒ 这里再 `addAccount` 就是**同 id 的两次写入**：会被
+           * `writeAccounts` 的 dedup 兜住并打一条 warn —— 功能上无害，但那条
+           * 日志会**误导排查**（看起来像「RPC 与 auth 都登记了，谁才是对的」）。
+           * 故本分支必须把 `pool` / `accountId` **透传给 `startLogin`**，
+           * 由它登记；失败时也由它 `removePlaceholder` 清掉。
+           *
+           * ⚠️ `region` 必须过白名单（`normalizeAccioRegion`）：它来自**客户端
+           * 自报**的 RPC 载荷（无 schema 校验），且决定登录域名与凭据里的
+           * `region` —— 未登记值回落 `'cn'` 并留痕（与 zcode 的
+           * `normalizeZcodeLoginProvider` 同因，issue IKJLK3 E2）。
+           */
+          let accioStarted: StartedAccioLogin
+          try {
+            accioStarted = await accio.startLogin({
+              refName,
+              region: normalizeAccioRegion(req.accioRegion),
+              pool,
+              accountId: id,
+            })
+          } catch (error) {
+            // ⚠️ 占位条目由 `startLogin` 自己清理（`fail()` 里的
+            //    `removePlaceholder`），这里**不得**再 removeAccount ——
+            //    那是同 id 的第二次写入，且会与它自己的清理竞争。
+            const reason = error instanceof Error ? error.message : String(error)
+            throw new Error(`无法启动 Accio 登录（本地回调服务启动失败）：${reason}`)
+          }
+
+          // ⚠️ **不接收 result 的解析值**：`AccioAuth` 的 `result` 是
+          // `Promise<void>` —— 凭据落盘、账号池回填、昵称与有效期全部在
+          // `finishLogin` 里做完（与其余家「RPC 回填」的分工相反）。
+          // 这里只挂日志与失败清理。
+          accioStarted.result.catch((error: unknown) => {
+            ctx.logger.warn(`[jet-hub] background ${ACCIO.id} login failed for ${id}: ${String(error)}`)
+            /**
+             * ⚠️ **只记终态、不删条目**（与其余十二家不同）：
+             * Accio 的占位条目由 `AccioAuth.startLogin` 的 `fail()` 自己清
+             *（且它保证了「先删完再 reject」），这里再 `removeAccount` 是
+             * **同 id 的第二次写入**，会与它自己的清理竞争（见上方 Accio 分支的长注释）。
+             * 用户关掉弹窗 / 授权被拒都走这条路 ⇒ 前端 `login.poll` 得以立刻报出原因，
+             * 而不是静默转圈 5 分钟（Gitee issue IKLI7J）。
+             */
+            recordLoginFailure(id, error)
+          })
+
+          return { ok: true, value: { accountId: id, loginUrl: accioStarted.loginUrl } }
         } else {
           return { ok: false, error: { code: 'bad-request', message: `unknown provider: ${provider}` } }
         }
@@ -3079,7 +3413,7 @@ function registerJetHubEndpoints(
           const entry = accounts.find((a) => a.id === req.accountId)
           if (!entry) throw new Error(`Account ${req.accountId} not found`)
 
-          // 按 **entry.provider** 分派到对应服务，并调用**按凭据 ref 的**
+          // 按 **entry.provider** 查 `auths` 命名对象分派，并调用**按凭据 ref 的**
           // 续期入口 —— 三处都是修复既有缺陷的关键：
           //
           // 1. 原实现只处理 codearts / buddy，`workbuddy` 会落到 else 抛
@@ -3088,7 +3422,7 @@ function registerJetHubEndpoints(
           //    **默认单凭据 ref**（如 BUDDY_ACCESS_TOKEN），而要刷的是池内条目的
           //    BUDDY_ACCOUNT_XXX —— 于是「刷这个账号」实际刷的是另一个凭据，
           //    结果要么报错要么静默改了错的对象。
-          // 3. ⚠️ **每个分支都必须传 `pool` + `entry.id`**（issue !IKIRTT）：
+          // 3. ⚠️ **分派必须传 `pool` + `entry.id`**（issue !IKIRTT）：
           //    续期成功后要把新的 `expiresAt` 写回账号池，UI 才不再显示
           //    「已过期」。早先只有 raccoon 分支传了，其余七个分支漏传，
           //    凭据续好了、界面纹丝不动，用户没有任何自救手段。
@@ -3097,75 +3431,32 @@ function registerJetHubEndpoints(
           // 「刷新」按钮（按钮是 测试/重测/重置/停用/代理/指纹/删除），
           // 调用方是仓库外的脚本/手工 RPC。下面三处历史注释曾把它写成
           // 「账号卡片的刷新按钮」——那是失实的，会把排障的人引到不存在的 UI。
-          switch (entry.provider) {
-            case 'codearts':
-              await codearts.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case 'buddy':
-              await buddy.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case 'workbuddy':
-              await workbuddy.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case LOBSTERAI.id:
-              await lobsterai.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case QODER.id:
-            case QODER_CN.id:
-              // 同协议族：按 provider 找到对应实例。
-              // ⚠️ 只刷传入的这个 ref，不碰默认单凭据 ref（历史缺陷同因）。
-              // ⚠️ **不要**图省事写 `qoder.refreshAccountCredential(...)` ——
-              // 那会让中国版账号的续期去刷国际版的凭据（两站 token 不通用，
-              // CN 永远续不动而国际版被无谓刷一次）。该串用由
-              // `lobsterai-rpc-dispatch.spec.ts` 的行为级用例锁死（已做反向验证）。
-              await requireQoderFamily(entry.provider).auth.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case TRAE.id:
-              await trae.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case CLINE.id:
-              await cline.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case LOOMY.id:
-              // ⚠️ Loomy **没有 refresh 端点**：这里只能做**有效性探测**，
-              // 失效时抛「请重新登录」。见 LoomyAuth.refreshAccountCredential。
-              await loomy.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case RACCOON.id:
-              // raccoon **有** refresh 端点（refresh_token 轮换），这里是真续期。
-              // ⚠️ 只读写传入的 ref，不碰默认单凭据 ref。
-              // ⚠️ **必须传 pool + entry.id**：续期后要把新的 `expiresAt` 写回
-              // 账号池，否则 UI 一直显示「已过期」（真实缺陷：JWT 已续到 15:09、
-              // 账号池仍是 12:02，相差 3.1 小时，但功能完全正常）。
-              await raccoon.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case MINIMAX.id:
-              // MiniMax **有** refresh 端点（`/oauth2/token` 的 refresh_token 授权），
-              // 这里是真续期。⚠️ 必须传 pool + entry.id —— 续期后要把新的
-              // `expiresAt` 写回账号池，否则 UI 一直显示「已过期」。
-              await minimax.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case ZCODE.id:
-              /**
-               * zcode **没有 refresh 端点**（凭据是静态的，与 Loomy 同类）。
-               *
-               * 但这个方法仍做实事：**逐账号重读自己的 ref 并规范化回写** ——
-               * 用户重新登录后重新调用 `account.refresh` 即可生效而无需重启 DSH。
-               * 凭据不可用时如实抛错（引导用户重新登录该账号）。
-               */
-              await zcode.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            case GEMINI.id:
-              // Gemini **有** refresh 端点（`oauth2.googleapis.com/token` 的
-              // `refresh_token` grant），这里是真续期。
-              // ⚠️ 必须传 pool + entry.id —— 续期后要把新的 `expiresAt` 写回
-              // 账号池，否则 UI 一直显示「已过期」而实际能正常发消息。
-              // ⚠️ Google 会**轮换 refresh_token**，`GeminiAuth` 内部已回写新值。
-              await gemini.refreshAccountCredential(entry.credentialRef, pool, entry.id)
-              break
-            default:
-              throw new Error(`Unknown provider: ${entry.provider}`)
+          //
+          // ⚠️ 2026-10-08 改（Task 2）：原先这里是一个 13 个 case 的 switch，
+          // 而**每个分支体都是同一行调用**（`auth.refreshAccountCredential(
+          // entry.credentialRef, pool, entry.id)`），只有实例名不同 —— 纯粹重复，
+          // 且历史上漏接过 `workbuddy`（它对 `account.refresh` 一直报
+          // `Unknown provider`）。分支越多，漏接概率越高。
+          //
+          // ⚠️ **查 `auths` 形参，不查全局注册表**（`provider-runtime.ts`）：
+          //    `auths` 是 Task 9 引入的命名对象，其**键就是 provider id**
+          //    （含 `qodercn`，注意不是变量名 `qoderCn`）。用形参而非全局 Map
+          //    的三个好处：① 测试仍可**直接传桩**控制分派（零全局可变状态）；
+          //    ② 不会与「真跑 apply()」的测试互相污染；③ 闭包捕获的是**本次注册
+          //    的那批实例**，语义上更紧。全局注册表留给**真正跨模块**的消费点
+          //    （Task 5 的 aggregate-expiry、Task 8 的 account-probe）。
+          const auth = authOf(auths, entry.provider)
+          if (auth === undefined) {
+            // ⚠️ 文案必须保持**可读且指明原因**，不要退化成泛化的 unsupported：
+            //    opencode 是「该产品没有续期概念」（凭据是静态 API key），
+            //    而未知 id 是「没注册」。两者都要让排查者看懂。
+            throw new Error(
+              descriptorOf(entry.provider) === undefined
+                ? `Unknown provider: ${entry.provider}`
+                : `Provider ${entry.provider} 不支持续期（它的凭据不是可续期类型）`,
+            )
           }
+          await auth.refreshAccountCredential(entry.credentialRef, pool, entry.id)
           return { ok: true, value: { success: true } }
         } catch (error) {
           /**
@@ -3188,8 +3479,8 @@ function registerJetHubEndpoints(
            *
            * | 位置 | 形态 | 为何安全 |
            * |---|---|---|
-           * | `login.poll` | `{done:false}` | 「用户尚未授权完」是正常中间态 |
-           * | `login.submitSms` | `{done:false, error}` | 验证码输错可重试，前端必判 `done` |
+           * | `login.poll` | `{done:false}`（进行中）／`{done:true, success:false, error}`（终态失败） | 有 `done` + `success` 两个判别字段，前端两者都判（2026-10-14 按 issue IKLI7J 补齐终态腿） |
+           * | `login.submitSms` | `{done:false, error}` | 验证码输错可重试；⚠️ 随包客户端**从不调用**它（备用路径，`plugin-src/` 零命中），故它的失败文案可见性**未被真实使用验证** |
            * | `credits.permanentLock` | 广播失败仍 `ok:true` | 广播失败不影响已落盘 |
            * | `credits.claimAll` | 单号失败进 `results[]` | 「单个失败不中断整体」是设计语义 |
            *
@@ -3237,7 +3528,8 @@ function registerJetHubEndpoints(
          * 放在 `listAllAccounts()` **之前**是刻意的：`failLogin` 是「先同步写记录、
          * 再异步删条目」，落在「记录已写、条目还在」的窗口里也必须能报出终态。
          * 正常路径不会误命中 —— 占位条目在 `account.create` 返回**之前**就已登记
-         *（十余处分支逐一核对过），故「条目在」期间不会有本账号 id 的失败记录。
+         *（十几处分支逐一核对过，含 accio 由 `startLogin` 自己登记），故「条目在」
+         * 期间不会有本账号 id 的失败记录。
          */
         const failure = loginFailureOf(req.accountId)
         if (failure !== undefined) {
@@ -3257,7 +3549,40 @@ function registerJetHubEndpoints(
         //   而实际上该账号一发请求就 `凭据无效`。这里对 zcode 追加**形状校验**。
         const ref = credentialRef(entry.credentialRef)
         const resolved = await ctx.credentials.resolve(ref)
-        if (!resolved) return { ok: true, value: { done: false } }
+        if (!resolved) {
+          /**
+           * OfficeAce 的占位条目走**凭据缺失即未完成**：这里代为轮询云侧 code。
+           * 用户授权完成后云侧立即返回 `code` → 换 token → 凭据落盘 → `done`。
+           *
+           * ⚠️ `code` 是**秒级时效** —— 轮询到必须**立刻** `completeLogin`
+           *（内部一次性完成 token 交换 + modelInfo + 落盘），不能延后。
+           */
+          if (entry.provider === OFFICEACE.id) {
+            const pending = pendingOfficeAceState.get(req.accountId)
+            if (pending !== undefined) {
+              /**
+               * ⚠️ **单飞**：客户端 `setInterval` 没有 in-flight 闸门，而一次交换含多次
+               * 网络往返（通常 > 1 秒）⇒ 两拍重叠几乎必然。同一个 `code` 只能换一次，
+               * 让后一拍**复用**前一拍的 promise，而不是各自去换、后失败者把成功者删掉。
+               */
+              const shared = officeAceExchangeInFlight.get(req.accountId)
+              if (shared !== undefined) return { ok: true, value: await shared }
+              const task = exchangeOfficeAceLogin(req.accountId, entry, pending)
+              officeAceExchangeInFlight.set(req.accountId, task)
+              void (async () => {
+                try {
+                  await task
+                } catch {
+                  // 不该发生：`exchangeOfficeAceLogin` 自身吞掉全部异常并返回 value。
+                  // 这里仍要兜住，否则一次未捕获拒绝会连带跳过后面那行 `delete`。
+                }
+                officeAceExchangeInFlight.delete(req.accountId)
+              })()
+              return { ok: true, value: await task }
+            }
+          }
+          return { ok: true, value: { done: false } }
+        }
         if (entry.provider === ZCODE.id) {
           let parsed: unknown
           try {
@@ -3336,26 +3661,6 @@ function registerJetHubEndpoints(
           pendingSmsMsgid.delete(req.accountId)
           return { ok: true, value: { done: true } satisfies RpcSubmitSmsResponse }
         } catch (error) {
-          /**
-           * ⚠️⚠️ **记账失败 ≠ 登录失败**（Issue F-24）。
-           *
-           * `loomy.loginWithSmsCode` 已按 `refName` 把凭据落库，紧随其后的
-           * `pool.updateAccount`（`state.json` 落盘）**会抛错**。此时若统一回
-           * `{done:false, error}`：① 前端按「验证码输错、可重试」呈现，用户重试；
-           * ② 而 `pendingSmsMsgid` 没删，msgid 又是**一次性**中间态（5 分钟有效、
-           * 已被这次调用消费）⇒ 重试**必败**，用户被锁在「点一次失败一次」的死循环里。
-           * ⇒ 判据与 `failLogin` 同源：**凭据在 ⇒ 这次登录就是成了**（记日志 + 清中间态
-           * + 回终态成功）。凭据读不到（`'unknown'`）时不当成成功，仍按可重试回报。
-           */
-          const landed = await loginCredentialLanded(req.accountId)
-          if (landed === true) {
-            ctx.logger.warn(
-              `[jet-hub] ${req.accountId} 短信登录已拿到凭据、后续记账失败（按成功处理）：`
-              + `${loginReasonText(error)}`,
-            )
-            pendingSmsMsgid.delete(req.accountId)
-            return { ok: true, value: { done: true } satisfies RpcSubmitSmsResponse }
-          }
           // ⚠️ 登录失败**不删除占位条目**：用户可能只是验证码输错，
           // 保留条目让他能重试（`login.sendSms` 会重新发码）。
           return {
@@ -3372,11 +3677,23 @@ function registerJetHubEndpoints(
        * 查询新手任务 / 一次性奖励状态（**Loomy** 的新手任务、**raccoon** 的登录奖励，只读）。
        *
        * ⚠️ 只读：**不得**在此触发任何 `complete`/`claim`（面板挂载时会调用它）。
-       * ⚠️ 两个 provider 共用本端点，故判据是「属于其中之一」而非只认 Loomy。
+       *
+       * ⚠️ **2026-10-08 改（Task 4）：两段 `if (req.provider === X.id)` 收敛成查表**
+       *   —— 分支体里**没有一行协议逻辑**（协议早已封装在 `loomy-onboarding.ts` 与
+       *   `raccoon-credits.ts` 内）。表在 `src/provider-onboarding.ts`，
+       *   各家实现逐字搬迁、**一行未改**（含 raccoon 那条「映射成 Loomy 那套任务
+       *   形状的一项」的语义）。
+       *
+       * ⚠️ 判据从「provider 属于 {loomy, raccoon}」改为「**该家是否提供
+       *   `onboarding.status`**」：那张手抄的 `!== LOOMY.id && !== RACCOON.id`
+       *   与能力表是**两份可漂移的东西**（新增一家要同时改两处，漏一处就静默
+       *   失效）。表由 `auths` 现造，与 `credits.*` 同法。
        */
       case 'onboarding.status': {
         const req = payload as RpcOnboardingStatusRequest
-        if (req.provider !== LOOMY.id && req.provider !== RACCOON.id) {
+        const impl = onboardingOf(onboarding, req.provider)
+        // ⚠️ 未登记 / 无该能力的 provider 回**可读的** bad-request（兜底契约）。
+        if (impl?.status === undefined) {
           return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
         }
         const account = pool.findAccount(req.accountId)
@@ -3387,36 +3704,12 @@ function registerJetHubEndpoints(
         if (!resolved) {
           return { ok: false, error: { code: 'bad-request', message: '凭据未配置' } }
         }
-        if (req.provider === RACCOON.id) {
-          // raccoon 只有**一项**一次性奖励（桌面端登录奖励 3000 分），
-          // 把它映射成 Loomy 那套「任务」形状的一项，复用同一个 RPC 与 UI。
-          // ⚠️ 已领状态靠**账单反查**（服务端没有单独的状态端点）。
-          const credential = JSON.parse(resolved.value) as RaccoonCredential
-          const status = await raccoon.fetchOnboardingStatus(credential)
-          return {
-            ok: true,
-            value: {
-              // ⚠️ `tasks` 是 `Record<key, boolean>`（完成状态），不是数组。
-              tasks: { desktop_login_reward: status.claimed },
-              earned: status.claimed ? status.points : 0,
-              total: status.points,
-              titles: { desktop_login_reward: '桌面端登录奖励（每号一次）' },
-              points: { desktop_login_reward: status.points },
-            } satisfies RpcOnboardingStatusResponse,
-          }
-        }
-        const credential = JSON.parse(resolved.value) as LoomyCredential
-        const state = await loomy.fetchOnboardingTasks(credential)
-        return {
-          ok: true,
-          value: {
-            tasks: state.tasks,
-            earned: state.earned,
-            total: state.total,
-            titles: { ...LOOMY_TASK_TITLES },
-            points: { ...LOOMY_TASK_POINTS },
-          } satisfies RpcOnboardingStatusResponse,
-        }
+        // ⚠️ 凭据解析在**守卫之后**、在 try 之外，与旧实现逐字一致：
+        //    这里只有**一个**账号（不是批量循环），故失败应如实冒泡成端点错误，
+        //    不该被吞成某个账号的 failed。
+        const credential = JSON.parse(resolved.value) as unknown
+        const value = await impl.status(credential, callContext)
+        return { ok: true, value: value satisfies RpcOnboardingStatusResponse }
       }
 
       /**
@@ -3470,8 +3763,12 @@ function registerJetHubEndpoints(
          *
          * Loomy 没有窗口概念（服务端直接给两个命名池）→ 不带该字段。
          */
-        const usesExpiryWindow = provider === CODEBUDDY.id || provider === WORKBUDDY.id
-          || provider === TRAE.id || provider === LOBSTERAI.id
+        // ⚠️ 2026-10-08 改：判据从四连 `||` 改为查 registry 的 `usesExpiryWindow`
+        //   —— 判据**本身不变**（仍是「是否按到期时间分桶」，**不是**「是不是 buddy」：
+        //   TRAE 与 LobsterAI 走同一套 `splitBuddyCreditsByExpiry`，同样受
+        //   `DSH_BUDDY_EXPIRING_WINDOW_DAYS` 影响）。改的只是**取值来源**。
+        //   ⚠️ loomy 刻意不在此列：它没有窗口概念（服务端直接给两个命名池）。
+        const usesExpiryWindow = descriptorOf(provider)?.usesExpiryWindow === true
         const lockResponse = (): RpcPermanentLockResponse => ({
           provider,
           locked: pool.permanentLocked(provider),
@@ -3486,12 +3783,10 @@ function registerJetHubEndpoints(
         await pool.setPermanentLocked(provider, req.locked)
         // ⚠️ 与 `model.setDisabled` 同理：本次写入会改变**选号结果**
         // （进而改变哪些账号会被使用），故广播一次让界面重新读取状态。
-        // 包 try/catch：通知失败不能反噬已经落盘的开关。
-        try {
-          ctx.emit('llm/adapters-updated')
-        } catch (error) {
-          ctx.logger?.warn?.(`[jet-hub] 广播 llm/adapters-updated 失败（不影响已保存的开关）: ${String(error)}`)
-        }
+        // ⚠️ 走**唯一**的广播实现（`src/catalog-broadcast.ts`）：它自带
+        // 「失败只记日志、不反噬已落盘的开关」与两级可选链 logger（审计指出
+        // 此处曾是内联实现，`ctx.logger.warn` 在 logger 缺席时会抛、仅被 catch 吞）。
+        broadcastCatalogChanged(ctx)
         return { ok: true, value: lockResponse() }
       }
 
@@ -3500,11 +3795,17 @@ function registerJetHubEndpoints(
        *
        * ⚠️ 这是**写**操作，且**每号只能领一次** —— 与 `credits.claimAll`
        *（每日签到）语义完全不同，故独立端点。
+       *
+       * ⚠️ **2026-10-08 改（Task 4）：两段 `if (req.provider === X.id)` 收敛成查表**
+       *   —— 与 `onboarding.status` 同法（见那里的注释）。表在
+       *   `src/provider-onboarding.ts`，含 raccoon 那条
+       *   「**已领时 `earned` 报满分、不是 0**」的实测语义（真实报障：
+       *   UI 显示「✅ 1 个此前已完成 / 累计已领 0 / 3000」自相矛盾）。
        */
       case 'onboarding.claim': {
         const req = payload as RpcOnboardingClaimRequest
-        // ⚠️ 两个 provider 共用本端点（Loomy 的新手任务 / raccoon 的登录奖励）。
-        if (req.provider !== LOOMY.id && req.provider !== RACCOON.id) {
+        const impl = onboardingOf(onboarding, req.provider)
+        if (impl?.claim === undefined) {
           return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
         }
         const account = pool.findAccount(req.accountId)
@@ -3515,56 +3816,37 @@ function registerJetHubEndpoints(
         if (!resolved) {
           return { ok: false, error: { code: 'bad-request', message: '凭据未配置' } }
         }
-        if (req.provider === RACCOON.id) {
-          // raccoon 的领取端点是**幂等**的：已领过返回 `granted:false`，
-          // 此时 claimed 为空数组、skipped 含该项。
+        const credential = JSON.parse(resolved.value) as unknown
+        let value: RpcOnboardingClaimResponse
+        try {
+          value = await impl.claim(credential, callContext)
+        } catch (error) {
+          // ⚠️ 实现侧用**上抛**表达「领取失败」（而不是返回一条
+          //    「成功但没领到」的响应）—— 这里翻译成既有的可读 bad-request
+          //    （`code: 'bad-request'` + 服务端原文）。
           //
-          // ⚠️ **已领时 `earned` 必须报满分，不是 0**（真实缺陷，用户报障）。
-          // `earned` 回答的是「该项目**累计**领到多少」，与「本次请求是否新增」
-          // 无关。早期在 `already-claimed` 分支写 `earned: 0`，于是 UI 显示
-          // 「✅ 1 个此前已完成 / 累计已领 0 / 3000」—— **自相矛盾**：
-          // 既然「此前已完成」，那 3000 分显然已经拿到手了。
-          const credential = JSON.parse(resolved.value) as RaccoonCredential
-          const outcome = await raccoon.claimLoginReward(credential)
-          if (outcome.kind === 'failed') {
-            return { ok: false, error: { code: 'bad-request', message: outcome.message } }
-          }
-          const claimed = outcome.kind === 'claimed'
-            ? [{ key: 'desktop_login_reward', title: '桌面端登录奖励', points: outcome.credit }]
-            : []
-          // 已领时的金额从**账单反查**取得（领取响应体里没有它），
-          // 与 `onboarding.status` 同一数据源 —— 否则两处会显示不同的数字
-          //（例如活动金额变化后，一处 3000、一处 3500）。
-          // 只读 GET，且仅在「点按钮时已领」这一低频路径上发生。
-          const points = outcome.kind === 'claimed'
-            ? outcome.credit
-            : (await raccoon.fetchOnboardingStatus(credential)).points
+          // ⚠️ **2026-10-08 更正（Task 4 复审 Finding 2）：本注释原先写「与旧实现
+          //    逐字一致」，那是错的** —— 逐字一致只对 **raccoon** 成立（它的旧分支
+          //    自己 catch 了 `outcome.kind === 'failed'` 并回 `bad-request`）；
+          //    **loomy 的旧分支没有 try/catch**，`claimOnboardingTasks` 一抛错就
+          //    冒到外层处理器，变成 `jet-hub/handler-failed`（「未知故障」，
+          //    用户看不出是领取失败）。
+          //
+          // ⇒ 现在两家**统一** `bad-request`，即 loomy 的**错误码变了**
+          //    （`jet-hub/handler-failed` → `bad-request`），这是一处 **G3 例外**
+          //    （见 Task 4 报告 §5 的 G3-4），**方向是改善**：失败原因不再被
+          //    降级成「未知故障」。用户可见影响为零 —— 客户端只渲染
+          //    `error.message`，而 message 逐字未变（仍是服务端原文）。
+          //    ⚠️ 故**不要**为了「零行为变更」把 loomy 改回上抛。
           return {
-            ok: true,
-            value: {
-              claimed,
-              skipped: outcome.kind === 'already-claimed' ? ['desktop_login_reward'] : [],
-              // 该项目累计已领 = 满分（无论本次是否新增）。
-              earned: points,
-              total: points,
-            } satisfies RpcOnboardingClaimResponse,
+            ok: false,
+            error: {
+              code: 'bad-request',
+              message: error instanceof Error ? error.message : String(error),
+            },
           }
         }
-        const credential = JSON.parse(resolved.value) as LoomyCredential
-        const result = await loomy.claimOnboardingTasks(credential)
-        return {
-          ok: true,
-          value: {
-            claimed: result.claimed.map((item) => ({
-              key: item.key,
-              title: LOOMY_TASK_TITLES[item.key] ?? item.key,
-              points: item.points,
-            })),
-            skipped: result.skipped,
-            earned: result.earned,
-            total: result.total,
-          } satisfies RpcOnboardingClaimResponse,
-        }
+        return { ok: true, value: value satisfies RpcOnboardingClaimResponse }
       }
 
       // ── 限流标记：重测（发真实请求验证）──
@@ -3627,7 +3909,8 @@ function registerJetHubEndpoints(
           const catalog = await fullCatalogIds(ctx, modelAdapters, entry.provider)
           modelId = pickTestModel(entry, catalog.ids, req.modelId)
           // ⚠️ 一个 id 都挑不出来**且远端也读失败**时才报「无法确定」并带上原因；
-          // 远端成功但目录为空 ⇒ 落到下面那句「没有可测试的模型」（两件事不同）。
+          // 远端成功但目录为空 ⇒ 落到下面那句「没有可测试的模型」（两件事不同：
+          // 前者是「读不到」，后者是「读到了但里面没有模型」）。
           if (modelId === '' && catalog.remoteError !== undefined) {
             return {
               ok: false,
@@ -3662,114 +3945,87 @@ function registerJetHubEndpoints(
       // ── 每日签到（积分领取）──
       // 查询某 provider 下全部启用账号的签到状态。
       //
-      // 四个 provider 分属**三套互不相同的协议**，各自在自己的分支里处理：
-      //   - CodeBuddy 系（buddy / workbuddy）：`productById()` 取 BuddyProduct，
-      //     走 `collectCreditsStatus` 的默认实现；
-      //   - `lobsterai`：slot → context 三步，无独立状态端点；
-      //   - `codearts`：华为云 SDK-HMAC-SHA256 签名，无独立状态端点。
+      // ⚠️ **2026-10-08 改（Task 3）：7 段分支收敛成「有则真查、无则如实 null」**。
+      //    原先 5 段（codearts / lobsterai / trae / cline / loomy）是**逐字同构**的
+      //    「手工拼 `{accountId, nickname, status: null}`」，另 2 段（minimax /
+      //    buddy 系）真查。现在判据统一为「该渠道有没有注册 `fetchStatus`」：
+      //    - 未注册 ⇒ 共享分支如实回 null（与它们原先的行为**逐字等价**）；
+      //    - 已注册 ⇒ 走 `collectCreditsStatus` 真查。
       //
-      // ⚠️ 只有 CodeBuddy 系能经 `productById()` 解析出产品配置；后两者
-      // **必须各自提前分支**，否则会落到下面的 bad-request。历史上 CodeArts
-      // 就是因此恒回 `unsupported provider: codearts`（客户端在面板挂载时
-      // 无条件调用 credits.balances，于是每打开一次设置页都在控制台报错并把
-      // 账号卡片标成查询失败）。现在 CodeArts 已有真实实现，该 bad-request
-      // 只对**未知** provider 生效。
+      //    ⚠️ 那 5 家**不注册** `fetchStatus` 是**诚实**的，不是偷懒：它们确实
+      //    没有与 `CheckinStatus` 同构的状态端点 —— 要么根本没有签到端点
+      //    （cline），要么要走两步且字段语义不同（codearts / lobsterai），
+      //    要么由 claim 流程自带幂等判据（trae / loomy）。臆造一份
+      //    `{streakDays: 0, dailyCredit: 0}` 会让面板显示「连续 0 天」这种
+      //    **看起来像真实读数**的假数据。
+      //
+      //    ⚠️ 与「不支持」的区别：本端点**支持**（返回 200 + 账号列表），
+      //    只是状态本身未知。故**不是**错误（与 claimAll 的守卫不同）。
+      //
+      //    ⚠️⚠️ **本改造对 5 家是行为变更（如实登记，别当成等价重构）**：
+      //    `qoder` / `qodercn` / `raccoon` / `zcode` / `gemini` 原先落到
+      //    `productById()` 的兜底、回 `bad-request: unsupported provider`，
+      //    现在回 `ok: true` + `status: null`。这是**放宽**（把「端点不支持」
+      //    改成「端点支持但状态未知」），与上面那条语义一致，且**无回归风险**：
+      //    - 客户端**零调用**本端点（`plugin-src/client/` 里搜不到
+      //      `credits.status`），自动签到走的是 `credits.claimAll`；
+      //    - 它的实际消费者是外部脚本 / 直接 RPC 调用（见
+      //      `docs/implementation-notes.md`）。
+      //    判据由 `credits-runtime-parity.spec.ts` 的
+      //    「credits.status 对 registry 里的每个渠道都被接受」锁死；
+      //    **未知** provider 仍回 bad-request（兜底契约不变）。
       case 'credits.status': {
         const req = payload as RpcCreditsStatusRequest
-        if (req.provider === 'codearts') {
-          // CodeArts 没有独立的「签到状态」端点：可领状态要经
-          // `statistics/plugin`（账户类型）+ `/v1/ops/delivery`（活动列表）
-          // 两步才能得到，且语义与 CodeBuddy 的 CheckinStatus 不同构
-          //（无 streak_days / daily_credit 等概念）。
-          // 故与 LobsterAI 同样如实返回 null，而不是臆造一份状态对象。
-          const accounts = await pool.listAccounts(req.provider)
-          return {
-            ok: true,
-            value: {
-              accounts: accounts.map((entry) => ({ accountId: entry.id, nickname: entry.nickname, status: null })),
-            } satisfies RpcCreditsStatusResponse,
-          }
-        }
-        if (req.provider === LOBSTERAI.id) {
-          // LobsterAI 没有独立的「签到状态」端点：活动状态要经
-          // slot → context 两步才能得到，且语义与 CodeBuddy 的
-          // CheckinStatus 不同构（无 streak/dailyCredit 等概念）。
-          // 故这里如实返回 null，而不是臆造一份状态对象。
-          const accounts = await pool.listAccounts(req.provider)
-          return {
-            ok: true,
-            value: {
-              accounts: accounts.map((entry) => ({ accountId: entry.id, nickname: entry.nickname, status: null })),
-            } satisfies RpcCreditsStatusResponse,
-          }
-        }
-        if (req.provider === TRAE.id) {
-          // TRAE 有签到状态端点，但需要发起 Ug 请求获取（见 claim 内部的多步流程）。
-          // 与 LobsterAI/CodeArts 一样如实返回 null，由 claimAll 自行处理预检。
-          const accounts = await pool.listAccounts(req.provider)
-          return {
-            ok: true,
-            value: {
-              accounts: accounts.map((entry) => ({ accountId: entry.id, nickname: entry.nickname, status: null })),
-            } satisfies RpcCreditsStatusResponse,
-          }
-        }
-        if (req.provider === CLINE.id) {
-          // Cline **没有签到端点**（对整个 sidecar 二进制做字符串扫描，
-          // checkin / check-in / daily / campaign 均无任何 Cline 业务端点命中；
-          // 见 src/cline-credits.ts 的模块注释）。故与 WorkBuddy 国际版一致，
-          // 如实返回 null，而不是臆造一份状态对象。
-          const accounts = await pool.listAccounts(req.provider)
-          return {
-            ok: true,
-            value: {
-              accounts: accounts.map((entry) => ({ accountId: entry.id, nickname: entry.nickname, status: null })),
-            } satisfies RpcCreditsStatusResponse,
-          }
-        }
-        if (req.provider === LOOMY.id) {
-          // Loomy 没有独立的「签到状态」端点：每日额度由 `POST /points/first-login`
-          // 触发，其响应自带 `alreadyProcessed`。故与 LobsterAI/CodeArts 同样
-          // 如实返回 null，由 claimAll 内部处理幂等。
-          const accounts = await pool.listAccounts(req.provider)
-          return {
-            ok: true,
-            value: {
-              accounts: accounts.map((entry) => ({ accountId: entry.id, nickname: entry.nickname, status: null })),
-            } satisfies RpcCreditsStatusResponse,
-          }
-        }
-        if (req.provider === MINIMAX.id) {
-          // ⚠️ MiniMax **有**独立的签到状态端点（`/minimax-cloud/api/v1/signin/status`），
-          // 与 LobsterAI/TRAE/Cline 那几个「如实返回 null」的 provider 不同 ——
-          // 故走共享 helper 真查（`fetchMinimaxSigninStatus` 失败时返回 null，
-          // 由 helper 逐账号 try/catch 兜住，单账号失败不中断整体）。
-          //
-          // ⚠️ **判据是 `is_today && status===3`**（见 `minimaxPanelToCheckinStatus`），
-          // 不是「没有 Claimable」。`active` 恒 true（拿到响应即 true）。
-          const minimaxStatusAccounts = await pool.listAccounts(req.provider)
-          const value = await collectCreditsStatus<MinimaxCredential, undefined>(
-            minimaxStatusAccounts, undefined, {
-              resolve: (ref) => ctx.credentials.resolve(ref),
-              fetchStatus: (credential) => fetchMinimaxSigninStatus(credential),
-              warn: (msg) => ctx.logger?.warn?.(msg),
-            },
-          )
-          return { ok: true, value: { accounts: value } satisfies RpcCreditsStatusResponse }
-        }
-        const product = productById(req.provider)
-        if (product === undefined) {
-          return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
-        }
         const accounts = await pool.listAccounts(req.provider)
-        const results = await collectCreditsStatus(accounts, product, {
+        const statusImpl = creditsOf(credits, req.provider)
+
+        if (statusImpl?.fetchStatus === undefined) {
+          // ⚠️ 未知 provider 与「已登记但无状态端点」必须**分开**：
+          //    前者是 bad-request（兜底契约），后者是「如实 null」。
+          //    registry 是权威判据（不是另立一份 provider 名单 —— 两份必然漂移）。
+          if (descriptorOf(req.provider) === undefined) {
+            return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
+          }
+          return {
+            ok: true,
+            value: {
+              accounts: accounts.map((entry) => ({
+                accountId: entry.id,
+                nickname: entry.nickname,
+                status: null,
+              })),
+            } satisfies RpcCreditsStatusResponse,
+          }
+        }
+
+        // ⚠️ `collectCreditsStatus` 逐账号 try/catch —— 单账号失败**不中断整体**，
+        //    这与「顺序查询避免并发风控」同属该骨架已验证的语义，**不要重写**。
+        //
+        // ⚠️ 第二参（product）统一传 `undefined`：它**只被透传给 `fetchStatus`**，
+        //    而 `fetchStatus` 现在由 credits 表提供、自带各自的 product 配置，
+        //    不再需要调用侧转发（原先 buddy 系传 `productById()`、minimax 传
+        //    `undefined`，是历史形态）。
+        const value = await collectCreditsStatus(accounts, undefined, {
           resolve: (ref) => ctx.credentials.resolve(ref),
+          fetchStatus: (credential) => statusImpl.fetchStatus!(credential, callContext),
           warn: (msg) => ctx.logger?.warn?.(msg),
         })
-        return { ok: true, value: { accounts: results } satisfies RpcCreditsStatusResponse }
+        return { ok: true, value: { accounts: value } satisfies RpcCreditsStatusResponse }
       }
 
       // 一键领取：逐账号顺序执行（并发易触发风控），单个账号失败不中断整体。
+      //
+      // ⚠️ **2026-10-08 改（Task 4）：14 段 `if (req.provider === X.id)` 收敛成查表**
+      //   —— 那些分支体里**没有一行协议逻辑**（协议早已封装在各家
+      //   `claimXxxDailyCheckin` 内），RPC 层看到的只是「选哪个函数」。
+      //   表在 `src/provider-credits.ts`，各家实现逐字搬迁、**一行未改**。
+      //   ⚠️ 编排仍留在共享骨架 `collectClaimResults` 里，**一行不重写**
+      //   （「顺序执行避免并发风控」「单账号失败不中断」「凭据解析在 try 之内」
+      //    都是实测结论）。
+      //
+      // ⚠️ **表从 `auths` 现造，不查全局注册表**（与 `credits.balances` 同法，
+      //   理由见 `registerJetHubRpc` 的注释与设计复审 C1）：本函数持有本次注册的
+      //   auth 实例，查全局表会让测试无法注入桩、并重开「位置/时序错位」那扇门。
       case 'credits.claimAll': {
         const req = payload as RpcCreditsClaimAllRequest
         const accounts = await pool.listAccounts(req.provider)
@@ -3782,17 +4038,35 @@ function registerJetHubEndpoints(
         // 症状会变得自相矛盾、更难排查。
         //
         // ⚠️ 放在**端点入口**（与余额端点同因）：本 case 下有十几家 provider
-        // 分支，逐分支加必漏。
-        // ⚠️ 顺序执行、失败不上抛，见 `healExpiredAccounts`。
+        // 分支（qoder/codearts/lobsterai/trae/cline/workbuddy/raccoon/minimax/
+        // zcode/gemini/buddy 系…），逐分支加必漏。
+        // ⚠️ 顺序执行、失败不上抛，见 {@link healExpiredAccounts}。
         await healExpiredAccounts(accounts)
+        // ⚠️ **ZCode 是唯一保留的特例**（与余额侧的 opencode / qoder 同族理由）：
+        //    它的「一键领取」= 补激活上报 → preview → **逐个 plan** claim，
+        //    且**每个 plan 都要重新产一个 captcha**（captcha 一次性，复用会得
+        //    `3007`，这条路径每个 plan 都现产新的）—— 故**不能**复用
+        //    `collectClaimResults` 那套「一个凭据一次 claim」的形状（它假设
+        //    `claim()` 内部自己处理幂等），这里自己遍历账号与 plan。
+        //
+        //    ⚠️ ZCode **没有**独立的「今日是否已领」端点，故不走 `precheckStatus`
+        //    （`claimDailyWith` **自带**激活上报与 preview 查询，重复调用只会多发
+        //    一次无谓请求）。
+        // ⚠️ **Qoder 同族也是保留的特例**（与 `credits.balances` 同因）：
+        //    `claimQoderDailyCheckin` 只吃 `QoderCredential` + `QoderProduct`，
+        //    形态与「表里的实现自带 product 配置」不匹配。它的领取流程**自带活动
+        //    列表查询**（`loadCampaigns` → 逐个 claim），故 `precheckStatus: false`
+        //    跳过外部那次检查 —— 否则会重复发一次 GET（与 LobsterAI 传 false 同因）。
+        //
+        //    ⚠️ 幂等判据是响应体的 `replayed:true`（重复领取同样返回 HTTP 200），
+        //       已在 `claimQoderDailyCheckin` 内部处理。
+        //
+        //    ⚠️ 这两家**刻意不在** credits 表里（`credits-runtime-parity.spec.ts` 的
+        //       「表里的渠道集合」与 `provider-runtime-wiring.spec.ts` 的
+        //       「形态不匹配的特例」两条守卫都要求它们缺席）—— 故这里保持特例分支，
+        //       而不是把它们塞进表里再放宽那两条守卫。
         if (isQoderFamily(req.provider)) {
           const { product } = requireQoderFamily(req.provider)
-          // Qoder 的领取流程**自带活动列表查询**（loadCampaigns → 逐个 claim），
-          // 故 precheckStatus: false 跳过外部那次检查 —— 否则会重复发一次 GET
-          // （与 LobsterAI 传 false 的理由同类）。
-          //
-          // ⚠️ Qoder 的幂等判据是响应体的 `replayed:true`（重复领取同样返回
-          // HTTP 200），已在 claimQoderCampaign 内部处理。
           const value = await collectClaimResults<QoderCredential, undefined>(accounts, undefined, {
             resolve: (ref) => ctx.credentials.resolve(ref),
             claim: (credential) => claimQoderDailyCheckin(credential, product),
@@ -3801,176 +4075,7 @@ function registerJetHubEndpoints(
           })
           return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
         }
-        if (req.provider === 'codearts') {
-          // CodeArts（华为云）走**签名**协议，与两个腾讯系 provider 都不同源：
-          // 领取流程自带「账户类型 + 活动列表」预检（见 claimCodeArtsDailyCheckin），
-          // 故 precheckStatus: false 跳过外部那次 CodeBuddy 式的状态查询 ——
-          // 用 fetchCheckinStatus 打华为端点既发错请求又必然失败。
-          const value = await collectClaimResults<CodeArtsCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            claim: (credential) => claimCodeArtsDailyCheckin(credential),
-            precheckStatus: false,
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === LOBSTERAI.id) {
-          // LobsterAI 的 clientVersion 是签到必填参数，需动态解析
-          //（带缓存，通常无额外网络开销）。
-          const clientVersion = await lobsterai.resolveClientVersion()
-          const value = await collectClaimResults(accounts, LOBSTERAI, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            claim: (credential, product) =>
-              claimLobsteraiDailyCheckin(credential, product, clientVersion),
-            // 领取流程内部已做 slot/context 预检，不需要外部再查一次状态。
-            precheckStatus: false,
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === TRAE.id) {
-          const value = await collectClaimResults<TraeCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            // ⚠️ **必须开启状态预检**（`precheckStatus` 默认为 true，不要传 false）。
-            //
-            // TRAE 的 claim 对「今天已签到」是**幂等**的：实测重复领取同样返回
-            // `{code:0, message:"success"}`，与真正领取成功**无法区分**。
-            // 早期照抄 LobsterAI 传了 `precheckStatus: false`（那是「领取流程内部
-            // 已做 slot/context 预检」的理由，TRAE 没有这回事），于是已签到的账号
-            // 被报成「领取成功」（用户报障：显示成功但 +0 积分）。
-            // 判据只能是 status 端点的 `checked_in`。
-            fetchStatus: (credential) =>
-              fetchTraeCheckinStatus(credential as TraeCredential, TRAE, fetch),
-            claim: (credential, _product, entry) =>
-              claimTraeDailyCheckin(
-                credential as TraeCredential,
-                TRAE,
-                fetch,
-                pool.traeCheckinDeviceGenerationFor(entry.id),
-                (next) => pool.updateTraeCheckinDeviceGeneration(entry.id, next),
-              ),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === LOOMY.id) {
-          // Loomy 的「签到」= `POST /points/first-login`（触发每日赠送额度）。
-          // ⚠️ 语义**不是**「+5000 积分」：`dailyBalance = dailyQuota - dailyConsumed`，
-          // 消耗后不回补。文案由 claimLoomyDailyQuota 的 already-claimed 表达。
-          // 领取流程自带幂等判据（`alreadyProcessed`），故不做额外预检。
-          const values: RpcCreditsClaimAccountResult[] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                outcome: { kind: 'failed', code: -1, message: '凭据未配置' },
-              })
-              continue
-            }
-            let credential: LoomyCredential
-            try {
-              credential = JSON.parse(resolved.value) as LoomyCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                outcome: { kind: 'failed', code: -1, message: '凭据解析失败' },
-              })
-              continue
-            }
-            const outcome = await loomy.claimDailyQuota(credential)
-            values.push({ accountId: account.id, nickname: account.nickname, outcome })
-          }
-          return {
-            ok: true,
-            value: {
-              summary: computeClaimSummary(values.map((v) => v.outcome)),
-              results: values,
-            } satisfies RpcCreditsClaimAllResponse,
-          }
-        }
-        if (req.provider === CLINE.id) {
-          // Cline **没有签到端点**（见 src/cline-credits.ts 的模块注释：
-          // 对整个 sidecar 做字符串扫描，无任何 checkin/campaign 业务端点）。
-          // 客户端按能力矩阵（`credits-capabilities.js` 的
-          // `cline: { balance: true, dailyCheckin: false }`）根本不会渲染
-          // 「一键领取积分」按钮、也不会发起本调用；这里显式返回可读错误，
-          // 而不是落到下面 `productById` 的 `unsupported provider` 泛化文案
-          // —— 后者会让排查者以为是「provider 没注册」，而真相是「该产品无此能力」。
-          return {
-            ok: false,
-            error: {
-              code: 'bad-request',
-              message: 'Cline 不支持每日签到（其后端没有签到接口）',
-            },
-          }
-        }
-        if (req.provider === 'workbuddy') {
-          // WorkBuddy **国际版没有签到接口**：客户端能力矩阵登记为
-          // `workbuddy: { balance: true, dailyCheckin: false }`，故它从不渲染
-          // 「一键领取积分」按钮、也从不调用本方法 —— 也就是说这条守卫此前
-          // **缺失但没被触发**（真实缺陷，2026-10-02 补）。
-          //
-          // ⚠️ 为什么必须补：没有它时 `workbuddy` 会落到下面 `productById` 拿到的
-          // buddy 产品上，用**国际版**凭据去发国内版的签到请求 —— 必然失败，而且是
-          // 一次真实的上游请求。而「每日首次启动自动签到」（`src/auto-checkin.ts`）
-          // 正是靠「调用 `claimAll`、按返回的信封判跳过」来决定遍历范围的，它**不维护
-          // 第二份能力名单** ⇒ 这里漏一个守卫，它就会真去发一轮必然失败的请求。
-          // 两处是同源改动，别只改一半。
-          return {
-            ok: false,
-            error: {
-              code: 'bad-request',
-              message: 'WorkBuddy 国际版不支持每日签到（其后端没有签到接口）',
-            },
-          }
-        }
-        if (req.provider === RACCOON.id) {
-          // raccoon **没有签到端点**：每日 300 积分由服务端按日自动发放
-          //（账单里的 `daily_grant`，实测注册后 1 分钟即到账），
-          // 客户端按能力矩阵（`raccoon: { balance: true, onboardingTasks: true }`，
-          // **无** `dailyCheckin`）根本不会渲染「一键领取积分」按钮、也不会发起本调用。
-          // 这里显式返回可读错误，而不是落到下面 `productById` 的
-          // `unsupported provider` 泛化文案 —— 后者会让排查者以为是
-          //「provider 没注册」，而真相是「该产品无此能力」。
-          return {
-            ok: false,
-            error: {
-              code: 'bad-request',
-              message: 'Raccoon Work 不支持每日签到（每日积分由服务端自动发放；登录奖励请在「新手任务」中领取）',
-            },
-          }
-        }
-        if (req.provider === MINIMAX.id) {
-          // ⚠️ **必须开启状态预检**（`precheckStatus` 默认为 true，不要传 false）。
-          //
-          // 理由与 TRAE 那条同型（见上方 TRAE 分支的详细注释）：MiniMax 的
-          // `claimMinimaxDailyCheckin` 靠响应体的 `claim_result` 判幂等
-          //（`1`=真领取、`2`=已领过），这在 **HTTP 层**是可靠的；但状态预检是
-          // 第二道防线 —— 若某天服务端对已领账号也回 `claim_result: 1`，
-          // 预检能靠 `todayCheckedIn` 先挡住，避免把「今天已领」报成「+积分」。
-          // 反之传 false 会让已签到账号走到 claim 请求（多发一次 POST）。
-          const value = await collectClaimResults<MinimaxCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchStatus: (credential) => fetchMinimaxSigninStatus(credential),
-            claim: (credential) => claimMinimaxDailyCheckin(credential),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
         if (req.provider === ZCODE.id) {
-          /**
-           * ZCode 的「一键领取」= 补激活上报 → preview → 逐个 claim。
-           *
-           * ⚠ **每个 plan 都要重新产一个 captcha**（captcha 一次性，
-           * 复用会得 `3007`，这条路径每个 plan 都现产新的）—— 故不能复用 `collectClaimResults`
-           * 那套「一个凭据一次 claim」的形状（它假设 `claim()` 内部
-           * 自己处理幂等），这里自己遍历账号与 plan。
-           *
-           * ⚠ ZCode **没有**独立的「今日是否已领」端点，故不调
-           * `precheckStatus`（`claimDailyWith` **自带**激活上报与
-           * preview 查询，重复调用只会多发一次无谓请求）。
-           */
           const results: RpcCreditsClaimAllResponse['results'] = []
           const outcomes: ClaimOutcome[] = []
           for (const account of accounts) {
@@ -4018,28 +4123,81 @@ function registerJetHubEndpoints(
             value: { results, summary: computeClaimSummary(outcomes) } satisfies RpcCreditsClaimAllResponse,
           }
         }
-        const product = productById(req.provider)
-        if (product === undefined) {
-          return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
+
+        const impl = creditsOf(credits, req.provider)
+        if (impl?.claim === undefined) {
+          // ⚠️ 措辞必须**指明是"该产品无此能力"**，不能退化成「provider 没注册」
+          // —— 后者会让排查者去查注册表，而真相是产品没有这个接口。
+          //
+          // ⚠️ 文案由**表**给（`claimUnavailableReason`），不在端点里拼模板：
+          //    三条文案是实测报障修来的、各自信息量不同（raccoon 那条含可操作
+          //    指引「登录奖励请在『新手任务』中领取」），压成一句泛化模板会丢掉它。
+          //    两个真实例子（各自的历史注释都记录了这一点）：
+          //      - cline：对整个 sidecar 做字符串扫描，无任何 checkin/campaign 端点；
+          //      - workbuddy：国际版内核里只有 get-dosage-notify，没有签到接口。
+          //    ⚠️ workbuddy 这条守卫**必须有**：没有它时会落到下面的通用分支，
+          //       用**国际版**凭据去发**国内版**的签到请求 —— 必然失败，而且是一次
+          //       真实的上游请求。而「每日首次启动自动签到」正是靠「调 claimAll、
+          //       按返回的信封判跳过」来决定遍历范围的，它**不维护第二份能力名单**。
+          //
+          // ⚠️ 表里**没有专属文案**的已登记渠道（gemini / opencode / aggregate）
+          //    仍回**旧的** `unsupported provider: X` —— 那是**刻意不动**的行为
+          //    （改成「不支持每日签到」是一处需批准的 G3 例外，见 Task 4 报告）。
+          //    未登记的 id 同样落进这里（兜底契约不变）。
+          if (impl?.claimUnavailableReason !== undefined) {
+            return {
+              ok: false,
+              error: { code: 'bad-request', message: impl.claimUnavailableReason },
+            }
+          }
+          return {
+            ok: false,
+            error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` },
+          }
         }
-        // 成长中心任务：与签到**共用这一趟逐账号循环**（见 CreditsEndpointDeps
-        // .afterClaim），故凭据只解析一遍。
+        // ⚠️ 第二参（product）统一传 `undefined`：它只被透传给骨架的 `claim` /
+        //    `fetchStatus` 入参，而这两者现在由 credits 表提供、**自带各自的
+        //    product 配置**，不再需要调用侧转发（原先 buddy 系传
+        //    `productById()`、其余传 `undefined`，是历史形态）。
         //
-        // ⚠️ `runTasks` 缺省为 false：这条路径同时是「每日首次启动自动签到」的
-        // 执行体（见上方 createAutoCheckin 的 claim 回调），而成长一轮单账号实测
-        // 90～270s、全串行、任务间 1.5s 节流。默认开启等于每次启动自动打几十个
-        // 上游请求。只有用户手点「一键领取积分」时才传 true。
-        const value = await collectClaimResults(accounts, product, {
+        // ⚠️ `afterClaim`（成长中心）**必须留在这趟循环里**（见
+        //    `CreditsEndpointDeps.afterClaim` 的长注释）：它与签到共用同一趟
+        //    逐账号循环，凭据只解析一遍。漏掉它的症状**只是**「成长中心不工作了」，
+        //    日志里没有错误。
+        const value = await collectClaimResults(accounts, undefined, {
           resolve: (ref) => ctx.credentials.resolve(ref),
+          // ⚠️ 骨架的 `claim` 是 `(credential, product, entry)` —— 第三参才是
+          //    `entry`（TRAE 用它取签到设备代次）。产品配置由表里的实现闭包捕获，
+          //    故这里把 `product` 丢掉。
+          claim: (credential, _product, entry) => impl.claim!(credential, entry, callContext),
+          // ⚠️ 由能力表驱动，不再散落 provider 字面量。
+          ...impl.precheckStatus === undefined ? {} : { precheckStatus: impl.precheckStatus },
+          // ⚠️ 预检优先用 `claimStatus`，缺席时回落到 `fetchStatus`
+          //（buddy / minimax 的预检与面板读数是同一个端点，只声明一次）。
+          ...(impl.claimStatus ?? impl.fetchStatus) === undefined
+            ? {}
+            : {
+                fetchStatus: (credential: unknown) =>
+                  (impl.claimStatus ?? impl.fetchStatus)!(credential, callContext),
+              },
+          // 成长中心任务：与签到**共用这一趟逐账号循环**（见 CreditsEndpointDeps
+          // .afterClaim），故凭据只解析一遍。
+          //
+          // ⚠️ `runTasks` 缺省为 false：这条路径同时是「每日首次启动自动签到」的
+          // 执行体（见上方 createAutoCheckin 的 claim 回调），而成长一轮单账号实测
+          // 90～270s、全串行、任务间 1.5s 节流。默认开启等于每次启动自动打几十个
+          // 上游请求。只有用户手点「一键领取积分」时才传 true。
+          //
+          // ⚠️ 门控是「**该家是否提供 `afterClaim`**」—— 原先的
+          //    `GROWTH_CAPABLE_PROVIDERS` 手抄集合已删除（Task 1b 同因：
+          //    消除平行副本，让「哪家有成长中心」由能力注册表说了算）。
+          ...req.runTasks !== true || impl.afterClaim === undefined
+            ? {}
+            : {
+                afterClaim: (credential, _product, entry, _outcome, roundDeadlineAt) =>
+                  impl.afterClaim!(credential, entry, { budgetMs: req.budgetMs, roundDeadlineAt }, callContext),
+              },
           warn: (msg) => ctx.logger?.warn?.(msg),
-          ...(req.runTasks === true && GROWTH_CAPABLE_PROVIDERS.has(req.provider)
-            ? {
-                afterClaim: (credential, growthProduct, entry, _outcome, roundDeadlineAt) =>
-                  collectBuddyGrowth(
-                    credential, growthProduct, entry, req.budgetMs, roundDeadlineAt,
-                  ),
-              }
-            : {}),
         })
         return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
       }
@@ -4049,6 +4207,13 @@ function registerJetHubEndpoints(
       // 独立于 account.list 的原因：余额要为每个账号发一次网络请求，而
       // account.list 是打开面板就会调的轻量操作。混在一起会让账号列表被
       // 网络耗时拖慢，且一次查询失败会让整份列表都取不到。
+      //
+      // ⚠️ **2026-10-08 改（Task 3）：11 段 `if (req.provider === X.id)` 收敛成查表**
+      //   —— 那些分支体里**没有一行协议逻辑**（协议早已封装在各家
+      //   `fetch*Balance` 内），RPC 层看到的只是「选哪个函数」。表在
+      //   `src/provider-credits.ts`，各家实现逐字搬迁、**一行未改**。
+      //   ⚠️ 编排仍留在共享骨架 `collectCreditBalances` 里，**一行不重写**
+      //   （「顺序查询避免并发触发风控」「单账号失败不中断」都是实测结论）。
       case 'credits.balances': {
         const req = payload as RpcCreditsBalancesRequest
         const accounts = await pool.listAccounts(req.provider)
@@ -4061,99 +4226,25 @@ function registerJetHubEndpoints(
         // 手动自救手段（「重测」的 refresh 是刻意 no-op）。
         //
         // 为什么要放在**端点入口**而不是每个 provider 分支里：本端点上有
-        // 「特例短路 + 查表分派」两段，在入口加**一处**就覆盖全部，逐分支加必漏
-        //（仓库在 `workbuddy` 上漏过一次：`account.refresh` 端点对它一直报
-        // `Unknown provider`）。
+        // 「特例短路（opencode / qoder）+ 查表分派」两段，且查表那段对
+        // **所有**落在表里的渠道共用一行调用 —— 在入口加**一处**就覆盖全部，
+        // 逐分支加必然漏（仓库在 `workbuddy` 上漏过一次：`account.refresh`
+        // 端点对它一直报 `Unknown provider`）。
         //
         // ⚠️ **顺序执行**且失败不上抛（见该函数）：积分查询是逐账号顺序
         // 查询（避免并发触发风控），这里保持同一形状。
         await healExpiredAccounts(accounts)
-        if (req.provider === 'codearts') {
-          // 余额来自 `statistics/plugin`（与账户类型检测同一个响应），
-          // 故用带原因的钩子：非积分账户要显示「Token 计费账户」而不是
-          // 误导性的「余额查询失败」。
-          const values = await collectCreditBalances<CodeArtsCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchBalanceDetailed: async (credential) => {
-              // 用带原因的版本：`fetchCodeArtsAccountInfo` 只回 null，会把
-              // 「AK 限流」「签名失败」「凭据过期」压成同一句笼统文案，
-              // 用户与排查者都拿不到线索（本端点就因此把一次 401 显示成了
-              // 无信息量的「账户信息查询失败」）。
-              const result = await fetchCodeArtsAccountInfoDetailed(credential)
-              if (!result.ok) return { balance: null, error: `账户信息查询失败：${result.message}` }
-              const info = result.info
-              if (!info.isCreditPackage) {
-                return {
-                  balance: null,
-                  error: info.isTokenPackage
-                    ? 'Token 计费账户，无积分余额'
-                    : '非积分计费账户，无积分余额',
-                }
-              }
-              // 积分账户但没有 credit metric：如实报「无积分数据」，
-              // 不显示成 0 —— 0 会让用户以为自己把积分用光了。
-              if (info.credit === undefined) return { balance: null, error: '未返回积分数据' }
-              return { balance: info.credit }
-            },
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        if (req.provider === LOBSTERAI.id) {
-          const values = await collectCreditBalances(accounts, LOBSTERAI, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchBalance: (credential, product) => fetchLobsteraiCreditBalance(credential, product),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          // ⚠️ LobsterAI 也回传窗口天数（用户报障「账号的积分没按长期、临时方式
-          // 显示」）：它的每个资源包都带 `expiresAt`（已归一化到
-          // `deductionEndTime`），面板要按到期远近分「长期 / 临时」。
-          // 窗口语义与 buddy / TRAE 一致，共用同一个环境变量。
-          return {
-            ok: true,
-            value: {
-              accounts: values,
-              windowDays: buddyExpiringWindowDays(),
-            } satisfies RpcCreditsBalancesResponse,
-          }
-        }
-        if (isQoderFamily(req.provider)) {
-          const { product } = requireQoderFamily(req.provider)
-          // 余额来自 `GET {product.openApiBase}/sash/api/v2/me/usage`（实测只需
-          // Bearer + Cosy-ClientType，**不需要**模型列表那样的 WASM 签名）。
-          // `fetchQoderCreditBalance` 只吃 QoderCredential，故这里不用
-          // collectCreditBalances 的泛型（它会把产品配置转发给 fetchBalance）。
-          const values: RpcCreditsBalancesResponse['accounts'] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据未配置',
-              })
-              continue
-            }
-            let credential: QoderCredential
-            try {
-              credential = JSON.parse(resolved.value) as QoderCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据解析失败',
-              })
-              continue
-            }
-            const balance = await fetchQoderCreditBalance(credential, product)
-            values.push({
-              accountId: account.id,
-              nickname: account.nickname,
-              balance,
-              // 查不到时带上原因，卡片显示原因而非 0（与其它 provider 同约定）。
-              ...balance === null ? { error: '积分查询失败（凭据失效或响应异常）' } : {},
-            })
-          }
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
+
+        // ⚠️ **两个形态与骨架不匹配的特例，先于查表短路**：
+        //    - `opencode`：余额是**本地派生的通道可用性**（读账号池的
+        //      `modelRateLimits`），**零网络请求**。套进
+        //      `fetchBalance(credential, …)` 形状会逼它去发一个不存在的上游请求
+        //      （实测 Zen 的 15 个候选余额路径全部 404）。
+        //    - `qoder` 系：`fetchQoderCreditBalance` 只吃 `QoderCredential`，
+        //      且 product 来自同族注册表，**不走** `collectCreditBalances` 的
+        //      `(credential, product)` 泛型。
+        // 保留特例而非强行套骨架：套上去会丢语义（设计文档 §3.5 的边界 ——
+        // 抽象的是「选哪个函数」，不是「函数内部怎么做」）。
         if (req.provider === OPENCODE.id) {
           // ⚠️⚠️ **这里不查远端余额**（设计决定，2026-10-02，与用户确认走「限额状态」路 A）。
           //
@@ -4216,283 +4307,162 @@ function registerJetHubEndpoints(
           })
           return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
         }
-        if (req.provider === TRAE.id) {
-          const values = await collectCreditBalances(accounts, TRAE, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchBalance: (credential, product) => fetchTraeCreditBalance(credential as TraeCredential, product),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          // ⚠️ TRAE 也回传窗口天数：它的资源包现在带 `deductionEndTime`
-          // （条目级 `expire_time`，秒→毫秒），面板要按「长期 / 临时」分桶显示。
-          // 没有窗口天数前端会拒绝渲染分类行（见 credit-expiry.js 的
-          // normalizeWindowDays —— 非 buddy provider 不带该字段被视为
-          // "没有作废维度"，这是防止凭空渲染假分类行的门禁）。
-          // 窗口语义与 buddy 系一致：距到期不足 windowDays 的算「临时」。
+        if (isQoderFamily(req.provider)) {
+          const { product } = requireQoderFamily(req.provider)
+          // 余额来自 `GET {product.openApiBase}/sash/api/v2/me/usage`（实测只需
+          // Bearer + Cosy-ClientType，**不需要**模型列表那样的 WASM 签名）。
+          // `fetchQoderCreditBalance` 只吃 QoderCredential，故这里不用
+          // collectCreditBalances 的泛型（它会把产品配置转发给 fetchBalance）。
+          const values: RpcCreditsBalancesResponse['accounts'] = []
+          for (const account of accounts) {
+            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
+            if (!resolved) {
+              values.push({
+                accountId: account.id, nickname: account.nickname,
+                balance: null, error: '凭据未配置',
+              })
+              continue
+            }
+            let credential: QoderCredential
+            try {
+              credential = JSON.parse(resolved.value) as QoderCredential
+            } catch {
+              values.push({
+                accountId: account.id, nickname: account.nickname,
+                balance: null, error: '凭据解析失败',
+              })
+              continue
+            }
+            const balance = await fetchQoderCreditBalance(credential, product)
+            values.push({
+              accountId: account.id,
+              nickname: account.nickname,
+              balance,
+              // 查不到时带上原因，卡片显示原因而非 0（与其它 provider 同约定）。
+              ...balance === null ? { error: '积分查询失败（凭据失效或响应异常）' } : {},
+            })
+          }
+          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
+        }
+
+        // ── OfficeAce（华为 ModelArts MaaS）──
+        //
+        // ⚠️ **不套查表分派**：它的余额不是「拿凭据调上游」的形状，而是
+        //    **云侧 V11 签名直读**（`GET /v1/subscription`）——凭据是 STS 三元组
+        //    且签名逻辑在 `officeace-auth.ts` 内部，没有 `fetchBalance(credential)`
+        //    这个可注入点。与 opencode / qoder 同属「形态与骨架不匹配」的特例。
+        //
+        // 返回的 `creditGroups` 含套餐桶（`skus[].quotas`）与活动桶
+        //（`bonus_skus[]`），逐桶带 `expiresAt` —— 归一化到 `deductionEndTime`
+        // 后由通用判据分成「永久 / 长期 / 临期」三档（`PERMANENT_LOCK_PROVIDERS` 同款）。
+        //
+        // ⚠️ **必须回传 `windowDays`**：客户端 `splitCreditsByExpiry` 的
+        // `normalizeWindowDays` 对 `undefined` 返回 `null` ⇒ 整个分桶行静默不渲染
+        //（真实症状：胶囊只有合计、没有「永久绿 / 长期黄 / 临期红」三行）。
+        if (req.provider === OFFICEACE.id) {
+          // ⚠️ 用可选链取 auth：本端点的多条单测用**空桩 auths**（`{}`）遍历
+          //    registry，缺 `officeace` 键时直接取属性会抛 TypeError ⇒ 整个 case
+          //    冒泡成 `ok:false`（真实症状：`officeace 应被接受` 变红）。
+          //    取不到就如实回「查询失败」，与网络失败同一条降级路径。
+          const fetchSummary = auths.officeace?.fetchSubscriptionSummary
+          // ⚠️ **逐账号查询，不共享一份结果**（2026-10-13）：
+          //    原实现只查一次就拿去填所有卡片 ⇒ N 个账号显示同一个余额，
+          //    面板合计被放大 N 倍（实测两个账号显示 13000 = 6500×2）。
+          //    每个账号按自己的 `credentialRef` 查自己那份订阅。
+          const values: RpcCreditsBalancesResponse['accounts'] = []
+          for (const account of accounts) {
+            const subscription = fetchSummary === undefined
+              ? undefined
+              : await fetchSummary.call(
+                auths.officeace,
+                48,
+                account.credentialRef,
+                undefined,
+                ctx.credentials as never,
+              ).catch(() => undefined)
+            if (subscription === undefined) {
+              values.push({
+                accountId: account.id,
+                nickname: account.nickname,
+                balance: null,
+                error: '积分查询失败（华为云订阅接口不可达或凭据已失效）',
+              })
+              continue
+            }
+            values.push({
+              accountId: account.id,
+              nickname: account.nickname,
+              balance: {
+                total: subscription.totalCredits,
+                packages: subscription.creditGroups.map((group) => ({
+                  name: group.name,
+                  unit: OFFICEACE.quotaUnit,
+                  remaining: group.remaining,
+                  total: group.total,
+                  used: group.used ?? 0,
+                  active: !group.expired,
+                  cycleStartTime: '',
+                  cycleEndTime: '',
+                  expiredTime: group.expiresAt ?? '',
+                  // 分桶判据字段：订阅套餐包无固定到期（永久桶），活动/签到包有明确到期。
+                  ...(group.expiresAt !== undefined && group.expiresAt !== null
+                    ? { deductionEndTime: new Date(group.expiresAt).getTime() }
+                    : {}),
+                })),
+                expiredTotal: subscription.creditGroups.filter((g) => g.expired).length,
+              },
+            })
+          }
           return {
             ok: true,
             value: {
               accounts: values,
+              // ⚠️ **成功/失败都要回传 `windowDays`**：该字段表达的是「本渠道
+              //    按到期时间分桶」（registry 的 `usesExpiryWindow`），与本次
+              //    读数成功与否**无关**。只在成功路径带它会让「空账号池 / 查询
+              //    失败」时形状不一致 —— 守卫用例遍历 registry 时正会红
+              //（实测症状：`officeace 必须回传 windowDays`）。
               windowDays: buddyExpiringWindowDays(),
             } satisfies RpcCreditsBalancesResponse,
           }
         }
-        if (req.provider === MINIMAX.id) {
-          // 余额来自 `GET /minimax-cloud/api/v1/credit/details`。
-          //
-          // ⚠️ **该端点是平铺响应**（`total_count` 与 `base_resp` 同级、**没有
-          // `data` 键**）—— 与签到端点不同。`fetchMinimaxCreditBalance` 内部已
-          // 用 `unwrapEnvelopeData` 兼容两种形状。
-          // ⚠️ 查不到时（null）由 helper 统一补「余额查询失败」文案，卡片显示
-          // 原因而非 0 —— 这与「余额为 0」是**两回事**，不能混为一谈
-          //（本机实测 `total_count: 0` 且 `details` 缺失正是「真的为 0」）。
-          const values = await collectCreditBalances<MinimaxCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchBalance: (credential) => fetchMinimaxCreditBalance(credential),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        if (req.provider === GEMINI.id) {
-          // 余额 = **配额窗口**（不是充值积分）：`POST
-          // /v1internal:retrieveUserQuotaSummary` 两个桶（`gemini-5h` /
-          // `gemini-weekly`）的剩余比例。
-          //
-          // ⚠️ 用 `fetchBalanceDetailed`（而非 `fetchBalance`）：Gemini 的
-          // 「未授权」与「查询失败」是**两回事** —— 前者要显示「尚未授权 Google
-          // 账号」、后者要显示具体原因（网络/HTTP/响应形状）。
-          // `collectCreditBalances` 会把 `{balance: null, error}` 原样透传给
-          // 卡片（helper 只在 `error` 缺失时才补「余额查询失败」），故这里
-          // **不需要**像 CLINE 分支那样手写 for 循环。
-          //
-          // ⚠️ 第二实参传 `GEMINI` 而不是 minimax 那样的 `undefined`：
-          // `fetchGeminiCreditBalance` 的第二形参就是 product（端点/超时来自
-          // 产品配置）。
-          //
-          // ⚠️ 账号规格（Pro / Free / Ultra）搭这趟车回来：`loadCodeAssist` 与
-          // 配额是同一函数里**并行**发的两个端点，档位挂在 `result.tier` 上。
-          // 这里把它翻译成面板要的 `extra.accountTier` —— `label` 是短标签
-          // （面板只放得下一个词），`title` 是上游原文（hover 才看得到）。
-          // 档位取不到时 `extra` 缺席，面板不渲染那一行（**不是错误**）。
-          const values = await collectCreditBalances<GeminiCredential, typeof GEMINI>(accounts, GEMINI, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchBalanceDetailed: async (credential) => {
-              const { balance, error, tier } = await fetchGeminiCreditBalance(credential, GEMINI)
-              const extra: RpcCreditsBalanceExtra | undefined = tier === undefined
-                ? undefined
-                : { accountTier: { label: tier.label, title: `${tier.name}（${tier.id}）` } }
-              return {
-                balance,
-                ...error === undefined ? {} : { error },
-                ...extra === undefined ? {} : { extra },
-              }
-            },
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        if (req.provider === CLINE.id) {
-          // 余额来自 `GET /api/v1/users/{accountId}/balance`（实测
-          // `{data:{userId, balance}, success:true}`）。与 Qoder 分支同因：
-          // `fetchClineCreditBalance` 只吃 ClineCredential，故不用
-          // collectCreditBalances 的泛型（它会把产品配置转发给 fetchBalance）。
-          //
-          // ⚠️ 账号 id 必须用凭据里的 `account_id`（`usr-…`），**不是** JWT 的
-          // `sub`（`user_…`）—— 传后者实测返回 `400 Invalid request format`。
-          const values: RpcCreditsBalancesResponse['accounts'] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据未配置',
-              })
-              continue
-            }
-            let credential: ClineCredential
-            try {
-              credential = JSON.parse(resolved.value) as ClineCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据解析失败',
-              })
-              continue
-            }
-            const result = await fetchClineCreditBalance(credential, CLINE)
-            values.push({
-              accountId: account.id,
-              nickname: account.nickname,
-              balance: result.balance,
-              // 查不到时带上**具体原因**（含 HTTP 状态码与错误体摘要），
-              // 而不是笼统一句「查询失败」—— 卡片显示原因而非 0
-              //（0 是「已用光」的语义，会误导用户）。
-              ...result.balance === null
-                ? { error: result.error ?? '积分查询失败（凭据失效或响应异常）' }
-                : {},
-            })
-          }
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        if (req.provider === LOOMY.id) {
-          // 余额来自 `GET /points/records`（**只读**，无副作用）。
-          // ⚠️ 刻意不用 `first-login`：那是**写**端点，在「打开面板」这种
-          // 高频路径上调用会意外触发签到。
-          const values: RpcCreditsBalancesResponse['accounts'] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据未配置',
-              })
-              continue
-            }
-            let credential: LoomyCredential
-            try {
-              credential = JSON.parse(resolved.value) as LoomyCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据解析失败',
-              })
-              continue
-            }
-            const balance = await loomy.fetchCreditBalance(credential)
-            values.push({
-              accountId: account.id,
-              nickname: account.nickname,
-              balance,
-              // 查不到时带原因（不显示成 0，0 是「已用光」的语义）。
-              ...balance === null ? { error: '积分查询失败（凭据失效或响应异常）' } : {},
-            })
-          }
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        if (req.provider === RACCOON.id) {
-          // 余额来自 `GET /points/v1/balance`（**只读**，无副作用）。
-          const values: RpcCreditsBalancesResponse['accounts'] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据未配置',
-              })
-              continue
-            }
-            let credential: RaccoonCredential
-            try {
-              credential = JSON.parse(resolved.value) as RaccoonCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据解析失败',
-              })
-              continue
-            }
-            const balance = await raccoon.fetchCreditBalance(credential)
-            values.push({
-              accountId: account.id,
-              nickname: account.nickname,
-              balance,
-              // ⚠️ 查不到时带原因（**不显示成 0** —— 0 是「已用光」的语义，
-              // 把「查询失败」显示成 0 会让用户以为自己积分没了）。
-              ...balance === null ? { error: '积分查询失败（凭据失效或响应异常）' } : {},
-            })
-          }
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        if (req.provider === ZCODE.id) {
-          /**
-           * 余额来自 `GET /zcode-plan/billing/balance`（**只读**，无副作用）。
-           *
-           * ⚠ ZCode 的额度单位是 **token**，而 Jet Hub 这个字段的语义是
-           * 「积分」。两者量纲不同 —— 但都要展示，故这里如实返回数值
-           * 并在错误文案里说明来源。`balance: null` 表示**查不到**
-           * （不显示成 0，0 是「已用光」的语义）。
-           */
-          const values: RpcCreditsBalancesResponse['accounts'] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据未配置',
-              })
-              continue
-            }
-            let credential: ZcodeCredential
-            try {
-              credential = JSON.parse(resolved.value) as ZcodeCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '凭据解析失败',
-              })
-              continue
-            }
-            const result = await zcode.fetchBalanceFor(credential)
-            if (result === undefined) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '额度查询失败（凭据失效或网络异常）',
-              })
-              continue
-            }
-            if (result.enterprise === true) {
-              // 企业版不下发额度数字、只给外部链接 —— 如实说明，不显示 0。
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                balance: null, error: '企业版账号不下发额度数字，请在 ZCode 内查看',
-              })
-              continue
-            }
-            values.push({
-              accountId: account.id,
-              nickname: account.nickname,
-              /**
-               * ⚠ `CreditBalance` 的形状是 `{total, packages[], expiredTotal?}`
-               * 这类**积分包**结构，而 ZCode 是「按日的 token 额度池」。
-               * 两者结构不同，故**逐桶**如实映射 —— 上游一个 resource bucket
-               * 就是一个包，包名用 `show_name`（实测是模型名，如
-               * `GLM-5.3-Flash`）。
-               *
-               * ## ⚠⚠ 这里曾经只映射 `buckets[0]`（真实缺陷）
-               *
-               * 旧实现只取 `result.planName`（= `buckets[0]?.showName`）拼**一个**
-               * 包 —— 多桶账号的其余额度被**静默丢掉**，UI 上看起来只有
-               * 一个模型的额度。而 `result.remaining` / `total` 却是**全桶汇总**，
-               * 于是那一个包的数字比它自己的 `totalUnits` 还大，自相矛盾。
-               *
-               * 实测（本机账号）上游只回一个桶（`GLM-5.3-Flash`），
-               * 但**不能按「只有一个桶」来写** —— 那正是把缺陷固化成契约；
-               * 且用户要看的恰恰是「GLM-5.3 与 GLM-5.3-Flash 各自剩多少」，
-               * 前端需要按模型逐行渲染、缺桶的模型显示占位。
-               */
-              balance: buildZcodeBalance(result),
-            })
-          }
-          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
-        }
-        const product = productById(req.provider)
-        if (product === undefined) {
+
+        // ── 查表分派 ──
+        // ⚠️ 表由 `registerJetHubEndpoints` 从 `auths` 现造（**不是**形参，
+        //    见 `registerJetHubRpc` 的注释：第 5 个位置形参已在 2026-10-08
+        //    设计复审 C1 中删除）。`src/index.ts` 另有一份**同源同构**的表挂在
+        //    `ProviderRuntime.credits` 上，供 Task 5/8 的跨模块消费点读 ——
+        //    两条接线的消费方不同，但用的是同一个工厂、同一批 auth 实例。
+        const impl = creditsOf(credits, req.provider)
+        if (impl === undefined) {
           return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
         }
-        const values = await collectCreditBalances(accounts, product, {
+        // ⚠️ 包一层适配：runtime 的签名是 `(credential, call)`，
+        //    `collectCreditBalances` 的入参签名是 `(credential, product)`。
+        const values = await collectCreditBalances(accounts, undefined, {
           resolve: (ref) => ctx.credentials.resolve(ref),
+          ...impl.fetchBalanceDetailed === undefined
+            ? {}
+            : {
+                fetchBalanceDetailed: (credential) =>
+                  impl.fetchBalanceDetailed!(credential, callContext),
+              },
+          ...impl.fetchBalance === undefined
+            ? {}
+            : { fetchBalance: (credential) => impl.fetchBalance!(credential, callContext) },
           warn: (msg) => ctx.logger?.warn?.(msg),
         })
-        // ⚠️ 只有 buddy 系会走到这里（`productById` 只认 CodeBuddy / WorkBuddy），
-        // 而它们正是唯一需要「窗口天数」的 provider：面板要把资源包分成
-        // 临时 / 永久两桶显示，窗口必须**由后端给出**（可被
-        // DSH_BUDDY_EXPIRING_WINDOW_DAYS 覆盖），前端写死就会与选号判据分叉。
-        return {
-          ok: true,
-          value: {
-            accounts: values,
-            windowDays: buddyExpiringWindowDays(),
-          } satisfies RpcCreditsBalancesResponse,
-        }
+        // ⚠️ 只有**按到期时间分桶**的渠道才回传窗口天数（判据是 registry 的
+        //    `usesExpiryWindow`，不是「是不是 buddy」）—— 前端文案若写死 15
+        //    会与真实判据不一致（用户看到「只烧 15 天内的」而实际按 31 天筛号）。
+        //    ⚠️ 改成字段驱动后**行为不变**：登记的正是原先那四段硬编码的
+        //    buddy 系 + TRAE + LobsterAI（loomy 刻意不在内 —— 它由服务端直接
+        //    给两个命名池，没有窗口概念）。
+        const usesWindow = descriptorOf(req.provider)?.usesExpiryWindow === true
+        const value: RpcCreditsBalancesResponse = usesWindow
+          ? { accounts: values, windowDays: buddyExpiringWindowDays() }
+          : { accounts: values }
+        return { ok: true, value }
       }
 
       // ── Cline「订阅额度」：官方额度窗口 + 请求记录 ──
@@ -4660,7 +4630,7 @@ function registerJetHubEndpoints(
         // 背景：`withDeadModelPruning` 会把已失效模型从 `listModels` / `listAllModels`
         // 两侧剔除，于是它既不在 `all` 里、也不在 `disabledMap` 里 —— 上面的两条
         // 补回路径都救不回它。结果是**模型从设置页彻底消失，连开关都摸不着**，
-        // 用户永远无法自行恢复（这正是本段注释在 `:3370-3375` 列为必须避免的根因：
+        // 用户永远无法自行恢复（这正是上文 `withDeadModelPruning` 处列为必须避免的根因：
         // 「用户再也无法重新打开」）。
         //
         // ⇒ 这里把 dead 表里的 id 补回目录，并带上 `dead: true` 让客户端灰显 +
@@ -4714,9 +4684,9 @@ function registerJetHubEndpoints(
         // 必须广播：否则开关只写进磁盘、界面一直显示旧目录（成因见该函数注释）。
         broadcastCatalogChanged(ctx)
         const disabledModels = pool.listDisabledModels(req.provider)
-        // ⚠️⚠️ **静默空操作必须留痕**（Issue IKJW33，2026-10-12 自上游移植）：
-        // 对已从上游目录消失的 id 开关时，旧实现返回「成功」却什么都没发生、
-        // 且零警告。写入语义不变，只在响应里补 warnings 说明真相。
+        // ⚠️⚠️ **静默空操作必须留痕**（Issue IKJW33）：对已从上游目录消失的 id
+        // 开关时，旧实现返回「成功」却什么都没发生、且零警告。写入语义不变，
+        // 只在响应里补 warnings 说明真相（判据与取舍见 `catalogWarnings`）。
         const warnings = catalogWarnings(
           known, req.provider, [req.modelId], req.disabled === true,
         )
@@ -4939,7 +4909,7 @@ function registerJetHubEndpoints(
        * 读取多个供应商的汇总状态（Jet Hub 左侧导航分组 + 一键开关据此渲染）。
        *
        * 为什么一次取全部：8 个供应商若逐个查，就是 16 次往返，且每次都要走
-       * 异步凭据解析。这里**全程只用同步的内存副本**，不产生任何网络请求：
+       * 异步凭据解析。这里**默认全程只用同步的内存副本**，不产生网络请求：
        * - 模型目录用 `modelAdapters[provider].listAllModels()`（同步；它内部
        *   在冷缓存时会**后台**补拉，但不阻塞本次返回）；
        * - 账号用 `pool.listAccountsByProvider()`（同步读内存）。
@@ -4950,6 +4920,33 @@ function registerJetHubEndpoints(
        *
        * 适配器缺失（外部/旧适配器）时 `total = 0`、`closed = false`：
        * 保守判为「未关闭」，让用户可以尝试操作，而不是误报成已关闭。
+       *
+       * ## ⚠️⚠️ `closed` 必须只走「安全方向」，故它在必要时**会去核实一次**
+       *
+       * `listAllModels()` 在**冷缓存**下返回各家**编译期兜底表**（子集），
+       * 而 `closed = total > 0 && disabled === total` 是**基于那个子集**算的
+       * ⇒ 子集可能**误报已关闭**（真实缺陷，独立审计实测）：
+       *
+       * ```
+       * 兜底表 [hy3]（冷缓存） + 黑名单 { hy3: true }（旧版本「关闭全部」写下的）
+       * ⇒ total=1, disabled=1 ⇒ closed:true
+       * 而远端还有 glm-5.2 / deepseek-v4-flash 可选 ⇒ 界面显示「已关闭」却仍能选
+       * ```
+       *
+       * ⚠️ 危险方向**只有 `closed: true` 这一个**：报 false 是安全的（用户可点开关，
+       * 点了会得到明确错误）。故这里**只在子集判据说「已关闭」时才去核实**
+       *（用 `fullCatalogIds` 取并集）：
+       *
+       * - 核实成功 ⇒ 用并集重算 `total` / `disabled` / `closed`；
+       * - 核实不了（远端读失败 / 为空）⇒ **保守报未关闭**（安全方向），
+       *   与「适配器缺失」同一取舍。
+       *
+       * ⚠️ 这样**常见路径零网络**：绝大多数供应商是「未关闭」，子集判据
+       * 直接给 false、不触发核实（冷缓存下也不触发）。只有**真的可能已关闭**
+       * 的供应商才付一次目录读取；缓存已热时那次读是纯内存的。
+       * ⚠️ 代价：多个「已关闭」供应商会**串行**各读一次（每次上限
+       * {@link CATALOG_READ_TIMEOUT_MS}）—— 首屏最多因此多花「已关闭家数 × 2 秒」
+       * 的最坏值，而实际情况是缓存已热（用户会先看到列表才会去关）。
        */
       case 'provider.status': {
         const req = payload as RpcProviderStatusRequest
@@ -4972,25 +4969,27 @@ function registerJetHubEndpoints(
               if (disabledMap[model.id] === true) disabled++
             }
           }
-          // ⚠️⚠️ `closed` 必须只走「安全方向」，故「即将报已关闭」时**核实一次**
-          //（Issue IKJW33 相邻缺陷）：`listAllModels()` 冷缓存返回**兜底表（子集）**，
-          // 而子集可能**误报已关闭**（兜底表 [hy3] + 黑名单 {hy3:true} ⇒ closed:true，
-          // 而远端还有几百个可选）。危险方向**只有 `closed: true` 这一个**：
-          // 报 false 是安全的（用户可点开关、点了会得到明确错误）⇒ 只在子集判据
-          // 说「已关闭」时才用 `fullCatalogIds` 核实；核实不了（远端读失败）⇒
-          // **保守报未关闭**。⚠️ 常见路径零网络：未关闭的供应商不触发核实。
-          // ⚠️ 判「远端读成功」用 `remoteError === undefined` 而**不是** `complete`：
-          // 「全部模型都已关闭」时 `listModels()` 被黑名单过滤成 `[]`，
-          // 恰是本端点要正确回答的状态；若用 `complete`（要求远端非空），
-          // 一关全就永远核实不了、`closed` 恒为 false（上游第一版踩过）。
           let closed = total > 0 && disabled === total
+          // ⚠️⚠️ 只有「即将报已关闭」才核实（危险方向，见方法头）。
           if (closed) {
             const full = await fullCatalogIds(ctx, modelAdapters, provider)
+            // ⚠️⚠️ **判据是「远端读成功」，不是 `complete`**：`complete` 额外要求
+            // 远端**非空**，而这里恰好有一个**正常**的空形态 ——
+            // 「全部模型都已关闭」时 `listModels()` 被黑名单过滤成 `[]`
+            //（实测：这正是本端点要正确回答的那个状态！）。
+            // 若这里用 `complete`，一关全就永远核实不了、`closed` 恒为 false
+            // ⇒ 「关闭供应商」后界面永远显示未关闭（本修复第一版踩过，
+            // 两条既有用例当场变红）。
+            // ⚠️ 而「无账号门控」（真的看不到）时远端也是 `[]`，两者**同形**；
+            // 此时并集只剩适配器兜底表，`disabled` 会按它算 —— 因为
+            // `closed` 的判据是「子集里全部命中」，若兜底表全命中就仍报已关闭。
+            // 这是可接受的：兜底表全关 + 远端看不到 ⇒ 用户确实没有可选模型。
             if (full.remoteError === undefined) {
               total = full.ids.length
               disabled = full.ids.filter((id) => disabledMap[id] === true).length
               closed = total > 0 && disabled === total
             } else {
+              // 核实不了（远端读失败）⇒ 保守报未关闭（安全方向）。
               closed = false
             }
           }
@@ -5263,64 +5262,10 @@ function registerJetHubEndpoints(
         //    为它报错会让会话输入区出现无意义的错误（本仓库对「非关键路径失败」
         //    的既有取向是安静降级，见 `usage-badge.js` 的目录解析注释）。
         const canonicalId = (payload as { canonicalId?: unknown } | undefined)?.canonicalId
-        const hasId = typeof canonicalId === 'string' && canonicalId.length > 0
-        const provider = hasId
+        const provider = typeof canonicalId === 'string' && canonicalId.length > 0
           ? (source?.activeProvider?.(canonicalId) ?? null)
           : (source?.activeProvider?.() ?? null)
-        // ⚠️ 具体模型是**新增字段**（用户 2026-10-09 报障）：`auto` 的显示名不认识具体
-        //    模型，只给渠道的话用户不知道这次回答是谁给的。
-        // ⚠️ 老适配器可能没有 `activeTarget` ⇒ 回落 `model: null`（**不是**报错，
-        //    与 `provider` 的安静降级同取向）；老客户端只读 `provider`，也不受影响。
-        const target = hasId
-          ? (source?.activeTarget?.(canonicalId) ?? null)
-          : (source?.activeTarget?.() ?? null)
-        const value: RpcAggregateActiveProviderResponse = {
-          provider,
-          model: target === null ? null : target.realId,
-        }
-        return { ok: true, value }
-      }
-
-      /**
-       * 路由型 provider「**此刻正在用的**真实渠道与模型」（供输入区实时读数）。
-       *
-       * ## 与 `aggregate.activeProvider` 的分工（**不要合并成一个端点**）
-       *
-       * | 端点 | 语义 | 写入时机 |
-       * |---|---|---|
-       * | `aggregate.activeProvider` | 上次实际**成功**的渠道 + 模型 | 整轮跑完 |
-       * | `router.activeRoute`（本端点） | **本次正在发往**的目标 | 转发一开始 |
-       *
-       * 前者服务于**余额徽标**（显示一个刚失败、已无额度的渠道会误导），故必须成功才写；
-       * 后者服务于**「当前在用什么模型」**，等整轮跑完才更新就失去实时性。
-       * 两者在「请求进行中」必然不同，这是规格如此，不是缺陷。
-       *
-       * ## ⚠️ 另一个存在理由：`jet-hub-auto` 此前**完全**没有读数
-       *
-       * `aggregate.activeProvider` 只认识聚合的虚拟模型。`jet-hub-auto` 的真实目标
-       * 此前只出现在 `prepareCall` 拼出的 `model.name` 里，且客户端无从读取
-       * ⇒ 本端点让两家用同一套读数机制。
-       *
-       * ## ⚠️ 纯内存读、零网络（与前者同一取向）
-       *
-       * 客户端按 5 秒轮询它（见 `ACTIVE_ROUTE_POLL_MS` 的注释），不能有任何网络成本。
-       *
-       * ⚠️ 无历史 ⇒ 三个字段全 `null` ⇒ 客户端显示占位（不预测、不编造）。
-       * ⚠️ 未注册/未知 router 同样回 `null` 而**不是**报错：这是可选装饰，
-       *    为非关键路径失败弹错会让会话输入区出现无意义的错误（既有取向）。
-       */
-      case 'router.activeRoute': {
-        const router = (payload as { provider?: unknown } | undefined)?.provider
-        // ⚠️ 非字符串 / 空串一律当「无历史」处理，不抛错：客户端在首帧（目录还没
-        //    解析出来）会传空值，那是正常时序而不是调用错误。
-        const route = typeof router === 'string' && router.length > 0
-          ? activeRoutes.read(router)
-          : null
-        const value: RpcActiveRouteResponse = {
-          provider: route?.provider ?? null,
-          model: route?.model ?? null,
-          at: route?.at ?? null,
-        }
+        const value: RpcAggregateActiveProviderResponse = { provider }
         return { ok: true, value }
       }
 
@@ -5453,6 +5398,35 @@ function registerJetHubEndpoints(
         return { ok: true, value }
       }
 
+      // ── 渠道原生搜索总开关（Jet Hub 页头的开关）──
+      //
+      // 语义：**开** = 支持原生搜索的渠道（CodeBuddy / WorkBuddy）走自己后端的
+      // 搜索接口；**关** = 所有渠道一律回官方 DeepSeek 搜索。
+      // 消费方是 `src/web-native.ts` 的 `tools/execute` 监听器（经 `index.ts`
+      // 传入 `() => pool.nativeWebSearchEnabled()`）。
+      case 'nativeSearch.getEnabled': {
+        const value: RpcNativeSearchGetEnabledResponse = { enabled: pool.nativeWebSearchEnabled() }
+        return { ok: true, value }
+      }
+
+      case 'nativeSearch.setEnabled': {
+        const req = payload as RpcNativeSearchSetEnabledRequest
+        // ⚠️ 与 `gateway.setEnabled` 同约定：**不做默认值猜测** ——
+        // 默认成 true 会静默打开用户特意关闭的开关。
+        if (typeof req.enabled !== 'boolean') {
+          return { ok: false, error: { code: 'bad-request', message: '非空布尔 enabled 必填' } }
+        }
+        await pool.setNativeWebSearchEnabled(req.enabled)
+        // 不刷新任何缓存：监听器是**每次现读** `pool.nativeWebSearchEnabled()`，
+        // 写完即生效（没有需要失效的派生状态）。
+        ctx.logger.info(
+          `[jet-hub] ${req.enabled ? '打开' : '关闭'}渠道原生搜索`
+          + `${req.enabled ? '' : '（所有渠道改用 DeepSeek 官方搜索）'}`,
+        )
+        const value: RpcNativeSearchSetEnabledResponse = { enabled: pool.nativeWebSearchEnabled() }
+        return { ok: true, value }
+      }
+
       // ── 内部 captcha 载体（二期）──
       //
       // 这两条是**客户端驱动**的通道：DSH 的 `connection.fetch` 只有
@@ -5539,18 +5513,19 @@ function registerJetHubEndpoints(
 
       // ── 账号备份（导出 / 导入）──
       //
-      // 目的：更换 DSH 版本时迁移账号凭据。备份文件是**自包含**的 JSON
-      // （账号索引 + 凭据原文 + 模型黑名单，见 src/backup.ts），与 DSH 版本
-      // 无关 —— 导入时按**当前版本**的存储契约重建，天然跨版本。
+      // 目的：更换 DSH 版本时迁移账号凭据，以及**单独**把某个账号搬到另一台
+      // 机器。备份文件是**自包含**的 JSON（账号索引 + 凭据原文 + 模型黑名单，
+      // 见 src/backup.ts），与 DSH 版本无关 —— 导入时按**当前版本**的存储契约
+      // 重建，天然跨版本。
       //
       // 安全约定：加密在浏览器侧完成（PBKDF2 + AES-GCM），RPC 只接收/返回
       // 明文载荷；明文 JSON 不经过本层持久化与日志。
       case 'backup.export': {
+        const req = (payload ?? {}) as RpcBackupExportRequest
         // accountIds 只作用于 accounts / credentials 两个字段；黑名单与锁定表
-        // 仍是全量，故产物始终是一份可整体还原的自包含快照。（移植自 Gitee）
-        const exportReq = (payload ?? {}) as RpcBackupExportRequest
-        const accountIds = Array.isArray(exportReq.accountIds)
-          ? exportReq.accountIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+        // 仍是全量，故产物始终是一份可整体还原的自包含快照。
+        const accountIds = Array.isArray(req.accountIds)
+          ? req.accountIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
           : undefined
         const result = await exportBackup(pool, ctx.credentials, { accountIds })
         const value: RpcBackupExportResponse = {
@@ -5560,7 +5535,7 @@ function registerJetHubEndpoints(
         return { ok: true, value }
       }
 
-      // 导入有两种模式（移植自 Gitee）：
+      // 导入有两种模式：
       // - `replace`（缺省）= 整体替换（还原快照，不是合并）；
       // - `merge` = 只追加，按 id 跳过已存在的账号，不碰黑名单与锁定表。
       // 写入顺序刻意「先凭据、后账号池」：账号池写入成功后，门控
@@ -5591,14 +5566,22 @@ function registerJetHubEndpoints(
         return { ok: true, value }
       }
 
-      // 账号池统计（导入前的覆盖提示用）：缺 expiresAt 的条目疑似 DSH 版本
-      // 切换后自动恢复的产物（反推不读凭据值，故无有效期）。前端据此在
-      // 确认导入前提示用户「有 N 个自动恢复的账号将被整体覆盖」。
+      // 账号池统计（导入前的覆盖提示用，也供导出弹窗勾选账号）：缺 expiresAt
+      // 的条目疑似 DSH 版本切换后自动恢复的产物（反推不读凭据值，故无有效期）。
+      // 前端据此在确认导入前提示用户「有 N 个自动恢复的账号将被整体覆盖」，
+      // 并在导出时列出可勾选的账号。
       case 'backup.status': {
         const state = pool.getStateSnapshot()
         const value: RpcBackupStatusResponse = {
           accounts: state.accounts.length,
           withoutExpiry: state.accounts.filter((entry) => entry.expiresAt === undefined).length,
+          // 只给展示字段：凭据内容绝不进这条响应。
+          accountList: state.accounts.map((entry) => ({
+            id: entry.id,
+            provider: entry.provider,
+            nickname: entry.nickname,
+            enabled: entry.enabled,
+          })),
         }
         return { ok: true, value }
       }
@@ -5617,7 +5600,7 @@ function registerJetHubEndpoints(
        *    触发风控」），不缓存会让上游请求数随轮询线性放大。
        *
        * ⚠️ 未知 provider 的 `bad-request` 由内层 `credits.balances` 给出（那里
-       * 已有 12 条分派与 `unsupported provider` 的统一文案），本分支**原样透传**，
+       * 已有查表分派与 `unsupported provider` 的统一文案），本分支**原样透传**，
        * 不另立一份 provider 名单 —— 两份名单必然漂移。
        *
        * ⚠️ `force: true` = 绕过缓存（手动刷新、签到之后）。
@@ -5694,9 +5677,8 @@ function registerJetHubEndpoints(
        * 数据源是落盘的日聚合表（`token-ledger.json`，重启保留）—— 纯内存
        * 计算（Map 树 → 数组），不打上游、不做额外 I/O。
        *
-       * ⚠️ `sinceDays` 钳制在 `[1, TOKEN_LEDGER_HISTORY_MAX_DAYS]`：0/负数
-       * 按「仅今日」处理（省略 = 全部历史），超过上限裁到上限 —— 落盘本身
-       * 只保留 90 天，更大的窗口只会白算。
+       * `sinceDays` 钳制在 `[1, TOKEN_LEDGER_HISTORY_MAX_DAYS]`；也支持 fromDay / toDay
+       * 按 UTC+8 日键做闭区间查询。落盘本身只保留 90 天。
        */
       case 'usage.tokenLedgerHistory': {
         const req = payload as RpcUsageTokenLedgerHistoryRequest
@@ -5704,8 +5686,23 @@ function registerJetHubEndpoints(
         const sinceDays = typeof raw === 'number' && Number.isFinite(raw)
           ? Math.min(Math.max(Math.trunc(raw), 1), TOKEN_LEDGER_HISTORY_MAX_DAYS)
           : undefined
-        const result = readTokenLedgerHistory(readTokenLedgerDayMap(), { sinceDays })
+        const fromDay = isValidTokenLedgerDayKey(req?.fromDay) ? req.fromDay : undefined
+        const toDay = isValidTokenLedgerDayKey(req?.toDay) ? req.toDay : undefined
+        const result = readTokenLedgerHistory(readTokenLedgerDayMap(), { sinceDays, fromDay, toDay })
         const value: RpcUsageTokenLedgerHistoryResponse = { history: result.days, totals: result.totals }
+        return { ok: true, value }
+      }
+
+      /** 只删除一个 UTC+8 日期的持久化历史累计，不触碰实时明细与其他设置。 */
+      case 'usage.tokenLedgerDeleteDay': {
+        const req = payload as Partial<RpcUsageTokenLedgerDeleteDayRequest>
+        if (!isValidTokenLedgerDayKey(req?.day)) {
+          return { ok: false, error: { code: 'bad-request', message: 'day 必须是有效的 YYYY-MM-DD 日期' } }
+        }
+        if (!deleteTokenLedgerDay(req.day)) {
+          return { ok: false, error: { code: 'not-found', message: `没有可删除的 ${req.day} 历史用量` } }
+        }
+        const value: RpcUsageTokenLedgerDeleteDayResponse = { day: req.day, deleted: true }
         return { ok: true, value }
       }
 
@@ -5791,20 +5788,49 @@ function registerJetHubEndpoints(
         return { ok: true, value }
       }
 
+      case 'officeace.status': {
+        /**
+         * OfficeAce（华为 MaaS）凭据状态：**只读探测**，不抛错。
+         *
+         * ⚠️ STS 临期先**静默刷新**（refresh_token 30 天，一次性）—— 刷新失败
+         * 不阻塞状态展示，仍按旧凭据回 `ready: true`（推理可能仍可用：MaaS 的
+         * Basic 凭据与 STS 生命周期不同步），真正失效由 `stream` 的 401 兜底。
+         */
+        let credential = await auths.officeace.readOfficeAceCredential().catch(() => undefined)
+        if (credential !== undefined && auths.officeace.isExpiring(credential)) {
+          credential = (await auths.officeace.refreshStoredCredential().catch(() => undefined)) ?? credential
+        }
+        const base = { quotaUnit: OFFICEACE.quotaUnit }
+        if (credential === undefined) {
+          return {
+            ok: true,
+            value: { ...base, ready: false, user: undefined, models: [], expiresAt: undefined },
+          }
+        }
+        return {
+          ok: true,
+          value: {
+            ...base,
+            ready: true,
+            user: credential.displayName ?? (credential.accountId !== undefined && credential.accountId.length > 0
+              ? `华为云 ${credential.accountId.slice(0, 8)}`
+              : '华为云账号'),
+            models: OFFICEACE_MODELS.map((m) => ({ id: m.id, name: m.name })),
+            expiresAt: credential.expiresAt,
+          },
+        }
+      }
+
       default:
         return { ok: false, error: { code: 'bad-request', message: `unknown method: ${method}` } }
     }
   }
 }
 
-/** 补齐新旧 Connection 都要求的错误详情字段。 */
-function normalizeRpcResult(result: unknown): unknown {
+/** 构造带 rpcId 的响应 JSON */
+function reply(rpcId: string, result: unknown): Response {
   const value = typeof result === 'object' && result !== null && (result as Record<string, unknown>).ok === false
     ? { ...result as Record<string, unknown>, error: { ...(result as Record<string, unknown>).error as Record<string, unknown>, details: {} } }
     : result
-  return value
-}
-
-function reply(rpcId: string, result: unknown): Response {
-  return Response.json({ type: 'server-response', rpcId, result: normalizeRpcResult(result) })
+  return Response.json({ type: 'server-response', rpcId, result: value })
 }

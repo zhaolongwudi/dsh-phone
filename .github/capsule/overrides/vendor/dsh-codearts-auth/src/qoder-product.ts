@@ -103,6 +103,51 @@ export interface QoderFallbackModel {
    * 1. **取值来源是 `efforts` 的键名，不是值**：目录形如
    *    `efforts: { xhigh: {}, low: {}, medium: { is_default: true } }`，
    *    键即档位 id。本字段按**目录原始顺序**保存（客户端也按对象键序渲染）。
+   *
+   *    ⚠️⚠️ **这份顺序在各账号之间恒为「乱序」，而它就是上游原样下发的事实**
+   *    （Issue IKLIDV 实测：本机 8 个账号目录 CN 3 + 国际版 5，逐条解出的
+   *    `thinking_config.enabled.efforts` 键序**完全相同**，无第二种形态）：
+   *    `xhigh > high > low > max > medium`（ultimate/performance/smodel/cmodel）、
+   *    `high > low > max`（gmodel/kmodel*）、`xhigh > low > medium`（qmodel_38max/qfmodel）、
+   *    `high > max > low`（dfmodel）。
+   *
+   *    ⚠️ **故这里刻意不重排**，理由有二，缺一不可：
+   *    ① 本字段是「兜底镜像」，其正当性来自**与远端目录逐条可比**
+   *      （对账用 `JSON.stringify` **按序**比对，重排会让 17 条模型全部报
+   *      「档位不符」，对账从此失效 —— 该对账脚本**未入库**，见
+   *      `docs/agent-notes/misc.md` 的「`scripts/` 里哪些入库、哪些不入库」：
+   *      `git ls-files scripts/` 只有 `copy-assets.mjs` / `extract-qoder-wasm.mjs`
+   *      两个，其余是**本地指针**。故本条不要只靠脚本自证 —— 更硬的判据是
+   *      ② 与「上游目录本身就是这份乱序」（下有实测记录））；
+   *    ② 官方客户端**自己就按键序渲染**，重排会让我们与 IDE 的档位条不一致。
+   *
+   *    ⇒ **排序责任在渲染方**：需要「由弱到强」的横向档位轴，应由客户端按
+   *    `REASONING_EFFORT_RANK` 排序，**不要**在数据层规整 Qoder（那是改事实）。
+   *
+   *    ⚠️⚠️ **但本仓库当前没有这个「渲染方」**（对抗审计指出的实质缺口，已核实）：
+   *    全仓 `efforts.sort` / `toSorted` **零命中**，也没有任何按 rank 排序的出口；
+   *    本仓 Jet Hub 客户端只把 `efforts` 用于**文本对照表**（`join(' · ')` 成一行字，
+   *    `plugin-src/client/openai-gateway-panel.js`），**不渲染档位轴**。
+   *    ⇒ 该宣告目前是一条**给外部渲染方的约定**，不是本仓已实现的机制：
+   *    DSH 官方那个纵向列表不排序（纵向无观感问题），而**横向渲染的第三方客户端**
+   *    （issue IKLIDV 的报告方即此类）拿到 Qoder 的乱序时会**原样透传**成
+   *    「左强右弱」。**结论**：本仓库**不该**在数据层改事实，但也**不该**把
+   *    这条责任当成「已解决」—— 若将来本仓自己渲染档位轴（或用户要求 Qoder
+   *    与其它家观感一致），**在渲染处按 `REASONING_EFFORT_RANK` 排序**才是修法。
+   *
+   *    ⚠️ **那为什么 `zcode` 就在适配器里主动排序（`orderReasoningLevels`）？
+   *    两者不矛盾，判据是同一条：「**对齐官方 IDE 的档位条**」——
+   *    - `zcode`：上游键序（实测插入序 `low, max, high`）**与它的 IDE 显示不一致**
+   *      （IDE 显示 `low, high, max`，有用户截图为证）⇒ 不排就会与 IDE 不一致，
+   *      故**必须排**；
+   *    - `qoder`：上游键序**就是** IDE 的渲染序（客户端 `Cj()`/`gU()` 用
+   *      `Object.entries` 遍历，即对象键序 —— 由 `scripts/probe-qoder-effort-fields.mjs`
+   *      按客户端算法完整复刻）⇒ 排了**反而**与 IDE 不一致。
+   *
+   *    ⇒ 两家的差别来自**上游本身是否已与它的 UI 一致**，不是标准不统一。
+   *    判断「该不该排」只问一句：**上游键序与官方 IDE 的显示是否一致**？
+   * 对照：codearts / raccoon / minimax 的「开启-关闭」两档是**我们自己构造**的
+   *    声明（不是上游目录），故那三处按强度序排是修「我们的显示顺序」，与此处不同。
    * 2. **`*`（`is_default`）是"默认选中"，不是"多选"**：
    *    IDE 里是**下拉单选**，「极高/低/中」三选一，默认落在「中」
    *    （见 {@link defaultEffort}）。
@@ -538,6 +583,9 @@ const QODER_CN_FALLBACK_MODELS: readonly QoderFallbackModel[] = [
   // - `efforts` 取自目录 `thinking_config.enabled.efforts` 的**键**（目录原序）；
   // - `defaultEffort` 取该对象里 `is_default: true` 的键；
   // - `supportsDisable` = 目录存在 `thinking_config.disabled` 分支。
+  // ⚠️ **这些数组为什么不是升序**（`xhigh` 在 `low` 前等）—— 那是**上游原样**，
+  // 本仓库刻意如实镜像、不重排；完整理由与「排序责任在渲染方」见
+  // `QoderFallbackModel.efforts` 的注释（Issue IKLIDV）。**不要**把它当 bug 顺手排序。
   // ⚠️ **`qmodel` / `qmodel_latest` 只有「关闭思考」**：目录里它们的 `enabled`
   // **没有 `efforts` 键**，只有 `disabled` + `enabled.is_default` ——
   // 即官方就只提供「关」这一个选项（用户 2026-09-28 确认：

@@ -34,12 +34,7 @@
  *   重试；正确做法是判 `max-tokens` 让 dsh 重试。
  */
 
-import {
-  CONTEXT_WINDOW_EXCEEDED_CODE,
-  LlmError,
-  ToolCallId as CallId,
-  isContextWindowExceededError,
-} from '@deepseek-ai/dsh-llm'
+import { LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import {
   createBlankReasoningSuppressor,
@@ -60,6 +55,7 @@ import {
   createDsmlMarkerNormalizer,
   fixDsmlMarkers,
 } from './sse.js'
+import { DsmlContentExtractor } from './dsml.js'
 import { normalizeHarnessMessages } from './message-shape.js'
 import { isBillingBusinessCode, looksLikeBillingError, parseQueueError, queueDelayMs } from './model-queue.js'
 
@@ -195,47 +191,11 @@ export function serializeMessages(
    */
   const flushToolImages = (own?: Array<Record<string, unknown>>): void => {
     const ownParts = own ?? []
-    const hasImages = pendingToolImages.length > 0
-    if (!hasImages && ownParts.length === 0) return
-    /**
-     * ⚠️⚠️ **只在真的有挂起的工具结果图片时才重排顺序**（手机版对上游实现的收窄）。
-     *
-     * 上游此处**无条件**把图排到文本之前。本仓库实测：那会翻转**普通贴图**
-     *（无工具结果）的既有顺序 —— `[text, image]` 变成 `[image, text]`，
-     * 使既有 spec 的 2 条断言变红（buddy-adapter.spec.ts 的
-     * `stream sends user images as inline image_url parts` 与
-     * `贴图这一轮会自动重看目录`；lobsterai 同型）。
-     *
-     * 顺序本身**不影响模型能否看见图片**（上游注释亦称「两种顺序实测都能被看到」），
-     * 故这里按最小改动原则收窄：无挂图时 `own` **原样发出**（旧行为逐字节不变），
-     * 只有确实要「图与提问合条」时才做图前置的重排。
-     */
-    if (!hasImages) {
-      // ⚠️⚠️ **纯文本 parts 数组会被上游以 `model_param_invalid` 400 拒收整个请求**
-      //    （Issue 第九轮修复的自伤面，实测形态 `content:[{type:'text'},{type:'text'}]`）。
-      //    `combined` 一旦把「上一条延后正文」与「本条正文」合并就必然是 parts 形态；
-      //    只要此刻没有挂图，就会原样落到这里 ⇒ 坏历史每轮重放 = **会话报废**。
-      //    故**全为 text 时 join 回字符串**（与原实现的字符串形态等义）。
-      //    ⚠️ 含有非 text 的 part（本条自带的顶层图）时**不能** join：那会丢图。
-      const allText = ownParts.every((part) => part.type === 'text')
-      wire.push({
-        role: 'user',
-        content: allText ? ownParts.map((part) => String(part.text)).join('') : ownParts,
-      })
-      return
-    }
+    if (pendingToolImages.length === 0 && ownParts.length === 0) return
     // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
     const ownImages = ownParts.filter((part) => part.type !== 'text')
     const ownText = ownParts.filter((part) => part.type === 'text')
-    // ⚠️⚠️ **纯图无文本的独立 user 条，模型看不见**（Issue IKLIFH 的漏网形态，与上游
-    //    IKLSB8 同族）：本条挂图却没有任何自身文本时（典型：请求以「工具结果带图」
-    //    收尾，后面再没有提问可搭车），wire 上会产出 `content:[{type:'image_url'}]`
-    //    的纯图条 —— 按本项目实测表即 ❌「不支持识别图片」形态，而上游**不报错**
-    //    （HTTP 200）⇒ 用户误判成模型没有视觉能力。
-    //    ⇒ 无自身文本时补回说明文本，让图始终与一段文字同在一条消息里。
-    //    ⚠️ 仅在本条真的没有文本时补：已有文本时**逐字节不变**（不改既有 wire 形态）。
-    const ownTextOrHint = ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]
-    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownTextOrHint] })
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
     pendingToolImages = []
   }
 
@@ -294,41 +254,12 @@ export function serializeMessages(
     // ⚠️⚠️ **两条互斥分支**（Issue IKLIFH 的落点）：
     // 无工具结果 → 立刻发出并让挂起图片搭车；含工具结果 → 整条延后到下一条
     // user 消息（tool 消息必须紧跟其 assistant `tool_calls`，中间插消息会 400）。
-    // ⚠️⚠️ **延后判据必须看「有没有挂图 / 有没有延后正文」，不能只看「本条有没有
-    // 工具结果」**（Issue IKLIFH 补修，2026-10-14；上游 `32681a8b` 只修了 buddy，
-    // 本仓库三处一起改）。原判据 `toolResults.length > 0` 在
-    // 「tool 结果 → 一条无工具结果的 user（『好的』）→ 真正的提问」这一真实序列上
-    // 判错：中间那条把 `pendingToolImages` 与 `pendingOwnParts` **一起 flush 掉并
-    // 单独发出**，真正的提问随后成了**纯字符串** user 消息 ⇒ 图与问重新分处两条，
-    // **恰好复现 IKLIFH 要消灭的形态**。触发前提：工具结果后跟多于一条 user 消息。
-    //
-    // ⚠️ 「有挂图」还必须覆盖「历史上一条延后的正文」：那种情况下
-    // `pendingOwnParts` 非空而 `pendingToolImages` 已空，若只看后者就会把正文
-    // 提前发出、同样与后续提问分处两条。
     const deferred = toolResults.length > 0
-      || pendingToolImages.length > 0
-      || pendingOwnParts !== undefined
     // ⚠️⚠️ **无挂图且本条无图时必须保持「字符串」形态**（旧行为逐字节不变）：
     // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
     // 拒收整个请求（实测）。
     const hasImage = parts !== undefined
-    // ⚠️⚠️ **条件必须把 \`pendingOwnParts\` 也算进来**（手机版修掉的一处**真实数据丢失**，
-    //    上游同段逐字节相同、同样存在）：
-    //
-    //    上一条 user 消息含工具结果时，它的**自身正文**被延后到 \`pendingOwnParts\`；
-    //    若本条既没有挂起图片、自己也没有图（\`pendingToolImages.length === 0 && !hasImage\`），
-    //    上面这个条件恒为 false ⇒ \`combined\` 是 undefined ⇒
-    //    \`flushToolImages(undefined)\` 因「无挂图且 own 为空」**提前 return**
-    //    ⇒ 那份延后正文**从未被发出，静默丢失**。
-    //
-    //    可达性：harness 的真实形状就是「工具结果搭载在一条 user 消息里，而那条
-    //    消息可以同时带用户自己的正文」（见 \`message-shape.ts\` 的降级规则：
-    //    \`role:'tool'\` 降级后 content 只有 tool-result 块，但**混合形态** ——
-    //    user 消息里 text 与 tool-result 并存 —— 是 ≤0.1.6 的常规形状）。
-    //    实测（本仓库行为探针）：正文与顶层图片双双消失，模型看不到。
-    //
-    //    ⇒ 判据改成「有挂图 **或** 本条有图 **或** 有延后正文」。
-    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage || pendingOwnParts !== undefined
+    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage
       ? [
         ...(pendingOwnParts ?? []),
         ...(parts ?? (text.length > 0 ? [{ type: 'text', text }] : [])),
@@ -398,26 +329,28 @@ export function errorMessage(error: unknown): string {
 /**
  * 读取错误体里 `detail` 字段的可读文本（字符串，或 `{message}` 嵌套对象）。
  *
- * ## 为什么单独成函数（Gitee issue IKLBSH A1，2026-10-14 自上游移植）
+ * ## 为什么单独成函数（Gitee issue IKLBSH A1）
  *
  * 上游代理的顶层 catch 常把异常包成
  * `{"error":"acp-proxy failure","detail":"<真实原因>"}`：`error` 那条腿能取出的
  * 只是**没有信息量的摘要**，而真正的原因（连接超时 / 鉴权细节 / 上游栈信息）
  * 全在 `detail` 里。只认前者时用户只看到四个字，**根因完全不可见**。
  *
- * ⚠️⚠️ **本仓库有多份同义的 `errorDetail`**（`openai-compat` / `llm-adapter` /
+ * ⚠️⚠️ **本仓库有 6 份同义的 `errorDetail`**（`openai-compat` / `llm-adapter` /
  * `buddy-adapter` / `lobsterai-adapter` / `trae-adapter` / `accio-adapter`）。
- * 各写一条判据必然漂移 —— 那正是本仓库首条红线「同一语义两套判据」的形态。
- * 故这条腿**只留一份实现**（就在本文件），其余各家 import 它。
+ * 6 份各写一条判据必然漂移 —— 那正是本仓库首条红线「同一语义两套判据」的形态
+ * （`llm-adapter.ts` 的注释里就记着「两处改一处时**必须同时改另一处**」）。
+ * 故这条腿**只留一份实现**，其余 5 份 import 它。
  *
- * ⚠️ **证据强度如实标注：没有真实报文**。上游 866 个真实会话（解压后 3.0 GB，
- * 覆盖全部 `turn/end` 错误事件）里 `"detail"` **零命中**。该形态的依据是
- * ① 上游代理类实现的既有惯例、② harness 自带的 `providerErrorDetail`
- * 本身就**产出** `{message, detail}` 这一对字段。属于「结构上必然可达、
- * 但未实测」的一条腿。
+ * ⚠️ **证据强度如实标注：没有真实报文**。866 个真实会话（解压后 3.0 GB，
+ * 覆盖全部 `turn/end` 错误事件）里 `"detail"` **零命中**
+ * （`scripts/tmp-scan-iklbsh.mjs`）。该形态的依据是 ① 上游代理类实现的既有惯例、
+ * ② harness 自带的 `providerErrorDetail`（`dsh-llm-deepseek/lib/index.js`）
+ * 本身就**产出** `{message, detail}` 这一对字段。
+ * 属于「结构上必然可达、但未实测」的一条腿。
  *
  * ⚠️ **只加不减**（与 `errorDetail` 的既有纪律一致）：本函数只影响原先
- * 「所有腿都落空 ⇒ 退回整段裸 JSON」那一种形态；它必须排在**最后**一条腿，
+ * 「所有腿都落空 ⇒ 退回整段裸 JSON」那一种形态；它排在**最后**一条腿，
  * 既有腿的优先级与产出**逐字节不变**。
  */
 export function detailFieldText(value: unknown): string | undefined {
@@ -439,21 +372,43 @@ export function detailFieldText(value: unknown): string | undefined {
  * ## ⚠️⚠️ 这个函数是**展示**出口；`httpErrorCode` 一类**分类**出口必须排除 detail 腿
  *
  * `detail` 对展示有价值，但它会**加长分类判据的输入** ⇒ 可能翻转错误码
- * （上游两轮审计独立确证的真实净回归）：
+ * （真实净回归，两轮审计独立确证）：
  *
  * | 报文 | 只算既有腿 | 加上 detail 腿 |
  * |---|---|---|
  * | `{"message":"bad request","detail":"insufficient quota"}` | `INVALID_REQUEST` | **`QUOTA_EXCEEDED`** |
  * | `{"message":"bad request","detail":"prompt is too long for this model"}` | `INVALID_REQUEST` | **`CONTEXT_WINDOW_EXCEEDED`** |
  *
- * 后者还会**触发 DSH 的上下文溢出压缩** —— 纯展示改进换来行为变更。
+ * 后者还会**触发 DSH 的上下文溢出压缩** —— 纯展示改进换来行为变更，且**零守卫**
+ * （我加的用例只断言返回值，没有一条锁分类结果）。
  *
  * ⇒ 处置：**默认保持含 detail（= 展示行为不变）**，只有**分类调用点**显式传
- * `{ forClassify: true }` 把它排除。本仓库需要排除的是 `llm-adapter.ts` 的
- * `httpErrorCode`（buddy 的 `httpErrorCode` 刻意收**原始 body**，见其注释）。
+ * `{ forClassify: true }` 把它排除。本仓库需要排除的只有 `llm-adapter.ts` 的
+ * **两处**（`httpErrorCode` 与 4xx 额度判据）—— 它们是 `errorDetail` 产物
+ * 的**唯一**分类消费者（buddy 的 `httpErrorCode` 刻意收**原始 body**，见其注释）。
  */
-export function errorDetail(body: string, options?: { forClassify?: boolean }): string {
-  const includeDetailField = options?.forClassify !== true
+export function errorDetail(body: string): string {
+  return errorDetailImpl(body, true)
+}
+
+/**
+ * 从错误体提取**分类用**的可读文本 —— **不含**顶层 `detail` 字段。
+ *
+ * ⚠️ 分类调用点（`httpErrorCode` / `isSseQuotaExhaustedErrorCode` 一类）
+ * **必须**走本出口，理由与实测表见 {@link errorDetail}。
+ * 本出口保证分类输入与「加 detail 腿之前」**逐字节相同**。
+ */
+export function errorDetailForClassify(body: string): string {
+  return errorDetailImpl(body, false)
+}
+
+/**
+ * `errorDetail` 的唯一实现（两条出口共用，**不各写一份** —— 那是本仓库首条红线
+ * 「同一语义两套判据」，且必然漂移）。
+ *
+ * @param includeDetailField - `true` = 展示出口；`false` = 分类出口。
+ */
+function errorDetailImpl(body: string, includeDetailField: boolean): string {
   try {
     const data = JSON.parse(body) as Record<string, unknown>
     // ⚠️ `error` 也要认：Cline 的部分错误体是 `{error: "<文案>", success: false}`
@@ -468,9 +423,9 @@ export function errorDetail(body: string, options?: { forClassify?: boolean }): 
       typeof data.message === 'string' ? data.message : undefined,
       typeof data.msg === 'string' ? data.msg : undefined,
       typeof nested === 'string' ? nested : undefined,
-      // ⚠️ 上游代理的 `{"error":"…","detail":"<真实原因>"}` 形态（IKLBSH A1）。
-      // 判据只留一份实现（本文件的 `detailFieldText`）；必须是最后一条腿。
       includeDetailField ? detailFieldText(data) : undefined,
+      // ⚠️ **最后一条腿**，且只在展示出口计入（见上）。
+
     ].filter((value): value is string => value !== undefined)
     if (parts.length > 0) return parts.join(' ')
   } catch {
@@ -479,86 +434,13 @@ export function errorDetail(body: string, options?: { forClassify?: boolean }): 
   return body
 }
 
-/**
- * 腾讯网关「请求过大」的另一种措辞：`prompt is too long: 100001 tokens > 100000 maximum`。
- *
- * ⚠️ harness 的 `isContextWindowExceededError` **认不出这句话**（它的各分支都要求
- * 出现 `context` / `for this model` / `maximum context` 之类字样）。报文若同时带
- * `extError.code = context_length_exceeded` 还能靠结构化那条命中；**只带
- * `code`/`msg`** 时就漏判。
- *
- * ⚠️ 判据必须**同时**要求「prompt is too long」与「N tokens > M」两个特征：
- * 只认前者的宽泛措辞会把别的内容类 400 误判成溢出。
- *
- * ⚠️ `buddy-adapter.ts` 有一份**逐字相同**的常量（它刻意不走本模块，见模块头）。
- * 本次**不合并**它（那属于与本任务无关的重构，且会改到已被线上流量验证过的实现）；
- * 若将来统一共享层，应把这条一起收进来。
- */
-const PROMPT_TOO_LONG_BODY = /\bprompt\s+is\s+too\s+long\b[\s\S]{0,40}?\b\d[\d,]*\s+tokens?\s*>/i
-
-/**
- * 判定一段上游报文是否表示**上下文超限**（应归 `CONTEXT_WINDOW_EXCEEDED`）。
- *
- * ⚠️ 判据只用**宿主**分类器 `isContextWindowExceededError` + 上面那条网关措辞，
- * **不写任何本地措辞表**（本仓库红线：同一语义不得两套判据）。
- *
- * ⚠️ 判定看**完整报文**，展示才用 `errorDetail()` 的归一化文本 —— 后者在能提取到
- * `error.*` / `message` 时会丢掉 `extError` / `displayMsg` 等字段，实测那些字段
- * 恰恰是稳定命中的依据（`buddy-adapter.ts` 同款结论）。
- *
- * ⚠️ **导出是给 `llm-adapter.ts`（codearts）用的**（2026-10-11）：它的 400 分支
- * 此前只喂 `errorDetail(body)`，同样会漏掉 `extError.code`，且没有网关措辞兜底。
- * 两处**必须同源**，否则会重演本模块已修过的「只改了一条通道」缺陷。
- */
-export function isContextOverflowBody(body: string): boolean {
-  return body.length > 0
-    && (isContextWindowExceededError(body) || PROMPT_TOO_LONG_BODY.test(body))
-}
-
-/**
- * 将 HTTP 状态码映射为 harness 错误码。
- *
- * ## `400` 为什么要看报文（手机版补充，2026-10-11）
- *
- * 归错码的**代价不对称**：
- *
- * - `INVALID_REQUEST` **不在** harness 的 `DEFAULT_RETRYABLE_CODES` 里 → 不重试；
- *   更关键的是它**不触发溢出压缩** —— `dsh-compaction-basic` 的 request-error
- *   listener 第一行就是 `if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE) return next()`
- *   ⇒ 连「试一次压缩」的机会都没有，用户看到裸错误，且长会话越过窗口后**每轮报废**。
- * - 归成溢出的最坏结果只是一次无效的压缩尝试。
- *
- * 方向因此取「宁可多判一次溢出」。判据见 {@link isContextOverflowBody}。
- *
- * ⚠️ `body` 传**原始响应体**（不是 `errorDetail()` 的结果），理由见该函数注释。
- * 缺省空串只为「没有报文可判」的调用点仍能编译 —— 那等同于改动前的行为。
- */
-export function httpErrorCode(status: number, body = ''): string {
+/** 将 HTTP 状态码映射为 harness 错误码。 */
+export function httpErrorCode(status: number): string {
   if (status === 401 || status === 403) return 'AUTH'
   if (status === 429) return 'RATE_LIMIT'
-  if (status === 400) {
-    // 先判上下文超限，再退回通用 INVALID_REQUEST。
-    if (isContextOverflowBody(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
-    return 'INVALID_REQUEST'
-  }
+  if (status === 400) return 'INVALID_REQUEST'
   if (status >= 500) return 'SERVER'
   return `HTTP_${status}`
-}
-
-/**
- * 流内（SSE）错误帧的失败码：文案命中上下文超限时归**规范码**，否则维持 `SERVER`。
- *
- * 与 {@link httpErrorCode} 的 400 分支是**同一语义、同一判据**
- * （{@link isContextOverflowBody}）：溢出既可能以 HTTP 400 下发，也可能以
- * **HTTP 200 + 流内错误帧**下发。两条通道必须一致，否则会重演本模块已修过的
- * 「只修了一条通道」缺陷（排队与额度用尽两处都有同款注释）。
- *
- * ⚠️ **导出是给 `lobsterai-adapter.ts` 用的**（2026-10-11）：它有自己的 SSE 实现
- * （刻意不复用本模块约 200 行的协议层），流内失败的码此前固定写 `SERVER` ——
- * 那是**第三份**同义判据。它只复用这一个函数，与本模块的协议层无关。
- */
-export function sseFailureCode(text: string): string {
-  return isContextOverflowBody(text) ? CONTEXT_WINDOW_EXCEEDED_CODE : 'SERVER'
 }
 
 /**
@@ -633,6 +515,17 @@ export interface ConsumeOpenAiSseOptions {
    */
   maxTokens?: number
   /**
+   * 是否把正文里的 **DSML 工具调用块**解析为结构化 tool-call。
+   *
+   * ⚠️ **只在该通道确实用 DSML 时开启**（与注入 `buildDsmlSystemPrompt`
+   * **成对出现**）：适配器不把 `tools` 发给上游、改为把 schema 注入 system
+   * 提示，模型便以 `<｜DSML｜tool_calls>` 文本输出调用 —— 本消费器必须
+   * 把它解析回来，否则整段标签当正文显示，工具**永不执行**。
+   *
+   * 关闭时本消费器行为与从前**逐字节一致**（纯文本通道不受影响）。
+   */
+  dsmlToolMode?: boolean
+  /**
    * 每解析成功一帧就回调一次（**旁路观测**，不得影响流本身）。
    *
    * Cline 用它取网关下发的路由元数据（真正服务这笔请求的上游渠道），
@@ -655,9 +548,9 @@ const RAW_SNIPPET_LIMIT = 400
 
 // ────────────────────────── DSML 标记归一化 ──────────────────────────
 //
-// ⚠️ 实现在 **./sse.js**（buddy 等自解析适配器也从那里导入）—— 这里
+// ⚠️ 实现在 **`./sse.js`**（buddy 等自解析适配器也从那里导入）—— 这里
 // re-export 只为既有调用方路径稳定。为什么需要、规则是什么，见 sse.ts
-// 的 fixDsmlMarkers 注释（2026-10-13 实测：deepseek-v4.1-flash /
+// 的 `fixDsmlMarkers` 注释（2026-10-13 实测：deepseek-v4.1-flash / 
 // step-5-preview 把标记写坏成双竖线，宿主解析不了）。
 
 export { fixDsmlMarkers, createDsmlMarkerNormalizer } from './sse.js'
@@ -736,12 +629,101 @@ export async function* consumeOpenAiSse(
    */
   const suppressor = createBlankReasoningSuppressor()
   /**
-   * DSML 标记归一化器（见 createDsmlMarkerNormalizer）。
+   * DSML 标记归一化器（见 {@link createDsmlMarkerNormalizer}）。
    *
-   * ⚠️ **每个 stream() 调用一个实例**（与 loopGuard 同生命周期）：
+   * ⚠️ **每个 `stream()` 调用一个实例**（与 `loopGuard` 同生命周期）：
    * 待定缓冲是跨帧状态，共用会串流。
    */
   const dsmlFix = createDsmlMarkerNormalizer()
+  /**
+   * DSML 流式提取器（见 dsml.ts `DsmlContentExtractor`）。
+   *
+   * ⚠️ **只在 `dsmlToolMode` 开启时创建并接管正文**（2026-10-13）。
+   *
+   * 为什么必须在这里：OfficeAce 走本函数，而 DSML 解析器原先**只存在于
+   * `llm-adapter.ts`（codearts）**。上一版只给 OfficeAce 注入了 DSML 提示
+   * （「教模型写」），本函数却不解析 ⇒ 模型写出的 DSML 文本整段当正文，
+   * 用户报「还是不行」。**教得会、还要解得开**，故解析器收归共享层后
+   * 在本函数接入。
+   */
+  const dsmlExtractor = config.dsmlToolMode === true ? new DsmlContentExtractor() : undefined
+  /**
+   * DSML 解析出的调用所用的 wire 下标（**负数**，与上游标准 `tool_calls`
+   * 的 0/1/2… 隔离，避免两套机制抢同一个 `toolCalls` 槽位）。
+   *
+   * ⚠️ **负数只是「与合规上游不撞」，不是「天然隔离」**（2026-10-13 对抗性
+   * 审计实测）：OpenAI 协议里 `tool_calls[].index` 是**非负整数**，但上游
+   * 并非总是合规 —— 真发 `{index:-1}` 时会与本计数器首个键 **-1 撞车**：
+   * 上游的 `callId` 覆盖掉已 yield 的 `dsml_1`，参数被 `+=` 拼成
+   * `{...}{...}` 两段相连的非法 JSON ⇒ `isTruncatedArguments` 判真 ⇒
+   * **误报 max-tokens 触发重试（工具可能重复执行）**。
+   * 故上游分支现经 {@link allocUpstreamWireIndex} 把不合规下标挪进非负空间。
+   */
+  let dsmlWireIndex = -1
+  /**
+   * 为**不合规**的上游 `tool_calls[].index` 分配一个未被占用的非负下标。
+   *
+   * 仅在 `call.index` 不是非负整数时调用（罕见），保证与 DSML 的负数键
+   * 以及其它上游键都不相撞。
+   */
+  function allocUpstreamWireIndex(): number {
+    let max = -1
+    for (const key of toolCalls.keys()) {
+      if (Number.isInteger(key) && key >= 0 && key > max) max = key
+    }
+    return max + 1
+  }
+  /**
+   * 取（按需创建）**正文块**。
+   *
+   * ⚠️ **必须延后建块**（2026-10-13 审计）：旧实现在解析 DSML **之前**就
+   * 无条件建块并 `yield block-start`，纯 DSML 响应于是留下一个**孤儿
+   * `block-start(text)`**（无 `text-delta`、收尾也因正文为空而不发
+   * `block-end`）—— 宿主 `BlockAssembler` 对没有 `block-end` 的 partial
+   * 同样会用 `partial.text` 组装成 `{type:'text',text:''}`，空块落进会话。
+   * 这恰好是本文件自己写明「不发射空 text 块」的那条不变式。
+   * 与 `suppressor` 的延后建块同策。
+   */
+  function ensureTextBlock(): { block: { index: number; kind: 'text'; text: string }; created: boolean } {
+    const found = blocks.find(candidate => candidate.kind === 'text')
+    if (found === undefined) {
+      const block: { index: number; kind: 'text'; text: string } = { index: nextIndex++, kind: 'text', text: '' }
+      blocks.push(block)
+      return { block, created: true }
+    }
+    return { block: found as { index: number; kind: 'text'; text: string }, created: false }
+  }
+  /** 取（按需创建）**思考块**，与 {@link ensureTextBlock} 同策。 */
+  function ensureReasoningBlock(): { block: { index: number; kind: 'reasoning'; text: string }; created: boolean } {
+    const found = blocks.find(candidate => candidate.kind === 'reasoning')
+    if (found === undefined) {
+      const block: { index: number; kind: 'reasoning'; text: string } = { index: nextIndex++, kind: 'reasoning', text: '' }
+      blocks.push(block)
+      return { block, created: true }
+    }
+    return { block: found as { index: number; kind: 'reasoning'; text: string }, created: false }
+  }
+  /**
+   * 把一段**思考**增量落到 reasoning 块（含死循环守卫与纯空白抑制）。
+   *
+   * ⚠️ 两个 reasoning 出口（`<thought>` 与 `delta.reasoning_content`）必须
+   * **共用同一个 `suppressor` 实例**，否则第二处会从空态重新累积
+   * （明明已有非空白内容却被判为「至今仍空白」）。见 `suppressor` 注释。
+   */
+  function* emitReasoningDelta(chunk: string): Generator<StreamChunk> {
+    if (chunk.length === 0) return
+    if (loopGuard !== undefined) {
+      if (loopGuard.observe(chunk)) loopDetected = true
+    }
+    if (loopDetected) return
+    const emit = suppressor.feed(chunk)
+    if (emit === undefined) return
+    const { block, created } = ensureReasoningBlock()
+    if (created) yield { type: 'block-start', index: block.index, blockType: 'reasoning' }
+    // ⚠️ **整块回写**（赋值，不是 `+=`）：helper 内部已累积全部文本。
+    block.text = suppressor.text()
+    yield { type: 'reasoning-delta', index: block.index, text: emit }
+  }
   const toolCalls = new Map<number, {
     index: number
     text: string
@@ -891,9 +873,7 @@ export async function* consumeOpenAiSse(
           }
         }
         if (data.error !== undefined) {
-          // 溢出可能以流内错误帧下发（见 `sseFailureCode`）——码必须与 HTTP 层同源。
-          const text = `${label}: ${data.error.message ?? 'unknown error'}`
-          throw new LlmError(text, sseFailureCode(text))
+          throw new LlmError(`${label}: ${data.error.message ?? 'unknown error'}`, 'SERVER')
         }
         // Qoder 风格错误：顶层 code/message/type（且无 choices）。
         // 判据要求**同时**出现 code 与 message，避免把正常帧里恰好叫
@@ -947,9 +927,10 @@ export async function* consumeOpenAiSse(
             )
           }
           const detail = [String(data.code), data.type].filter(Boolean).join('/')
-          // 同上：流内错误帧也要认溢出（否则直连渠道的长会话照样每轮报废）。
-          const text = `${label}: ${data.message}${detail.length > 0 ? ` (${detail})` : ''}`
-          throw new LlmError(text, sseFailureCode(text))
+          throw new LlmError(
+            `${label}: ${data.message}${detail.length > 0 ? ` (${detail})` : ''}`,
+            'SERVER',
+          )
         }
         // ⚠️ **网关形态的错误帧**：既没有 `code`、也没有 `error`、也没有 `choices`，
         // 只带 `statusCodeValue` / `stackTrace` + `message`。
@@ -991,8 +972,7 @@ export async function* consumeOpenAiSse(
               })
             }
             const suffix = status === undefined ? '' : ` (status=${status})`
-            const text = `${label}: ${data.message}${suffix}`
-            throw new LlmError(text, sseFailureCode(text), {
+            throw new LlmError(`${label}: ${data.message}${suffix}`, 'SERVER', {
               ...(status === undefined ? {} : { status }),
             })
           }
@@ -1014,12 +994,6 @@ export async function* consumeOpenAiSse(
           : (!gotAnyContent && typeof choice?.message?.content === 'string' ? choice.message.content : undefined)
         if (textDelta !== undefined && textDelta.length > 0) {
           if (typeof deltaContent === 'string' && deltaContent.length > 0) gotAnyContent = true
-          let block = blocks.find(candidate => candidate.kind === 'text')
-          if (block === undefined) {
-            block = { index: nextIndex++, kind: 'text', text: '' }
-            blocks.push(block)
-            yield { type: 'block-start', index: block.index, blockType: 'text' }
-          }
           // 正文死循环守卫（见 `proseLoopGuard` 注释）。
           //
           // ⚠️ 与思考守卫的关键差异：命中后**只停止累积与发射**，**绝不**
@@ -1046,17 +1020,86 @@ export async function* consumeOpenAiSse(
           // 现改为**收尾无条件调用** `splitThinkTaggedContent`：
           // 它无闭标签时返回 `undefined`，调用方走原路径，
           // 故普通响应仍**逐字节不变**（功能等价，只是多一次字符串扫描）。
-          if (!proseLoopDetected) {
-            // ⚠️ **先归一化再累积**（2026-10-13）：坏标记 若原样
-            //    累积，宿主解析器不认，工具调用整段当正文 —— 模型「停住不动」
-            //    （实测 deepseek-v4.1-flash / step-5-preview）。push() 是流式
-            //    安全的：跨帧的模式由待定缓冲拼齐（见该函数注释）。
-            const fixedDelta = dsmlFix.push(textDelta)
-            block.text += fixedDelta
-            // 归一化可能把整帧都扣进缓冲（fixedDelta 为空）—— 空帧不发。
-            if (fixedDelta.length > 0) {
-              yield { type: 'text-delta', index: block.index, text: fixedDelta }
+          // ⚠️ **先归一化**（2026-10-13 审计修正）：坏标记 `<｜｜DSML｜｜` 若原样
+          //    累积，宿主解析器不认，工具调用整段当正文 —— 模型「停住不动」
+          //    （实测 deepseek-v4.1-flash / step-5-preview）。push() 是流式
+          //    安全的：跨帧的模式由待定缓冲拼齐（见该函数注释）。
+          //    ⚠️ 归一化**必须留在死循环门禁之外**：门禁只管「可见正文要不要
+          //    继续累积」，而扣住的缓冲是**跨帧状态** —— 跳过一次 push 会让
+          //    待定缓冲与上游流失步，后续帧的标签再也拼不齐。
+          let delta = dsmlFix.push(textDelta)
+          // ── DSML 工具调用 / `<thought>` 解析（OfficeAce 等走本函数的通道）──
+          //
+          // ⚠️⚠️ **必须在死循环门禁之外**（2026-10-13 对抗性审计实测的**真缺陷**）。
+          //
+          // 旧实现把整段 DSML 解析塞在 `if (!proseLoopDetected)` **内部**，
+          // 而同一函数里的标准 `delta?.tool_calls` 分支在**外部** —— 两条
+          // 路径行为不一致。实测（正文循环后紧跟 DSML 块）：
+          //
+          // | 路径 | 命中正文循环后到达的调用 |
+          // |---|---|
+          // | 标准 `tool_calls` | ✅ 照常解析并执行（`finish=tool-calls`）|
+          // | DSML（修复前）| ❌ **整体丢弃**（`tool-calls` 数 0、无报错）|
+          //
+          // 后果与「无报错中断」同型：模型本意要调工具，harness 却报
+          // `max-tokens` 重试、工具永不执行。这与本文件自己写明的设计意图
+          // （上面那段「工具调用在循环正文之后到达且有效，必须照常执行」）
+          // 直接矛盾 —— 修法即让 DSML 与标准路径**同层**：解析不受门禁管辖，
+          // 只有**可见正文的累积与发射**受管辖。
+          if (dsmlExtractor !== undefined) {
+            const extracted = dsmlExtractor.feed(delta)
+            if (extracted.toolCalls.length > 0) {
+              for (const call of extracted.toolCalls) {
+                const wireIndex = dsmlWireIndex--
+                const callId = `dsml_${Math.abs(wireIndex)}`
+                const block: {
+                  index: number
+                  text: string
+                  callId?: string
+                  name?: string
+                  announced: boolean
+                } = { index: nextIndex++, text: '', callId, announced: false }
+                toolCalls.set(wireIndex, block)
+                toolIds.set(wireIndex, callId)
+                block.name = call.name
+                block.text = call.arguments
+                if (hasUsableToolName(block.name)) {
+                  block.announced = true
+                  toolOrder.push(block.index)
+                  yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
+                  yield {
+                    type: 'tool-call-delta',
+                    index: block.index,
+                    id: ToolCallId(callId),
+                    name: block.name,
+                    argumentsDelta: block.text,
+                  }
+                }
+              }
             }
+            // ⚠️ **`reasoning` 必须放行**（2026-10-13 审计的**真缺陷**）：
+            //    提取器把 `<thought>…</thought>` 的**内容摘出来**放进
+            //    `reasoning`（正文不再包含它），旧实现只取 `text` 与
+            //    `toolCalls` ⇒ **该段既不在正文也不在 reasoning，凭空消失**。
+            //    codearts 侧（`llm-adapter.ts` 的 `emitDsmlFeed`）两个通道都接，
+            //    本函数漏了一半。`<thought>` 不闭合时更严重：其后全部内容
+            //    滞留缓冲、随 `flush()` 以 `reasoning` 返回后被丢弃 ⇒
+            //    **整段回复消失**（用户看到空响应）。
+            yield* emitReasoningDelta(extracted.reasoning)
+            delta = extracted.text
+          }
+          // 可见正文的累积与发射**受死循环门禁管辖**（与旧行为一致）。
+          //
+          // ⚠️ **建块必须在「确有可见正文」之后**（2026-10-13 审计）：旧实现
+          //    先无条件建块并 `yield block-start`，纯 DSML 响应（提取器把整帧
+          //    都摘成 tool-call、`delta` 为空）于是留下孤儿 `block-start(text)`
+          //    —— 宿主 `BlockAssembler` 会用 `partial.text`（空串）组装出
+          //    `{type:'text',text:''}`，正是本文件自己禁止的空块。
+          if (!proseLoopDetected && delta.length > 0) {
+            const { block, created } = ensureTextBlock()
+            if (created) yield { type: 'block-start', index: block.index, blockType: 'text' }
+            block.text += delta
+            yield { type: 'text-delta', index: block.index, text: delta }
           }
         }
         // 同样必须用 `typeof === 'string'`：reasoning_content 也会显式返回 null。
@@ -1083,29 +1126,22 @@ export async function* consumeOpenAiSse(
           // 可达性：扫描 281 会话 / **27949 个 attempt**，reasoning 帧与 usage 帧
           // 时间戳完全相同的次数为 **0**（相差 ≤2ms 也为 0）—— 真实流量中不可达，
           // 但修复成本为零，故仍按正确写法实现。
-          if (loopGuard !== undefined) {
-            if (loopGuard.observe(reasoningDelta)) loopDetected = true
-          }
-          if (!loopDetected) {
-            // 纯空白思考：`emit === undefined` ⇒ 本片一个 chunk 都不发，
-            // 于是既不建块、也不消耗 `nextIndex`（见 helper 注释与 `blank-reasoning.spec.ts`）。
-            const emit = suppressor.feed(reasoningDelta)
-            if (emit !== undefined) {
-              let block = blocks.find(candidate => candidate.kind === 'reasoning')
-              if (block === undefined) {
-                block = { index: nextIndex++, kind: 'reasoning', text: '' }
-                blocks.push(block)
-                yield { type: 'block-start', index: block.index, blockType: 'reasoning' }
-              }
-              // ⚠️ **整块回写**（赋值，不是 `+=`）：helper 内部已累积全部文本，
-              // 用 `+=` 会把已发过的部分再写一遍（双写）。
-              block.text = suppressor.text()
-              yield { type: 'reasoning-delta', index: block.index, text: emit }
-            }
-          }
+          //
+          // ⚠️ 与 `<thought>`（`emitReasoningDelta`）**共用同一个 helper 与同一个
+          //    `suppressor`** —— 本适配器的两个 reasoning 出口必须同源，否则
+          //    第二处会从空态重新累积（见 `suppressor` 注释）。
+          yield* emitReasoningDelta(reasoningDelta)
         }
         for (const call of delta?.tool_calls ?? []) {
-          const wireIndex = call.index ?? 0
+          // ⚠️ **必须把不合规的下标挪进非负空间**（2026-10-13 对抗性审计）：
+          //    DSML 侧用负数键（-1/-2…），而上游若真发 `{index:-1}` 就会与
+          //    它撞同一个 Map 键 —— callId 被覆盖、参数被拼成 `{...}{...}`
+          //    非法 JSON ⇒ 误报 max-tokens 触发重试（工具可能重复执行）。
+          //    协议规定 index 是非负整数，此处对越界值做一次归一。
+          const rawIndex = call.index
+          const wireIndex = Number.isInteger(rawIndex) && (rawIndex as number) >= 0
+            ? rawIndex as number
+            : allocUpstreamWireIndex()
           if (typeof call.id === 'string' && call.id.length > 0) toolIds.set(wireIndex, call.id)
           const callId = toolIds.get(wireIndex) ?? `call_${wireIndex}`
           let block = toolCalls.get(wireIndex)
@@ -1117,13 +1153,7 @@ export async function* consumeOpenAiSse(
           // 只允许非空名字覆盖：后续分片带空串 "" 会清空首个分片解析出的工具名，
           // 表现为 `unknown tool ""`。
           if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
-            // ⚠️ 存进去的必须是**下发值**（Issue F-52）：下面的闸门
-            //    `hasUsableToolName` 用 `trim()` 判可用，而此前存的是原样值 ——
-            //    `name=" read_image "` 会带着空白一路下发到 wire（delta 的
-            //    `name` 与 `block-end` 的 `name` 都取自本字段），上游按精确
-            //    匹配解析 ⇒ `unknown tool " read_image "`，整轮失败。
-            //    判据与取值必须同源，故归一化落在**入库这一处**。
-            block.name = call.function.name.trim()
+            block.name = call.function.name
           }
           const fragment = call.function?.arguments ?? ''
           block.text += fragment
@@ -1152,7 +1182,7 @@ export async function* consumeOpenAiSse(
             yield {
               type: 'tool-call-delta',
               index: block.index,
-              id: CallId(callId),
+              id: ToolCallId(callId),
               name: block.name!,
               argumentsDelta: block.text,
             }
@@ -1161,7 +1191,7 @@ export async function* consumeOpenAiSse(
           yield {
             type: 'tool-call-delta',
             index: block.index,
-            id: CallId(callId),
+            id: ToolCallId(callId),
             ...block.name !== undefined ? { name: block.name } : {},
             argumentsDelta: fragment,
           }
@@ -1227,7 +1257,6 @@ export async function* consumeOpenAiSse(
    */
   let emittedProse = ''
   // 按创建顺序关闭每个块
-  const textBlock = blocks.find(block => block.kind === 'text')
   for (const index of toolOrder) {
     const block = [...toolCalls.values()].find(candidate => candidate.index === index)!
     // `toolOrder` 只收「名字已可用」的块（见 tool_calls 分支），故此处名字必然
@@ -1246,7 +1275,7 @@ export async function* consumeOpenAiSse(
       index,
       block: {
         type: 'tool-call',
-        id: CallId(block.callId ?? ''),
+        id: ToolCallId(block.callId ?? ''),
         name: block.name!,
         // 仅把「无参数工具下发的空分片」补成 {}；**残缺参数保持原样**，
         // 由 max-tokens 判定触发重试 —— 把残缺 JSON 补成 {} 会伪造出
@@ -1260,16 +1289,40 @@ export async function* consumeOpenAiSse(
   // ── DSML 归一化收尾：下发待定缓冲 ──
   // 扣住的尾部（可能是模式前缀）在流结束时必须放行，否则最后几个字符
   // 永远不到达宿主。顺序：先 flush 进累积文本，block-end 才能带上它。
+  // ⚠️ 放行目标用 `ensureTextBlock()`（按需建块）：缓冲里若真有内容，
+  //    就得有块承载它；纯标签残片场景下这段本就不会发（tail 为空）。
   {
     const tail = dsmlFix.flush()
     if (tail.length > 0 && !proseLoopDetected) {
-      const tailBlock = blocks.find(candidate => candidate.kind === 'text')
-      if (tailBlock !== undefined) {
-        tailBlock.text += tail
-        yield { type: 'text-delta', index: tailBlock.index, text: tail }
-      }
+      const { block: tailBlock, created } = ensureTextBlock()
+      if (created) yield { type: 'block-start', index: tailBlock.index, blockType: 'text' }
+      tailBlock.text += tail
+      yield { type: 'text-delta', index: tailBlock.index, text: tail }
     }
   }
+  // ── DSML 提取器收尾：把残留缓冲按态放行 ──
+  // 未闭合的 DSML 块（流被截断）不能被吞掉，flush() 会补回开标签，
+  // 保证用户看到的是完整残片而非凭空消失的一段文本。
+  //
+  // ⚠️ **`flushed.reasoning` 也必须放行**（2026-10-13 审计的真缺陷）：
+  //    `<thought>` 未闭合时，其后**全部内容**都滞留在缓冲里并以 `reasoning`
+  //    返回 —— 只放行 `text` 会让整段回复**凭空消失**（用户看到空响应）。
+  if (dsmlExtractor !== undefined) {
+    const flushed = dsmlExtractor.flush()
+    if (flushed.reasoning.length > 0) yield* emitReasoningDelta(flushed.reasoning)
+    if (flushed.text.length > 0 && !proseLoopDetected) {
+      const { block: tailBlock, created } = ensureTextBlock()
+      if (created) yield { type: 'block-start', index: tailBlock.index, blockType: 'text' }
+      tailBlock.text += flushed.text
+      yield { type: 'text-delta', index: tailBlock.index, text: flushed.text }
+    }
+  }
+  // ── 两个 flush 之后**才**取正文块 ──
+  // ⚠️ **顺序不可颠倒**：上面两处 flush 都可能在此时**首次**创建正文块
+  //    （纯 DSML / 纯标签响应里正文块此前不存在），若提前捕获引用，新块
+  //    就永远拿不到 `block-end` ⇒ 孤儿 `block-start(text)` ⇒ 宿主
+  //    `BlockAssembler` 用 `partial.text`（空串）组装出空 text 块。
+  const textBlock = blocks.find(block => block.kind === 'text')
   if (textBlock !== undefined) {
     // ── think 标签归位（见 `splitThinkTaggedContent`）──
     //

@@ -49,27 +49,29 @@ export const name = 'jet-hub-client'
  * 未声明时本插件可能先被物化，`inject` 便会一直等服务，徽标不出现（不影响
  * 设置页与其余功能）。
  *
- * ## ⚠️ `remote.session`（2026-10-02 真机事故 → 2026-10-03 rc.8 适配）
+ * ## ⚠️⚠️ `remote.session` **必须**在这里（真机事故 2026-10-02，desktop 永久失效）
  *
- * 曾按 0.1.2-rc.1 的 `dsh-client-ui-model-selection` 对齐声明了
- * `sessions` / `remote` / `remote.session`：旧版该包的 `directoryFor` 会读
- * `this.ctx.remote.session`，不声明就在 desktop 上静默失败。
+ * `dsh-client-ui-model-selection` 自己的声明是
+ * `inject = ["sessions", "remote", "remote.session"]`，而它的
+ * `directoryFor(sessionId)` 内部会读 `this.ctx.sessions` 与
+ * `this.ctx.remote.session`。
  *
- * rc.8 已**删除** `remote.session` 服务（model-selection 包里已无任何引用），
- * 本插件多声明会让 cordis 逐插件校验永远等不到服务，整个 bundle 卡在
- * `pending (waiting for service: remote.session)`，Web UI 报
- * 「Failed to load plugins」。⇒ rc.8 起只声明 `sessions`，若将来降级回
- * 0.1.2-rc.1 时代的宿主，再把这三个名字加回来。
+ * cordis 的 inject 是**逐插件**校验的：我们自己的 ctx 没声明 `remote.session`，
+ * 那句 `ctx.remote.session` 就直接抛
+ * `cannot get property "remote.session" without inject`。
+ * 症状是**桌面版徽标永久不显示、且无任何报错**（我曾用 try/catch 吞掉异常，
+ * 结果把崩溃换成了静默失败，比原问题更难发现）。
+ *
+ * ⇒ 这里必须与该包**对齐**地声明 `sessions` / `remote` / `remote.session`。
+ * 少一个都会让 `directoryFor` 在 desktop 上失败。
  */
-export const inject = ['slots', 'connection', 'modelDirectories', 'sessions']
+export const inject = ['slots', 'connection', 'modelDirectories', 'sessions', 'remote', 'remote.session']
 
 import { callManagementRpc, unwrapRpcResult } from '../management-rpc.mjs'
 import { installJetHubStyles } from './jet-hub-styles.js'
 import { JET_HUB_RPC_CHANNEL, JetHubPage, providerLabel } from './jet-hub.js'
 import { startCarrierContribution } from './zcode-carrier.js'
 import { UsageBadge } from './usage-badge.js'
-import { ActiveModelPill } from './active-model-pill.js'
-import { createChatGptCall } from './chatgpt-plan-rpc.js'
 
 export function apply(ctx) {
   ctx.effect(() => installJetHubStyles(), 'jet-hub: install styles')
@@ -78,7 +80,6 @@ export function apply(ctx) {
     const raw = await callManagementRpc(ctx.connection, JET_HUB_RPC_CHANNEL, endpoint, payload, signal)
     return unwrapRpcResult(raw)
   }
-  const chatGptCall = createChatGptCall(ctx.connection)
 
   /**
    * zcode 内部 captcha 载体的贡献循环（二期 Task 4）。
@@ -98,7 +99,7 @@ export function apply(ctx) {
     id: 'jet-hub',
     order: 50,
     label: () => 'Jet Hub',
-    inject: () => ({ rpcCall, chatGptCall }),
+    inject: () => ({ rpcCall }),
   }, JetHubPage))
 
   /**
@@ -197,82 +198,4 @@ export function apply(ctx) {
         rpcCall('credits.claimAll', { provider, runTasks, budgetMs }),
     }),
   }, UsageBadge))
-
-  /**
-   * 输入区**最下方**的「在用模型」实时读数（`conversation.composer.dock`）。
-   *
-   * ## 它补齐了什么（2026-10-10）
-   *
-   * 宿主侧早已记录「实际发往的真实渠道 + 真实模型」（`aggregate.activeProvider`
-   * 的 `model` 字段 / 本端点的 `router.activeRoute`），聚合徽标也已经把模型后缀
-   * 拼进了胶囊 —— 但那些都在**模型选择器旁**，且 `jet-hub-auto` 完全没有读数。
-   * 本组件在输入区最下方补一枚独立读数，覆盖两家路由 provider。
-   *
-   * ## 槽位选择
-   *
-   * 该槽是 **list + 会话作用域**，官方在该处按 order 注入两枚统计胶囊
-   * （`activity` = 轮/步 · tok/s，order 0；`usage` = token 总量 · 缓存命中，order 1）。
-   * 本插件用 order 2 **追加**在它们之后 ⇒ 三枚胶囊同处一行，无需覆盖上游
-   * `dsh-client-ui-chat`（那是本仓库刻意避免的做法：覆盖上游包会把对方的
-   * 后续修复一起冻住）。
-   *
-   * ## ⚠️ 为什么必须惰性取目录 + 同时交出 store 与 load
-   *
-   * 与上面的用量徽标同因（真机事故 2026-10-02）：`directoryFor(sessionId)` 在
-   * 槽位 inject 期求值会让桌面版抛 `cannot get property "remote.session"
-   * without inject`，而该异常发生在会话输入区的同步渲染路径上 ⇒ 模型选择器整个
-   * 点不动。故只交出**取值函数**，由组件在自己的 effect 里调用。
-   * 且 store 初值为 `{ current: null, status: 'idle' }`，组件必须自己调 `load()`
-   * 才能拿到真实 `current` —— 两者缺一不可。
-   */
-  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-    name: 'conversation.composer.dock',
-    id: 'jet-hub-active-model',
-    // ⚠️ 2 = 排在官方 activity(0) / usage(1) 之后（= 最下方一行）。
-    order: 2,
-    inject: (sessionId) => ({
-      resolveDirectory: () => {
-        const directory = ctx.modelDirectories.directoryFor(sessionId);
-        return {
-          store: directory.store,
-          load: () => directory.load(),
-        };
-      },
-      providerLabel,
-      /**
-       * 取「本次实际发往的真实目标」。
-       *
-       * ⚠️ 宿主端点是**纯内存读**（零网络零余额查询），组件按 5 秒轮询它 ——
-       * 见 `active-model-pill.js` 的 ACTIVE_ROUTE_POLL_MS 注释。
-       *
-       * ## ⚠️⚠️ 为什么要有 `aggregate.activeProvider` 这条回落
-       *
-       * `router.activeRoute` 是**新端点**，而宿主代码**只在 DSH 启动时载入**
-       * （不热重载）。于是存在一个真实的中间态：**客户端 bundle 已更新、宿主还是旧的**
-       * —— 浏览器侧由 `dsh-client-hmr` 每 500ms 轮询 bundle 并自动 reload，而宿主侧
-       * 必须重启。旧宿主虽然没有新端点，但**已经有** `aggregate.activeProvider`
-       * （它自 c066b8ea 起就返回 `{ provider, model }`，模型后缀那批改动就靠它）。
-       * ⇒ 聚合这条路径完全可以先借用旧端点拿到真实读数，**不必等重启**。
-       *
-       * `jet-hub-auto` 没有对应的旧端点 ⇒ 它只能等重启，此时组件显示占位文案
-       * （不是不渲染）。
-       *
-       * ⚠️ 回落**只在**新端点抛错时走（`unknown method` / 未注册）；新端点一旦可用
-       * 就以它为准，避免两个数据源的判据分叉（新端点按**发起**时刻写，旧端点按
-       * **成功**时刻写，两者在请求进行中必然不同，见 `active-route.ts` 的对照表）。
-       */
-      readActiveRoute: async (provider) => {
-        try {
-          return await rpcCall('router.activeRoute', { provider });
-        } catch (error) {
-          // 只有「端点不存在」才回落；其它错误（如未注册适配器）原样交给组件降级。
-          if (provider !== 'aggregate') throw error;
-          const fallback = await rpcCall('aggregate.activeProvider', {});
-          return fallback === null || typeof fallback !== 'object'
-            ? null
-            : { provider: fallback.provider ?? null, model: fallback.model ?? null, at: null };
-        }
-      },
-    }),
-  }, ActiveModelPill))
 }

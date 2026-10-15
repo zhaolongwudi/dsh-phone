@@ -54,6 +54,18 @@
  *    **多一个空格**都不拦（上表「只差一个词」「内层多一个空格」两行），
  *    说明服务端认的是**逐字符的字面量**，**不能**把它泛化成正则/关键词。
  *
+ * ⚠️⚠️ **但「逐字符的精确字面量」不等于「每条指纹的锚点相同」**（2026-10-14，
+ * 登记 Claude Code 那条时实测出来）。两条已登记指纹的**位置语义是相反的**：
+ *
+ * | 指纹 | 位置语义 | 依据 |
+ * |---|---|---|
+ * | ZCode gitStatus 句 | **位置无关**（句中/段中被夹住仍拦） | 上表「句中 / 段中被别的句子夹住」 |
+ * | Claude Code 身份句 | **行首锚定**（前接任意一个字符即放行） | 见 {@link CONTENT_FINGERPRINTS} 第二条 |
+ *
+ * ⇒ **绝不能把任一条的锚点结论推给新指纹**。新增一条时的探针必须**两侧都测**
+ * （既测句首也测非句首），否则会把「锚点不吃这一口」误读成「这条指纹已失效」
+ * —— 那是**假阴性**，比没有探针更危险（会让人据此删掉一条仍然必需的登记）。
+ *
  * ⚠️ **可复核凭据已入库**（2026-10-12 审计补齐）：`tests/e2e/buddy-fingerprint-roles.e2e.spec.ts`。
  * 上面那四行 ★ **不是**本文件的自我声明 —— 它们各有一次真实发请求的用例。
  * ⚠️ 这个 e2e 文件不可省：单测只能锁「代码按这个范围改」，**锁不住这个范围对不对**。
@@ -130,6 +142,40 @@ const CONTENT_FINGERPRINTS: readonly ContentFingerprint[] = [
     find: 'Main branch (you will usually use this for PRs)',
     replace: 'Main branch (PRs usually go here)',
     note: 'Gitee IKJNA1；本机 2026-10-05 对 workbuddy / CodeBuddy 双端点实测复现',
+  },
+  {
+    // Claude Code 内建常量（v2.1.295 的 `yl`）：
+    // `"You are Claude Code, Anthropic's official CLI for Claude."`
+    //
+    // ⚠️ **`find` 刻意不带尾句点**，一条同时覆盖两个常量（本机实测两者改写后都放行）：
+    //   - `yl`  = `You are Claude Code, Anthropic's official CLI for Claude.`
+    //   - `sf`  = 同句 + `, running within the Claude Agent SDK.`
+    // 第三个常量 `af`（`You are a Claude agent, built on Anthropic's Claude Agent SDK.`）
+    // 实测**不被拦**，故刻意不登记（多一条就是替上游无谓改写用户提示词）。
+    //
+    // ## ⚠️⚠️ 本条的匹配语义**不是**「位置无关」，而是**行首锚定**（与 ZCode 那条相反）
+    //
+    // 2026-10-14 本机对两个端点的逐格实测（详见 `docs/agent-notes/providers-buddy.md`
+    // 「Claude Code 身份句」一节）：该指纹**只在文本绝对开头**被拦 ——
+    //   | 形态 | 结果 |
+    //   |---|---|
+    //   | 裸串 | ❌ 400/11128 |
+    //   | 前接空格 / 前换行 / 前接任意前言 | ✅ **200 放行** |
+    //   | 后接句点 / 破折号 / 中文句号 / 长正文 | ❌ 400/11128 |
+    // 即**前导字符一个都不容忍、后缀完全自由**，与 ZCode 那条的「位置无关」不同。
+    //
+    // 这不影响改写本身（下面 `replaceAll` 照样生效），但**影响怎么为新指纹做探针**：
+    // 只测「夹在句中」会得到「已放行」的**假阴性**（真因是锚点，不是这句不再触发）。
+    // 故本条的实测凭据必须含**贪心探针**（覆盖行首与非行首两侧），见
+    // `tests/e2e/buddy-fingerprint-roles.e2e.spec.ts` 的 Claude 段。
+    //
+    // ⚠️ **改成行首锚定的正则**（如 `^` 配 `m`）是**错**的：改写范围宁可略宽 ——
+    // 漏改一处就换来整轮 400，多改一处只是语义等价的措辞变化（原文已不存在
+    // 「位置无关」的相反证据）。故与上一条共用同一条实现路径。
+    find: "You are Claude Code, Anthropic's official CLI for Claude",
+    replace: "You are Claude Code, Anthropic's CLI for Claude",
+    note: 'Gitee IKLS2L；本机 2026-10-14 对 workbuddy / CodeBuddy 双端点实测：'
+      + 'system 与 assistant 正文位置均 400/11128，改写后两端点均 200（含 SDK 变体）',
   },
 ]
 
