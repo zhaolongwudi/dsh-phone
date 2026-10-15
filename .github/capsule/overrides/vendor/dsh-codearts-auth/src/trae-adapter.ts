@@ -1259,11 +1259,14 @@ export class TraeAdapter extends LlmAdapter {
           // 覆盖到下次配额重置）；上游若给出明确重置时间应以那个为准，
           // 但 4008 响应里没有可靠的重置字段，故改的是兜底值本身。
           const cooldownMs = traeCooldownFor(lastKind)
+          // ⚠️ 落盘失败**不得冒泡**（Issue F-40，HTTP 层这一处与流内那处同源）：
+          //    标记丢了最多再撞一次墙，抛错则把「上游 4xx + 换号」整条链路打断，
+          //    用户拿到的是与真实成因无关的存储异常。
           await pool.updateModelRateLimit(
             currentAccountId,
             options.model,
             Date.now() + cooldownMs,
-          )
+          ).catch(() => {})
         }
         await markCurrentAccount()
 
@@ -1349,11 +1352,22 @@ export class TraeAdapter extends LlmAdapter {
               ? classifyTraeError(0, JSON.stringify({ code: streamErr.code, message: streamErr.message }))
               : undefined
             const cooldownMs = kind !== undefined ? traeCooldownFor(kind) : TRAE_RATE_LIMIT_FALLBACK_MS
+            /**
+             * ⚠️⚠️ 落盘失败**必须吞掉，不能冒泡**（Issue F-40）。
+             *
+             * 这里在 `catch (error)` 块内 —— 而 `error` 正是**上游真实错误**
+             *（流内可换号错误）。此前的 `await` 一旦因写盘失败（磁盘满 / 权限）
+             * 抛出，它就会**顶掉**那个错误：调用方拿到的是存储异常，
+             * 而真正该上报的 `LlmError`（含上游 errorCode 与原因）连同
+             * 换号决策一起消失 —— 用户看到的报错与真实成因毫无关系。
+             * 标记只是「下次别再选它」的提示，丢了最多再撞一次墙。
+             * 处置与 `gemini-adapter.ts` 的同名调用逐字同源。
+             */
             await this.options.accountPool.updateModelRateLimit(
               currentAccountId,
               options.model,
               Date.now() + cooldownMs,
-            )
+            ).catch(() => {})
           }
           // 取下一个账号。
           //
@@ -1665,7 +1679,11 @@ export class TraeAdapter extends LlmAdapter {
                         const callFn = call.function
                         const fn = typeof callFn === 'object' && callFn !== null ? callFn as Record<string, unknown> : undefined
                         if (fn !== undefined && typeof fn.name === 'string' && fn.name.length > 0) {
-                          block.name = fn.name
+                          // ⚠️ 存进去的必须是**下发值**（Issue F-52，与
+                          //    `openai-compat.ts` 同源同修）：闸门
+                          //    `hasUsableToolName` 用 `trim()` 判可用，而此前存
+                          //    原样值 ⇒ 带空白的工具名一路下发到 wire。
+                          block.name = fn.name.trim()
                         }
                         const fragment = fn !== undefined && typeof fn.arguments === 'string' ? fn.arguments : ''
                         block.text += fragment
