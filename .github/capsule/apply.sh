@@ -248,30 +248,22 @@ grep -q "materializeAndroid" runtime/overlays/@deepseek-ai/dsh-session-persisten
 #      是上游的改进。精确串比对会把它误判为失配 ⇒ 被迫退回精确钉版，反而丢掉该设计。
 #      故改为与 §5.97 同源：**调用引擎自身的判据**判定兼容性，而不是比字符串。
 #      （判据权威 = `evaluatePluginCompatibility`，见 scripts/check-plugin-peers.mjs 文件头。）
+#      ⚠️ **2026-10-15 改造（第二次）**：把 §5.95 的判定**并入 §5.97 的通用扫描**，
+#      不再在这里自己写一份半成品判定。原因（CI run 38739058216 实测）：
+#      第一版改造用 `node -e` + 内联 semver，并把「设备树路径」写死 —— 那只在本机成立，
+#      CI 上没有该路径 ⇒ 打印「找不到 semver」硬失败。而 §5.97 的 check-plugin-peers.mjs
+#      早已解决同一问题：它用 `runtime/tools/pnpm/dist/node_modules/semver`（仓库自带、永远在），
+#      且**全扫** `runtime/package.json` 的全部 `file:` 依赖（含 dsh-codearts-auth）。
+#      ⇒ 两套同义的 peer 判据必须合一（本仓库首条红线：一份判据，一处实现）。
+#      本段只保留一条**清单登记**断言：dsh-codearts-auth 必须仍在受检清单里
+#      （若它被从 runtime/package.json 摘掉，通用扫描就不再覆盖它 —— 那才是真正的静默缺口）。
 VENDOR_MANIFEST="vendor/dsh-codearts-auth/package.json"
-node -e '
-  const fs = require("node:fs");
-  const path = process.argv[1];
-  const expect = process.argv[2];
-  const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-  const peers = manifest.peerDependencies ?? {};
-  // 收集全部 @deepseek-ai/dsh* 的 peer 声明，逐个交给 semver 判定
-  const targets = Object.entries(peers).filter(([name]) => name === "@deepseek-ai/dsh" || name.startsWith("@deepseek-ai/dsh-"));
-  if (targets.length === 0) { console.error("::error::" + path + " 没有任何 @deepseek-ai/dsh* 的 peer 声明（引擎门禁无从判定）"); process.exit(1); }
-  let semver;
-  for (const c of ["semver", process.env.DSH_TREE ? process.env.DSH_TREE + "/node_modules/semver" : "", "/data/data/com.dshphone/files/tree/node_modules/semver"]) {
-    if (!c) continue;
-    try { semver = require(c); break; } catch { /* 下一个 */ }
-  }
-  if (semver === undefined) { console.error("::error::找不到 semver（无法判定 peer 兼容性）：导出 DSH_TS/DSH_TREE 或装在设备树"); process.exit(1); }
-  let bad = 0;
-  for (const [name, range] of targets) {
-    const ok = typeof range === "string" && range.trim() !== "" && semver.satisfies(expect, range, { includePrerelease: true });
-    if (!ok) { console.error("::error::" + path + " 的 " + name + " peer 范围 " + JSON.stringify(range) + " 不匹配引擎 " + expect + "（设备上 Jet Hub 会被引擎静默跳过）"); bad++; }
-  }
-  if (bad > 0) process.exit(1);
-  console.log("✓ " + path + " 的 " + targets.length + " 条 dsh* peer 均兼容引擎 " + expect);
-' "$VENDOR_MANIFEST" "$ENGINE_VER_EXPECT"
+test -f "$VENDOR_MANIFEST" \
+  || { echo "::error::缺少 $VENDOR_MANIFEST（Jet Hub 插件清单不在，引擎会整包跳过它）"; exit 1; }
+grep -q '"dsh-codearts-auth": "file:' runtime/package.json \
+  || { echo "::error::runtime/package.json 的 file: 依赖里没有 dsh-codearts-auth —— §5.97 的通用扫描将不再覆盖它（Jet Hub 会被引擎静默跳过而无人拦）"; exit 1; }
+#      真正判定兼容性 = 下面 §5.97 的通用扫描（引擎判据 + 仓库自带 semver）。
+
 # 5.97) **同类地雷的泛化扫描**（2026-10-14 同日追加）。
 #      §5.95 只钉住了 Jet Hub 一个包，但事故的**成因是普遍的**：任何会被引擎当插件
 #      加载的包，只要 peerDependencies 里 @deepseek-ai/dsh* 钉了一个**精确旧版**，
