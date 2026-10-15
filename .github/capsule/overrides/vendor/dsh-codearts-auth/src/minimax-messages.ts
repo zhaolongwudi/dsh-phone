@@ -606,7 +606,12 @@ export async function* consumeMinimaxSse(
         yield { type: 'block-start', index, blockType: 'text' }
       } else if (kind === 'tool_use') {
         const id = typeof b.id === 'string' ? b.id : ''
-        const name = typeof b.name === 'string' ? b.name : ''
+        // ⚠️ **必须 trim 后再存**（Issue F-52）：下面的闸门 `hasUsableToolName`
+        // 用 `name.trim().length > 0` 判可用，而此前把它判过的**原样值**存进
+        // `toolName` 并逐片下发 ⇒ `name=" read_image "` 会带着空白发给上游，
+        // 上游按精确匹配解析 ⇒ `unknown tool " read_image "`（整轮失败）。
+        // 判据与取值必须同源，故归一化落在**入库这一处**。
+        const name = typeof b.name === 'string' ? b.name.trim() : ''
         /**
          * ⚠️ **名字不可用时一个 chunk 都不产出**（与 `zcode-anthropic.ts` /
          * `openai-compat.ts` 同款）：
@@ -661,14 +666,34 @@ export async function* consumeMinimaxSse(
         if (state !== undefined) state.text += d.thinking
         yield { type: 'reasoning-delta', index, text: d.thinking }
       } else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
+        /**
+         * ⚠️⚠️ **没有对应 `block-start` 的 index 一律不下发**（Issue F-25）。
+         *
+         * `blocks` 只在 `content_block_start` 里写入。上游畸形/丢帧时（qoder
+         * 实测过完全没有 `name` 字段的 `tool_use` 帧，本文件上方注释有记录），
+         * `input_json_delta` 可能先于任何 start 到达 —— 原实现只判
+         * `droppedToolIndexes`，于是给一个**从未宣布过**的 index 发
+         * `tool-call-delta`：`id` 退化成 `CallId('')`、`name` 因 `state` 为
+         * undefined 而整键省略。下游 OpenAI 网关（`openai-gateway/stream.ts`）
+         * 的 `tool.name` **只**从本 chunk 取 ⇒ 标准客户端（openai-node 的 zod /
+         * Codex / Cursor）抛 `Expected 'function.name' to be a string`，
+         * 而这帧本来就不该存在（我们没有为它发过 `block-start`，也没有块收尾）。
+         *
+         * 判据与 `content_block_stop` 处同源：`state === undefined` 即
+         * 「这个 index 没有活着的块」，只是这里**不必**再看
+         * `droppedToolIndexes`（丢弃的 index 同样没有 state，被这条一并覆盖）。
+         * `state.type !== 'tool-call'` 是同一判据的另一半：正文/思考块从来
+         * 不消费 `input_json_delta`。
+         */
+        if (state === undefined || state.type !== 'tool-call') return
         // ⚠️ 已丢弃的块**不累积、不发 delta** —— 发了会让 `BlockAssembler`
         // 为它建出 partial，于是「一个 chunk 都不产出」这条约定被绕过。
         if (droppedToolIndexes.has(index)) return
-        if (state !== undefined) state.toolArgs += d.partial_json
+        state.toolArgs += d.partial_json
         yield {
           type: 'tool-call-delta',
           index,
-          id: CallId(state?.toolId ?? ''),
+          id: CallId(state.toolId ?? ''),
           /**
            * ⚠️ 名字必须**随每一片**下发（PR #93 的修复）。
            *
