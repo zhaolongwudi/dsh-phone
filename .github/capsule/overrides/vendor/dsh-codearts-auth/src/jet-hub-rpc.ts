@@ -1948,17 +1948,39 @@ function registerJetHubEndpoints(
    *
    * ⇒ 判据：**凭据在 ⇒ 这次登录就是成了**。`failLogin` 据此把「登录真的失败」与
    * 「登录成功后的记账失败」分开（后者只记日志，不删号、不报失败）。
+   *
+   * ⚠️⚠️ **返回三态**（Issue F-50，不可逆方向）：`true` 已落库 / `false` 确实没落库 /
+   * `'unknown'` **读不到凭据存储、状态未知**。第三态与 `poolEntryOf` 的保守分支同源
+   * —— 见下方实现里那段说明（读失败若被当成「没落库」，就会删掉一次可能已成功的登录）。
+   *
+   * @returns `true` = 凭据已落库；`false` = 确实没有；`'unknown'` = 读失败（未知）。
    */
-  async function loginCredentialLanded(accountId: string): Promise<boolean> {
+  async function loginCredentialLanded(accountId: string): Promise<boolean | 'unknown'> {
     const refs = new Set<string>()
     const entry = poolEntryOf(accountId)
     if (entry !== undefined && entry !== 'unknown') refs.add(entry.credentialRef)
+    /**
+     * ⚠️⚠️ **读失败 ≠ 不存在**（Issue F-50）。
+     *
+     * 判据原先写作 `.catch(() => undefined)`，把「凭据存储读失败」与「这个 ref 没有
+     * 凭据」合并成同一个 `undefined`。而本函数的返回值直接决定 `failLogin` 是否
+     * **删账号 + unset 凭据**（不可逆）⇒ 一次读取抖动就会把一次**可能已经成功**的
+     * 登录销毁。故读失败时**不返回 false**，而是返回 `'unknown'` 交给调用方走保守分支
+     * （与 {@link poolEntryOf} 的「读不到时不删」同口径）。
+     */
+    let unreadable = false
     for (const name of refs) {
       if (name.length === 0) continue
-      const resolved = await ctx.credentials.resolve(credentialRef(name)).catch(() => undefined)
+      let resolved: { value: string } | undefined
+      try {
+        resolved = await ctx.credentials.resolve(credentialRef(name))
+      } catch {
+        unreadable = true
+        continue
+      }
       if (resolved !== undefined && resolved.value.length > 0) return true
     }
-    return false
+    return unreadable ? 'unknown' : false
   }
 
   /**
@@ -1971,12 +1993,22 @@ function registerJetHubEndpoints(
    *（凭据已落库，只是后续记账失败）—— 调用方**不得**把它当作失败。
    */
   async function failLogin(accountId: string, error: unknown): Promise<string | undefined> {
-    if (await loginCredentialLanded(accountId)) {
+    const landed = await loginCredentialLanded(accountId)
+    if (landed === true) {
       ctx.logger.warn(
         `[jet-hub] ${accountId} 登录已拿到凭据、后续记账失败（按成功处理：不记失败、不删账号）：`
         + `${loginReasonText(error)}`,
       )
       return undefined
+    }
+    if (landed === 'unknown') {
+      // ⚠️ 凭据存储**读不到**（不是「没有」）：状态未知 ⇒ 只记终态、**不删账号**
+      //（Issue F-50，不可逆方向；与下面 poolEntryOf 的 'unknown' 分支同口径）。
+      ctx.logger.warn(
+        `[jet-hub] ${accountId} 登录收尾时读不到凭据存储（状态未知），已记终态但**不删账号**（宁可留卡片）：`
+        + `${loginReasonText(error)}`,
+      )
+      return recordLoginFailure(accountId, error)
     }
     const entry = poolEntryOf(accountId)
     if (entry === 'unknown') {
@@ -1992,7 +2024,14 @@ function registerJetHubEndpoints(
       return recordLoginFailure(accountId, new Error('该账号条目已被删除（可能是你手动删掉了它）'))
     }
     const message = recordLoginFailure(accountId, error)
-    void pool.removeAccount(accountId).catch(() => {})
+    void pool.removeAccount(accountId).catch((removeError: unknown) => {
+      // ⚠️ **不得静默吞掉**（Issue F-49）：删号失败会让这张「登录失败」的卡片留在池里
+      //    （占位条目 = 无凭据的幽灵账号），而这里原先零日志 —— 用户看不到、排查也无线索。
+      ctx.logger.warn(
+        `[jet-hub] ${accountId} 登录失败后删除占位条目失败（该卡片会残留，可在面板手动删除）：`
+        + `${loginReasonText(removeError)}`,
+      )
+    })
     return message
   }
 
@@ -2434,7 +2473,10 @@ function registerJetHubEndpoints(
           // 阻塞数十秒后才返回 URL，弹窗必被拦截并返回 null，前端兜底逻辑
           // 便执行 `window.location.href = loginUrl`，把整个设置页跳走
           // ——用户报的「主页面直接跳转过去了」正是此因。
-          const started = await codearts.startLogin({ refName })
+          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51）：与 loomy / raccoon /
+          // minimax / gemini 的已验证形态一致。否则后台流程先落定时，它的
+          // `pool.updateAccount` 会打在一个**还没登记的条目**上（回填丢失）；而启动
+          // 失败时还得把条目删掉（下面的 catch），不留幽灵账号。
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2446,6 +2488,14 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
+          let started
+          try {
+            started = await codearts.startLogin({ refName })
+          } catch (error) {
+            // 启动失败：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            throw error
+          }
           started.result.then(async (loginResult) => {
             const credential = parseCodeArtsCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2466,7 +2516,7 @@ function registerJetHubEndpoints(
         } else if (provider === LOBSTERAI.id) {
           // LobsterAI 与 codearts 同款：回调式登录 + 两步式返回，
           // 理由见上面的 codearts 分支（弹窗拦截导致主页面被跳转）。
-          const started = await lobsterai.startLogin({ refName })
+          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
           await pool.addAccount({
             id,
             provider: LOBSTERAI.id,
@@ -2476,6 +2526,14 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
+          let started
+          try {
+            started = await lobsterai.startLogin({ refName })
+          } catch (error) {
+            // 启动失败：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            throw error
+          }
           started.result.then(async (loginResult) => {
             const credential = parseLobsteraiCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2499,7 +2557,7 @@ function registerJetHubEndpoints(
           // ⚠️ 分支内一律用 `product` / `auth`，**不要**出现 `QODER` 字面量 ——
           // 否则中国版会拿国际版的域名与 client_id 发请求。
           const { product, auth } = requireQoderFamily(provider)
-          const started = await auth.startLogin({ refName })
+          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2511,6 +2569,14 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
+          let started
+          try {
+            started = await auth.startLogin({ refName })
+          } catch (error) {
+            // 启动失败：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            throw error
+          }
           started.result.then(async (loginResult) => {
             const credential = parseQoderCredential(loginResult.access)
             // ⚠️ 设备码轮询响应**不带 `user_name`**，故 `credential.nickname` 恒为空
@@ -2542,7 +2608,7 @@ function registerJetHubEndpoints(
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
         } else if (provider === TRAE.id) {
           // TRAE 回调式登录 + 两步式返回（与 LobsterAI / codearts 同因）。
-          const started = await trae.startLogin({ refName })
+          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2554,6 +2620,14 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
+          let started
+          try {
+            started = await trae.startLogin({ refName })
+          } catch (error) {
+            // 启动失败：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            throw error
+          }
           started.result.then(async (loginResult) => {
             const credential = parseTraeCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2579,7 +2653,9 @@ function registerJetHubEndpoints(
           // `POST {workOsBase}/user_management/authorize/device` 拿到设备码，
           // 才能返回 loginUrl（Qoder 的 URL 是纯本地构造的）。那只是一次
           // 快速 POST，仍远快于浏览器手势窗口，故两步式的理由与 Qoder 一致。
-          const started = await cline.startLogin({ refName })
+          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51）：Cline 的 `startLogin` 内部
+          // 要发一次 WorkOS 设备码请求（有网络往返），后台流程先落定的窗口比其它
+          // 分支更宽。理由同 codearts 分支。
           // 先登记启用的占位条目（无凭据），使前端 login.poll 能立即看到该账号；
           // 登录成功后再回填昵称/有效期等真实字段。
           await pool.addAccount({
@@ -2591,6 +2667,14 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
+          let started
+          try {
+            started = await cline.startLogin({ refName })
+          } catch (error) {
+            // 启动失败：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            throw error
+          }
           started.result.then(async (loginResult) => {
             const credential = parseClineCredential(loginResult.access)
             await pool.updateAccount(id, {
@@ -2790,16 +2874,7 @@ function registerJetHubEndpoints(
            * `loginResult` 分支里的 `findAccountIdByIdentityField`）——
            * 判据是插件自己拿到的 `user_id`，不再依赖本机文件。
            */
-          const started = await zcode.startLogin({
-            refName,
-            // ⚠️ 缺省 `'bigmodel'`（既有行为不变）；`'zai'` 走 chat.z.ai 国际版。
-            // ⚠️ 必须过白名单（真实修复，Gitee issue IKJLK3 E2）：`req` 是**客户端
-            //   自报**的（RPC 载荷没有 schema 校验），原先只做 `?? 'bigmodel'` 兜底，
-            //   任何其它字符串都会被原样送进 `startZcodeLogin` → 打到一个不存在的
-            //   授权端点，表现为「授权页打不开 / 轮询到超时」这类难以定位的失败。
-            //   未登记值一律回落到缺省渠道并记日志（不报错，见下）。
-            provider: normalizeZcodeLoginProvider(req.zcodeProvider),
-          })
+          // ⚠️ **登记必须早于 `startLogin`**（Issue F-51，理由同 codearts 分支）。
           // 先登记占位条目（无凭据），使前端 `login.poll` 能立即看到该账号；
           // 登录成功后再回填昵称。失败则删除占位条目。
           await pool.addAccount({
@@ -2812,6 +2887,23 @@ function registerJetHubEndpoints(
             refreshable: false,
             createdAt: Date.now(),
           })
+          let started
+          try {
+            started = await zcode.startLogin({
+              refName,
+              // ⚠️ 缺省 `'bigmodel'`（既有行为不变）；`'zai'` 走 chat.z.ai 国际版。
+              // ⚠️ 必须过白名单（真实修复，Gitee issue IKJLK3 E2）：`req` 是**客户端
+              //   自报**的（RPC 载荷没有 schema 校验），原先只做 `?? 'bigmodel'` 兜底，
+              //   任何其它字符串都会被原样送进 `startZcodeLogin` → 打到一个不存在的
+              //   授权端点，表现为「授权页打不开 / 轮询到超时」这类难以定位的失败。
+              //   未登记值一律回落到缺省渠道并记日志（不报错，见下）。
+              provider: normalizeZcodeLoginProvider(req.zcodeProvider),
+            })
+          } catch (error) {
+            // 启动失败：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            throw error
+          }
           started.result.then(async (saved) => {
             /**
              * ★★ **重复账号去重**（真实缺陷，2026-10-02）。
@@ -3244,6 +3336,26 @@ function registerJetHubEndpoints(
           pendingSmsMsgid.delete(req.accountId)
           return { ok: true, value: { done: true } satisfies RpcSubmitSmsResponse }
         } catch (error) {
+          /**
+           * ⚠️⚠️ **记账失败 ≠ 登录失败**（Issue F-24）。
+           *
+           * `loomy.loginWithSmsCode` 已按 `refName` 把凭据落库，紧随其后的
+           * `pool.updateAccount`（`state.json` 落盘）**会抛错**。此时若统一回
+           * `{done:false, error}`：① 前端按「验证码输错、可重试」呈现，用户重试；
+           * ② 而 `pendingSmsMsgid` 没删，msgid 又是**一次性**中间态（5 分钟有效、
+           * 已被这次调用消费）⇒ 重试**必败**，用户被锁在「点一次失败一次」的死循环里。
+           * ⇒ 判据与 `failLogin` 同源：**凭据在 ⇒ 这次登录就是成了**（记日志 + 清中间态
+           * + 回终态成功）。凭据读不到（`'unknown'`）时不当成成功，仍按可重试回报。
+           */
+          const landed = await loginCredentialLanded(req.accountId)
+          if (landed === true) {
+            ctx.logger.warn(
+              `[jet-hub] ${req.accountId} 短信登录已拿到凭据、后续记账失败（按成功处理）：`
+              + `${loginReasonText(error)}`,
+            )
+            pendingSmsMsgid.delete(req.accountId)
+            return { ok: true, value: { done: true } satisfies RpcSubmitSmsResponse }
+          }
           // ⚠️ 登录失败**不删除占位条目**：用户可能只是验证码输错，
           // 保留条目让他能重试（`login.sendSms` 会重新发码）。
           return {
