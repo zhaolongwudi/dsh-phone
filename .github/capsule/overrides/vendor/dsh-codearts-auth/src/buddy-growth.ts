@@ -199,6 +199,28 @@ const SETTLE_WAIT_MS = 4000
 /** 主题写入后等皮肤事件生效的等待（毫秒）。 */
 const APPEARANCE_SETTLE_MS = 2000
 
+/**
+ * 可被 `AbortSignal` 打断的节流等待（Issue F-65）。
+ *
+ * ⚠️ 不能用裸 `setTimeout`：那样卸载插件 / 用户取消之后，本循环仍会「睡满」
+ * 每一段节流再继续往下走（最坏在 10 分钟预算内持续发请求）。取消即**立即返回**，
+ * 由调用方按 `signal.aborted` 收住本轮。监听器在两种结局下都会摘掉。
+ */
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal === undefined) return new Promise((resolve) => setTimeout(resolve, ms))
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout>
+    const finish = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+    timer = setTimeout(finish, ms)
+    signal.addEventListener('abort', finish, { once: true })
+  })
+}
+
 // ── 数据结构 ──
 
 /**
@@ -316,6 +338,16 @@ export interface GrowthCompletionOptions {
    * 而 `NaN > 0` 为 false，若不显式区分会静默变成不限时，恰是本预算要防的情况。
    */
   budgetMs?: number
+  /**
+   * 取消信号（Issue F-65）。
+   *
+   * 本循环最坏要跑满 10 分钟预算、期间持续建会话 / 发消息 —— 此前它
+   * **没有任何取消入口**（签名里连 signal 都没有），宿主卸载插件、用户关掉
+   * 面板都停不下它：循环会一直持有凭据发请求到预算耗尽。
+   * 传入后：每项开始前与每次节流等待都会检查，命中即**如实收住并记下
+   * 哪几项未执行**（`results` 里可见），不做无谓的剩余动作。
+   */
+  signal?: AbortSignal
 }
 
 /** {@link runGrowthTaskCompletions} 的单项结果。 */
@@ -338,6 +370,8 @@ export interface GrowthCompletionReport {
   claimedCredit: number
   /** 时间预算用尽、本轮提前收住。 */
   timedOut: boolean
+  /** 本轮被**取消**（宿主卸载 / 生命周期收尾，Issue F-65）而提前收住。 */
+  cancelled?: boolean
   message?: string
 }
 
@@ -2201,6 +2235,13 @@ async function readProgress(
  * ⚠️ 与 {@link claimAllGrowth}（只接取 + 旅行领奖，副作用最小）的区别：本函数
  * **真正执行完成动作**，会建会话 / 发消息（消耗少量 token 与活跃记录）。
  * 串行 + 单账号 + 白名单限定控制风控。
+ *
+ * ## ⚠️ 可取消、可被生命周期收住（Issue F-65）
+ *
+ * 本循环最坏要跑满预算（缺省 10 分钟），期间持续发请求。此前它**没有任何
+ * 取消入口** ⇒ 宿主卸载插件 / 用户关掉面板都停不下它（裸 `setTimeout` 更不受
+ * 生命周期约束）。现在经 `options.signal` 接受取消，并把**等待也做成可中断的**
+ *（`sleepWithSignal`），命中即如实收住。
  */
 export async function runGrowthTaskCompletions(
   credential: BuddyCredential,
@@ -2225,6 +2266,22 @@ export async function runGrowthTaskCompletions(
       '[buddy-growth] 凭据缺少 user_id：判据事件里的 userId/machineId 将退化，'
       + '任务大概率不被服务端计数。请重新登录该账号。',
     )
+  }
+  /**
+   * ⚠️⚠️ **入口处先查一次取消**（Issue F-65）。
+   *
+   * 下面的 `fetchGrowthTaskCodes` 是**第一次真实上游调用**，而逐项循环里的取消
+   * 检查在它之后 —— 只放那里的话，「已经在取消态」的调用仍会白打一次上游
+   *（本探针实测：`calls === 1`）。插件卸载 / 生命周期收尾时这一发正是要避免的。
+   * 返回结构与 `roundDeadlineAt` 那条早退**同形**（`ok:true` + `cancelled`），
+   * 因为「本轮没轮到它」同样不是任何账号的过错。
+   */
+  if (options.signal?.aborted === true) {
+    return {
+      ok: true, results: [], completed: 0, clientOnly: 0, failed: 0,
+      claimedCount: 0, claimedCredit: 0, timedOut: false, cancelled: true,
+      message: '本轮已取消（插件卸载 / 生命周期收尾），未执行成长任务',
+    }
   }
   // 取「白名单可达 ∩ 未完成（not_accepted + in_progress）」的 task_code。
   // 接取（accept）把任务从 not_accepted 置 in_progress，完成动作必须在
@@ -2273,6 +2330,14 @@ export async function runGrowthTaskCompletions(
     console.warn(`[buddy-growth] budgetMs=${String(options.budgetMs)} 非有限值，本轮不限时`)
   }
   let timedOut = false
+  /**
+   * 本轮是否被**取消**（Issue F-65）。与 `timedOut` 分开记：两者都是「提前收住」，
+   * 但成因完全不同（一个是我们的预算到了，一个是外部要求停），合并后
+   * 用户看到的文案会说错原因。
+   */
+  let cancelled = false
+  /** 取消信号（宿主生命周期 / 用户操作注入；缺省则行为与修复前逐字一致）。 */
+  const signal = options.signal
 
   // 接取这批里仍 not_accepted 的（in_progress 的跳过 accept，幂等）
   const toAccept = unfinished.toAccept
@@ -2334,6 +2399,25 @@ export async function runGrowthTaskCompletions(
       failed += 1
       continue
     }
+    /**
+     * ⚠️ **取消检查放在每一项开始之前**（Issue F-65），与下面的预算检查同一位置、
+     * 同一处置（如实报出哪几项没做）。文案刻意用**不同的词**（「已取消」而非
+     * 「时间预算已用尽」）：两者都是提前收住，但成因不同，合并后用户会照着
+     * 错误的提示去「再点一次」。
+     */
+    if (signal?.aborted === true) {
+      cancelled = true
+      const remain = actionable.slice(actionable.indexOf(code))
+      for (const pending of remain) {
+        results.push({
+          taskCode: pending,
+          ok: false,
+          message: '本轮已取消（插件卸载 / 生命周期收尾），未执行',
+        })
+      }
+      failed += remain.length
+      break
+    }
     // ⚠ 预算耗尽就**如实停在这里**：剩下每一项的真实完成动作都可能包含真实
     // 对话与多次复查，硬跑完会让整轮 RPC 悬到宿主超时（超时上限由
     // dsh-credentials 的 rpc 层决定，本插件不可见也不可控）—— 表现是用户点一次
@@ -2361,7 +2445,8 @@ export async function runGrowthTaskCompletions(
       message = `${code} 的判据由服务端 status 记录（非 progress 计数），API 事件不改变它；需在客户端真实完成`
       results.push({ taskCode: code, ok, message, clientOnly: true })
       clientOnly += 1
-      await new Promise((resolve) => setTimeout(resolve, TASK_INTERVAL_MS))
+      // ⚠️ 可中断的节流（Issue F-65）：取消后不再「睡满」每一段。
+      await sleepWithSignal(TASK_INTERVAL_MS, signal)
       continue
     }
     try {
@@ -2692,8 +2777,8 @@ export async function runGrowthTaskCompletions(
     if (clientOnlyFlag) {
       clientOnly += 1
     }
-    // 串行节流：任务间留缓冲。
-    await new Promise((resolve) => setTimeout(resolve, TASK_INTERVAL_MS))
+    // 串行节流：任务间留缓冲（可被取消打断，Issue F-65）。
+    await sleepWithSignal(TASK_INTERVAL_MS, signal)
   }
 
   // ── 扫尾：对所有「已达标未领取」的任务补领（网页显示可领取 = 服务端已判完成，
@@ -2705,6 +2790,24 @@ export async function runGrowthTaskCompletions(
     // 扫尾覆盖**全量**任务 code（含已完成未领的），不只 not_accepted 子集。
     const allCodes = await listAllGrowthTaskCodes(credential, product, fetcher)
     for (const code of allCodes) {
+      /**
+       * ⚠️ **扫尾同样受取消约束**（Issue F-65）：`allCodes` 长度由服务端决定、
+       * 无上限，每项一次 POST + 1s sleep ⇒ 不检查取消的话，用户在逐项阶段之后
+       * 取消仍拦不住这最后一段（最坏几十次请求）。
+       */
+      if (signal?.aborted === true) {
+        cancelled = true
+        const remaining = allCodes.length - allCodes.indexOf(code)
+        console.warn(`[buddy-growth] 扫尾补领在取消处停止，剩余 ${remaining} 项未执行`)
+        results.push({
+          taskCode: code,
+          ok: false,
+          // ⚠️ 文案同样带「未执行」二字（与下面的预算分支共用同一回归判据）。
+          message: `扫尾补领已取消（插件卸载 / 生命周期收尾），本轮还有 ${remaining} 项未执行`,
+        })
+        failed += 1
+        break
+      }
       // 扫尾同样受时间预算约束：allCodes 长度由服务端决定，无上限，
       // 每项一次 POST + 1s sleep，超时未检查会撞上宿主 RPC 超时。
       if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
@@ -2729,7 +2832,8 @@ export async function runGrowthTaskCompletions(
         claimedCount += 1
         claimedCredit += claim.credit
       }
-      await new Promise((resolve) => setTimeout(resolve, SWEEP_INTERVAL_MS))
+      // ⚠️ 可中断的节流（Issue F-65）。
+      await sleepWithSignal(SWEEP_INTERVAL_MS, signal)
     }
   }
 
@@ -2747,9 +2851,12 @@ export async function runGrowthTaskCompletions(
     claimedCount,
     claimedCredit,
     timedOut,
+    // ⚠️ 只在**真被取消**时才带上该字段（Issue F-65）：恒定出现会让
+    //    「取消」与「正常跑完」在报告里无法区分。
+    ...(cancelled ? { cancelled: true } : {}),
     ...(hasActivity
       ? {
-          message: `完成 ${completed} 项，需客户端 ${clientOnly} 项，失败 ${failed} 项，自动领取 ${claimedCount} 项（+${claimedCredit} 积分）${timedOut ? '；本轮时间预算用尽，剩余项未执行，再点一次即可继续' : ''}${uidHint}`,
+          message: `完成 ${completed} 项，需客户端 ${clientOnly} 项，失败 ${failed} 项，自动领取 ${claimedCount} 项（+${claimedCredit} 积分）${timedOut ? '；本轮时间预算用尽，剩余项未执行，再点一次即可继续' : ''}${cancelled ? '；本轮已取消（插件卸载 / 生命周期收尾），剩余项未执行' : ''}${uidHint}`,
         }
       : // 无活动：区分「本来就没有可完成任务」与「扫尾领到了但逐项阶段没做」
         // —— 后者说明账号里只有已达标未领的奖励，是正常终态。
@@ -2777,6 +2884,8 @@ export async function runGrowthTaskCompletions(
  * 否则同一个僵尸条目在两处会给出互相矛盾的判定。
  *
  * @param budgetMs 透传给 `runGrowthTaskCompletions`；`undefined` 由其取缺省 10 分钟。
+ * @param signal 取消信号（Issue F-65）：宿主生命周期 / 用户取消时用来中止本账号的
+ *   成长任务循环。`undefined` 时行为与修复前逐字一致。
  */
 export async function collectBuddyGrowth(
   credential: BuddyCredential,
@@ -2784,6 +2893,7 @@ export async function collectBuddyGrowth(
   entry: ProviderAccountEntry,
   budgetMs: number | undefined,
   roundDeadlineAt: number | undefined,
+  signal?: AbortSignal,
 ): Promise<RpcBuddyGrowthAccountResult> {
   // 整轮预算已耗尽 ⇒ 该账号**不再发起任何成长请求**。
   //
@@ -2800,7 +2910,7 @@ export async function collectBuddyGrowth(
   }
   let report: Awaited<ReturnType<typeof runGrowthTaskCompletions>>
   try {
-    report = await runGrowthTaskCompletions(credential, product, fetch, { budgetMs })
+    report = await runGrowthTaskCompletions(credential, product, fetch, { budgetMs, signal })
   } catch (error) {
     return {
       accountId: entry.id, nickname: entry.nickname,
