@@ -17,11 +17,43 @@ if [ -f .github/capsule/DISABLED ]; then
   exit 0
 fi
 
-# 1) 胶囊独有源文件（全新增路径，不覆盖任何上游文件）
+# 1) 胶囊独有源文件（须为全新增路径，不覆盖任何上游文件 —— 由 1.5 的门禁保证）
+#
+# ⚠️ 门禁必须在**铺开之前**取快照：`files/` 一铺开，上游工作树里哪些路径本来就有
+#    就再也分不清了（Issue F-03）。
+UPSTREAM_TREE_SNAPSHOT="$(mktemp)"
+find . -type f -not -path './.github/capsule/*' -not -path './.git/*' \
+  | sed 's|^\./||' | sort > "$UPSTREAM_TREE_SNAPSHOT"
+# ⚠️ AndroidManifest.xml 是**整份覆盖**（见 overrides/app/src/main/AndroidManifest.xml
+#    的维护须知）：上游日后新增组件会被这份覆盖**静默遮蔽**。故先取其 `android:name`
+#    清单，覆盖后由 2.7 的门禁比对（Issue F-28 的配套防线）。
+UPSTREAM_MANIFEST_NAMES="$(mktemp)"
+grep -o 'android:name="[^"]*"' app/src/main/AndroidManifest.xml | sort -u > "$UPSTREAM_MANIFEST_NAMES" || true
 cp -a .github/capsule/files/. .
 
 # 2) 接线覆盖文件（基线 = 上游 0.1.60 同名文件 + 胶囊接线）
 cp -a .github/capsule/overrides/. .
+
+# 1.5/2.5) 防撞自检（Issue F-03）：`files/` 必须是**全新增路径**。
+#
+# ⚠️ 为什么需要它：`files/` 的语义是「全新增，不覆盖上游」，但原实现**没有任何检查**
+#    —— 上游日后新增一个与我们同路径的文件时，`cp -a files/. .` 会**静默覆盖**它，
+#    构建、类型检查、单测全绿，谁也不知道上游那份文件没了。
+#    （该风险不是假设：本轮审查就查出 `files/` 下有三个测试 spec 与上游同名，
+#     一直在静默遮蔽上游的同名测试 —— 已迁到 `overrides/` 表明「这是有意的覆盖」。）
+# ⚠️ 判据是**路径存在性**，不是内容：内容相同也会在将来漂移，不值得开例外。
+if [ -s "$UPSTREAM_TREE_SNAPSHOT" ]; then
+  COLLIDING_FILES="$(
+    cd .github/capsule/files && find . -type f | sed 's|^\./||' | sort \
+      | comm -12 - "$UPSTREAM_TREE_SNAPSHOT"
+  )"
+  if [ -n "$COLLIDING_FILES" ]; then
+    echo "::error::capsule files/ 下有与上游工作树同路径的文件（会静默覆盖上游内容，Issue F-03）。"
+    echo "::error::若确实要覆盖上游同名文件，请把它移到 overrides/（那是覆盖的既定位置）："
+    echo "$COLLIDING_FILES"
+    exit 1
+  fi
+fi
 
 # 2.5) 防撞自检：files/ 与 overrides/ 出现同路径 = 配置错误（overrides 会静默胜出）。
 #      正常情况两者是互斥集合（全新增 vs 覆盖上游）；发现交集立即失败，防静默遮蔽。
@@ -32,6 +64,34 @@ if comm -12 \
   comm -12 \
     <(cd .github/capsule/files && find . -type f | sort) \
     <(cd .github/capsule/overrides && find . -type f | sort)
+  exit 1
+fi
+
+# 2.6) 覆盖文件与上游同名的**清单登记**（Issue F-03）。
+#      与 1.5 互补：1.5 管「files/ 不许撞上游」，这里管「overrides/ 撞了上游是**有意**的」。
+#      ⚠️ 只打印清单、不做断言 —— overrides/ 撞上游是它的本职。
+#      之所以要打印：一旦上游大改被覆盖的文件，构建会以 tsc/测试失败告警（见 README），
+#      但那需要人知道「这个文件是被覆盖的」；清单一目了然。
+echo "── overrides/ 覆盖的上游同名文件（$(comm -12 \
+    <(cd .github/capsule/overrides && find . -type f | sed 's|^\./||' | sort) \
+    "$UPSTREAM_TREE_SNAPSHOT" | wc -l) 个）"
+rm -f "$UPSTREAM_TREE_SNAPSHOT"
+
+# 2.7) AndroidManifest.xml 整份覆盖的**漂移门禁**（Issue F-28 的配套防线）。
+#      overrides/app/src/main/AndroidManifest.xml 是整份覆盖，只为给 MainActivity 加一个
+#      `android:configChanges`。上游日后新增 service / receiver / activity / provider
+#      （或新增权限声明）时，这份覆盖会**静默遮蔽**它们 —— 表现为「上游加了个组件，
+#      但装出来的 APK 里没有」，而构建、类型检查、单测全绿。
+#      ⚠️ 判据取**超集**（覆盖 ⊇ 上游）而非相等：我们只允许加，不允许丢。
+MISSING_MANIFEST_NAMES="$(
+  comm -23 "$UPSTREAM_MANIFEST_NAMES" \
+    <(grep -o 'android:name="[^"]*"' app/src/main/AndroidManifest.xml | sort -u)
+)"
+rm -f "$UPSTREAM_MANIFEST_NAMES"
+if [ -n "$MISSING_MANIFEST_NAMES" ]; then
+  echo "::error::AndroidManifest.xml 的胶囊覆盖丢失了上游声明的 android:name（整份覆盖遮住了上游新增项）："
+  echo "$MISSING_MANIFEST_NAMES"
+  echo "::error::请把上游新增项同步进 .github/capsule/overrides/app/src/main/AndroidManifest.xml。"
   exit 1
 fi
 
@@ -209,6 +269,25 @@ node scripts/ui-tests/plugin-peers.test.mjs
 #    而不报错，因为 querySelector 返回 null 后被 ?. / if(!x) 静默跳过。
 node scripts/check-ui-anchors.mjs
 
+# 6.2) **跨层类名契约门禁**（Issue F-19，2026-10-14 新增）。
+#      6) 管的是**上游哈希**锚点；这一条管**插件侧类名** —— `.dim-jh-*` 由
+#      dsh-codearts-auth 的 plugin-src 产出、由本层 app（dsh-phone.js/css）消费，
+#      此前**无版本号、无断言、无测试锁**：插件侧改名即静默失效，而构建、类型检查、
+#      单测全绿。F-15（窄屏徽标读数整块消失）与 F-16（账号拖拽触屏无效）正是因此
+#      长期无人发现 —— 插件侧 CSS 是桌面口径，手机可用性完全靠本层注入维持。
+#      ⚠️ 本脚本在资产不全时打印「跳过」并 exit 0（与 6) 同款），不会假红。
+node scripts/check-plugin-contract.mjs
+node scripts/ui-tests/check-plugin-contract.test.mjs
+
+# 6.3) **胶囊提交产物的「产物↔源码」一致性门禁**（Issue F-68，2026-10-14 新增）。
+#      `files/vendor/.../lib/active-route.js` 是**提交进胶囊的 tsc 产物**（不是构建期
+#      生成的），而纯净构建（DISABLED）直接用仓库预编译 lib ⇒ 源码改了而产物没同步时，
+#      设备上跑的还是旧代码，且**没有任何报错**。本步用设备树 typescript 现场 emit
+#      再逐行比对。
+#      ⚠️ 需要 typescript：CI 上由 vendor 的 devDeps 提供；缺失时脚本会明确说明并
+#      非零退出（这是「判据缺失」，不是「通过」）。
+node scripts/check-capsule-artifacts.mjs
+
 # 6.5) UI 图层健康检查：拦「代码与样式对不上且不报错」的三类腐化 ——
 #      状态类无 CSS 消费（切换是死代码）、死 CSS、未定义变量。
 #      实测这套判据在开发中先后误报过 5+2+3 项（创建标记/外部契约/拼接设置被
@@ -324,4 +403,92 @@ node scripts/ui-tests/plugin-bundle-load.test.mjs
 # 行为复核（不只看代码形态）：真的执行 dsh-phone.js，检查「接管事实在场时
 # 本地遮罩是否让位」。静态断言只看得到代码里写了什么。
 node scripts/ui-tests/mask-takeover-behavior.test.mjs
+
+# 15) 2026-10-14 深度审查（P0/P1）修复的**接线自检**。
+#     这一段全部是「抽出的实现正确 ≠ 被正确调用」形态的锚点：丢掉它们不会报错，
+#     只会静默退回缺陷态。每条都注明 Issue 编号。
+#
+# —— F-01 发布包不得是 debuggable ——
+#   init script 必须存在；**胶囊模板** workflow 必须真的用 `-I` 引它；产物门禁必须还在。
+#   ⚠️ 判据只钉**胶囊模板**（`.github/capsule/build-apk.yml`）—— 它才是本仓库可控的
+#      真相源：`.github/workflows/build-apk.yml` 由 `sync-upstream.yml` 从模板恢复。
+#      在**尚未 sync 的检出**（如本地新克隆、CI 首次跑）里，运行期 workflow 仍是上游
+#      原版、**不含** `-I`，此时硬失败会误报（实测：干净树上 apply.sh 因此 exit 1）。
+#      ⇒ 运行期那份改为**提示**（不是断言）：它一旦被 sync 覆盖就会带上。
+test -f scripts/no-debuggable.gradle
+grep -qF -e "debuggable = false" scripts/no-debuggable.gradle
+grep -qF -e "-I .github/capsule/files/scripts/no-debuggable.gradle" .github/capsule/build-apk.yml
+grep -qF -e "application-debuggable" .github/capsule/build-apk.yml
+#   运行期 workflow：**与胶囊模板逐字节相同**才算「已由 sync-upstream 恢复」，
+#   那时才断言（否则它仍是上游原版，断言会误报）。
+#   ⚠️ 不能用「内容里出现 capsule 字样」当判据 —— 上游原版 build-apk.yml **本身就**
+#      引用 `.github/capsule/apply.sh` / `update-readme.py`（实测：该判据让干净树上的
+#      apply.sh 假红）。
+if [ -f .github/workflows/build-apk.yml ]; then
+  if cmp -s .github/capsule/build-apk.yml .github/workflows/build-apk.yml; then
+    grep -qF -e "-I .github/capsule/files/scripts/no-debuggable.gradle" .github/workflows/build-apk.yml
+    grep -qF -e "application-debuggable" .github/workflows/build-apk.yml
+  else
+    echo "::warning::.github/workflows/build-apk.yml 与胶囊模板不一致（尚未由 sync-upstream 恢复）；恢复后即带上 F-01 的 -I 与产物门禁。"
+  fi
+fi
+#   WebView 远程调试必须显式关闭（默认值随 debuggable 走，不能依赖默认）。
+grep -qF -e "setWebContentsDebuggingEnabled(false)" app/src/main/java/com/dshphone/MainActivity.kt
+#
+# —— F-02 / F-17 破坏性操作确认按钮文案 + `alert()` 接管 ——
+#   肯定按钮不得再是「更新」；必须有 `onJsAlert`。
+! grep -qF -e 'setPositiveButton("更新")' app/src/main/java/com/dshphone/MainActivity.kt
+grep -qF -e 'setPositiveButton("确定")' app/src/main/java/com/dshphone/MainActivity.kt
+grep -qF -e "override fun onJsAlert" app/src/main/java/com/dshphone/MainActivity.kt
+#
+# —— F-27 不在胶囊内的上游 asset 必须存在 ——
+#   这两个文件由上游提供（胶囊既没有它们、也没法在 tsc/单测里发现缺失），
+#   缺失时手机端表现是「页面白屏」，而构建全绿 ⇒ 必须显式 test -f。
+test -f app/src/main/assets/dsh-phone.compat.js
+test -f app/src/main/assets/dsh-phone.export.js
+grep -qF -e "移动端样式 dsh-phone.css 读取失败" app/src/main/java/com/dshphone/MainActivity.kt
+#
+# —— F-28 旋转/深色不重建 Activity ——
+grep -qF -e "android:configChanges=" app/src/main/AndroidManifest.xml
+grep -qF -e "override fun onConfigurationChanged" app/src/main/java/com/dshphone/MainActivity.kt
+grep -qF -e "override fun onSaveInstanceState" app/src/main/java/com/dshphone/MainActivity.kt
+#
+# —— F-04 聚合层「本轮体积」必须按会话分桶且可降 ——
+#   丢掉 `lastContextTokensBySession` 会静默退回「进程级只增峰值」⇒ 小会话死循环。
+grep -qF -e "lastContextTokensBySession" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+grep -qF -e "self.recordSessionContextTokens(sessionKey" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+grep -qF -e "const observedTokens = self.lastContextTokensBySession.get(sessionKey)" \
+  vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+#   学习点必须用**本次尝试**的 turnTokens，不能用峰值。
+grep -qF -e "const observed = turnTokens" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+! grep -qF -e "const observed = self.lastContextTokens" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+#
+# —— F-05 / F-06 / F-07 / F-09 图片与工具回执形态（三个适配器必须同型）——
+for adapter in openai-compat buddy-adapter lobsterai-adapter; do
+  # F-06：有图无文时不得降级为字面量 `(no output)`
+  grep -qF -e "resultText = joined.length > 0 ? joined : TOOL_RESULT_IMAGE_TEXT" \
+    "vendor/dsh-codearts-auth/src/$adapter.ts"
+  # F-05：纯图无文本的独立 user 条必须补回说明文本
+  grep -qF -e "ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]" \
+    "vendor/dsh-codearts-auth/src/$adapter.ts"
+  # F-09：无图时必须 join 回字符串（纯文本 parts 数组会被上游 400）
+  grep -qF -e "allText ? ownParts.map((part) => String(part.text)).join('') : ownParts" \
+    "vendor/dsh-codearts-auth/src/$adapter.ts"
+  # F-21：延后判据必须把「有挂图」与「有延后正文」都算进来
+  grep -qF -e "|| pendingToolImages.length > 0" "vendor/dsh-codearts-auth/src/$adapter.ts"
+  grep -qF -e "|| pendingOwnParts !== undefined" "vendor/dsh-codearts-auth/src/$adapter.ts"
+done
+# F-07：gemini 工具结果内层图必须提升为 inlineData
+grep -qF -e "toolResultInlineImages" vendor/dsh-codearts-auth/src/gemini-messages.ts
+grep -qF -e "pendingToolImages.push(...innerImages)" vendor/dsh-codearts-auth/src/gemini-messages.ts
+#
+# —— F-18 workbuddy 不得下发 reasoning_effort ——
+grep -qF -e "suppressesProseWhenEffortSent" vendor/dsh-codearts-auth/src/buddy-adapter.ts
+grep -qF -e "!suppressesProseWhenEffortSent(this.product.id)" vendor/dsh-codearts-auth/src/buddy-adapter.ts
+#
+# —— F-20 网关空名工具调用必须剔除而非 400 ——
+grep -qF -e "isUsableToolCallId" vendor/dsh-codearts-auth/src/openai-gateway/messages.ts
+grep -qF -e "collectCallAvailability" vendor/dsh-codearts-auth/src/openai-gateway/messages.ts
+grep -qF -e "callIdAvailability" vendor/dsh-codearts-auth/src/openai-gateway/responses.ts
+
 echo "胶囊外挂应用完成"
