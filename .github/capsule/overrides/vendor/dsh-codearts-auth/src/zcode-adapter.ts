@@ -1594,7 +1594,10 @@ export class ZcodeAdapter extends LlmAdapter {
     if (rotationRequest(this.product.id)) return undefined
 
     if (activeAccountId !== undefined && activeAccountId.length > 0) {
+      // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：换号不该因为一次写盘失败而中断
+      //    （标记丢了最多再撞一次墙，抛错则整轮请求直接失败）。
       await pool.updateModelRateLimit(activeAccountId, options.model, nextUtc8DayStartMs())
+        .catch(() => {})
       tried.add(activeAccountId)
     }
 
