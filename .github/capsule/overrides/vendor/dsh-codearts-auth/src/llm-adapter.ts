@@ -811,7 +811,12 @@ function parseDsmlInvoke(block: string): { name: string; arguments: string } | u
   // 提取 name="..." 属性
   const nameMatch = /name\s*=\s*"([^"]*)"/.exec(block)
   if (nameMatch === null) return undefined
-  const name = nameMatch[1]
+  // ⚠️ **必须 trim**（Issue F-52）：模型把 invoke 写成 `name=" read_image "`
+  //    是实测形态，而两个消费点（本文件的 `dsmlCalls` / `reasoningDsmlCalls`）
+  //    都用 `hasUsableToolName` 的 `trim()` 判据放行 —— 判可用却把**带空白**的
+  //    名字下发，上游/DSH 按精确匹配解析 ⇒ `unknown tool " read_image "`。
+  //    在**唯一的解析入口**归一，两个消费点同时受益（不必各写一遍）。
+  const name = nameMatch[1].trim()
   // 提取所有 parameter 子节点，按出现顺序拼装 arguments JSON
   const params: Record<string, unknown> = {}
   let cursor = 0
@@ -1018,6 +1023,74 @@ function normalizeDsmlText(text: string): string {
   )
 }
 
+/** DSML `parameter` **开**标签（容忍 `｜DSML｜` 后的空白与多根竖线笔误）。 */
+const DSML_PARAM_OPEN_TAG = /<｜+DSML｜+\s*parameter\b[^>]*>/
+/** DSML `parameter` / `invoke` **闭**标签（值区段的右边界，形态同样放宽）。 */
+const DSML_PARAM_CLOSE_TAG = /<\/｜+DSML｜+\s*parameter\b[^>]*>/
+const DSML_INVOKE_CLOSE_TAG = /<\/｜+DSML｜+\s*invoke\b[^>]*>/
+
+/**
+ * {@link normalizeDsmlText} 的**协议感知**版本：只归一**标签**，不动参数值。
+ *
+ * ## 为什么必须区分（Issue F-56，工具参数被静默篡改）
+ *
+ * `feed()` 拿到的是 `this.buffer += chunk` 的**整个累积缓冲**，而
+ * `normalizeDsmlText` 的三条正则会把文中任何像坏标记的片段都改掉 ——
+ * 包括 `parameter` 标签**之间的参数值**。实测形态：模型用 DSML 写
+ * `write` 的 `content`（或 `bash` 的 `command`）时，正文里出现
+ * `<｜｜DSML｜｜ calls>` 这样的**字面文本**（贴日志、写文档、讨论协议都算），
+ * 它会被收敛成 `<｜DSML｜ calls>` ⇒ 落进 `content` 的值被**静默改写**：
+ * 用户拿到的文件与模型给的原文不一致，且**没有任何日志**。
+ * 这条通道本来是要「修工具的写法」，不该动工具的参数。
+ *
+ * ## 判据（本文件唯一需要「认识协议」的地方）
+ *
+ * 值区段 = **`parameter` 开标签的 `>` 之后** 到 **下一个 `parameter` / `invoke` 闭标签之前**，
+ * 这一段**逐字节照抄**；其余区段（含 `tool_calls` / `invoke` / `parameter` 三种标签本身）
+ * 照旧走 {@link normalizeDsmlText}。
+ *
+ * ⚠️ **起点必须落在 `parameter` 而不是 `tool_calls`**：从 `tool_calls` 之后就放行，
+ * 会把 `invoke` / `parameter` 的**标签写法**（`<｜DSML｜ invoke` 这类空白形态）
+ * 一起放行 ⇒ `indexOf(DSML_INVOKE_OPEN_PREFIX)` 恒不命中 ⇒ 工具调用凭空消失
+ *（正是上游三次事故的那条，`dsml-extractor-normalize` 的用例 ④⑥ 锁着它）。
+ * 值区段的边界判据与解析侧**同一套正则形态**，两处不会漂移。
+ *
+ * ## ⚠️ 与「尾部半截标签」的关系
+ *
+ * 本函数**不**负责扣留半截前缀（那是 {@link createDsmlMarkerNormalizer} 与
+ * `feed()` 的 `keepLen` 的职责）：开标签被拆帧切在半路时本函数找不到完整的
+ * `parameter` 开标签，于是整段照旧归一（与修复前逐字节一致）——
+ * 下一次 `feed()` 拼齐后才进值区段。两条判据各管一段，不重叠。
+ *
+ * ⚠️ 幂等：区段外仍走 `normalizeDsmlText`（它本身幂等），值区段逐字节不变。
+ */
+function normalizeDsmlChunk(text: string): string {
+  // 三条正则都要求出现 `DSML` ⇒ 不含它的文本逐字节等价，直接短路（零成本）。
+  if (!text.includes('DSML')) return text
+  let result = ''
+  let cursor = 0
+  for (;;) {
+    const chunk = text.slice(cursor)
+    // 本段不含 `DSML` ⇒ 不可能有标签，逐字节放行。
+    if (!chunk.includes('DSML')) return result + chunk
+    // **最早**的 `parameter` 开标签：多个参数按出现顺序逐个处理（循环自然推进）。
+    const open = DSML_PARAM_OPEN_TAG.exec(chunk)
+    if (open === null) return result + normalizeDsmlText(chunk)
+    const valueStart = cursor + open.index + open[0].length
+    const rest = text.slice(valueStart)
+    const closes: number[] = []
+    const closeParam = DSML_PARAM_CLOSE_TAG.exec(rest)
+    const closeInvoke = DSML_INVOKE_CLOSE_TAG.exec(rest)
+    if (closeParam !== null) closes.push(closeParam.index)
+    if (closeInvoke !== null) closes.push(closeInvoke.index)
+    const valueEnd = closes.length === 0 ? text.length : valueStart + Math.min(...closes)
+    // 值之前（含 `parameter` 开标签本身）照旧归一；值区段逐字节照抄。
+    result += normalizeDsmlText(text.slice(cursor, valueStart)) + text.slice(valueStart, valueEnd)
+    if (valueEnd >= text.length) return result
+    cursor = valueEnd
+  }
+}
+
 /**
  * 流式 DSML 提取器。feed() 接收 content delta，返回一个结果对象：
  * - `text`：应作为 text-delta 输出的纯文本（可能为空串）
@@ -1050,7 +1123,12 @@ export class DsmlContentExtractor {
     // ⚠️ 必须放在 buffer 累积**之后**：别名与空白形态都可能被拆成多帧到达，
     //    只有等 buffer 拼齐才改得动（这也是不能靠 sse.ts 逐帧归一化器的原因）。
     // 幂等：规范形再过一遍，正则命中后重建出同一字符串。
-    this.buffer = normalizeDsmlText(this.buffer)
+    //
+    // ⚠️⚠️ **用 `normalizeDsmlChunk` 而不是 `normalizeDsmlText`**（Issue F-56）：
+    //    后者会把 `parameter` 标签**之间的参数值**里任何像坏标记的片段一并改写
+    //    ⇒ 工具参数被**静默篡改**（模型写文件/贴日志时最常出现该形态）。
+    //    前者只归一标签区段，值区段逐字节照抄。
+    this.buffer = normalizeDsmlChunk(this.buffer)
     for (;;) {
       if (this.state === 'normal') {
         // 寻找最早出现的开标签（thought 或 DSML tool_calls）
@@ -2064,7 +2142,10 @@ export class CodeArtsAdapter extends LlmAdapter {
             // 直接覆盖会把首个分片解析出的真实工具名清空，导致
             // `unknown tool ""`。只有非空名字才允许更新。
             if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
-              block.name = call.function.name
+              // ⚠️ 存进去的必须是**下发值**（Issue F-52，与 `openai-compat.ts`
+              //    同源同修）：闸门 `hasUsableToolName` 用 `trim()` 判可用，而
+              //    此前存原样值 ⇒ 带空白的工具名一路下发到 wire。
+              block.name = call.function.name.trim()
             }
             const fragment = call.function?.arguments ?? ''
             block.text += fragment
