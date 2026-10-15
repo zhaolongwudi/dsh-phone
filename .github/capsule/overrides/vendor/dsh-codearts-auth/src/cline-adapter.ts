@@ -803,11 +803,14 @@ export class ClineAdapter extends LlmAdapter {
           if (currentAccountId === markedAccountId) return
           if (!recordsClineRateLimit(response.status, errorText)) return
           markedAccountId = currentAccountId
+          // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：`markedAccountId` 已经先写，
+          //    即便这次落盘失败，本轮也不会对同一账号重复记账；而让异常冒泡会
+          //    把一次限流失败变成整轮抛错（与 `gemini-adapter.ts` 同一处置）。
           await this.options.accountPool?.updateModelRateLimit(
             currentAccountId,
             options.model,
             clineRateLimitResetAt(response, errorText, options.model),
-          )
+          ).catch(() => {})
         }
         for (let round = 0; round < maxRotate; round++) {
           await markLimited()
