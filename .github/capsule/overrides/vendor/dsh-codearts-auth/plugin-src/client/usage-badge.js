@@ -446,6 +446,11 @@ function UsageBadgeActive(props) {
   /** 自动签到开关的写入错误（与偏好分开：两者是不同的设置项，别互相顶掉）。 */
   const [autoError, setAutoError] = React.useState('');
   /**
+   * ⚠️ Issue F-45：自动签到开关的**写入在途**标记（禁用按钮 + aria-busy）。
+   * 见 onToggleAutoCheckin 的注释：连点两次会发出两个相反的写请求。
+   */
+  const [autoBusy, setAutoBusy] = React.useState(false);
+  /**
    * 领取状态。`claiming` 用**字符串**而不是布尔：
    * `'current'` = 只签当前渠道（单次请求）；`'all'` = 遍历全部支持签到的渠道
    * （串行多次请求，要显示 `done/total` 进度，否则用户以为卡住了）。
@@ -480,6 +485,11 @@ function UsageBadgeActive(props) {
     let alive = true;
     let inFlight = false;
     /**
+     * ⚠️ Issue F-45：在途期间被挡下的**强制**读数（见 load 里的让路说明）。
+     * 它只记「有一次 force 没跑成」，跑完当前这次就在 finally 里补一次。
+     */
+    let forcePending = false;
+    /**
      * 读一次。三种调用形态（**语义不同，不要合并**）：
      *
      * | 形态 | force | 隐藏页 | 用途 |
@@ -497,8 +507,24 @@ function UsageBadgeActive(props) {
      * 后台标签页里新建的会话会一直停在「读取中…」。
      */
     const load = async (options = {}) => {
-      if (inFlight) return;
       const force = options.force === true;
+      /**
+       * ⚠️ Issue F-45：**强制读数不得被静默丢弃**。
+       *
+       * 原先第一行是 `if (inFlight) return;`（连 force 一起早退），于是用户点
+       * 「刷新」（`read.current()`）或刚签完到触发的补读，只要撞上一次正在跑的
+       * 轮询就会被**整体丢掉**：界面上什么都没发生，用户只会以为按钮坏了，
+       * 而他那次操作恰恰是「我不信缓存里的数，现在给我重读」（force 绕过宿主 120s 缓存）。
+       *
+       * ⇒ 分两种让路形态：
+       *   · 非强制（挂载 / 轮询 / 切回前台）：照旧早退 —— 那是节流，重复读没有意义；
+       *   · 强制：只**登记待办**（下面 finally 里补跑一次），既不并发打上游
+       *     （`inFlight` 这道闸门仍然有效，宿主侧逐账号顺序 HTTP），也不丢这次意图。
+       */
+      if (inFlight) {
+        if (force) forcePending = true;
+        return;
+      }
       // 隐藏的标签页跳过**轮询**（值不值得为一个没人看的数字保持请求）。
       if (options.poll === true && typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       inFlight = true;
@@ -520,6 +546,13 @@ function UsageBadgeActive(props) {
       } finally {
         inFlight = false;
         if (alive && force) setBusy(false);
+        // ⚠️ Issue F-45：补跑期间被挡下的那次强制读数（见上面的让路说明）。
+        //    用微任务而不是直接递归调用：直接调会在 finally 里同步进入本函数、
+        //    与 React 的 setState 批处理叠在一起（同一次提交里两次 setBusy）。
+        if (alive && forcePending) {
+          forcePending = false;
+          Promise.resolve().then(() => { void load({ force: true }); });
+        }
       }
     };
     read.current = () => { void load({ force: true }); };
@@ -616,10 +649,15 @@ function UsageBadgeActive(props) {
    * 2. 若这一轮正在跑，**12 秒后再读一次** —— 一轮是串行打十几个上游，通常十几秒
    *    内结束；不补这一次，状态灯要等满 60 秒轮询才从「进行中」变成「今天已完成」，
    *    用户会以为卡住了。只补一次，不做轮询循环（组件卸载后 `read.current` 已被置空）。
+   *
+   * ⚠️ Issue F-45：写入**在途时禁用**这个开关。它是一次落盘的设置写入，连点两次
+   * 会发出两个相反的写请求（最终值取决于服务端到达顺序），而开关自身是
+   * `aria-pressed` + `data-state` 的受控展示 —— 状态灯会与真实设置分叉。
    */
   const onToggleAutoCheckin = async () => {
-    if (auto === undefined) return;
+    if (auto === undefined || autoBusy) return;
     const next = auto.enabled !== true;
+    setAutoBusy(true);
     setAutoError('');
     try {
       await setAutoCheckin(next);
@@ -627,6 +665,10 @@ function UsageBadgeActive(props) {
       if (next) setTimeout(() => read.current(), 12_000);
     } catch (error) {
       setAutoError(describeBadgeError(error, '自动签到开关保存失败'));
+    } finally {
+      // ⚠️ 无论成败都要放行（否则写入失败后按钮永久变灰，用户无法重试 —— 而重试
+      // 恰恰是失败后唯一能做的事）。
+      setAutoBusy(false);
     }
   };
 
@@ -924,6 +966,10 @@ function UsageBadgeActive(props) {
           'data-state': autoState,
           'data-running': auto?.running === true,
           'aria-pressed': auto?.enabled === true,
+          // ⚠️ Issue F-45：写入在途时禁用（连点两次 = 两个相反的写请求），
+          //    并用 aria-busy 让读屏知道这个开关还没落定。
+          disabled: autoBusy || auto === undefined,
+          'aria-busy': autoBusy ? 'true' : undefined,
           title: autoTitle,
           'aria-label': autoTitle,
           onClick: () => { void onToggleAutoCheckin(); },
@@ -1294,6 +1340,11 @@ function UsageBadgeActive(props) {
     // 界面各写一份措辞，改一处就会出现「胶囊说A、弹窗说B」的偏差。
     // 只有积分模式才有那句话（窗口/套餐不是合计），故其余模式保留简写。
     if (view.failedCount > 0) parts.push(view.incompleteNote === '' ? `${view.failedCount} 个账号读取失败` : view.incompleteNote);
+    // ⚠️ Issue F-47：失败**原因**原先只在 `title` 里（见下面的 title 拼接）——
+    // 触屏没有 hover，手机上「为什么读不到」永远看不见，用户只能看到
+    // 「1 个账号读取失败」却无从下手。这里把它作为脚注的一部分常驻显示
+    // （`failureReason` 来自 badge-model 的 firstFailureReason，取首个账号的原因）。
+    if (view.failureReason !== '') parts.push(`原因：${view.failureReason}`);
     if (failed && snapshot !== null) parts.push('本次刷新失败，显示的是上一次读数');
     if (parts.length === 0) return null;
     return React.createElement('div', { key: 'foot', className: 'dim-jh-badgeFoot' }, parts.join(' · '));
