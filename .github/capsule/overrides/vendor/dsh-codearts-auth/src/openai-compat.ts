@@ -34,7 +34,7 @@
  *   重试；正确做法是判 `max-tokens` 让 dsh 重试。
  */
 
-import { LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { LlmError, ToolCallId, isContextWindowExceededError, CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import {
   createBlankReasoningSuppressor,
@@ -455,10 +455,40 @@ function errorDetailImpl(body: string, includeDetailField: boolean): string {
 }
 
 /** 将 HTTP 状态码映射为 harness 错误码。 */
-export function httpErrorCode(status: number): string {
+/**
+ * 网关侧「提示词过长」措辞（Anthropic 协议原生的超限报文）。
+ *
+ * ⚠️ 必须**两个特征同时出现**：「prompt is too long」与「N tokens > M」——
+ * 只认前者的宽泛措辞会把别的内容类 400 误判成溢出。
+ */
+const PROMPT_TOO_LONG_BODY = /\bprompt\s+is\s+too\s+long\b[\s\S]{0,40}?\b\d[\d,]*\s+tokens?\s*>/i
+
+/**
+ * 判定一段上游报文是否表示**上下文超限**（应归 `CONTEXT_WINDOW_EXCEEDED`）。
+ *
+ * ⚠️ 判据只用**宿主**分类器 `isContextWindowExceededError` + 上面那条网关措辞，
+ * **不写任何本地措辞表**（本仓库红线：同一语义不得两套判据）。
+ *
+ * ⚠️ 判定看**完整报文**，展示才用 `errorDetail()` 的归一化文本 —— 后者在能提取到
+ * `error.*` / `message` 时会丢掉 `extError` / `displayMsg` 等字段，实测那些字段
+ * 恰恰是稳定命中的依据。
+ *
+ * ⚠️ **导出是给 `zcode-adapter.ts` 用的**（它的端点是 Anthropic 协议，原生超限
+ * 报文宿主认不出）。两处**必须同源**，否则会重演「只改了一条通道」的缺陷。
+ */
+export function isContextOverflowBody(body: string): boolean {
+  return body.length > 0
+    && (isContextWindowExceededError(body) || PROMPT_TOO_LONG_BODY.test(body))
+}
+
+export function httpErrorCode(status: number, body = ''): string {
   if (status === 401 || status === 403) return 'AUTH'
   if (status === 429) return 'RATE_LIMIT'
-  if (status === 400) return 'INVALID_REQUEST'
+  if (status === 400) {
+    // ⚠️ 先判上下文超限，再退回通用 INVALID_REQUEST（归错码的代价不对称，见 isContextOverflowBody）。
+    if (isContextOverflowBody(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
+    return 'INVALID_REQUEST'
+  }
   if (status >= 500) return 'SERVER'
   return `HTTP_${status}`
 }

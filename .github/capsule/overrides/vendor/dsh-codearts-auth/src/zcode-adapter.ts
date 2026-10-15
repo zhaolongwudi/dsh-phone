@@ -54,7 +54,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, ReasoningEffortId, CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
@@ -66,7 +66,7 @@ import { AccountPool } from './account-pool.js'
 import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
 import { broadcastCatalogChanged } from './catalog-broadcast.js'
-import { collectImages, serializeMessages } from './openai-compat.js'
+import {collectImages, serializeMessages, isContextOverflowBody } from './openai-compat.js'
 import { projectRequestImage, type ImageRequestTarget } from './image-budget.js'
 import type { ZcodeCredential } from './zcode.js'
 import { ZCODE, type ZcodeFallbackModel, type ZcodeProduct, type ZcodeRemoteModelLike } from './zcode-product.js'
@@ -2142,7 +2142,18 @@ export function httpErrorCodeForZcode(status: number, body: string): string {
   if (status === 401 || trimmed.includes('1002')) return 'AUTH'
   if (status === 429) return 'RATE_LIMIT'
   if (status >= 500) return 'SERVER'
-  if (status === 400) return 'INVALID_REQUEST'
+  if (status === 400) {
+    /* ⚠️ 400 里有一类是**请求超出上下文窗口**（手机版补，2026-10-11）。
+       归错码的代价不对称：`INVALID_REQUEST` **不触发** DSH 的溢出压缩
+       （`dsh-compaction-basic` 的 listener 第一行就是
+       `if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE) return next()`）
+       ⇒ 长会话越过窗口后**每轮报废**。
+       ⚠️ 判据用**共享层**的 `isContextOverflowBody`（宿主分类器 + 网关措辞兜底）：
+       本端点是 Anthropic 协议，原生超限报文 `prompt is too long: N tokens > M maximum`
+       宿主分类器**认不出**。两处必须同源（本仓库红线）。 */
+    if (isContextOverflowBody(trimmed)) return CONTEXT_WINDOW_EXCEEDED_CODE
+    return 'INVALID_REQUEST'
+  }
   return 'SERVER'
 }
 

@@ -1133,6 +1133,23 @@ const STYLES = `
    ⚠️ 本文件整体是模板字符串：注释里**绝不能出现反引号**（会提前闭合，
    esbuild 的报错会指向注释行、看起来像 CSS 写错）。本条注释就曾踩过。 */
 
+
+/* 手机版补：实时路由胶囊的样式（rc.11 无此组件，配套 files 层的 active-model-pill.js）。
+   宽度上限只写在**外层** root 上（32%）。内层 button 必须是 max-width: 100% ——
+   百分比是相对各自的包含块解析的：两层都写 32% 会让实际可用宽度变成 32% x 32%
+   （约视口的 10%），模型名会被砍到只剩几个字符。
+   ⚠️ 本段注释不得使用反引号：本文件整体是模板字符串（见上方同类警告）。 */
+.dim-jh-routePill { box-sizing: border-box; display: inline-flex; flex-direction: column; justify-content: center; gap: 0; min-width: 0; max-width: 100%; padding: 0 6px; border: none; border-radius: 8px; background: 0 0; font: inherit; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); }
+button.dim-jh-routePill { cursor: pointer; }
+button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { color: var(--dsw-alias-label-secondary); }
+/* 唯一的上限：让出宽度给官方 activity / usage 两枚胶囊（三枚共处一行）。 */
+.dim-jh-routePillRoot { display: inline-flex; min-width: 0; max-width: 32%; }
+/* 两行各自省略：行内 overflow 必须由行自己扛（容器是 column，overflow 会切成整块）。 */
+.dim-jh-routePillTop, .dim-jh-routePillBottom { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 上行渠道：更弱一档（它是「谁」、不常变，让视线先落到下面的模型名上）。 */
+.dim-jh-routePillTop { font-size: 9px; line-height: 11px; opacity: 0.75; }
+/* 下行模型：略大一点，且等宽数字（模型名里常带 4.1 / 5.2 这类版本号）。 */
+.dim-jh-routePillBottom { font-size: 10px; line-height: 12px; }
 `
 
 /**
