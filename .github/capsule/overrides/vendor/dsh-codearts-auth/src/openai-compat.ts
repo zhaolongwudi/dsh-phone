@@ -211,13 +211,31 @@ export function serializeMessages(
      * 只有确实要「图与提问合条」时才做图前置的重排。
      */
     if (!hasImages) {
-      wire.push({ role: 'user', content: ownParts })
+      // ⚠️⚠️ **纯文本 parts 数组会被上游以 `model_param_invalid` 400 拒收整个请求**
+      //    （Issue 第九轮修复的自伤面，实测形态 `content:[{type:'text'},{type:'text'}]`）。
+      //    `combined` 一旦把「上一条延后正文」与「本条正文」合并就必然是 parts 形态；
+      //    只要此刻没有挂图，就会原样落到这里 ⇒ 坏历史每轮重放 = **会话报废**。
+      //    故**全为 text 时 join 回字符串**（与原实现的字符串形态等义）。
+      //    ⚠️ 含有非 text 的 part（本条自带的顶层图）时**不能** join：那会丢图。
+      const allText = ownParts.every((part) => part.type === 'text')
+      wire.push({
+        role: 'user',
+        content: allText ? ownParts.map((part) => String(part.text)).join('') : ownParts,
+      })
       return
     }
     // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
     const ownImages = ownParts.filter((part) => part.type !== 'text')
     const ownText = ownParts.filter((part) => part.type === 'text')
-    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
+    // ⚠️⚠️ **纯图无文本的独立 user 条，模型看不见**（Issue IKLIFH 的漏网形态，与上游
+    //    IKLSB8 同族）：本条挂图却没有任何自身文本时（典型：请求以「工具结果带图」
+    //    收尾，后面再没有提问可搭车），wire 上会产出 `content:[{type:'image_url'}]`
+    //    的纯图条 —— 按本项目实测表即 ❌「不支持识别图片」形态，而上游**不报错**
+    //    （HTTP 200）⇒ 用户误判成模型没有视觉能力。
+    //    ⇒ 无自身文本时补回说明文本，让图始终与一段文字同在一条消息里。
+    //    ⚠️ 仅在本条真的没有文本时补：已有文本时**逐字节不变**（不改既有 wire 形态）。
+    const ownTextOrHint = ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownTextOrHint] })
     pendingToolImages = []
   }
 
@@ -276,7 +294,20 @@ export function serializeMessages(
     // ⚠️⚠️ **两条互斥分支**（Issue IKLIFH 的落点）：
     // 无工具结果 → 立刻发出并让挂起图片搭车；含工具结果 → 整条延后到下一条
     // user 消息（tool 消息必须紧跟其 assistant `tool_calls`，中间插消息会 400）。
+    // ⚠️⚠️ **延后判据必须看「有没有挂图 / 有没有延后正文」，不能只看「本条有没有
+    // 工具结果」**（Issue IKLIFH 补修，2026-10-14；上游 `32681a8b` 只修了 buddy，
+    // 本仓库三处一起改）。原判据 `toolResults.length > 0` 在
+    // 「tool 结果 → 一条无工具结果的 user（『好的』）→ 真正的提问」这一真实序列上
+    // 判错：中间那条把 `pendingToolImages` 与 `pendingOwnParts` **一起 flush 掉并
+    // 单独发出**，真正的提问随后成了**纯字符串** user 消息 ⇒ 图与问重新分处两条，
+    // **恰好复现 IKLIFH 要消灭的形态**。触发前提：工具结果后跟多于一条 user 消息。
+    //
+    // ⚠️ 「有挂图」还必须覆盖「历史上一条延后的正文」：那种情况下
+    // `pendingOwnParts` 非空而 `pendingToolImages` 已空，若只看后者就会把正文
+    // 提前发出、同样与后续提问分处两条。
     const deferred = toolResults.length > 0
+      || pendingToolImages.length > 0
+      || pendingOwnParts !== undefined
     // ⚠️⚠️ **无挂图且本条无图时必须保持「字符串」形态**（旧行为逐字节不变）：
     // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
     // 拒收整个请求（实测）。
@@ -324,7 +355,18 @@ export function serializeMessages(
             .filter((part) => part.type === 'text')
             .map((part) => String(part.text))
             .join('')
-          if (joined.length > 0) resultText = joined
+          // ⚠️⚠️ **有图无文时绝不能落到 `(no output)`**（Issue IKLSB8，真实报障）。
+          //
+          // `resultParts !== undefined` 的含义是「该工具结果里有内容」，只是内容
+          // **不是文本**（全是图片）。原先这里只在 `joined` 非空时改写 `resultText`，
+          // 于是纯图片型工具结果保留了初值 `(no output)` —— 模型收到的是
+          // **「工具没有任何输出」**，于是回答「Read 没有返回内容 / gave no output」，
+          // 用户据此以为模型没有视觉能力；真实原因是「有输出，输出是图」。
+          //
+          // 判据必须用 `resultParts !== undefined`（**有内容**）而不是「有图」：
+          // `[image unavailable]` 占位符也走这条腿，它同样不是「没有输出」。
+          // 与 `trae-adapter.ts` / `accio-adapter.ts` 逐字同义（那两家早已如此兜底）。
+          resultText = joined.length > 0 ? joined : TOOL_RESULT_IMAGE_TEXT
         } else {
           resultText = contentToText(result.content) || '(no output)'
         }
@@ -1075,7 +1117,13 @@ export async function* consumeOpenAiSse(
           // 只允许非空名字覆盖：后续分片带空串 "" 会清空首个分片解析出的工具名，
           // 表现为 `unknown tool ""`。
           if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
-            block.name = call.function.name
+            // ⚠️ 存进去的必须是**下发值**（Issue F-52）：下面的闸门
+            //    `hasUsableToolName` 用 `trim()` 判可用，而此前存的是原样值 ——
+            //    `name=" read_image "` 会带着空白一路下发到 wire（delta 的
+            //    `name` 与 `block-end` 的 `name` 都取自本字段），上游按精确
+            //    匹配解析 ⇒ `unknown tool " read_image "`，整轮失败。
+            //    判据与取值必须同源，故归一化落在**入库这一处**。
+            block.name = call.function.name.trim()
           }
           const fragment = call.function?.arguments ?? ''
           block.text += fragment
