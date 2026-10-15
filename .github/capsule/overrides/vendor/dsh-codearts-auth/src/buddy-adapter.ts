@@ -47,7 +47,7 @@ import { reportLedgerAccount } from './token-ledger.js'
 import { planSessionTitleThinking } from './session-title.js'
 // ⚠️ `detail` 那条腿**只留一份实现**（`openai-compat.ts`）：本仓库多份同义的
 // `errorDetail` 各写一条判据必然漂移（IKLBSH A1）。
-import { detailFieldText } from './openai-compat.js'
+import { detailFieldText, TOOL_RESULT_IMAGE_TEXT } from './openai-compat.js'
 // ⚠️ 腾讯系内容级风控的指纹改写 —— 与 **OpenAI 网关**共用同一份真相源
 // （`src/openai-gateway/tencent-fingerprint.ts`）。该模块**零 import**，
 // 故从 `src/` 反向引它不构成环。
@@ -76,6 +76,54 @@ export const CHAT_API_BASE = 'https://copilot.tencent.com/v2'
  */
 function isDeepSeekModel(model: string): boolean {
   return /^deepseek/i.test(model.trim())
+}
+
+/**
+ * 该产品是否属于「**下发 `reasoning_effort` 会吞掉正文**」的一类。
+ *
+ * ## 实测依据（2026-10-14，`www.workbuddy.ai` + `deepseek-v4.1-flash`）
+ *
+ * 固定会话 111 的真实 messages + 标准 `tools`，逐格 13~15 个有效样本：
+ *
+ * | `reasoning_effort` | 有正文的比例 | 说明 |
+ * |---|---|---|
+ * | **不发该字段** | **15/15**（省略）/ 14/14（无 tools） | **唯一 100% 保住正文** |
+ * | `low`  | 1/14  | |
+ * | `high` | 4/15  | |
+ * | `max`  | 6/13  | |
+ *
+ * 而**不带 tools** 时四个格全部 15/15 有正文 ⇒ 正文本身没丢，丢的是
+ * 「模型在开思考 + 有工具可调」时那句「我先去做 X」的前言。上游把工具调用
+ * 路由进 `tool_calls` 通道时，把同一轮里 `delta.content` 的前言一并吞掉。
+ * 实测对照：同一请求体只换模型为 `hy4-preview-f` → 前言正常返回（75 字符）。
+ *
+ * ## 为什么判据挂在**产品**上而不是模型族上
+ *
+ * ① 同族的 CodeBuddy（中国版 `copilot.tencent.com`）不在本轮实测范围内，
+ *    把它一并关掉是**未经证实的行为变更** —— 而 2026-09 的既有结论
+ *    （`reasoning_effort` 是 deepseek 系的思考开关）恰恰依赖它，故保留。
+ * ② OfficeAce（华为 MaaS）实测**同样吞正文，但本改法救不了**：见下方注释。
+ *
+ * ## ⚠️ 聚合 / auto 渠道**无需**另改
+ *
+ * 二者的 `streamThrough`（`aggregate-adapter.ts`）与 `withTranslatedEffort`
+ * （`auto-adapter.ts`）只负责**按目标档位表翻译** `options.reasoningEffort`，
+ * 最终仍经 `ctx.llm.stream()` 回到**本适配器**构造 wire body ⇒ 本函数是
+ * 这些路径的**共同收口**，轮换到 workbuddy 时同样生效，无需第二份判据。
+ * ⚠️ 反过来也成立：若把判据加在聚合层，就会漏掉直连路径，并让
+ * 「同一模型直连与轮换行为不同」成为可能 —— 这正是本仓库反复出静默缺陷的形态。
+ *
+ * ## 代价：模型在该渠道上**完全不思考**
+ *
+ * 不发 `reasoning_effort` 对 deepseek 系等价于关闭思考（2026-09 实测
+ * 「无 `reasoning_effort`、无 `thinking` → `reasoning_content` 恒为 0」），
+ * 工具选错风险会上升。这是**为保住正文而自愿付出的代价**，不是副作用。
+ * 若上游日后修复，该判据可整条删除。
+ *
+ * ## ⚠️ `thinking:{type:'enabled'}` 仍照发（见调用点注释）
+ */
+function suppressesProseWhenEffortSent(productId: string): boolean {
+  return productId === 'workbuddy'
 }
 /**
  * CodeBuddy 的 provider 路由名（历史常量，保留导出以兼容既有导入方）。
@@ -359,13 +407,31 @@ function serializeMessages(
      * 只有确实要「图与提问合条」时才做图前置的重排。
      */
     if (!hasImages) {
-      wire.push({ role: 'user', content: ownParts })
+      // ⚠️⚠️ **纯文本 parts 数组会被上游以 `model_param_invalid` 400 拒收整个请求**
+      //    （Issue 第九轮修复的自伤面，实测形态 `content:[{type:'text'},{type:'text'}]`）。
+      //    `combined` 一旦把「上一条延后正文」与「本条正文」合并就必然是 parts 形态；
+      //    只要此刻没有挂图，就会原样落到这里 ⇒ 坏历史每轮重放 = **会话报废**。
+      //    故**全为 text 时 join 回字符串**（与原实现的字符串形态等义）。
+      //    ⚠️ 含有非 text 的 part（本条自带的顶层图）时**不能** join：那会丢图。
+      const allText = ownParts.every((part) => part.type === 'text')
+      wire.push({
+        role: 'user',
+        content: allText ? ownParts.map((part) => String(part.text)).join('') : ownParts,
+      })
       return
     }
     // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
     const ownImages = ownParts.filter((part) => part.type !== 'text')
     const ownText = ownParts.filter((part) => part.type === 'text')
-    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
+    // ⚠️⚠️ **纯图无文本的独立 user 条，模型看不见**（Issue IKLIFH 的漏网形态，与上游
+    //    IKLSB8 同族）：本条挂图却没有任何自身文本时（典型：请求以「工具结果带图」
+    //    收尾，后面再没有提问可搭车），wire 上会产出 `content:[{type:'image_url'}]`
+    //    的纯图条 —— 按本项目实测表即 ❌「不支持识别图片」形态，而上游**不报错**
+    //    （HTTP 200）⇒ 用户误判成模型没有视觉能力。
+    //    ⇒ 无自身文本时补回说明文本，让图始终与一段文字同在一条消息里。
+    //    ⚠️ 仅在本条真的没有文本时补：已有文本时**逐字节不变**（不改既有 wire 形态）。
+    const ownTextOrHint = ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownTextOrHint] })
     pendingToolImages = []
   }
 
@@ -472,10 +538,27 @@ function serializeMessages(
     // 「看不见」（实测 hy4-preview 与 deepseek-v4-flash 均答「图像已被过滤」，
     // 而两者远端都是 `supportsImages: true`）。明细见 flushToolImages 的表。
     //
-    // ⚠️ 含工具结果时**整条延后**：OpenAI 兼容协议要求 tool 消息**紧跟**其
-    // assistant `tool_calls`，中间插任何 user 消息都会 400（trae 上游对应
+    // ⚠️⚠️ **延后判据必须看「有没有挂图」，不能只看「本条有没有工具结果」**
+    // （2026-10-14 修复）。原实现 `const deferred = toolResults.length > 0`
+    // 在「tool 结果 → 一条无工具结果的 user（『好的』）→ 真正的提问」这一
+    // 真实序列上判错：那中间条把 `pendingToolImages` 与 `pendingOwnParts`
+    // **一起 flush 掉并单独发出**，真正的提问随后成了**纯字符串** user 消息
+    // ⇒ 图与问重新分处两条，**恰好复现 IKLIFH 本次要消灭的形态**。
+    //
+    // 触发前提：工具结果后跟**多于一条** user 消息。实测 wire（hy4-preview）：
+    //   修复前 [3]=user `image_url+text(好的)`、[4]=user `"这页写了什么？"`
+    //   修复后 [3]=user `image_url+text(好的)+text(这页写了什么？)`（同一条）
+    //
+    // ⚠️ 含工具结果时**整条延后**这条不变：OpenAI 兼容协议要求 tool 消息**紧跟**
+    // 其 assistant `tool_calls`，中间插任何 user 消息都会 400（trae 上游对应
     // `code=4027`，回归见 `trae-adapter.spec.ts`）。与 trae 的 `deferred` 同型。
+    //
+    // ⚠️ 「有挂图」还必须覆盖「历史上一条延后的正文」：那种情况下
+    // `pendingOwnParts` 非空而 `pendingToolImages` 已空，若只看后者就会把
+    // 正文提前发出、同样与后续提问分处两条。
     const deferred = toolResults.length > 0
+      || pendingToolImages.length > 0
+      || pendingOwnParts !== undefined
     // ⚠️ 本条同时是上一条延后内容的「搭车机会」：`pendingOwnParts` 里的正文
     // 必须与本条内容、挂起图片**一起**发出一条，否则那份正文与提问分处两条。
     //
@@ -505,6 +588,8 @@ function serializeMessages(
       : undefined
     pendingOwnParts = undefined
     if (deferred) {
+      // ⚠️ `combined` 已含本条内容，直接沿用即可；仅当它是 undefined 而本条有
+      // 正文时（无图、无上一条延后内容）才需要把本条正文兜进来。
       pendingOwnParts = combined ?? (text.length > 0 ? [{ type: 'text', text }] : undefined)
     } else if (combined !== undefined || toolResults.length === 0) {
       // ⚠️ 核心修复：挂起图片与本条内容**同一条**发出，而非让图片单独成一条。
@@ -527,7 +612,14 @@ function serializeMessages(
             .filter((part) => part.type === 'text')
             .map((part) => String(part.text))
             .join('')
-          if (joined.length > 0) resultText = joined
+          // ⚠️⚠️ **有图无文时绝不能落到 `(no output)`**（Issue IKLSB8，与
+          // `openai-compat.ts` 同一处同义修复）。`resultParts !== undefined`
+          // 的含义是「该工具结果里有内容」，只是内容**不是文本**；原先只在
+          // `joined` 非空时改写 `resultText`，纯图片型工具结果于是保留初值
+          // `(no output)` ⇒ 模型答「Read 没有返回内容」，用户误判成模型没有
+          // 视觉能力。判据用 `resultParts !== undefined`（**有内容**）而不是
+          // 「有图」：`[image unavailable]` 占位符也走这条腿，它同样不是没有输出。
+          resultText = joined.length > 0 ? joined : TOOL_RESULT_IMAGE_TEXT
         } else {
           resultText = contentToText(result.content) || '(no output)'
         }
@@ -1804,7 +1896,22 @@ export class BuddyAdapter extends LlmAdapter {
       if (deepseek) {
         bodyObj.thinking = { type: 'enabled' }
       }
-      if (plan.effort !== undefined) {
+      // ⚠️⚠️ **workbuddy 一律不发 `reasoning_effort`**（2026-10-14 实测，见
+      //    `suppressesProseWhenEffortSent` 的完整表格）。
+      //
+      //    实测：本渠道的 `deepseek-v4.1-flash` 在**带 tools** 时，一旦下发该字段，
+      //    工具调用前的正文前言会被上游**整段吞掉**（`delta.content` 为 0）——
+      //    不发该字段则 15/15 次都拿得到正文。真实报障：会话 `5cb92a4b`（标题「111」）
+      //    连续 23 步全是 reasoning + tool-call、**text 块为 0**，用户看不到正文。
+      //
+      //    ⚠️ **聚合 / auto 渠道轮换到 workbuddy 时同样生效**：那两条路径只翻译
+      //    `options.reasoningEffort`，最终仍经 `ctx.llm.stream()` 回到这里构造
+      //    wire body —— 本行是它们的**共同收口**，故不另写第二份判据。
+      //
+      //    ⚠️ `thinking:{type:'enabled'}` **仍照发**：它单独不改变思考开关
+      //    （2026-09 实测「仅带 thinking → `reasoning_content` 仍为 0」），
+      //    与本条判据正交，且删掉它会改变出站报文形态、对齐官方客户端。
+      if (plan.effort !== undefined && !suppressesProseWhenEffortSent(this.product.id)) {
         bodyObj.reasoning_effort = plan.effort
       }
     }
@@ -2467,7 +2574,11 @@ export class BuddyAdapter extends LlmAdapter {
             // 直接覆盖会把首个分片解析出的真实工具名清空，导致
             // `unknown tool ""`。只有非空名字才允许更新。
             if (typeof call.function?.name === 'string' && call.function.name.length > 0) {
-              block.name = call.function.name
+              // ⚠️ 存进去的必须是**下发值**（Issue F-52，与 `openai-compat.ts`
+              //    同源同修）：闸门 `hasUsableToolName` 用 `trim()` 判可用，而
+              //    此前存原样值 ⇒ `name=" read_image "` 带着空白下发到 wire，
+              //    上游按精确匹配解析 ⇒ `unknown tool " read_image "`。
+              block.name = call.function.name.trim()
             }
             const fragment = call.function?.arguments ?? ''
             block.text += fragment
