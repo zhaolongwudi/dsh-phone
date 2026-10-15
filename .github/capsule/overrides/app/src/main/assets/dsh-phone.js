@@ -430,6 +430,11 @@
     });
     // Jet Hub's right-aligned quota panel crosses the left edge when its
     // trigger sits beside the upload button. Fit it to the visible composer.
+    // ⚠️ Issue F-19：下面这段（以及本文件与 dsh-phone.css 里全部 .dim-jh-* 选择器）
+    // 依赖的是**插件侧产出**的类名（dsh-codearts-auth 的 plugin-src/client）。
+    // 这类跨层依赖已显式登记在 app/src/main/assets/phone-plugin-contract.json，
+    // 由 scripts/check-plugin-contract.mjs 做构建期门禁 —— 插件侧改名/删除会报红，
+    // 而不是像 F-15/F-16 那样静默失效。**新增任何 .dim-jh-* 依赖时先登记再引用。**
     document.querySelectorAll('.dim-jh-badge,.dsh-phone-composer-more').forEach(root => {
       const prefix = '--dsh-phone-popover-';
       if (!media.matches) { ['left','width','height'].forEach(key => root.style.removeProperty(prefix+key)); return; }
