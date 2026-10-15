@@ -393,6 +393,30 @@ function linuxBrowserCandidates(home: string): string[] {
 }
 
 /**
+ * Android 候选链（Issue F-42）。
+ *
+ * ## 为什么是**空表**，而不是「再猜几个路径」
+ *
+ * Android 上**不存在**可供 `spawn` 的 chromium 可执行文件：Chrome / Edge 在
+ * 那里是 APK，内核跑在应用沙箱里、没有可从宿主 Node 直接启动的二进制；Termux
+ * 官方源也不提供 chromium 包。此前 `platform === 'android'` 落进 **Windows**
+ * 分支（`process.platform` 在 Android 上是 `'android'`，三条显式分支都不命中），
+ * 于是候选链是一串 `Program Files\\…\\chrome.exe`（且 `PROGRAMFILES` 未设时
+ * 拼出的是会被 `isAbsolute` 过滤掉的相对路径），提示文案同样教用户去找
+ * `chrome.exe` —— 一个在手机上**永远不存在**的东西，用户照着做只会更懵。
+ *
+ * 按本文件既有的「**宁可漏判不可误伤**」纪律：列一个不存在的候选比不列更糟
+ *（`findBrowserExecutable` 只判 `existsSync`、不判「能不能执行」，见
+ * `linuxBrowserCandidates` 关于 flatpak appstream 的同款警告）。故这里如实返回
+ * 空表 —— 失败点因此落在 {@link browserNotFoundMessage} 的 Android 文案上，
+ * 它说的是唯一真正可行的两条路：宿主注入 captcha，或用户显式指定
+ * `ZCODE_CHROME_PATH`（`browserCandidates` 会把它 unshift 到本表之前）。
+ */
+function androidBrowserCandidates(): string[] {
+  return []
+}
+
+/**
  * 浏览器可执行文件的**候选链**（按优先级，`ZCODE_CHROME_PATH` 恒排第一）。
  *
  * ## 为什么抽成**纯函数**
@@ -443,6 +467,10 @@ export function browserCandidates(
     candidates = macBrowserCandidates(home)
   } else if (platform === 'linux') {
     candidates = linuxBrowserCandidates(home)
+  } else if (platform === 'android') {
+    // ⚠️ **必须显式列全**（Issue F-42）：`android` 此前落进 `else` 分支被当成
+    //    Windows 处理（理由与提示文案见 `androidBrowserCandidates`）。
+    candidates = androidBrowserCandidates()
   } else {
     candidates = windowsBrowserCandidates(env, home)
   }
@@ -495,6 +523,18 @@ export function browserNotFoundMessage(platform: NodeJS.Platform = process.platf
     return '已尝试 /usr/bin 下的 google-chrome / chromium / microsoft-edge / brave-browser' +
       '（含 /opt/google/chrome、/snap/bin 与 flatpak 导出位置）；' +
       '可用 ZCODE_CHROME_PATH 显式指定可执行文件路径（如 /usr/bin/chromium）。'
+  }
+  if (platform === 'android') {
+    /**
+     * ⚠️ Android 有**自己的**文案（Issue F-42）：此前落进下面的通用兜底，
+     * 而手机用户看到「已尝试 Chrome / Chromium / Edge 的常见安装位置」会去
+     * 应用商店找浏览器 —— 那与这条链路毫无关系（APK 里没有可 spawn 的内核）。
+     * 如实说清两条真正可行的路：宿主注入 captcha，或显式指定路径。
+     */
+    return 'Android 上没有可供直接启动的 chromium 可执行文件（Chrome / Edge 是 APK，' +
+      '内核跑在应用沙箱内；Termux 官方源也不提供 chromium）；' +
+      '本机 ZCode 验证应由宿主注入的 captcha 通道产出，' +
+      '若确有可执行文件可用 ZCODE_CHROME_PATH 显式指定。'
   }
   return '已尝试 Chrome / Chromium / Edge 的常见安装位置；' +
     '可用 ZCODE_CHROME_PATH 显式指定可执行文件路径。'
