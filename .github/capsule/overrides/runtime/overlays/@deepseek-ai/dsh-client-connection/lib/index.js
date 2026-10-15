@@ -603,6 +603,8 @@ const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/;
 var HostConnectionService = class extends Service {
 	trustedHosts;
 	browserAuth;
+	/** ⚠️ Issue F-37：配置的请求体上限必须一路传到 channel RPC 路由，否则恒用 300 MiB 默认值。 */
+	maxRequestBodyBytes;
 	/** The operator Peer every admitted request speaks for. */
 	operator;
 	interceptors = /* @__PURE__ */ new Map();
@@ -613,11 +615,13 @@ var HostConnectionService = class extends Service {
 	* @param ctx - owning Connection plugin context.
 	* @param trustedHosts - deployment authorities accepted by the Host/Origin fence.
 	* @param browserAuth - process token and persistent browser-session owner.
+	* @param maxRequestBodyBytes - configured request-body ceiling for every bridged route.
 	*/
-	constructor(ctx, trustedHosts, browserAuth) {
+	constructor(ctx, trustedHosts, browserAuth, maxRequestBodyBytes = DEFAULT_MAX_REQUEST_BODY_BYTES) {
 		super(ctx, "connection");
 		this.trustedHosts = trustedHosts;
 		this.browserAuth = browserAuth;
+		this.maxRequestBodyBytes = maxRequestBodyBytes;
 		this.operator = new OperatorPeer(ctx);
 		ctx.effect(() => () => this.operator.dispose(), "client-connection: operator Peer");
 		this.allowsRemoteAuthorities = trustedHosts.some(isRemoteAuthority);
@@ -706,7 +710,7 @@ var HostConnectionService = class extends Service {
 					res.end(admission.rejection === 401 ? "unauthorized" : "forbidden");
 					return;
 				}
-				await bridge(req, res, fetchHandler);
+				await bridge(req, res, fetchHandler, this.maxRequestBodyBytes);
 			}
 		};
 		return owner.effect(() => owner.webServer.register(route), `client-connection: ${channel} rpc channel`);
@@ -851,7 +855,10 @@ function assertImageBodyCapacity(ctx, maxRequestBodyBytes) {
 	if (maxRequestBodyBytes < requiredImageBodyBytes) throw new Error(`client-connection maxRequestBodyBytes (${String(maxRequestBodyBytes)}) must be at least ${String(requiredImageBodyBytes)} for the configured aggregate image limit`);
 }
 /** Services required before providing Connection. */
-const inject = ["credentials", "webServer"];
+// ⚠️ Issue F-35：`webServer` 不是前置条件 —— 本文件注释（:862-864）与 apply() 里的
+// ctx.inject(["webServer"]) 都把浏览器传输当作**可选**挂载。旧写法让没有 webServer 的组合
+// 整包静默不激活（纯 RPC 通道注册也不存在），与本文件的注释自相矛盾。
+const inject = ["credentials"];
 const Config = z.object({
 	recovery: ConnectionRecoveryConfigSchema.default({}),
 	trustedHosts: z.array(String).default([]),
@@ -872,7 +879,7 @@ async function apply(ctx, config) {
 	const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? 314572800;
 	for (const entry of trustedHosts) assertTrustedAuthority(entry);
 	assertImageBodyCapacity(ctx, maxRequestBodyBytes);
-	const connection = new HostConnectionService(ctx, trustedHosts, await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays));
+	const connection = new HostConnectionService(ctx, trustedHosts, await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays), maxRequestBodyBytes);
 	ctx.inject(["webServer"], (webCtx) => {
 		assertImageBodyCapacity(webCtx, maxRequestBodyBytes);
 		webCtx.on("webserver/index-inject", (table) => {
