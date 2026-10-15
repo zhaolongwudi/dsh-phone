@@ -447,6 +447,29 @@ async function probeWithAdapter(
       }
     }
     return { modelId, ok: false, message: `无法确认：${message}` }
+  } finally {
+    /**
+     * ⚠️⚠️ **必须回收本函数自建的 Zcode 浏览器**（Issue F-41）。
+     *
+     * `ZcodeAdapter` 在调用方**没有**注入 `mintCaptcha` 时会自建一台常驻
+     * chromium（`zcode-adapter.ts` 的 `captchaBrowser`），用来产出阿里云
+     * captcha —— 而上游**按需**索要验证：一旦这次探测被 `3007` 拒，浏览器就
+     * 被拉起来了。本模块是「重测」按钮的实现，每次点击都新建一个适配器
+     * （见上方分派表），此前**全文件没有任何 `.stop()`** ⇒ 每重测一次泄漏
+     * 一台常驻 chromium（约 200–400 MB，且用户没有任何界面能关掉它）。
+     *
+     * 只在 `ZcodeAdapter` 上调用：其余适配器没有浏览器资源，`stop()` 也不是
+     * 那个联合类型的公共成员（用 `instanceof` 收窄，避免给别的适配器凭空
+     * 加一个空方法）。`stop()` 本身失败**不得改变探测结论** —— 回收是副作用，
+     * 结论才是返回值。
+     */
+    if (adapter instanceof ZcodeAdapter) {
+      try {
+        adapter.stop()
+      } catch {
+        // 回收失败只影响内存占用，不影响本次探测的结论。
+      }
+    }
   }
 }
 
@@ -502,7 +525,12 @@ export async function retestAccount(
   // 选号逻辑也会误判为可用。上游时刻是滚动的，每次重测都可能往后推。
   for (const outcome of result.stillLimited) {
     if (outcome.resetTimeMs === undefined) continue
+    // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：这里只是把「上游给出的新重置时刻」
+    //    写回存储；写盘失败不该让整个「重测」RPC 变成 handler-failed ——
+    //    用户要的结论（哪些模型已恢复 / 仍受限）已经在 `result` 里了。
+    //    处置与 `gemini-adapter.ts` 的同名调用逐字同源。
     await pool.updateModelRateLimit(accountId, outcome.modelId, outcome.resetTimeMs)
+      .catch(() => {})
   }
   return result
 }
