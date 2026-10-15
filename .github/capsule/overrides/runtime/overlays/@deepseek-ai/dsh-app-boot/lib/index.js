@@ -1653,8 +1653,9 @@ var ResolutionRouter = class {
 	}
 };
 function internalModules() {
-	const addon = process.platform === "android" || process.env.DSH_PHONE_ANDROID === "1"
-		? { requireBuiltin: createRequire(import.meta.url) }
+	const android = process.platform === "android" || process.env.DSH_PHONE_ANDROID === "1";
+	const addon = android
+		? androidRequireBuiltin()
 		: createRequire(import.meta.url)("node-addon-require-builtin");
 	const esmModule = addon.requireBuiltin("internal/modules/esm/loader");
 	const cjsModule = addon.requireBuiltin("internal/modules/cjs/loader");
@@ -1674,6 +1675,31 @@ function internalModules() {
 		cjsConditions: cjsHelpers.getCjsConditions(),
 		modern
 	};
+}
+/**
+* Resolve the internal-module accessor profile resolution needs on Android.
+* ⚠️ Issue F-34：`node-addon-require-builtin` 没有 Android 原生绑定（加载即抛
+* "No usable native binding"），所以旧 Android 分支直接用 CommonJS 的
+* `require("internal/...")`，而 Node 只在带 `--expose-internals` 时放行它——既无检测也无回退。
+* 换启动器/worker 未继承 execArgv 时，整个 profile 解析会以与真实原因无关的模块解析错误失败。
+* 这里先试原生插件（未来的 Android 绑定可用即自动走通），再回退到需要该开关的
+* `require("internal/...")`；两条路都不可用时抛出带真实原因与 execArgv 的明确错误。
+* @returns an accessor exposing `requireBuiltin(specifier)` for `internal/...` modules.
+*/
+function androidRequireBuiltin() {
+	const nodeRequire = createRequire(import.meta.url);
+	try {
+		const addon = nodeRequire("node-addon-require-builtin");
+		addon.requireBuiltin("internal/modules/esm/loader");
+		return addon;
+	} catch (addonError) {
+		try {
+			nodeRequire("internal/modules/esm/loader");
+		} catch (internalError) {
+			throw new Error(`profile resolution: Android requires --expose-internals (execArgv: ${JSON.stringify(process.execArgv)}) or a node-addon-require-builtin native binding; neither is usable: ${String(addonError)}`, { cause: internalError });
+		}
+		return { requireBuiltin: (specifier) => nodeRequire(specifier) };
+	}
 }
 /**
 * Replace a resolver error's message and the same text in its stack.
