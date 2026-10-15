@@ -917,6 +917,8 @@ window.__ModuleLoader__.load({
 		/** Connection generation readiness, cancellation, and continuous recovery. */
 		const MANUAL_RECONNECT = /* @__PURE__ */ new Error("connection: manual reconnect requested");
 		const NETWORK_STATE_CHANGED = /* @__PURE__ */ new Error("connection: browser network state changed");
+		/** ⚠️ Issue F-36：页面回前台只结束挂起的退避等待，不重置退避计数、不绕过离线闸门。 */
+		const PAGE_RESUMED = /* @__PURE__ */ new Error("connection: page resumed");
 		function sleep(ms, signal) {
 			return new Promise((resolve) => {
 				const t = setTimeout(done, ms);
@@ -983,6 +985,16 @@ window.__ModuleLoader__.load({
 				this.retryDelay?.abort(MANUAL_RECONNECT);
 			}
 			/**
+			* End a suspended retry wait after the page returns to the foreground.
+			* ⚠️ Issue F-36：Android 的页面会被反复冻结/恢复，旧实现在每次回前台都调 reconnect()
+			* ——退避计数归零、immediateRetry 绕过离线闸门，还会 abort 进行中的 generation。
+			* 这里只提前结束挂起的退避等待：退避计数与离线判据保持原样，也不打断进行中的握手/流。
+			*/
+			resume() {
+				if (!this.running || !this.networkAvailable) return;
+				this.retryDelay?.abort(PAGE_RESUMED);
+			}
+			/**
 			* Suspend automatic retries while offline and restart backoff when the network returns.
 			* @param available - whether the browser reports network access.
 			*/
@@ -1046,7 +1058,9 @@ window.__ModuleLoader__.load({
 							await sleep(this.backoffDelay(attempt), retryDelay.signal);
 							if (this.retryDelay === retryDelay) this.retryDelay = null;
 							if (!this.isRunning()) return;
-							if (retryDelay.signal.aborted) continue;
+							/* ⚠️ Issue F-36：页面回前台（PAGE_RESUMED）只提前结束这一次等待，仍按当前
+							   attempt 立即连接；reconnect()/网络变化的打断仍回到循环顶部重算退避。 */
+							if (retryDelay.signal.aborted && retryDelay.signal.reason !== PAGE_RESUMED) continue;
 						}
 						console.warn(`[connection] connection lost, retry #${String(attempt)}`);
 						this.callSink(() => {
@@ -1357,7 +1371,9 @@ window.__ModuleLoader__.load({
 				if (event.persisted) controller.reconnect();
 			};
 			const visible = () => {
-				if (globalThis.document?.visibilityState === "visible" && getState() !== "connected") controller.reconnect();
+				// ⚠️ Issue F-36：旧实现回前台即 reconnect()（退避归零、绕过离线闸门、abort 当前 generation），
+				// 手机反复切前后台会反复打断正在进行的连接；改为只唤醒挂起的重试等待。
+				if (globalThis.document?.visibilityState === "visible" && getState() !== "connected") controller.resume();
 			};
 			controller.setNetworkAvailable(loopback || initiallyAvailable);
 			browser.addEventListener("online", online);
