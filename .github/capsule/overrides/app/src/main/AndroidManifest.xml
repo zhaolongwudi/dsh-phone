@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  胶囊覆盖文件（Issue F-28）：基线 = 上游 0.1.60 的 app/src/main/AndroidManifest.xml
+  + 给 MainActivity 加 `android:configChanges`。
+
+  ## 为什么必须覆盖整份（而不是只改一行）
+  上游没有 `git apply` 补丁通道（apply.sh 第 3 步已明确「不再使用 git apply 补丁」），
+  胶囊的既定机制就是「整份覆盖同名文件」。故这里保留上游其余内容逐字节不变，
+  只加 `configChanges` 一个属性。
+
+  ## 为什么要加 `configChanges`（Issue F-28）
+  不加时，**旋转屏幕 / 系统深色模式切换**都会销毁并重建 Activity：
+  - WebView 随之重建 ⇒ **整页重载**（聊天滚动位置、正在进行的流全部丢失）；
+  - 「电脑模式」被打回手机模式（`remoteMode` / `pocketUrl` 是 Activity 字段）；
+  - 若此刻正开着文件选择器，`fileCallback` 随旧 Activity 一起丢失 ⇒
+    网页的 `file input` **永不返回**。
+  代码侧配套：`MainActivity.onConfigurationChanged`（重算系统栏/IME 内边距）与
+  `onSaveInstanceState` / `onRestoreInstanceState`（进程回收路径的兜底）。
+
+  ## ⚠️ 维护须知（漂移风险）
+  本文件是**整份覆盖**：上游日后在 manifest 里新增组件（service / receiver /
+  activity / provider）时，本覆盖会**静默遮蔽**它。为此 `apply.sh` 增设了一道
+  门禁：覆盖前后比对 `android:name` 组件清单，上游新增组件未同步进本文件即
+  **构建中断**（与 F-03 的 files/ 覆盖门禁同一思路）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+    <queries>
+        <package android:name="com.termux" />
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.reqable.android" />
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.HOME" /></intent>
+    </queries>
+
+    <application
+        android:label="DSH 手机版"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true"
+        android:extractNativeLibs="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|locale|layoutDirection"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="dsh-phone" android:host="chatgpt" android:path="/return" />
+            </intent-filter>
+        </activity>
+
+        <provider android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku" android:multiprocess="false"
+            android:enabled="true" android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <activity android:name=".control.ControlActivity" android:exported="false" android:label="手机操作" />
+        <service android:name=".browser.BrowserService" android:process=":browser" android:exported="false" />
+        <activity android:name=".browser.BrowserActivity" android:process=":browser" android:exported="false" android:label="DSH 内置浏览器" />
+        <receiver android:name=".control.TermuxResultReceiver" android:exported="false" />
+        <service android:name=".control.PhoneControlService"
+            android:label="DSH 手机操作" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/phone_control_accessibility" />
+        </service>
+        <service
+            android:name=".DshService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started on-device AI server and local model gateway with persistent bot connections" />
+        </service>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
