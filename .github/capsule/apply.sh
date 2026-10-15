@@ -119,6 +119,7 @@ fi
 node - <<'CAPSULE_RENAME_PATCH'
 const fs = require('fs');
 let bad = 0;
+let patched = 0;
 const patch = (file, from, to, label) => {
   if (!fs.existsSync(file)) { console.error('::error::改名迁移：找不到 ' + file); bad++; return; }
   const s = fs.readFileSync(file, 'utf8');
@@ -130,6 +131,7 @@ const patch = (file, from, to, label) => {
     return;
   }
   fs.writeFileSync(file, s.replace(from, to));
+  patched++;
   console.log('  ✓ ' + label);
 };
 
@@ -163,7 +165,15 @@ patch('home-template/profiles/phone/package.json',
   '        "dsh-providers-hub",',
   'profile 模板 bundles 项');
 
-// ③ 设备端**升级**迁移（老设备的 profile 里已是旧名，必须双向改）
+// ③ 恢复模式的保护清单（RecoveryManager.protectedBundles）：
+//    它决定「快照回滚时哪些 bundle 不受影响」。用旧名会让插件**不被识别为受保护**
+//    ⇒ 一旦走恢复流程，它可能被当作用户安装的条目回滚掉。
+patch('app/src/main/java/com/dshphone/RecoveryManager.kt',
+  '"dsh-codearts-auth", "dsh-phone-account"',
+  '"dsh-providers-hub", "dsh-phone-account"',
+  'RecoveryManager 保护清单');
+
+// ④ 设备端**升级**迁移（老设备的 profile 里已是旧名，必须双向改）
 patch('app/src/main/java/com/dshphone/NodeRunner.kt',
   [
     '            listOf("dsh-codearts-auth", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
@@ -189,18 +199,21 @@ patch('app/src/main/java/com/dshphone/NodeRunner.kt',
   'NodeRunner 双向 profile 迁移');
 
 // ④ 落地断言：三处新名必须真的出现（防「patch 静默没生效」）
+let checked = 0;
 for (const [file, needle, label] of [
   ['scripts/build-assets.py', "'dsh-providers-hub',", 'build-assets.py'],
   ['home-template/profiles/phone/package.json', '"dsh-providers-hub"', 'profile 模板'],
   ['app/src/main/java/com/dshphone/NodeRunner.kt', '"dsh-providers-hub"', 'NodeRunner.kt'],
+  ['app/src/main/java/com/dshphone/RecoveryManager.kt', '"dsh-providers-hub"', 'RecoveryManager.kt'],
 ]) {
+  checked++;
   if (!fs.readFileSync(file, 'utf8').includes(needle)) {
     console.error('::error::改名迁移后校验失败：' + label + ' 里没有新包名');
     bad++;
   }
 }
 if (bad > 0) { console.error('::error::改名迁移未完成（' + bad + ' 处）'); process.exit(1); }
-console.log('  ✓ 改名迁移落地（4 处 patch + 3 处校验）');
+console.log('  ✓ 改名迁移落地（' + patched + ' 处替换 + ' + checked + ' 处校验）');
 CAPSULE_RENAME_PATCH
 
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
