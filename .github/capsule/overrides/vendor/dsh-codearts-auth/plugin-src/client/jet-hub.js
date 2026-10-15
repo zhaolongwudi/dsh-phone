@@ -784,6 +784,11 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
   return React.createElement('div', {
     className: 'dim-jh-accountCard',
     'data-enabled': account.enabled,
+    /**
+     * ⚠️ Issue F-16：触屏拖拽靠 elementFromPoint 反查落点卡片，故根节点必须
+     * 带上 id（原先没有任何 id 钩子，只能按下标猜 —— 列表任何一次重排都会指错）。
+     */
+    'data-account-id': account.id,
     'data-dragging': dragProps.isDragging ? 'true' : undefined,
     // 插入位置指示：before 画在卡片上方，after 画在下方 —— 必须与
     // 实际落点一致，否则用户按指示拖放却得到不同结果。
@@ -802,8 +807,10 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
       dragProps.enabled
         ? React.createElement('span', {
             className: 'dim-jh-dragHandle',
-            title: '拖动以调整顺序（顺序即自动选号优先级）',
+            title: '按住拖动可调整顺序（顺序即自动选号优先级）',
             'aria-hidden': 'true',
+            // ⚠️ Issue F-16：触屏拖拽的指针事件（鼠标仍走整卡的 HTML5 DnD）。
+            ...dragProps.handleProps,
           }, '⠿')
         : null,
       dragProps.enabled
@@ -875,6 +882,25 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
             provider,
           })
         : null),
+    /**
+     * ⚠️ Issue F-47：资源包明细原先**只挂在账号名与状态标签的 title 上**
+     * （见上面的 accountTitle）—— 触屏没有 hover，手机上这部分解释完全看不到
+     * （aria-label 只对读屏有效，对看得见的用户等于没有）。
+     *
+     * 这里补一块**点开即见**的常驻明细：用原生 details/summary（触屏可点、
+     * 键盘可开合、无需 JS 状态），默认收起以免把卡片撑高 —— 卡片列表可能有
+     * 十几个账号，常驻展开会把「账号池」读成一屏明细。
+     * ⚠️ 类名复用已有的 .dim-jh-orderHint（同层级的小字说明），不为它新增样式：
+     *    插件样式表与 client spec 都按类名做断言，新增类名是要连带登记的成本。
+     * ⚠️ 逐行渲染而不是整段塞进一个节点：formatPackageTooltip 用换行分隔各包，
+     *    而 HTML 会把文本里的换行折叠成空格（整段读起来挤成一行）。
+     */
+    packageTooltip !== null
+      ? React.createElement('details', { className: 'dim-jh-orderHint' },
+          React.createElement('summary', null, '资源包明细'),
+          packageTooltip.split('\n').map((line, lineIndex) =>
+            React.createElement('span', { key: lineIndex, style: { display: 'block' } }, line)))
+      : null,
     provider === 'zcode' ? React.createElement(ZcodeSourcePanel, { account, rpcCall, onChanged: onSourceChanged }) : null,
     rateLimits.length > 0
       ? React.createElement('div', { className: 'dim-jh-rateLimits' },
@@ -962,6 +988,9 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
         : null,
       React.createElement('button', {
         className: 'dim-jh-btn',
+        // ⚠️ Issue F-45：写操作在途禁用（停用/启用、删除成组；busy 由面板按
+        //    writeBusy / probeBusy 传入）。原先该按钮任何时刻都可点，连点会重复发写请求。
+        disabled: busy,
         onClick: () => onToggle(account.id, !account.enabled),
       }, account.enabled ? '停用' : '启用'),
       // ⚠️ 仅 opencode：出口代理与指纹轮换是该 provider **独有**的账号维度
@@ -992,6 +1021,9 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
       React.createElement('button', {
         className: 'dim-jh-btn',
         'data-kind': 'danger',
+        // ⚠️ Issue F-45：删除是**不可逆**操作，在途禁用比其它按钮更要紧 ——
+        //    连点的第二次会打在已删掉的条目上，只回一条与真实原因无关的错误。
+        disabled: busy,
         onClick: () => onDelete(account.id),
       }, '删除')));
 }
@@ -1537,7 +1569,7 @@ function ModelListPanel({ provider, rpcCall, onClose }) {
                           : null);
                     })))));
 
-  // 与登录弹窗（.dim-jh-loginOverlay）同款做法：直接渲染在组件树内，靠
+  // 与登录弹窗同款做法：直接渲染在组件树内，靠
   // position: fixed 覆盖全屏。**刻意不用 createPortal** —— 客户端模块表由
   // 宿主注入（staticModules 种子表），本仓库无法离线确认 `react-dom` 是否在
   // 其中；一旦不在，require 会抛「missed the module table」，弹窗直接白屏。
@@ -2288,7 +2320,27 @@ function TokenLedgerPanel({ rpcCall, onClose }) {
                   key: b.day,
                   className: 'dim-jh-ledgerTrendCol',
                   title: b.day + '：↓↑ ' + formatTokenCount(b.tokens) + ' · ' + b.requests + ' 次',
+                  /**
+                   * ⚠️ Issue F-69：这根柱是**可点的 div**，原先既没有 role 也没有
+                   * tabIndex —— 键盘用户完全聚焦不到它（没有任何可聚焦钩子），读屏也把它
+                   * 当纯装饰。补成标准的可展开控件：
+                   * - role=button + tabIndex=0：进入 Tab 序列、可被读屏识别为控件；
+                   * - aria-expanded：如实播报下钻是否展开（视觉上靠 data-active 描边）；
+                   * - aria-label：**不**复用 title —— title 里那句是本日读数，
+                   *   而按钮名要说清「点它会发生什么」（否则读屏只念一串数字）；
+                   * - Enter / Space 触发（原生 button 的行为，div 必须自己实现）。
+                   */
+                  role: 'button',
+                  tabIndex: 0,
+                  'aria-expanded': expandedDay === b.day ? 'true' : 'false',
+                  'aria-label': `${b.day}：用量 ${formatTokenCount(b.tokens)}，${b.requests} 次请求。`
+                    + (expandedDay === b.day ? '已展开当日明细，按回车收起' : '按回车展开当日明细'),
                   onClick: () => setExpandedDay((prev) => (prev === b.day ? null : b.day)),
+                  onKeyDown: (event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+                    event.preventDefault();   // Space 不拦会滚动页面
+                    setExpandedDay((prev) => (prev === b.day ? null : b.day));
+                  },
                 },
                   React.createElement('div', {
                     className: 'dim-jh-ledgerTrendBar',
@@ -2386,6 +2438,74 @@ function TokenLedgerPanel({ rpcCall, onClose }) {
         renderEntries())));
 }
 
+/**
+ * ⚠️ Issue F-69：供应商导航（role=tablist）与右侧面板（role=tabpanel）互相指认用的 id。
+ *
+ * 本面板按 provider **单选**渲染 ⇒ 任何时刻只有一个 tabpanel，所有 tab 的
+ * `aria-controls` 都指向它；tabpanel 的 `aria-labelledby` 指向当前选中的 tab。
+ * 这一对 id 必须成对存在，否则「标签页」语义不成立（读屏只念出孤立按钮）。
+ */
+const PROVIDER_TABPANEL_ID = 'dim-jh-provider-tabpanel';
+
+/**
+ * ⚠️ Issue F-16：当前设备的主指针是否为「粗指针」（触屏）。
+ *
+ * 用途只有一个：让**拖拽提示文案**如实描述本设备的可用入口 —— 触屏上整卡拖动
+ * 等于滚动页面，能拖的只有抓取柄。与 jet-hub-styles.js 的 `@media (pointer: coarse)`
+ * 同源（同一个媒体特性），两边不会分叉。
+ * ⚠️ 判据不能缓存成模块常量：外接/断开蓝牙鼠标时该媒体特性会变化，缓存会让文案
+ * 停在旧值（而它正是用来纠正「提示可拖但拖不动」的）。调用点每次渲染才一次。
+ */
+const isCoarsePointer = () => typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(pointer: coarse)').matches;
+
+/**
+ * ⚠️ Issue F-23：登录轮询在途时的「重挂载让路」闸门（跨组件，模块级）。
+ *
+ * ## 被守住的缺陷
+ *
+ * 页头三处写操作（供应商开关、一键签到、备份导入）用 `setVersion(v => v + 1)`
+ * 换掉 ProviderPanel 的 `key` 来强制刷新面板。而 ProviderPanel 的卸载清理会
+ * `clearInterval(pollRef)` 并 `close()` 授权窗 —— 若此刻用户正在登录（轮询在途），
+ * 这次重挂载会**静默**掐断轮询、关掉授权窗口：用户看到「点了授权就没了」，
+ * 登录永不完成（轮询停了 ⇒ 再也不会有人读 `login.poll`），**且没有任何提示**。
+ *
+ * ## 修法：让路（推迟），而不是提示后照旧
+ *
+ * 在途期间把版号自增**登记为待办**，等轮询真正结束（成功 / 终态失败 / 超时 /
+ * 卸载清理 —— 四条路都汇聚到 `stopPoll`）时统一补发。用户无需知道这件事，
+ * 面板只是晚一点点刷新；反过来立即重挂载则是**不可恢复**的（登录窗口已关）。
+ *
+ * ⚠️ 用模块级对象而不是 React Context：ProviderPanel 与 JetHubPage 同在一个模块，
+ * 且同一时刻最多只有一个 ProviderPanel 在跑登录轮询（右侧面板按 provider 单选）。
+ */
+const loginPollGate = { active: false, pendingRefresh: null };
+
+/** 轮询开始（已拿到 loginUrl、进入等待）。 */
+const holdLoginPoll = () => { loginPollGate.active = true; };
+
+/** 轮询结束（任何结束路径）：放行被推迟的面板刷新。 */
+const releaseLoginPoll = () => {
+  loginPollGate.active = false;
+  const pending = loginPollGate.pendingRefresh;
+  loginPollGate.pendingRefresh = null;
+  if (typeof pending === 'function') pending();
+};
+
+/**
+ * 请求刷新右侧面板（递增版号）。
+ *
+ * ⚠️ Issue F-23：登录在途时**推迟** —— 立即重挂载会掐断轮询并关掉授权窗。
+ * @param bump 真正的刷新动作（`setVersion(v => v + 1)`）
+ * @returns 立即执行返回 true，被推迟返回 false
+ */
+const requestPanelRefresh = (bump) => {
+  if (loginPollGate.active) { loginPollGate.pendingRefresh = bump; return false; }
+  bump();
+  return true;
+};
+
 function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
   const [accounts, setAccounts] = React.useState([]);
   const [phase, setPhase] = React.useState('loading');
@@ -2468,6 +2588,26 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
   const [reordering, setReordering] = React.useState(false);
   // 拖拽提交失败时的提示（如「列表已变化，请刷新」）。
   const [reorderError, setReorderError] = React.useState(null);
+  /**
+   * ⚠️ Issue F-45：账号级写操作（停用 / 启用、删除）在途的账号 id。
+   *
+   * 原先这两个操作**既不置忙也不禁用按钮**：连点两下会重复发同一写请求
+   * （删除的第二次打到已删掉的条目上，只会得到一条无关错误），
+   * 且失败时只 `console.error` —— 界面上毫无反应，用户以为「点了没生效」。
+   * 这里把它们纳入同一套「在途即禁用 + 失败必提示」。
+   */
+  const [writeBusy, setWriteBusy] = React.useState(null);
+  /**
+   * ⚠️ Issue F-16：触屏拖拽的在途状态（null = 没在拖）。
+   *
+   * HTML5 拖放（onDragStart/onDragOver/onDrop）在触屏上**完全不触发** ——
+   * 手指拖动只会滚动页面。故手机上「拖动卡片调整顺序」是一句空话，
+   * 而顺序恰恰是自动选号与限流换号的真实优先级（见排序提示的文案），
+   * 用户改不了这个实质设置。这里补一套**指针事件**实现（onPointerDown/Move/Up
+   * + setPointerCapture），与同文件 ProviderSwitchPanel 的 touchPropsFor 同款 ——
+   * 那边早已验证可行（它的柄带 touch-action: none，见 jet-hub-styles.js）。
+   */
+  const touchDrag = React.useRef(null);
   const mounted = React.useRef(true);
   /**
    * 最新账号列表的 ref 镜像。
@@ -2647,6 +2787,11 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
       if (pollRef.current !== 0) { clearInterval(pollRef.current); pollRef.current = 0; }
       loginWindowRef.current?.close();
       loginWindowRef.current = null;
+      // ⚠️ Issue F-23：卸载路径**没有**走 stopPoll（这里是同样逻辑的内联版），
+      //    故必须在此显式放行让路闸门 —— 否则闸门会永久停在 active，
+      //    此后每一次 requestPanelRefresh 都被推迟到「下一次 stopPoll」，
+      //    而那可能永远不会来（面板已卸载）⇒ 刷新永久失效（比原缺陷更糟）。
+      releaseLoginPoll();
       // ⚠️ 领取闸门也要清：本 effect 依赖 `provider`，切 provider 会重跑
       // （清理后重新 `mounted.current = true`）。若闸门残留 true，新 provider
       // 面板上的首次点击会被误判成「上一次仍在进行中」而永远点不动。
@@ -2944,6 +3089,9 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
     loginWindowRef.current?.close();
     loginWindowRef.current = null;
     if (mounted.current) setCreating(false);
+    // ⚠️ Issue F-23：这里是**唯一**的轮询结束汇聚点（成功 / 终态失败 / 超时 /
+    //    卸载清理都走它）⇒ 让路闸门在这里放行，补发被推迟的面板刷新。
+    releaseLoginPoll();
   };
 
   /**
@@ -3094,6 +3242,9 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
         //   超时时一并展示。
         let lastPollError = null;
         let pollErrorCount = 0;
+        // ⚠️ Issue F-23：登记「登录轮询在途」——页头那三处 setVersion 重挂载
+        //   会通过它让路（见 loginPollGate 的模块注释）。
+        holdLoginPoll();
         pollRef.current = setInterval(async () => {
           if (!mounted.current) { stopPoll(); return; }
           if (Date.now() > deadline) {
@@ -3164,11 +3315,20 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
               return;
             }
             if (!pollRes?.done) return;
+            /**
+             * ⚠️ Issue F-22：`stopPoll()` 必须与上面两个终态分支（超时 / 终态失败）
+             * 同款**前置**，理由见终态失败分支里那段完整论证：轮询是 1 秒一次的
+             * setInterval，而 `loadAccounts` / `loadCredits` 都是真实网络往返 ——
+             * 停表排在两个 await 之后时，await 期间 `pollRef.current` 仍非 0，
+             * 下一拍会**再次进入本分支**：重复关窗、重复拉账号与额度，第二次的
+             * 时序不可控。成功分支同样有这两个 await（手机版特有：上游此处只有
+             * 同步的 `setError` / `setPhase`，没有 await 窗口），故同样必须前置。
+             */
+            stopPoll();
             if (loginWindow && !loginWindow.closed) loginWindow.close();
             setLoginUrlForManual(null);
             await loadAccounts();
             if (canLoadCredits) await loadCredits();
-            stopPoll();
           } catch (caught) {
             // ⚠️ **继续轮询**（宿主可能只是瞬时不可用），但必须留下痕迹：
             //   原先这里是裸 `catch {}`，于是 `login.poll` 自身报错（`ok:false`，
@@ -3216,6 +3376,8 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
    * 判定逻辑在 `./account-model-link.js`（纯函数，可单测）。
    */
   const toggleAccount = async (accountId, enabled) => {
+    // ⚠️ Issue F-45：在途禁用（写操作成组修复之一）——见 writeBusy 的注释。
+    setWriteBusy(accountId);
     try {
       // 必须在提交**之前**判定：提交后列表已刷新，「是否还有启用账号」的答案
       // 就是变更后的状态了。
@@ -3288,16 +3450,45 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
       }
     } catch (caught) {
       console.error('[jet-hub] toggle failed:', caught);
+      // ⚠️ Issue F-45：原先这里只写 console —— 手机上用户看不到任何反馈，
+      //    而「停用/启用」是状态类写操作，失败却看起来成功了最误导。
+      if (mounted.current) {
+        setProbeNotice({
+          tone: 'error',
+          text: `停用/启用失败：${caught?.message || '未知错误'}`,
+          details: [],
+        });
+      }
+    } finally {
+      // ⚠️ Issue F-45：无论成败都要放行在途禁用，否则按钮会永久变灰。
+      if (mounted.current) setWriteBusy(null);
     }
   };
 
+  /**
+   * 删除账号。
+   *
+   * ⚠️ Issue F-45：与 toggleAccount 同款 —— 在途禁用按钮 + 失败必提示。
+   * 删除是**不可逆**操作，失败静默尤其危险：用户会重复点，而第二次请求打到
+   * 已删掉的条目上，只会拿到一条与真实原因无关的错误。
+   */
   const deleteAccount = async (accountId) => {
     if (!confirm('确认删除此账号？关联的凭据也将被清除。')) return;
+    setWriteBusy(accountId);
     try {
       await rpcCall('account.delete', { accountId });
       await loadAccounts();
     } catch (caught) {
       console.error('[jet-hub] delete failed:', caught);
+      if (mounted.current) {
+        setProbeNotice({
+          tone: 'error',
+          text: `删除账号失败：${caught?.message || '未知错误'}`,
+          details: [],
+        });
+      }
+    } finally {
+      if (mounted.current) setWriteBusy(null);
     }
   };
 
@@ -3400,6 +3591,59 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
         if (sourceId === null || sourceId === account.id) return;
         const next = computeDropOrder(sourceId, account.id, dropPosition);
         if (next !== null) void commitOrder(next);
+      },
+      /**
+       * ⚠️ Issue F-16：触屏拖拽（指针事件）。挂在**抓取柄**上，而不是整张卡片：
+       * - 柄自带 touch-action: none（见 jet-hub-styles.js），浏览器才不会把手指的
+       *   纵向移动解释成页面滚动；
+       * - 整卡拖在触屏上做不到 —— 卡片区域必须让给滚动，否则账号多到一屏放不下时
+       *   用户就没法上下翻（那比排序更常用）。故按 pointerType 分工：
+       *   mouse 走 HTML5 DnD（整卡可拖），touch/pen 走这里（拖柄）。
+       * ⚠️ setPointerCapture 是必须的：手指滑出柄的范围后事件仍要送到本元素，
+       *   否则拖到一半就丢事件（表现为「拖不动」或落点丢失）。
+       * 落点判据用 elementFromPoint 反查卡片（与 ProviderSwitchPanel 同款），
+       * 上下半区由 dropPositionFromPointer 决定（复用既有纯函数，不另写一份）。
+       */
+      handleProps: {
+        onPointerDown: (event) => {
+          if (event.pointerType === 'mouse') return;   // 鼠标交给 HTML5 DnD
+          event.preventDefault();
+          try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* 忽略 */ }
+          touchDrag.current = { source: account.id, pointerId: event.pointerId, target: null, position: 'before' };
+          setDraggingId(account.id);
+          setReorderError(null);
+        },
+        onPointerMove: (event) => {
+          const drag = touchDrag.current;
+          if (drag === null || drag.pointerId !== event.pointerId) return;
+          const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest('.dim-jh-accountCard');
+          const targetId = hit?.dataset?.accountId;
+          if (!targetId || targetId === drag.source) {
+            drag.target = null;
+            setDropTargetId(null);
+            return;
+          }
+          drag.target = targetId;
+          drag.position = dropPositionFromPointer(event.clientY, hit.getBoundingClientRect());
+          setDropTargetId(targetId);
+          setDropPosition(drag.position);
+        },
+        onPointerUp: (event) => {
+          const drag = touchDrag.current;
+          if (drag === null || drag.pointerId !== event.pointerId) return;
+          event.preventDefault();
+          touchDrag.current = null;
+          setDraggingId(null);
+          setDropTargetId(null);
+          if (drag.target === null) return;
+          const next = computeDropOrder(drag.source, drag.target, drag.position);
+          if (next !== null) void commitOrder(next);
+        },
+        onPointerCancel: () => {
+          touchDrag.current = null;
+          setDraggingId(null);
+          setDropTargetId(null);
+        },
       },
     };
   };
@@ -3751,9 +3995,17 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
                 : null,
               // 排序提示：顺序会真实影响自动选号，必须让用户知道，否则
               // 「拖了有什么用」无从得知。仅两个以上账号时才显示。
+              // ⚠️ Issue F-16：文案必须如实描述**本设备**的拖拽入口 ——
+              //   触屏上整卡拖动=滚动页面（那是刻意的：卡片区必须让给滚动，
+              //   否则账号多到一屏放不下时没法上下翻），入口只有 ⠿ 柄。
+              //   旧文案一律写「也可直接拖整张卡片」，在手机上正好承诺了做不到的事
+              //   （比不提示更糟：用户以为坏了）。判据用 matchMedia('(pointer: coarse)')，
+              //   与 CSS 侧 pointer:coarse 同源。
               accounts.length > 1
                 ? React.createElement('p', { className: 'dim-jh-orderHint' },
-                    '拖动卡片可调整顺序（也可直接拖整张卡片）。顺序即自动选号与限流换号的优先级，排在前面的账号优先使用。')
+                    isCoarsePointer()
+                      ? '按住账号左侧的 ⠿ 柄上下拖动可调整顺序。顺序即自动选号与限流换号的优先级，排在前面的账号优先使用。'
+                      : '拖动卡片可调整顺序（也可直接拖整张卡片）。顺序即自动选号与限流换号的优先级，排在前面的账号优先使用。')
                 : null,
               reorderError
                 ? React.createElement('div', {
@@ -3771,7 +4023,10 @@ function ProviderPanel({ provider, rpcCall, isolatedLoginCall }) {
                 // 漏传会在渲染时抛 `ReferenceError: provider is not defined`
                 // 并让整个 Jet Hub 设置页崩成白屏（真实事故，2026-09-29）。
                 provider,
-                busy: probeBusy !== null,
+                // ⚠️ Issue F-45：卡片级按钮的禁用位现在同时覆盖**本卡片的写操作**
+                //    （停用/启用、删除在途）与面板级探测动作 —— 原先只按 probeBusy 判，
+                //    这两类写操作在途期间按钮仍可点（连点=重复写请求）。
+                busy: probeBusy !== null || writeBusy === account.id,
                 credits: credits[account.id],
                 creditsLoading: creditsLoading && credits[account.id] === undefined,
                 showCredits: canLoadCredits,
@@ -5346,7 +5601,15 @@ function AggregatePanel({ rpcCall }) {
   const [rejections, setRejections] = React.useState({});
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState(null);
-  /** 每个虚拟模型的展开态（`canonicalId → 用户点过的布尔`）。 */
+  /**
+   * ⚠️ Issue F-45：正在提交「参与轮换」开关的候选键（provider + realId）。
+   *
+   * 该开关是**乐观更新**：先本地翻、再发 RPC、失败时用服务端状态纠正。
+   * 没有在途禁用时，用户对着同一条连点两次会发出两个语义相反的写请求
+   * （第二次基于第一次的乐观态算 next），最终落库顺序不可控 —— 开关最后
+   * 显示什么、宿主实际拒绝什么，可能既不是用户第一次点的、也不是第二次点的。
+   */
+  const [toggleBusy, setToggleBusy] = React.useState(null);
   const [expanded, setExpanded] = React.useState({});
 
   /**
@@ -5409,6 +5672,11 @@ function AggregatePanel({ rpcCall }) {
   /** 切换某条候选的「参与轮换」开关。 */
   const onToggleRejected = React.useCallback(async (canonicalId, provider, realId) => {
     const next = !isRejected(rejections, canonicalId, provider, realId);
+    // ⚠️ Issue F-45：在途禁用（按键 = 候选身份，与 renderCandidate 的 key 同构）。
+    //    必须在乐观更新**之前**置位：连点两次都会读到同一个乐观态，第二次会算出
+    //    与第一次相反的 next（见 toggleBusy 的注释）。按钮同步 disabled 兜住 UI。
+    const toggleKey = `${provider}\u0000${realId}`;
+    setToggleBusy(toggleKey);
     // ⚠️ 乐观更新：先用纯函数算出新表并立刻渲染，再发 RPC。失败时用服务端回传的
     //    表纠正（见下）—— 否则开关会「点了不动」，用户以为坏了。
     setRejections((prev) => toggleRejection(prev, canonicalId, provider, realId, next));
@@ -5439,6 +5707,9 @@ function AggregatePanel({ rpcCall }) {
       // ⚠️ 失败时用服务端状态**纠正**乐观更新（否则界面显示已改、实际没改）。
       setNotice(`保存失败：${caught?.message ?? String(caught)}`);
       await load();
+    } finally {
+      // ⚠️ Issue F-45：放行在途禁用（成败都要，否则该行开关永久变灰）。
+      setToggleBusy((prev) => (prev === toggleKey ? null : prev));
     }
   }, [rejections, rpcCall, load]);
 
@@ -5495,6 +5766,10 @@ function AggregatePanel({ rpcCall }) {
       // ⚠️ 语义是「**参与**轮换」的正向开关，与用户直觉一致：
       //    打开 = 允许用这个渠道；关闭 = 不同意参与轮换（规格 §7.1 的原话）。
       'aria-pressed': String(!rejected),
+      // ⚠️ Issue F-45：本行在途时禁用 + 屏幕阅读器可感知（提交期间开关是乐观态，
+      //    读屏若不报「忙碌」会把它当成已生效）。
+      disabled: toggleBusy === `${candidate.provider}\u0000${candidate.realId}`,
+      'aria-busy': toggleBusy === `${candidate.provider}\u0000${candidate.realId}` ? 'true' : undefined,
       title: rejected ? '已拒绝：该渠道不参与这个模型的轮换' : '参与轮换',
       onClick: () => { void onToggleRejected(canonicalId, candidate.provider, candidate.realId); },
     }, rejected ? '已拒绝' : '参与轮换'));
@@ -5614,6 +5889,17 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
   const [selected, setSelected] = React.useState(PROVIDERS[0].id);
   // 每次切换 provider 时递增版号，强制重新挂载 ProviderPanel 触发 loadAccounts
   const [version, setVersion] = React.useState(0);
+  /**
+   * ⚠️ Issue F-23：刷新右侧面板 —— 登录在途时**让路**（推迟到登录结束再重挂载）。
+   *
+   * 直接 `setVersion` 会换掉 ProviderPanel 的 key ⇒ 卸载 ⇒ 清理函数掐断登录轮询
+   * 并关掉授权窗：用户看到「点了授权就没了」，登录永不完成且毫无提示。
+   * 让路闸门把这次刷新登记成待办，由 stopPoll（轮询的唯一结束汇聚点）补发。
+   * 唯一不使用它的入口是 selectProvider —— 那是用户明确的**离开**意图，不能推迟。
+   */
+  const refreshPanels = React.useCallback(() => {
+    requestPanelRefresh(() => setVersion(v => v + 1));
+  }, []);
   // 一键签到：busy 防重复点击，notice 显示上一次结果摘要。
   const [checkinBusy, setCheckinBusy] = React.useState(false);
   const [checkinNotice, setCheckinNotice] = React.useState(null);
@@ -5825,11 +6111,13 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
     if (typeof firstUsable === 'string' && firstUsable !== selected
       && PROVIDERS.some(p => p.id === firstUsable)) {
       setSelected(firstUsable);
-      setVersion(v => v + 1);
+      // ⚠️ Issue F-23：这是**自动纠偏**（不是用户点了什么）⇒ 必须让路，
+      // 否则它会在用户刚发起登录时把面板换掉、静默掐断轮询。
+      refreshPanels();
     }
     // providerStatuses 一并依赖：它到达后「首位已关闭 → 跳下一个 open」的纠偏
     // 才能算准。touchedRef 不进依赖（ref 读取无时序问题）。
-  }, [providerOrder, providerStatuses, selected]);
+  }, [providerOrder, providerStatuses, selected, refreshPanels]);
 
   /**
    * 提交拖拽后的新顺序。
@@ -5918,8 +6206,9 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
         text: `${label}：${summarizeProviderToggle(enabled, res)}`,
       });
       // 重新拉状态（分组随之变化）+ 重挂载右侧面板（账号启用状态已变）
+      // ⚠️ Issue F-23：走让路闸门 —— 登录在途时重挂载会掐断轮询并关掉授权窗。
       await loadProviderStatuses();
-      if (mounted.current) setVersion(v => v + 1);
+      if (mounted.current) refreshPanels();
     } catch (caught) {
       console.error('[jet-hub] toggle provider failed:', caught);
       if (!mounted.current) return;
@@ -6066,7 +6355,9 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
     });
     setCheckinBusy(false);
     // 领取会改变余额；递增版号让当前面板重新挂载并刷新账号与积分
-    setVersion(v => v + 1);
+    // ⚠️ Issue F-23：签到**串行打十几个上游**、耗时可观，期间用户完全可能去点
+    //    「+ 添加账号」；直接重挂载会把正在进行的登录连授权窗一起收掉。走让路闸门。
+    refreshPanels();
   };
 
   /**
@@ -6088,6 +6379,21 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
         type: 'button',
         role: 'tab',
         className: 'dim-jh-provider',
+        /**
+         * ⚠️ Issue F-69：tablist / tab / tabpanel 三件套此前是**残缺**的 ——
+         * 只有 role 与 aria-selected，缺 aria-controls、缺 tabpanel 的
+         * aria-labelledby、缺方向键漫游。ARIA 作者实践指南要求这三者配套，
+         * 否则「标签页」语义不成立（读屏只会念出一堆孤立按钮）。
+         *
+         * - id：tab 与 tabpanel 互相指认的锚；
+         * - aria-controls：指向本 tab 控制的 tabpanel（本面板只有一个 tabpanel，
+         *   所有 tab 都指向它 —— 这正是「单选面板」的标准形态）；
+         * - tabIndex：roving tabindex —— 只有选中项进 Tab 序列，其余靠方向键漫游，
+         *   否则十几个供应商会往 Tab 序列里塞十几站（键盘用户要按十几次才能离开导航）。
+         */
+        id: `dim-jh-tab-${p.id}`,
+        'aria-controls': PROVIDER_TABPANEL_ID,
+        tabIndex: p.id === selected ? 0 : -1,
         'aria-selected': p.id === selected,
         // 标题带上关闭状态：行本身已经没有开关，用户得知道去哪儿打开它。
         // ⚠️ 按钮名是「供应商」（页头），文案要与它一致，否则用户找不到。
@@ -6095,6 +6401,27 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
           ? `${p.label}（已关闭，可在页头「供应商」按钮里打开）`
           : p.label,
         onClick: () => selectProvider(p.id),
+        /**
+         * ⚠️ Issue F-69：方向键漫游（roving tabindex 的配套行为）。
+         * ⚠️ 用**实时 DOM 顺序**而不是 PROVIDERS 的声明顺序：左侧 rail 按
+         * 「已打开 / 已关闭」分组渲染，DOM 顺序与声明顺序不同 —— 按声明顺序跳
+         * 会让焦点在视觉上乱跳（用户按↓却跳回上面）。
+         * ⚠️ 焦点与选中一起走（自动激活）：本面板的选中即渲染面板，没有额外的
+         * 激活阶段，分两段反而要在别处再补一次回车处理。
+         */
+        onKeyDown: (event) => {
+          const step = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1
+            : (event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 0);
+          if (step === 0) return;
+          event.preventDefault();
+          const tabs = [...(event.currentTarget.closest('[role="tablist"]')?.querySelectorAll('[role="tab"]') ?? [])];
+          if (tabs.length === 0) return;
+          const at = tabs.indexOf(event.currentTarget);
+          const next = tabs[(at + step + tabs.length) % tabs.length];
+          if (next === undefined) return;
+          next.focus();
+          next.click();
+        },
       },
       React.createElement(ProviderLogo, { provider: p.id }),
       // ⚠️ 这里给 label 加了 `dim-jh-providerLabel` —— 该类在样式表里**早已定义**
@@ -6189,7 +6516,8 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
           rpcCall,
           // 导入成功会整体替换账号，ProviderPanel 只在挂载时拉列表；
           // 递增版号强制重新挂载，让账号列表与模型目录立即反映新状态。
-          onImported: () => setVersion(v => v + 1),
+          // ⚠️ Issue F-23：走让路闸门（导入耗时里用户可能正好在登录）。
+          onImported: refreshPanels,
         }),
         // 本机网关开关。⚠️ 文字刻意只写「网关」（见「供应商」按钮上方的同款
         // 注释）：页头按钮排成一行，长文字会把右端「关闭」挤到第二行。
@@ -6256,6 +6584,13 @@ export function JetHubPage({ close, rpcCall, chatGptCall, isolatedLoginCall }) {
       React.createElement('main', {
         className: 'dim-jh-panel',
         role: 'tabpanel',
+        // ⚠️ Issue F-69：tabpanel 必须能被 tab 指认（id），并回报自己由哪个 tab 命名
+        //    （aria-labelledby）。三者配套后读屏才会念「<供应商> 标签页，已选中」，
+        //    而不是把右侧内容当一段无名的普通区块。
+        //    用固定的单 panel id：本面板按 provider 单选渲染，任何时刻只有一个面板，
+        //    正是「所有 tab 共享一个 tabpanel」的标准形态（aria-controls 指向同一个）。
+        id: PROVIDER_TABPANEL_ID,
+        'aria-labelledby': `dim-jh-tab-${selected}`,
       },
       PROVIDERS.map(p => p.id === selected
         ? (p.id === 'aggregate'
