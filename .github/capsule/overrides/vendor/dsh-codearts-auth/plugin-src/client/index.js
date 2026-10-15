@@ -72,6 +72,9 @@ import { installJetHubStyles } from './jet-hub-styles.js'
 import { JET_HUB_RPC_CHANNEL, JetHubPage, providerLabel } from './jet-hub.js'
 import { startCarrierContribution } from './zcode-carrier.js'
 import { UsageBadge } from './usage-badge.js'
+// ⚠️ 手机版接线（apply.sh §4 断言）：输入区最下方的「当前实际在用哪个渠道/模型」胶囊。
+//    组件文件在 files/ 层（rc.11 无此文件），铺开后与本文件同目录。
+import { ActiveModelPill } from './active-model-pill.js'
 
 export function apply(ctx) {
   ctx.effect(() => installJetHubStyles(), 'jet-hub: install styles')
@@ -198,4 +201,29 @@ export function apply(ctx) {
         rpcCall('credits.claimAll', { provider, runTasks, budgetMs }),
     }),
   }, UsageBadge))
+
+  /* ⚠️ 手机版接线（apply.sh §4 断言）：输入区最下方的实时读数胶囊。
+     它与 UsageBadge 是两个独立槽位注册（判据不同：本组件读「本次正在发往」，
+     徽标读「上次成功」）—— 见 `active-route.ts` 模块头的对照表。 */
+  ctx.effect(() => ctx.slots.register({
+    name: 'conversation.composer.after',
+    inject: () => ({
+      providerLabel,
+      readActiveRoute: async (provider) => {
+        try {
+          return await rpcCall('router.activeRoute', { provider })
+        } catch (error) {
+          // 只有「端点不存在」才回落；其它错误原样交给组件降级。
+          // ⚠️ 回落存在的理由：宿主代码只在 DSH 启动时载入（不热重载），
+          //    故存在「客户端已更新、宿主还是旧的」中间态 —— 此时借用旧端点
+          //    `aggregate.activeProvider` 仍能拿到读数，不必等重启。
+          if (provider !== 'aggregate') throw error
+          const fallback = await rpcCall('aggregate.activeProvider', {})
+          return fallback === null || typeof fallback !== 'object'
+            ? null
+            : { provider: fallback.provider ?? null, model: fallback.model ?? null, at: null };
+        }
+      },
+    }),
+  }, ActiveModelPill))
 }

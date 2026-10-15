@@ -77,6 +77,8 @@ import {
 // **薄委托**（只提供 auto 的取号方式）。四个 `*Expiry` 折算函数 Task 7 已**搬移**到
 // 那里（不是复制）—— 两份同义实现必然漂移（AGENTS.md 首条判据的静默失效）。
 import { createExpiryProbe } from './aggregate-expiry.js'
+// ⚠️ 手机版接线（apply.sh §4 断言）。
+import { activeRoutes } from './active-route.js'
 
 /** 注册到 ctx.llm 的 provider 路由，也是 providerInfo().id（DSH 校验二者相等）。 */
 export const AUTO_PROVIDER = 'jet-hub-auto'
@@ -648,6 +650,10 @@ export class AutoAdapter extends LlmAdapter {
       ...(target.expiryAt === undefined ? { expiryAt: this.lastExpiryAt } : { expiryAt: target.expiryAt }),
     }
     const requested = options.reasoningEffort
+    /* ⚠️ 手机版接线（apply.sh §4 断言）：在 `ctx.llm.stream` **之前**记下真实目标。
+       写入时机是「请求发出前」而非「成功之后」—— 它回答「此刻在用什么」，
+       与聚合那张 `activeProviderByModel`（必须成功才写）判据不同。 */
+    activeRoutes.record(AUTO_PROVIDER, target.provider, target.model)
     const base = { ...options, provider: target.provider, model: target.model }
     const forwarded = this.withTranslatedEffort(target, base, requested)
     let probe = emptyZeroOutputProbe()

@@ -172,6 +172,33 @@ export interface JetHubConfig {
 export interface RpcListAccountsRequest {
   provider: string
 }
+/**
+ * RPC: 路由型 provider「本次实际发往的真实目标」响应（供输入区实时读数）。
+ *
+ * 覆盖 `aggregate`（聚合 · 跨渠道）与 `jet-hub-auto`（Auto · 临期优先 · 整池）两家 ——
+ * 它们在模型选择器里都只显示一个**虚拟**名字，用户看不到真实的渠道与模型。
+ *
+ * ## ⚠️ 与 {@link RpcAggregateActiveProviderResponse} 的**判据不同**（不要合并）
+ *
+ * | 端点 | 语义 | 写入时机 |
+ * |---|---|---|
+ * | `aggregate.activeProvider` | 上次实际**成功**的渠道 + 模型 | 整轮跑完 |
+ * | `router.activeRoute`（本响应） | **本次正在发往**的目标 | 转发一开始 |
+ *
+ * 前者服务于**余额徽标**（显示一个刚失败、已无额度的渠道会误导）⇒ 必须成功才写；
+ * 后者服务于**「当前在用什么」**，等整轮跑完才更新就失去实时性。
+ *
+ * ⚠️ `provider` / `model` 为 `null` 表示**无历史**（尚未发过任何请求 / 插件重启后
+ * 内存清空）⇒ 客户端显示占位文案。**不预测、不编造**。
+ */
+export interface RpcActiveRouteResponse {
+  provider: string | null
+  /** 该渠道下的真实 modelId（不是虚拟键，如 `auto`）。 */
+  model: string | null
+  /** 记录时刻（毫秒时间戳）；无历史时为 `null`。 */
+  at: number | null
+}
+
 export interface RpcListAccountsResponse {
   accounts: ProviderAccountStatus[]
 }

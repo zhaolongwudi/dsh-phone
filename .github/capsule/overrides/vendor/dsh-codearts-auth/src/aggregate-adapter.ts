@@ -28,6 +28,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+// ⚠️ 手机版接线（apply.sh §4 断言）：进程内「本次实际发往的真实目标」读数。
+import { activeRoutes } from './active-route.js'
 // ⚠️ `contentHasImage` 是**值导入**（`auto-adapter.ts` 同款）：带图判定必须与宿主
 // capability 判据**同一函数**（它含 tool-result 递归），自己写一遍必然漂移。
 import { LlmAdapter, LlmError, ProviderRequestId, ReasoningEffortId, contentHasImage } from '@deepseek-ai/dsh-llm'
@@ -1583,6 +1585,12 @@ export class AggregateAdapter extends LlmAdapter {
       const openedBlocks = new Map<number, string>()
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index]!
+        /* ⚠️ 手机版接线（apply.sh §4 断言）：在**转发一开始**就记下真实目标，
+           供客户端「当前实际在用哪个渠道/模型」的实时读数（`active-route.ts`）。
+           ⚠️ 与下面 `activeProviderByModel` 的「只在整轮跑完才写」判据**相反**，这是刻意的：
+           那张表回答「该看哪个渠道的余额」（写失败候选会让徽标指向错账号）；
+           本表回答「此刻正在用什么」（等整轮跑完就失去实时性）。两个语义、两处写入，不要合并。 */
+        activeRoutes.record(AGGREGATE_PROVIDER, target.provider, target.realId)
         // 该候选是否已经产出过内容（决定失败时能否安全切换，见上方长注释）。
         let emitted = false
         /**

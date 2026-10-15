@@ -19,6 +19,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { openIncognitoWindow } from './login.js'
+// ⚠️ 手机版接线（apply.sh §4 断言）：'router.activeRoute' 端点的数据源。
+import { activeRoutes } from './active-route.js'
 import { AccountPool } from './account-pool.js'
 import { AUTO_PROVIDER as AUTO_PROVIDER_ID } from './auto-adapter.js'
 import { resolveAutoBadgeRewrite, type AutoBadgeState } from './auto-badge.js'
@@ -269,6 +271,8 @@ import type {
   RpcUsageTokenLedgerDeleteDayResponse,
   RpcUsageAutoCheckinRequest,
   RpcUsageAutoCheckinResponse,
+  // ⚠️ 手机版接线（apply.sh §4 断言）。
+  RpcActiveRouteResponse,
   ProviderStatus,
   CatalogHealth,
 
@@ -5279,6 +5283,25 @@ function registerJetHubEndpoints(
        * ⚠️ 未注册时回**空表**而不是报错：面板据此保持字母序并提示，
        * 不影响其余功能（与 `aggregate.activeProvider` 的安静降级同取向）。
        */
+      /* ⚠️ 手机版接线（apply.sh §4 断言）：路由型 provider 的「本次实际发往」读数。
+         覆盖 aggregate 与 jet-hub-auto —— 它们在选择器里只显示虚拟名字。
+         客户端按 5 秒轮询它，**不能有任何网络成本**（纯内存读）。
+         ⚠️ 无历史 / 未注册一律回 null 而**不是**报错：这是可选装饰，
+            为非关键路径失败弹错会让输入区出现无意义错误（既有取向）。 */
+      case 'router.activeRoute': {
+        const router = (payload as { provider?: unknown } | undefined)?.provider
+        // 非字符串 / 空串当「无历史」：客户端首帧（目录未解析）会传空值，是正常时序。
+        const route = typeof router === 'string' && router.length > 0
+          ? activeRoutes.read(router)
+          : null
+        const value: RpcActiveRouteResponse = {
+          provider: route?.provider ?? null,
+          model: route?.model ?? null,
+          at: route?.at ?? null,
+        }
+        return { ok: true, value }
+      }
+
       case 'aggregate.expiryOrder': {
         const source = modelAdapters?.['aggregate']
         const order = source?.describeExpiryOrder === undefined
