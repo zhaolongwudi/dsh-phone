@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { BuddyCredential } from './buddy.js'
 import type { BuddyProduct } from './product.js'
-import { createJetHubStore, isValidResetAtMs, MAX_DATE_MS, mergeLegacyLoomyLock, sanitizeAccounts, sanitizeAggregateRejections, sanitizeDisabledModels, sanitizePermanentLocks } from './jet-hub-store.js'
+import { createJetHubStore, isValidResetAtMs, MAX_DATE_MS, mergeLegacyLoomyLock, sanitizeAccounts, sanitizeAggregateRejections, sanitizeDisabledModels, sanitizeGatewayEnabled, sanitizePermanentLocks, sanitizeProviderOrder } from './jet-hub-store.js'
 import type { AggregateRejectionMap, JetHubStore, JetHubState, ModelDisableMap, PermanentLockMap } from './jet-hub-store.js'
 import { createPermanentLockStore } from './permanent-lock-store.js'
 import type { PermanentLockStore } from './permanent-lock-store.js'
@@ -253,6 +253,29 @@ export class AccountPool {
     if (entry.provider !== 'zcode') return model
     const source = rotationRequest(entry.provider)?.sources?.get(this)?.get(entry.id) ?? entry.zcodeSource
     return source && source !== 'auto' ? `${model} · ${source}` : model
+  }
+
+  /**
+   * 读某账号在**该模型**上的限流解禁时刻（两套键都认，见下）。
+   *
+   * ⚠️⚠️ **必须同时认两套键**（Issue F-44）：`modelRateLimits` 的键有两种形态 ——
+   * ① {@link rateLimitKey} 的**来源后缀键**（`模型 · 来源`），由适配器的
+   *    `updateModelRateLimit` 写下（键在那个方法里转换）；
+   * ② **原始模型 id**，由 `markModelsExhaustedForExpiry` 的余额观测写下（它拿到的是
+   *    目录形态的模型 id，不做后缀转换）。
+   * 而选号侧原先只查后缀键 ⇒ zcode 配非 auto 额度来源时，观测写下的「额度用尽」
+   * 标记**永不命中** ⇒ 该账号被反复选中、反复撞墙 —— 正是 {@link expiryMarkedKeys}
+   * 注释里那条「每轮真烧一发请求」的死循环。两个消费者（`getAvailableAccount` 与
+   * `listAvailableCredentials`）原先也各查一套键，同一个账号在它们眼里状态不同。
+   *
+   * 判据取**更具体者优先**：先查来源后缀键（「这个来源确实撞墙了」的线上事实），
+   * 查不到再退回原始键（与来源无关的观测）。两者都缺 = 不受限。
+   */
+  private rateLimitResetAt(entry: ProviderAccountEntry, modelId: string): number | undefined {
+    const limits = entry.modelRateLimits
+    if (limits === undefined) return undefined
+    const scoped = limits[this.rateLimitKey(entry, modelId)]
+    return scoped !== undefined ? scoped : limits[modelId]
   }
 
   requestAccount(provider: string): ProviderAccountEntry | undefined {
@@ -644,6 +667,11 @@ export class AccountPool {
    * "键存在且为 true 即隐藏"，配置文件也不会随开关操作无限膨胀。
    */
   async setModelDisabled(provider: string, modelId: string, disabled: boolean): Promise<void> {
+    // ⚠️ 必须先确保已载入（Issue F-39）：本类只在**读**方法里调 `ensureLoaded()`，
+    // 若首次访问就是写操作，`this.modelCache` 还是初始空表 —— 一次开关就会把磁盘上
+    // 已有的黑名单整体覆盖掉（与 setModelsDisabled / setAccountsEnabled 同型，
+    // 后果见那两处的注释）。
+    this.ensureLoaded()
     const next: ModelDisableMap = { ...this.modelCache }
     const perProvider = { ...(next[provider] ?? {}) }
     if (disabled) perProvider[modelId] = true
@@ -1325,8 +1353,9 @@ export class AccountPool {
         .filter(a => {
           // 空 modelId（未知目标模型）：无可比对的键，保持候选不变。
           if (targetModel.length === 0) return true
-          if (!a.modelRateLimits) return true
-          const resetAt = a.modelRateLimits[this.rateLimitKey(a, targetModel)]
+          // ⚠️ 经 `rateLimitResetAt` 读：它同时认来源后缀键与原始模型 id
+          //    （Issue F-44，理由见该方法的注释）。
+          const resetAt = this.rateLimitResetAt(a, targetModel)
           return resetAt === undefined || resetAt === 0 || Date.now() >= resetAt
         }))
       if (candidates.length === 0) return null
@@ -1403,8 +1432,9 @@ export class AccountPool {
       .filter(a => {
         // 与 `getAvailableAccount` 同一判据：空 modelId 跳过限流过滤。
         if (modelId.length === 0) return true
-        if (!a.modelRateLimits) return true
-        const resetAt = a.modelRateLimits[modelId]
+        // ⚠️ 同样经 `rateLimitResetAt`（Issue F-44）：这里原先只查**原始键**，与选号侧
+        //    （查来源后缀键）不一致 ⇒ 同一个账号在两个消费者眼里「限流状态不同」。
+        const resetAt = this.rateLimitResetAt(a, modelId)
         return resetAt === undefined || resetAt === 0 || Date.now() >= resetAt
       })
     const out: Array<{ entry: ProviderAccountEntry; credential: unknown }> = []
@@ -1692,6 +1722,12 @@ export class AccountPool {
       for (const [modelId, resetAtMs] of Object.entries(limits)) {
         if (resetAtMs > 0 && Date.now() >= resetAtMs) {
           delete limits[modelId]
+          // ⚠️ **必须一并清 `expiryMarkedKeys`**（Issue F-60）：那条登记的语义是
+          //    「这个键上的标记由折算观测写下」，而标记本体刚被本方法删掉 ⇒ 登记
+          //    若留着就是**陈旧条目**：它无界增长，且日后同一个 (账号, 模型) 被
+          //    适配器写回标记时会呈现「登记在、标记也在」的假象 —— 观测路径据此
+          //    可以擦掉一次**真实撞墙**的证据（正是 `expiryMarkedKeys` 要防的事）。
+          this.expiryMarkedKeys.delete(exhaustedKey(entry.id, modelId))
           changed = true
         }
       }
@@ -1818,10 +1854,23 @@ export class AccountPool {
     for (const [provider, models] of Object.entries(this.modelCache)) {
       disabledModels[provider] = { ...models }
     }
+    // 同 `disabledModels`：嵌套结构必须逐层拷贝（Issue F-59）。
+    const aggregateRejections: AggregateRejectionMap = {}
+    for (const [canonicalId, byProvider] of Object.entries(this.aggregateRejectionCache)) {
+      const providers: Record<string, Record<string, boolean>> = {}
+      for (const [provider, byRealId] of Object.entries(byProvider)) providers[provider] = { ...byRealId }
+      aggregateRejections[canonicalId] = providers
+    }
     return {
       accounts: [...this.cache],
       disabledModels,
       ...this.lockFields(),
+      // ⚠️ 这三份偏好原先**不在快照里**（Issue F-59）⇒ 备份导出的「完整状态快照」
+      //    缺了它们：还原后「已拒绝轮换的候选」「网关开关」「供应商顺序」统统回到
+      //    默认值（用户看到的是「我明明关掉了网关 / 排好了顺序」）。
+      aggregateRejections,
+      gatewayEnabled: this.gatewayEnabledCache,
+      providerOrder: [...this.providerOrderCache],
     }
   }
 
@@ -1836,12 +1885,31 @@ export class AccountPool {
    * `sanitizeAccounts` / `sanitizeDisabledModels` 归一化：只保留可用的
    * 账号条目与显式 `true` 的黑名单项，坏条目直接丢弃而不是写进池里
    * 反复触发选号失败。
+   *
+   * ⚠️ `preferences` 是**与 `permanentLocks` 同口径的可选组**（Issue F-59）：
+   * 老备份文件里没有它 ⇒ 传 `undefined` 时**保持当前值**（不重置）；给出时整体替换
+   * 并经 `sanitize*` 过滤脏值。三份偏好与账号、黑名单要**取自同一份备份**，
+   * 否则还原出的状态自相矛盾（用户看到「账号回来了、设置没回来」）。
    */
   async replaceAll(
     accounts: readonly ProviderAccountEntry[],
     disabledModels: ModelDisableMap,
     permanentLocks?: PermanentLockMap,
+    preferences?: {
+      aggregateRejections?: AggregateRejectionMap
+      gatewayEnabled?: boolean
+      providerOrder?: readonly string[]
+    },
   ): Promise<void> {
+    /**
+     * ⚠️⚠️ **必须在覆盖前先载入**（Issue F-59，探针实测踩到）：「老备份缺键 ⇒ 保持
+     * 当前值」这一条只有在**当前值真的从磁盘读出来了**的前提下才成立。而本类只在
+     * **读**方法里调 `ensureLoaded()`，`replaceAll` 是写方法 ⇒ 在这条导入路径上
+     * `this.gatewayEnabledCache` 还是初始默认值 `true`、`providerOrderCache` 还是 `[]`
+     * —— 用户盘上明明写着「网关关、顺序自定义」，导入一份老备份后**静默回到默认**，
+     * 与注释承诺相反（与 F-39 是同一形态的缺陷：写方法自己不会载入）。
+     */
+    this.ensureLoaded()
     const next = sanitizeAccounts(accounts)
     this.cache = next
     this.modelCache = sanitizeDisabledModels(disabledModels)
@@ -1850,6 +1918,16 @@ export class AccountPool {
     // 给出表时**整体替换**（备份就是完整状态快照），并同样过滤脏值。
     if (permanentLocks !== undefined) {
       this.permanentLockCache = sanitizePermanentLocks(permanentLocks)
+    }
+    // 三份偏好同口径（Issue F-59）：老备份缺键 ⇒ 保持当前值。
+    if (preferences?.aggregateRejections !== undefined) {
+      this.aggregateRejectionCache = sanitizeAggregateRejections(preferences.aggregateRejections)
+    }
+    if (preferences?.gatewayEnabled !== undefined) {
+      this.gatewayEnabledCache = sanitizeGatewayEnabled(preferences.gatewayEnabled)
+    }
+    if (preferences?.providerOrder !== undefined) {
+      this.providerOrderCache = sanitizeProviderOrder(preferences.providerOrder)
     }
     this.loaded = true
     // 一次落盘三件事：锁定表进**独立文档**，账号与黑名单进 state.json，
