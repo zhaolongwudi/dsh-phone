@@ -6,7 +6,13 @@ import { build } from 'esbuild';
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(sourceDirectory, '../..');
 const outputPath = resolve(packageRoot, 'lib/client/jet-hub.js');
-const loaderId = 'dsh-codearts-auth';
+/* ⚠️ 必须等于包的 `name`（rc.11 改名后为 dsh-providers-hub）。
+   依据（引擎源码）：dsh-client-modules 的 graphRow(packageName,…) 用 package.json 的 name
+   作为这一行 bundle 的 id，再用它去 `factories.has(id)` 校验注册结果 ——
+   两者不等就是用户实测的启动失败：`loaded without registering "…" via __ModuleLoader__.load`。
+   ⚠️ 上游 rc.11 自己漏改了本行（改名只做了 package.json / cordis.patch.yml）。
+   等上游补上后，本文件可以整体撤掉 override。 */
+const loaderId = 'dsh-providers-hub';
 
 const result = await build({
   entryPoints: [resolve(sourceDirectory, 'index.js')],

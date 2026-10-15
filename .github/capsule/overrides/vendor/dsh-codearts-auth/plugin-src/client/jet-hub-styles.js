@@ -1159,7 +1159,7 @@ button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { c
  * （dsh-client-modules 的 stripClientSuffix(registration.id)），
  * 也就是样式标签 data-plugin 的**正确取值**。改名必须两边一起改。
  */
-const PLUGIN_ID = 'dsh-codearts-auth'
+const PLUGIN_ID = 'dsh-providers-hub'
 
 /** 样式标签的资源标识（宿主 data-plugin-css 的语义，见下）。 */
 const STYLE_TAG_ID = PLUGIN_ID + '/jet-hub.css'

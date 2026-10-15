@@ -8,7 +8,7 @@
     "4. 插件侧不再产出已登记的类名 ⇒ 门禁报「契约失效」，并点名是哪个插件文件、什么语义、本层哪几个文件在消费；",
     "5. 插件包版本与下面的 pluginVersion 不一致 ⇒ 门禁报「需复核」（改名多发生在插件发版时，这条把版本漂移变成一次显式确认）。"
   ],
-  "pluginPackage": "dsh-codearts-auth",
+  "pluginPackage": "dsh-providers-hub",
   "pluginVersion": "0.2.0-rc.11",
   "pluginDir": "overrides/vendor/dsh-codearts-auth/plugin-src/client",
   "appConsumers": [

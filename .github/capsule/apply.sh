@@ -95,6 +95,114 @@ if [ -n "$MISSING_MANIFEST_NAMES" ]; then
   exit 1
 fi
 
+# 2.8) rc.11 包改名迁移（dsh-codearts-auth → dsh-providers-hub）
+#
+# 背景：上游 0.2.0-rc.11 的提交「改名，版本」把包名从 `dsh-codearts-auth` 改成
+#       `dsh-providers-hub`。DSH 是**按包名字符串寻址 bundle**的（profile 的
+#       dependencies 键 + bundles 项），故改名必须**整链一致**；改一半就是静默失效。
+#       作者在包的 `cordis.patch.yml` 里也写了同样的注意事项。
+#
+# ⚠️ 上游自己只改了 3 个文件（package.json / cordis.patch.yml / README），
+#    `plugin-src/client/build.mjs` 的 loaderId **漏改** ⇒ bundle 仍按旧名注册，
+#    而宿主按新名校验（客户端期望的 id 取自 package.json 的 name —— 见
+#    dsh-client-modules 的 `graphRow(packageName, …)`）⇒ 装上就起不来：
+#      `loaded without registering "dsh-providers-hub" via __ModuleLoader__.load`
+#    该漏改由本胶囊修（overrides/.../plugin-src/client/build.mjs 的 loaderId）。
+#
+# ⚠️ 为什么用**就地精确替换**而不是往 overrides/ 丢整份文件：
+#    这两个文件上游仍在演进，整份覆盖会**静默遮蔽**上游后续修复（overrides/ 不受
+#    §1.5 防撞门禁保护）。就地替换 + 每处**落地断言**：上游一旦挪动这段文本就立刻
+#    硬失败，不会静默漂移成「以为改了其实没改」。
+#
+# ⚠️ 本段跑在 workflow「注入资源版本」**之后**，故不会把 ASSET_VERSION 冲回硬编码值
+#    （那会让 scripts/build-assets.py 的 validate_asset_version 硬失败）。
+node - <<'CAPSULE_RENAME_PATCH'
+const fs = require('fs');
+let bad = 0;
+const patch = (file, from, to, label) => {
+  if (!fs.existsSync(file)) { console.error('::error::改名迁移：找不到 ' + file); bad++; return; }
+  const s = fs.readFileSync(file, 'utf8');
+  const hits = s.split(from).length - 1;
+  if (hits !== 1) {
+    console.error('::error::改名迁移：' + label + ' 的锚点命中 ' + hits + ' 次（应为 1）。');
+    console.error('::error::上游挪动了这段文本 —— 请对照新版上游重写 apply.sh §2.8。');
+    bad++;
+    return;
+  }
+  fs.writeFileSync(file, s.replace(from, to));
+  console.log('  ✓ ' + label);
+};
+
+// ① 部署清单一：build-assets.py 的 BUNDLES 与部署目标名
+patch('scripts/build-assets.py',
+  "BUNDLES = ('dsh-codearts-auth',",
+  "BUNDLES = ('dsh-providers-hub',",
+  'build-assets.py BUNDLES');
+patch('scripts/build-assets.py',
+  "    for name, source in [('dsh-codearts-auth', ROOT / 'vendor/dsh-codearts-auth'),",
+  "    for name, source in [('dsh-providers-hub', ROOT / 'vendor/dsh-codearts-auth'),",
+  'build-assets.py 部署目标名（源路径不变）');
+patch('scripts/build-assets.py',
+  '    # ESM tests and local editing resolve the same hoisted dependency tree.',
+  [
+    '    # rc.11 改名：runtime 的依赖键仍是旧名（改它会牵动 pnpm-lock 的 peer 解析哈希，',
+    '    # 而本机无法忠实重算）⇒ pnpm 装出的是旧名目录；部署树只用新名，故清掉旧名副本',
+    '    # （避免同一份插件在树里存两份，也避免被残留的旧 profile 条目解析到）。',
+    "    shutil.rmtree(MODULES / 'dsh-codearts-auth', ignore_errors=True)",
+    '    # ESM tests and local editing resolve the same hoisted dependency tree.',
+  ].join('\n'),
+  'build-assets.py 清理旧名副本');
+
+// ② 出厂 profile 模板（新装用户的 profile）
+patch('home-template/profiles/phone/package.json',
+  '    "dsh-codearts-auth": "file:./node_modules/dsh-codearts-auth",',
+  '    "dsh-providers-hub": "file:./node_modules/dsh-providers-hub",',
+  'profile 模板 dependencies 键');
+patch('home-template/profiles/phone/package.json',
+  '        "dsh-codearts-auth",',
+  '        "dsh-providers-hub",',
+  'profile 模板 bundles 项');
+
+// ③ 设备端**升级**迁移（老设备的 profile 里已是旧名，必须双向改）
+patch('app/src/main/java/com/dshphone/NodeRunner.kt',
+  [
+    '            listOf("dsh-codearts-auth", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
+    '                if ((0 until bundles.length()).none { bundles.optString(it) == bundle }) bundles.put(bundle)',
+    '                dependencies.put(bundle, "file:./node_modules/$bundle")',
+    '            }',
+  ].join('\n'),
+  [
+    '            /* ⚠️ 手机版改名迁移（rc.11：dsh-codearts-auth → dsh-providers-hub，见 apply.sh §2.8）。',
+    '               必须**双向**：只加新名 ⇒ 旧入口残留 ⇒ 同一插件被加载两次',
+    '               （client-modules 报 resolves from multiple active Loader sources）；',
+    '               只删旧名不加新名 ⇒ 插件完全不加载。两者都是静默失效。 */',
+    '            for (legacy in listOf("dsh-codearts-auth")) {',
+    '                for (i in bundles.length() - 1 downTo 0) if (bundles.optString(i) == legacy) bundles.remove(i)',
+    '                dependencies.remove(legacy)',
+    '                File(installedModules, legacy).deleteRecursively()',
+    '            }',
+    '            listOf("dsh-providers-hub", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
+    '                if ((0 until bundles.length()).none { bundles.optString(it) == bundle }) bundles.put(bundle)',
+    '                dependencies.put(bundle, "file:./node_modules/$bundle")',
+    '            }',
+  ].join('\n'),
+  'NodeRunner 双向 profile 迁移');
+
+// ④ 落地断言：三处新名必须真的出现（防「patch 静默没生效」）
+for (const [file, needle, label] of [
+  ['scripts/build-assets.py', "'dsh-providers-hub',", 'build-assets.py'],
+  ['home-template/profiles/phone/package.json', '"dsh-providers-hub"', 'profile 模板'],
+  ['app/src/main/java/com/dshphone/NodeRunner.kt', '"dsh-providers-hub"', 'NodeRunner.kt'],
+]) {
+  if (!fs.readFileSync(file, 'utf8').includes(needle)) {
+    console.error('::error::改名迁移后校验失败：' + label + ' 里没有新包名');
+    bad++;
+  }
+}
+if (bad > 0) { console.error('::error::改名迁移未完成（' + bad + ' 处）'); process.exit(1); }
+console.log('  ✓ 改名迁移落地（4 处 patch + 3 处校验）');
+CAPSULE_RENAME_PATCH
+
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
 #    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
 
