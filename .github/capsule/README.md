@@ -25,15 +25,15 @@ git 仓库（main 分支）
 `sync-upstream.yml` 合并上游时**永远看不到胶囊改动** —— 胶囊不进 git 历史，
 所以既不会被覆盖，也不会破坏任何未来的上游更新。
 
-## 目录内容（2026-10-12 17:00 状态）
+## 目录内容（2026-10-15 01:30 实测状态；下表的数字均已按当日真实文件重新点过）
 
 | 路径 | 说明 |
 |---|---|
-| `files/` | 胶囊/移植**全新增**路径：11 个 src 模块（active-route、provider-registry/runtime/expiry、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、context-window-store、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ spec（当前 30 个文件） |
-| `overrides/` | **51 个**「上游某版 + 我方改动」覆盖文件 = vendor 49 个（src 40 + plugin-src/client 5 + spec 4）+ **UI 层 2 个**（`app/src/main/assets/dsh-phone.{js,css}`，2026-10-12 新增）；另有 1 个 `lib/`（胶囊自带的 d.ts 源）。每个的基线版本见 `docs/porting/PORTING-GITEE-HANDOFF.md` 各轮次记录 |
+| `files/` | 胶囊/移植**全新增**路径：**12 个** src 模块（active-route、provider-registry/runtime/expiry、zcode-entitlements、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、context-window-store、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ `active-route` 的 tsc 产物（`lib/` 4 个）+ spec **11 个**（全层 27 个 `.spec.ts` = 本路径 11 + overrides 16） |
+| `overrides/` | **130 个**「上游某版 + 我方改动」覆盖文件（含 `overrides/runtime/` 的 44 个；不含则为 **86 个**）= vendor **76**（`dsh-codearts-auth` 75：src 52 + plugin-src/client 6 + spec 16 + `package.json` 1；`dsh-channel-qq` 1）+ **壳层 4**（`app/src/main/assets/dsh-phone.{js,css}`、`app/src/main/java/com/dshphone/MainActivity.kt`、`app/src/main/AndroidManifest.xml`）+ peer 3 + phone-qq 2 + scripts 1。每个的基线版本见 `docs/porting/PORTING-GITEE-HANDOFF.md` 各轮次记录 |
 | `overrides/runtime/` | **官方引擎适配（2026-10-14 新增）**：3 个版本文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）+ `overlays/@deepseek-ai/`（23 包 40 文件）。上游 `runtime/` 与本仓库**逐字节一致**（属「永不直接改」的上游内容），故引擎升级走这里覆盖。当前基线 **`0.2.1-alpha.2`** |
 | `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）+ **UI 接线自检与锚点门禁**（2026-10-12 新增，见下节）+ **runtime 引擎版本自检**（2026-10-14 新增：6 条断言，防「文件铺了但装回旧引擎」的静默退回）；`DISABLED` 空文件 = 一键纯净构建 |
-| `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 15 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑** |
+| `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 27 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑**；产物一致性另由 `files/scripts/check-capsule-artifacts.mjs` 守（Issue F-68：提交进胶囊的 `lib/active-route.{js,d.ts}` 必须与 `src/active-route.ts` 逐行一致） |
 | `build-apk.yml` | 完整构建 workflow 模板（sync 后由 sync-upstream.yml 恢复到 .github/workflows/） |
 | `update-readme.py` | README 下载区块自动改写（[skip ci] 防循环） |
 
@@ -46,18 +46,18 @@ git 仓库（main 分支）
 |---|---|---|
 | `app/src/main/assets/dsh-phone.js` | **overrides**（上游文件） | 新增形态标记层：发布 `html[data-dsh-mobile-form]`、`[data-dsh-frame]`、`html[data-dsh-modal-open]`、`[data-dsh-settings-dialog]`、`html[data-dsh-settings-open]`；断点由 700 对齐上游 768px 阈值为 **767** |
 | `app/src/main/assets/dsh-phone.css` | **overrides**（上游文件） | 断点同步 767；文件头加分块地图；`[data-dsh-frame]`/`[data-shortcut-modal="settings"]` 与 hash 并列作兜底 |
-| `app/src/main/assets/ui-anchors.json` | files | 52 个上游 hash 的语义/归属映射表（隐式依赖显式化）+ `knownDead` 已失效登记 |
-| `app/src/main/res/values/ 与 values-night/ 下成对的 ds_colors.xml`、`values/dimens.xml` | files | 原生壳面语义色（双态）与 8pt 网格尺寸 token。⚠️ **当前仅定义、未被 Kotlin 消费**（`MainActivity.kt` 硬编码色仍在原处） |
+| `app/src/main/assets/ui-anchors.json` | files | 53 个上游 hash 的语义/归属映射表（隐式依赖显式化）+ `knownDead` 已失效登记（5 条） |
+| `app/src/main/res/values/ 与 values-night/ 下成对的 ds_colors.xml`、`values/dimens.xml` | files | 原生壳面语义色（双态）与 8pt 网格尺寸 token。⚠️ 已被 `MainActivity.kt` 消费（`R.color.ds_bg` / `ds_ok` / `ds_accent`） |
 | `scripts/check-ui-anchors.mjs`、`scripts/ui-anchor-scan.mjs` | files | 锚点门禁与哈希扫描器 |
-| `scripts/ui-tests/*.mjs` | files | 标记层行为测试（16 例）+ 门禁判别力测试（16 例） |
+| `scripts/ui-tests/*.mjs` | files | 标记层行为测试（`marker-layer.test.mjs` **32 例**）+ 门禁判别力测试（`check-ui-anchors.test.mjs` **30 例**） |
 
 **门禁两层**（`apply.sh` 与 `typecheck.yml` 都跑离线层）：
 
 ```sh
 node scripts/check-ui-anchors.mjs                      # 离线：CSS 引用的 hash 必须全部登记
 node scripts/check-ui-anchors.mjs --tree <dsh树根>      # 在线：额外校验 hash 在上游真实存在
-node scripts/ui-tests/marker-layer.test.mjs            # 标记层行为（12 例）
-node scripts/ui-tests/check-ui-anchors.test.mjs        # 门禁判别力反证（16 例）
+node scripts/ui-tests/marker-layer.test.mjs            # 标记层行为（32 例）
+node scripts/ui-tests/check-ui-anchors.test.mjs        # 门禁判别力反证（30 例）
 ```
 
 **自检必须锚代码形态，不能锚裸字符串**（2026-10-12 实测踩到）：本层 JS 的文件头
@@ -81,7 +81,7 @@ order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-pe
 解析失败，且失败形态是「组件静默不渲染」而非报错。实测 0.2.1-alpha.1 含 9 项，
 故组件可写成真 React 函数组件（`useState`/`useEffect`）。
 
-### UI 层工具清单（11 个脚本 / 15 个测试套件）
+### UI 层工具清单（`scripts/ui-*.mjs` **17 个** = 下表 **10 个** + 7 个维护/验收期工具：`ui-live-verify` / `ui-verify-installed` / `ui-verify-night-resources` / `ui-verify-preview-equivalence` / `ui-audit-objectives` / `ui-baseline-merge` / `ui-native-token-plan`。另有 `check-plugin-peers.mjs`、`check-capsule-artifacts.mjs`。`ui-tests/` 套件 **19 个**）
 
 | 脚本 | 作用 | 离线可跑 |
 |---|---|---|
@@ -97,7 +97,7 @@ order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-pe
 | `ui-module-seed.mjs` | 客户端静态模块表契约（react 等是否可用） | 需引擎树 |
 | `ui-semantic-anchors.mjs` | **信息性**：列出仍裸用 hash、但上游有稳定语义属性的位置 | 需引擎树 |
 
-`scripts/ui-tests/` 下 15 个套件（**265 例**）与之配套，每个都有判别力自证；
+`scripts/ui-tests/` 下 **19 个**套件（2026-10-15 本地实测合计 **337 例**，0 失败）与之配套，每个都有判别力自证；
 其中 `slot-chain-e2e.test.mjs` 用**真实 renderer + 真实 SlotCore + 真 React**
 串起「加载 → 建槽 → 注册 → 查出 → 渲染」完整链路。
 
@@ -119,9 +119,11 @@ order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-pe
 - 上游**没改**被覆盖的文件：无事发生，胶囊照常。
 - 上游**改了**其中某个文件：`overrides` 的旧基线会**静默覆盖**掉上游新改动
   （tsc/测试仍会过——这正是 #15「zcode 增强丢失」事故的形态）。
-  ⇒ **每次 sync 后必做基线漂移检查**：51 个 override 逐个与上游同路径比对
-（⚠️ 既有脚本 `.scratch/port-gitee/drift-check*.mjs` 只扫 `overrides/vendor/`，
-**不含 UI 层那 2 个** —— 上游若改了 `app/src/main/assets/dsh-phone.{js,css}`，
+  ⇒ **每次 sync 后必做基线漂移检查**：**130 个** override 逐个与上游同路径比对
+（⚠️ 既有脚本 `.scratch/port-gitee/drift-check*.mjs` 只扫 `overrides/vendor/`（76 个），
+**不含壳层那 4 个** —— `app/src/main/assets/dsh-phone.{js,css}`、
+`app/src/main/java/com/dshphone/MainActivity.kt`、`app/src/main/AndroidManifest.xml`；
+上游若改了它们，
 需手工比对 jwoo 上游同路径文件，基线见方案 §4 与本源文件头部注释），
   差异应全部为我方有意改动（脚本范例 `.scratch/port-gitee/drift-check.mjs`）。
   有漂移时按新版上游重定基线：**不要用 `patch` 命令**（toybox 对多 hunk 上下文
