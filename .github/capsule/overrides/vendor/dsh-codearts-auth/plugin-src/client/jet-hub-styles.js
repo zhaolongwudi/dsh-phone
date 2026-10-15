@@ -115,11 +115,16 @@ const STYLES = `
 
 /* 拖拽排序 */
 /* 抓取柄：独立的小区域，避免与卡片内的按钮/文本选择冲突 */
-.dim-jh-dragHandle { flex: none; width: 16px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: grab; color: var(--dsw-alias-label-tertiary, #9aa0a6); font-size: 12px; line-height: 1; letter-spacing: -1px; user-select: none; border-radius: 4px; }
+/* ⚠️ Issue F-16：touch-action: none 是**触屏拖拽能工作的前提** —— 没有它，
+   浏览器会把手指在柄上的纵向移动当成页面滚动，指针事件随即收到 pointercancel，
+   指针拖拽（onPointerDown/Move/Up）一次都不会走完。旁证：同仓库
+   .dim-jh-providerDragHandle 早就有这一行（provider 开关弹窗的拖拽在触屏上可用），
+   而账号卡片的柄只挂了类名 .dim-jh-dragHandle ⇒ 手机上「拖不动」而界面仍在提示可拖。 */
+.dim-jh-dragHandle { flex: none; width: 16px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: grab; color: var(--dsw-alias-label-tertiary, #9aa0a6); font-size: 12px; line-height: 1; letter-spacing: -1px; user-select: none; border-radius: 4px; touch-action: none; }
 .dim-jh-dragHandle:hover { color: var(--dsw-alias-label-secondary, #5f6672); background: rgb(31 35 41 / 5%); }
 .dim-jh-dragHandle:active { cursor: grabbing; }
 .dim-jh-providerDragHandle { touch-action: none; }
-@media (pointer: coarse) { .dim-jh-providerDragHandle { min-width: 32px; min-height: 40px; } }
+@media (pointer: coarse) { .dim-jh-providerDragHandle { min-width: 32px; min-height: 40px; } .dim-jh-dragHandle { min-width: 32px; min-height: 40px; } }
 /* 正在被拖动的卡片：淡出以表明它已"拿起" */
 .dim-jh-accountCard[data-dragging="true"] { opacity: 0.4; border-style: dashed; }
 /* 拖拽悬停的目标位置：插入线。上方=插到该卡片之前，下方=之后。 */
@@ -217,16 +222,22 @@ const STYLES = `
 /* 复制失败时把链接变成一次点击全选，用户能直接 Ctrl+C。 */
 .dim-jh-loginLinkRow[data-copy-state="failed"] .dim-jh-loginLink { user-select: all; }
 
-/* 登录弹窗 */
-.dim-jh-loginOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.dim-jh-loginDialog { background: var(--dsw-alias-bg-layer-1, #fff); border-radius: 12px; padding: 24px; min-width: 320px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
-.dim-jh-loginDialog h3 { margin: 0 0 8px; font-size: 16px; }
-.dim-jh-loginDialog p { font-size: 13px; color: var(--dsw-alias-label-secondary, #555); margin: 0 0 16px; }
-.dim-jh-loginActions { display: flex; gap: 8px; justify-content: flex-end; }
+/* ⚠️ Issue F-69：这里原先是一整块「登录弹窗」样式 —— .dim-jh-loginOverlay /
+   .dim-jh-loginDialog（外加它的 h3 与 p 两条）/ .dim-jh-loginActions。
+   客户端源码里**一个消费者都没有**：全仓库 className 零命中，已发布的
+   lib/client/jet-hub.js 构建产物里也只剩这几条规则自身 ⇒ 属死 CSS
+   （下面 modalOverlay 那段注释是唯一提到旧类名的地方，已改为不写类名）。
+   其中 .dim-jh-loginDialog 的 min-width: 320px 既没有 box-sizing: border-box
+   也没有 max-width，在 360px 视口下会横向溢出 —— 既然无人使用，**删除**比
+   补属性更对（与页头 .dim-jh-brand 那次的处置同口径：留在样式表里的无引用规则
+   没有任何价值，只会在下次重构时被误当成生效样式）。
+   ⚠️ 将来若真的要重建登录弹窗，不要照抄上面那组值：min-width 必须配
+   box-sizing: border-box 与 max-width: calc(100vw - 24px)。 */
 
 /* ── 模型列表弹窗（「显示列表」） ── */
 /* 复用登录弹窗的遮罩模式：fixed 覆盖全屏，z-index 高于设置页内容。
-   3000 高于 .dim-jh-loginOverlay 的 1000，保证两个弹窗同时存在时模型列表在上。 */
+   3000 高于登录弹窗遮罩的 1000（那组规则已按 Issue F-69 删除，此处只留数值关系
+   作历史依据），保证两个弹窗同时存在时模型列表在上。 */
 .dim-jh-modalOverlay { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,0.32); }
 /* 模型列表弹窗：**顶部锚定**而非垂直居中。
    ⚠️ 这是修真实缺陷（用户报障「输入文字后整个弹框的位置会发生改变，有点突兀」）：
@@ -918,6 +929,19 @@ const STYLES = `
  * 靠**源顺序**决定胜负 —— 一旦被排到前面，窄屏下 display:none 会被
  * 后面的 display:flex 覆盖，文字重新出现并挤压模型选择器（静默回归）。 */
 @media (max-width: 720px) { .dim-jh-badgeText, .dim-jh-badgeBtn > svg, .dim-jh-badgeBtn > .dim-jh-badgeChevron { display: none; } .dim-jh-badgeBtn { max-width: none; padding: 2px 6px; } }
+/* ⚠️ Issue F-48：上面那条断点把拥挤判据挂在**视口宽度**上，而 composer 的真实可用
+ * 宽度 = 视口 − 侧栏（该限制上面那段注释已自承）。手机**横屏**时视口往往 >720px，
+ * 于是落进「不收敛」的一侧：216px 徽标与模型选择器在同一行争宽，正是上面注释描述的
+ * 「模型选择器图标被挤没」形态。
+ * 严格解是容器查询（容器 = composer 行），但 @container 要 Chrome 105+，而本层目标
+ * 内核下界由 files/scripts/ui-compat-floor.mjs 定为 **Chrome 97**（该文件 FEATURES
+ * 表里 @container 标着 since:105）⇒ 容器查询在本层不可用。
+ * 故取「粗指针 + 横屏 + 矮视口」作 composer 拥挤的等价判据：粗指针=触屏设备、
+ * 横屏+max-height 500px=手机（平板横屏通常 ≥700px 高，不会被误伤）。
+ * ⚠️ 与 app 层 dsh-phone.css 的 F-15 规则的分工：视口 ≤767px 时 app 层用 !important
+ * 强制显示读数（那是 F-15 的诉求：手机上必须看得到读数，宽度由 max-width 收口）；
+ * 本条只在 >767px（app 层媒体查询不生效）的横屏手机上接管。 */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 500px) { .dim-jh-badgeText, .dim-jh-badgeBtn > svg, .dim-jh-badgeBtn > .dim-jh-badgeChevron { display: none; } .dim-jh-badgeBtn { max-width: none; padding: 2px 6px; } }
 .dim-jh-badgeDot { width: 5px; height: 5px; flex: none; border-radius: 999px; background: var(--dsw-alias-state-success-primary); }
 .dim-jh-badgeDot[data-tone="warn"] { background: var(--dsw-alias-state-warn-primary); }
 .dim-jh-badgeDot[data-tone="error"] { background: var(--dsw-alias-state-error-primary); }
@@ -1102,6 +1126,27 @@ button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { c
 .dim-jh-routePanelRows { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; }
 .dim-jh-routePanelRows dt { color: var(--dsw-alias-label-tertiary); }
 .dim-jh-routePanelRows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); }
+
+/* ⚠️ Issue F-46：本插件自有的小控件在触屏上远低于可点尺寸下限 ——
+   刷新键与自动签到灯 20×20、状态文字的关闭键 14×14、额度翻页箭头 24×24、
+   开关 34×20、纯图标按钮 min-width 26。app 层 dsh-phone.css 只把 .dim-jh-btn
+   提到 36px，这些类一个都没覆盖。
+   ⚠️ 为什么放在**插件侧**而不是 app 层：插件样式是运行时注入 head 的，**晚于**
+   app 层的 link ⇒ 同特异性下插件胜出；app 层要压过它得逐个 !important，
+   且每加一个小控件都要回去补一条。按 pointer:coarse 在插件侧放大是一次性收口
+   （与上面 .dim-jh-providerDragHandle 同款做法）。
+   ⚠️ 取值依据：badge 弹窗头部一行要放下 状态点 + 渠道名 + 时间 + 两枚按钮，
+   两枚按钮给到 44px 会把渠道名挤没，故取 32px（已高于 WCAG 2.5.8 的 24px 下限）；
+   额度翻页箭头 / 开关 / 图标按钮所在行空间充足，直接给 36~44px。 */
+@media (pointer: coarse) {
+  .dim-jh-badgeRefresh, .dim-jh-badgeAuto { width: 32px; height: 32px; }
+  .dim-jh-badgeAutoClose { width: 26px; height: 26px; }
+  .dim-jh-quotaArrow { width: 36px; height: 36px; }
+  .dim-jh-switch { width: 44px; height: 26px; }
+  .dim-jh-switch::after { width: 22px; height: 22px; }
+  .dim-jh-switch:checked::after { transform: translateX(18px); }
+  .dim-jh-iconBtn { min-width: 36px; min-height: 36px; }
+}
 
 
 `
