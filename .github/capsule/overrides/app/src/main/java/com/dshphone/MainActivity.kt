@@ -458,8 +458,13 @@ class MainActivity : Activity() {
      */
     private fun requestNotificationPermissionIfNeeded() {
         if (android.os.Build.VERSION.SDK_INT < 33) return
-        val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-            == android.content.pm.PackageManager.PERMISSION_GRANTED
+        // ⚠️ `==` 不得放在行首：Kotlin 不把「以运算符起头的下一行」当作续行，
+        //    第 461 行 `val granted = checkSelfPermission(...)` 在此已语法完整 ⇒
+        //    下一行以 `==` 开头会被解析成一条新语句，报
+        //    `Syntax error: Expecting an element`（CI 实测：compileDebugKotlin 失败）。
+        //    Kotlin 官方风格也是把运算符留在上一行尾。
+        val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
         if (granted) return
         requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
     }
