@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -56,6 +56,13 @@ export interface OpenAiGatewayOptions {
    * 必须有真实 HTTP 往返才立得住。它不是面向用户的配置项，插件调用方不传。
    */
   maxBodyBytes?: number
+  /**
+   * 同时在处理中的请求上限；缺省 {@link MAX_INFLIGHT_REQUESTS}。
+   *
+   * 与 `maxBodyBytes` 同一理由（**可测**，Issue F-08）：默认值下要构造「第 5 个
+   * 并发请求」得同时挂住 4 条真实流，既慢又依赖时序；插件调用方不传。
+   */
+  maxInflight?: number
   home?: string
   env?: NodeJS.ProcessEnv
   logger?: GatewayLogger
@@ -89,6 +96,59 @@ export interface OpenAiGateway {
  * —— `tests/unit/openai-gateway-server.spec.ts` 有一条纯算术用例锁住这个关系。
  */
 export const BODY_LIMIT = 300 * 1024 * 1024
+
+/**
+ * **手机侧**请求体上限（Issue F-08）。
+ *
+ * `BODY_LIMIT` 是桌面口径：它由「单条消息允许 200 MiB 图片」反推，而请求体在
+ * 本文件里**至少被复制四份**（`chunks` 数组 → `Buffer.concat` → `toString('utf8')`
+ * 字符串 → `JSON.parse` 的对象图）⇒ 300 MiB 的 body 对应 1 GiB 量级的瞬时峰值。
+ * 手机上前台 Node 进程被 OOM-kill **等于全部会话丢失**，代价与「一张超大图片
+ * 走不通」完全不对称。
+ *
+ * 取 64 MiB 的依据：① 四份副本约 256 MiB 峰值，留得出余量给模型目录与会话；
+ * ② 纯文本历史远小于此（Codex 全量回传实测在 MiB 级）；③ 需要更大的部署仍可用
+ * `DSH_OPENAI_GATEWAY_MAX_BODY_BYTES` 显式放开 —— 收敛的是**缺省值**，不是能力。
+ */
+export const ANDROID_BODY_LIMIT = 64 * 1024 * 1024
+
+/**
+ * 同时在处理中的请求上限（Issue F-08）。
+ *
+ * 原实现唯一的「并发控制」是 `active` 这个 AbortController 集合 —— 它能取消，
+ * **不能拒收**。而每个请求都持有整份 body 的若干副本 ⇒ 上游（Codex 等）并发
+ * 发几轮就足以在手机上把堆吃光。超过即回 429（可重试语义），而不是任其排队。
+ */
+export const MAX_INFLIGHT_REQUESTS = 4
+
+/** 覆盖请求体上限的环境变量（缺省见 {@link ANDROID_BODY_LIMIT} 的说明）。 */
+const BODY_LIMIT_ENV = 'DSH_OPENAI_GATEWAY_MAX_BODY_BYTES'
+
+/** 覆盖并发上限的环境变量。 */
+const MAX_INFLIGHT_ENV = 'DSH_OPENAI_GATEWAY_MAX_INFLIGHT'
+
+/**
+ * 解析正整数环境变量：非数字/0/负数一律视为**未配置**（回落缺省值）。
+ *
+ * ⚠️ 不做 `Number(x) || fallback` 式的宽松解析：`'0'` 与 `'abc'` 都会被吞成
+ * 缺省值本身并**静默生效**，用户以为改小了、实际没改 —— 与 `resolveGatewayConfig`
+ * 的 fail-closed 口径一致（宁可按缺省值跑，也不接受一个含义不明的配置）。
+ */
+function readPositiveIntEnv(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const raw = env[name]
+  if (typeof raw !== 'string' || raw.trim().length === 0) return undefined
+  const value = Number(raw.trim())
+  if (!Number.isSafeInteger(value) || value <= 0) return undefined
+  return value
+}
+
+/** 本进程该用的请求体上限（显式选项 > 环境变量 > 平台缺省）。 */
+function resolveBodyLimit(env: NodeJS.ProcessEnv, override: number | undefined): number {
+  if (override !== undefined) return override
+  const configured = readPositiveIntEnv(env, BODY_LIMIT_ENV)
+  if (configured !== undefined) return configured
+  return env.DSH_PHONE_ANDROID === '1' || process.platform === 'android' ? ANDROID_BODY_LIMIT : BODY_LIMIT
+}
 
 const defaultLogger: GatewayLogger = {
   info: (message) => console.info(message),
@@ -145,7 +205,13 @@ function readJson(request: IncomingMessage, signal: AbortSignal, limit: number):
     request.on('end', () => {
       signal.removeEventListener('abort', abort)
       try {
-        const value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+        // ⚠️ 先 concat 再**立刻放开** `chunks`（Issue F-08）：数组里每片都是一份
+        //    真实副本，而 `JSON.parse` 还要再分配一整棵对象图 —— 留着数组等于让
+        //    峰值多挂一份 body（300 MiB 口径下就是白白多 300 MiB）。放开后各片
+        //    可被回收，峰值从「4 份」降到「3 份」。
+        const raw = Buffer.concat(chunks)
+        chunks.length = 0
+        const value = JSON.parse(raw.toString('utf8')) as unknown
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('body must be an object')
         resolve(value as OpenAiChatRequest)
       } catch {
@@ -155,9 +221,23 @@ function readJson(request: IncomingMessage, signal: AbortSignal, limit: number):
   })
 }
 
+/**
+ * 校验 `Authorization` 头。
+ *
+ * ⚠️ **必须用常量时间比较**（Issue F-58）。原实现是
+ * ``value === `Bearer ${key}` `` —— `===` 在**首个不同字节**处短路，比较耗时随
+ * 「猜对的前缀长度」单调变化，同机任意进程都能计时观测。本机的 key 是
+ * 127.0.0.1 上唯一的一道门（回环端口对同机所有进程开放），逐字节爆破在理论上可行。
+ *
+ * 长度不同直接拒绝**不泄漏额外信息**：key 由 `loadOrCreateApiKey` 生成，长度固定。
+ */
 function authorized(request: IncomingMessage, key: string): boolean {
   const value = request.headers.authorization
-  return typeof value === 'string' && value === `Bearer ${key}`
+  if (typeof value !== 'string') return false
+  const expected = Buffer.from(`Bearer ${key}`)
+  const actual = Buffer.from(value)
+  if (actual.length !== expected.length) return false
+  return timingSafeEqual(actual, expected)
 }
 
 function getHome(options: OpenAiGatewayOptions): string {
@@ -171,7 +251,9 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): OpenAiGatewa
   // 读到它，用户才能配置外部客户端。
   const apiKey = loadOrCreateApiKey(getHome(options), env)
   const key = apiKey.value
-  const bodyLimit = options.maxBodyBytes ?? BODY_LIMIT
+  const bodyLimit = resolveBodyLimit(env, options.maxBodyBytes)
+  // ⚠️ 并发上限（Issue F-08）：`active` 只能取消、不能拒收，故必须在入口显式拒。
+  const maxInflight = options.maxInflight ?? readPositiveIntEnv(env, MAX_INFLIGHT_ENV) ?? MAX_INFLIGHT_REQUESTS
   const logger = options.logger ?? defaultLogger
   let server: Server | undefined
   let boundPort = config.port
@@ -337,6 +419,36 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): OpenAiGatewa
   }
 
   /**
+   * 写一个 SSE 事件，**必要时等 `drain`**（Issue F-26）。
+   *
+   * ## 为什么必须等
+   *
+   * `response.write()` 在 socket 缓冲区写满时返回 `false`，但**内容仍留在
+   * Node 的用户态缓冲里**。原实现忽略返回值、继续 `for await` 拉上游：
+   * 慢客户端（手机弱网、外部客户端读得慢）会让上游产出的每个事件都堆在
+   * 进程内存里，且**上游被拉得比客户端消费得快**——一次长回答足够把堆撑起来。
+   * 手机上这与 F-08 同属「OOM 面」，且进程一死全部会话一起丢。
+   *
+   * ⚠️ 必须同时监听 `close` / `error`：客户端断开时若只等 `drain`，这个
+   * Promise **永不 resolve**，请求会一直挂在 `active` 里直到进程退出
+   *（`close` 已在 `withRequest` 里 abort，但那个 signal 管不到这里）。
+   */
+  const writeSseEvent = async (response: ServerResponse, event: string): Promise<void> => {
+    if (response.write(event)) return
+    await new Promise<void>((resolve) => {
+      const finish = (): void => {
+        response.off('drain', finish)
+        response.off('close', finish)
+        response.off('error', finish)
+        resolve()
+      }
+      response.once('drain', finish)
+      response.once('close', finish)
+      response.once('error', finish)
+    })
+  }
+
+  /**
    * 档位被「翻译」或「丢弃」时记一条日志。
    *
    * ⚠️ 两种情况必须分开记，且**级别不同**：
@@ -387,7 +499,9 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): OpenAiGatewa
         writeSseHead(response)
         for await (const event of toOpenAiSse(stream, undefined, fullId, makeSuggestion(fullId))) {
           if (signal.aborted || response.destroyed) break
-          response.write(event)
+          // ⚠️ 等背压（Issue F-26）：忽略 write 的返回值会让慢客户端把整个
+          //    上游响应对进进程内存。
+          await writeSseEvent(response, event)
         }
         if (!response.writableEnded) response.end()
       } else {
@@ -439,7 +553,8 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): OpenAiGatewa
         writeSseHead(response)
         for await (const event of toResponsesSse(stream, responseId, fullId, body, makeSuggestion(fullId))) {
           if (signal.aborted || response.destroyed) break
-          response.write(event)
+          // ⚠️ 与 `/v1/chat/completions` 同一条背压闸（Issue F-26）。
+          await writeSseEvent(response, event)
         }
         if (!response.writableEnded) response.end()
       } else {
@@ -477,6 +592,25 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): OpenAiGatewa
     if ((path === '/v1/chat/completions' || path === '/v1/responses') && request.method === 'POST') {
       if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
         jsonResponse(response, 415, { error: { message: 'Content-Type must be application/json', type: 'invalid_request_error', code: 'invalid_content_type' } })
+        return
+      }
+      /**
+       * ⚠️ **并发闸**（Issue F-08）。
+       *
+       * `active` 里是**已在处理中**的请求（`withRequest` 在函数体首行同步登记，
+       * 故这里看到的一定是最新值）—— 每个都持有整份 body 的若干副本。
+       * 满了就回 **429**（`rate_limit_error`，OpenAI 客户端按可重试退避处理），
+       * 而不是让它排队：排队的代价是把内存峰值乘以并发数，而这正是手机上
+       * 会把进程直接打死的那个方向。
+       */
+      if (active.size >= maxInflight) {
+        jsonResponse(response, 429, {
+          error: {
+            message: `网关同时处理的请求已达上限（${maxInflight}），请稍后重试`,
+            type: 'rate_limit_error',
+            code: 'too_many_concurrent_requests',
+          },
+        })
         return
       }
       void (path === '/v1/responses' ? handleResponses(request, response) : handleChat(request, response))
