@@ -173,7 +173,16 @@ patch('app/src/main/java/com/dshphone/RecoveryManager.kt',
   '"dsh-providers-hub", "dsh-phone-account"',
   'RecoveryManager 保护清单');
 
-// ④ 设备端**升级**迁移（老设备的 profile 里已是旧名，必须双向改）
+// ④ 受保护内置清单（peer/controlled-market/catalog.mjs 的 BUILTINS）：
+//    它经 protectedName() 被**活跃使用** —— 受控市场的「不能覆盖安装」
+//    （trials.mjs）、试装按钮 canTrial（index.mjs）、workflow-hub 的 guard 都看它。
+//    旧名不在新名上 ⇒ 核心插件失去保护、并会冒出「试装」按钮（可被社区版覆盖）。
+patch('peer/controlled-market/catalog.mjs',
+  "export const BUILTINS = new Set(['@zseven-w/dsh-noema', 'dsh-codearts-auth',",
+  "export const BUILTINS = new Set(['@zseven-w/dsh-noema', 'dsh-providers-hub',",
+  'peer 受保护内置清单');
+
+// ⑤ 设备端**升级**迁移（老设备的 profile 里已是旧名，必须双向改）
 patch('app/src/main/java/com/dshphone/NodeRunner.kt',
   [
     '            listOf("dsh-codearts-auth", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
@@ -205,6 +214,7 @@ for (const [file, needle, label] of [
   ['home-template/profiles/phone/package.json', '"dsh-providers-hub"', 'profile 模板'],
   ['app/src/main/java/com/dshphone/NodeRunner.kt', '"dsh-providers-hub"', 'NodeRunner.kt'],
   ['app/src/main/java/com/dshphone/RecoveryManager.kt', '"dsh-providers-hub"', 'RecoveryManager.kt'],
+  ['peer/controlled-market/catalog.mjs', 'dsh-providers-hub', 'peer BUILTINS'],
 ]) {
   checked++;
   if (!fs.readFileSync(file, 'utf8').includes(needle)) {
