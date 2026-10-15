@@ -186,7 +186,23 @@ jobs:
       # 这正是本项目「防静默失效」的既定纪律：机制可以失效，但失效必须响亮。
       - name: 门禁：产物必须不是 debuggable
         run: |
-          BADGING=$(aapt dump badging app/build/outputs/apk/debug/app-debug.apk)
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          # ⚠️ `aapt` **不在 runner 的 PATH 上**（实测 2026-10-15：本步直接
+          #    `aapt: command not found` / exit 127 ⇒ 门禁假红，产物其实没被判定）。
+          #    SDK 把 aapt 放在 `$ANDROID_HOME/build-tools/<ver>/` 下，故用绝对路径定位；
+          #    并兼容新版 build-tools 只随附 `aapt2`（其 `dump badging` 输出格式兼容）的情形。
+          AAPT="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$AAPT" ] || [ ! -x "$AAPT" ]; then
+            AAPT="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          # 判据缺失 ≠ 通过：本门禁是发布前唯一防线，两个工具都找不到就按失败处理。
+          if [ -z "$AAPT" ] || [ ! -x "$AAPT" ]; then
+            echo "::error::找不到 aapt / aapt2（$ANDROID_HOME/build-tools/*/）—— debuggable 门禁无法判定，按失败处理。"
+            ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null || true
+            exit 1
+          fi
+          echo "门禁用工具：$AAPT"
+          BADGING="$("$AAPT" dump badging "$APK")"
           echo "$BADGING" | grep -E '^package:|^application-'
           if echo "$BADGING" | grep -q '^application-debuggable'; then
             echo "::error::发布产物是 debuggable 包（Issue F-01 回归）：run-as / adb pull 可读应用私有目录，WebView 远程调试可读页面内 Cookie（= 管理员凭据）。"
