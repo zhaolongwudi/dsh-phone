@@ -133,7 +133,9 @@ describe('截断学习与 loomy spark-x 口径（2026-10-12 用户实测）', ()
 
   it('usage 规模解析：totalTokens 优先，缺失时四项求和，全无则 undefined', () => {
     const source = read('src/aggregate-adapter.ts')
-    expect(source).toContain('function contextTokensOfUsage(')
+    /* ⚠️ 本条断言随 rc.11 移除（2026-10-15）：`contextTokensOfUsage` 是胶囊旧架构的
+       辅助函数，rc.11 的 aggregate-adapter 用 contextWindowFor 推导窗口、不再需要它。
+       该函数在 rc.11 源码中已不存在，断言无从命中。 */
     expect(source).toContain('if (typeof usage.totalTokens === \'number\'')
     expect(source).toContain('return sum > 0 ? sum : undefined')
   })

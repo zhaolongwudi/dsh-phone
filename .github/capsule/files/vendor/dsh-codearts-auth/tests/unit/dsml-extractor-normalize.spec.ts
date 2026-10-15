@@ -26,7 +26,10 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { DsmlContentExtractor } from '../../src/llm-adapter.js'
+/* ⚠️ 导入路径随 rc.11 更新（2026-10-15）：rc.11 把 DSML 解析整体搬到新模块
+   `src/dsml.ts`（独立成文件，不再内联在 llm-adapter.ts 里）。
+   本 spec 测的协议级归一行为不变 —— 只是类换了住处。 */
+import { DsmlContentExtractor } from '../../src/dsml.js'
 
 const BAR = '\uFF5C'
 const OPEN = `<${BAR}DSML${BAR}tool_calls>`

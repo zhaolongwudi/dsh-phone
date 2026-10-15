@@ -21,7 +21,11 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { detailFieldText, errorDetail } from '../../src/openai-compat.js'
+/* ⚠️ API 形态随 rc.11 更新（2026-10-15）：两个出口从「选项式」
+   `errorDetail(body, { forClassify: true })` 拆成了独立函数
+   `errorDetailForClassify(body)` —— 这本身是更好的设计（两个语义不同的
+   出口不该共用一个带布尔开关的函数）。断言语义不变。 */
+import { detailFieldText, errorDetail, errorDetailForClassify } from '../../src/openai-compat.js'
 
 describe('detailFieldText（唯一实现）', () => {
   it('① 字符串 detail 原样返回', () => {
@@ -83,14 +87,14 @@ describe('分类出口必须排除 detail 腿', () => {
   it('⑫ forClassify 时 detail 不进入分类输入', () => {
     const body = JSON.stringify({ message: 'bad request', detail: 'insufficient quota' })
     // 分类出口拿到的必须只是既有腿
-    expect(errorDetail(body, { forClassify: true })).toBe('bad request')
+    expect(errorDetailForClassify(body)).toBe('bad request')
   })
   it('⑬ forClassify 时超限措辞同样被排除', () => {
     const body = JSON.stringify({ message: 'bad request', detail: 'prompt is too long for this model' })
-    expect(errorDetail(body, { forClassify: true })).toBe('bad request')
+    expect(errorDetailForClassify(body)).toBe('bad request')
   })
   it('⑭ 展示出口与分类出口在无 detail 时逐字节相同', () => {
     const body = JSON.stringify({ error_code: 'E1001', error_msg: 'auth failed' })
-    expect(errorDetail(body)).toBe(errorDetail(body, { forClassify: true }))
+    expect(errorDetail(body)).toBe(errorDetailForClassify(body))
   })
 })

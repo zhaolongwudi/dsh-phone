@@ -144,7 +144,8 @@ describe('codearts 400 接线（源码文本断言）', () => {
   const source = readFileSync(resolve(here, '../..', 'src/llm-adapter.ts'), 'utf8')
 
   it('400 判据喂**完整报文**并复用共享判据（不再只喂 errorDetail）', () => {
-    expect(source).toContain("import { isContextOverflowBody } from './openai-compat.js'")
+    /* ⚠️ 改语义判据（2026-10-15，随 rc.11 同步）：只验证符号从共享层导入。 */
+    expect(source).toMatch(/import \{[^}]*\bisContextOverflowBody\b[^}]*\} from '\.\/openai-compat\.js'/)
     expect(source).toContain('if (isContextOverflowBody(body)) return CONTEXT_WINDOW_EXCEEDED_CODE')
     // 旧的漏判形态必须消失（它是本轮缺陷的判据）。
     expect(source).not.toContain('if (isContextWindowExceededError(detail)) return CONTEXT_WINDOW_EXCEEDED_CODE')

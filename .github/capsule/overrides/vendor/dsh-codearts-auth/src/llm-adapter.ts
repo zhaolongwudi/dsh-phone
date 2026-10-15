@@ -1,11 +1,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import {
-  attributionHeaders, CONTEXT_WINDOW_EXCEEDED_CODE, isContextWindowExceededError,
+  attributionHeaders, CONTEXT_WINDOW_EXCEEDED_CODE,
   isQuotaExceededError, LlmAdapter, LlmError,
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+// ⚠️ 手机版补（2026-10-15）：400 判据复用共享层实现（含网关措辞兜底，见 httpErrorCode 的 400 分支）。
+import { isContextOverflowBody } from './openai-compat.js'
 import { AccountPool } from './account-pool.js'
 import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
@@ -824,7 +826,14 @@ function httpErrorCode(status: number, body: string): string {
   if (isQuotaExceededError(detail)) return CODEARTS_QUOTA_EXHAUSTED_CODE
   if (status === 429) return 'RATE_LIMIT'
   if (status === 400) {
-    if (isContextWindowExceededError(detail)) return CONTEXT_WINDOW_EXCEEDED_CODE
+    /* ⚠️ 判据必须喂**完整报文**并复用**共享判据**（手机版补，2026-10-15）：
+       只喂 `detail`（errorDetailForClassify 的结果）会漏掉 `extError.code`
+       与网关措辞（`prompt is too long: N tokens > M maximum`），
+       而判错码的代价不对称 —— `INVALID_REQUEST` **不触发** DSH 的压缩恢复链
+       （`dsh-compaction-basic` 的 listener 第一行就是
+       `if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE) return next()`）
+       ⇒ 长会话越过窗口后**每轮报废**。两处必须同源（本仓库红线）。 */
+    if (isContextOverflowBody(body)) return CONTEXT_WINDOW_EXCEEDED_CODE
     return 'INVALID_REQUEST'
   }
   if (status >= 500) return 'SERVER'
