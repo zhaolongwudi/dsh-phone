@@ -284,8 +284,12 @@ node scripts/ui-tests/check-plugin-contract.test.mjs
 #      生成的），而纯净构建（DISABLED）直接用仓库预编译 lib ⇒ 源码改了而产物没同步时，
 #      设备上跑的还是旧代码，且**没有任何报错**。本步用设备树 typescript 现场 emit
 #      再逐行比对。
-#      ⚠️ 需要 typescript：CI 上由 vendor 的 devDeps 提供；缺失时脚本会明确说明并
-#      非零退出（这是「判据缺失」，不是「通过」）。
+#      ⚠️ 需要 typescript：本机由设备树提供；**CI 在本阶段拿不到**（vendor 的
+#      devDependencies 要到后面 `rebuild-vendor.sh` 才安装，而本步在它之前跑）。
+#      故脚本在 CI 且无 TS 时打印「⏭ 跳过」并 exit 0，由 build-apk.yml 的
+#      「门禁：胶囊产物与源码一致（F-68）」步骤在 vendor 依赖就绪后带
+#      `CAPSULE_ARTIFACT_GATE_REQUIRED=1` **补跑**；那一步缺 TS 是硬失败，
+#      不存在「两边都跳过」的静默失效。本机缺 TS 仍是硬失败（判据缺失 ≠ 通过）。
 node scripts/check-capsule-artifacts.mjs
 
 # 6.5) UI 图层健康检查：拦「代码与样式对不上且不报错」的三类腐化 ——

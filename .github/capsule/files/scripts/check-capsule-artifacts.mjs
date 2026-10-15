@@ -202,8 +202,26 @@ if (first === null) {
 const packageRoot = dirname(dirname(first)) // …/dsh-codearts-auth
 const tsHit = resolveTypeScript(packageRoot)
 if (tsHit === null) {
+  // ⚠️ **CI 在本阶段必然拿不到 typescript**：vendor 的 devDependencies 要到后面的
+  //    「编译 vendor 插件（rebuild-vendor.sh）」那一步才 `pnpm install`，而 apply.sh
+  //    跑在它之前（实测：2026-10-15 的 CI 就是在这一步以「找不到 typescript」红的）。
+  //    故 CI 上此处按**延迟执行**处理，由 build-apk.yml 的
+  //    「门禁：胶囊产物与源码一致（F-68）」步骤在 vendor 依赖就绪后补跑。
+  //    防「两边都跳过」的静默失效：补跑那步带 `CAPSULE_ARTIFACT_GATE_REQUIRED=1`，
+  //    在它那里再找不到 typescript 就是**硬失败**（不是跳过）。
+  //    本机（设备树有 TS）与本地开发完全不受影响：仍按下面的硬失败处理。
+  if (process.env.GITHUB_ACTIONS === 'true' && process.env.CAPSULE_ARTIFACT_GATE_REQUIRED !== '1') {
+    console.log('  ⏭ 跳过：CI 此处尚无 typescript（vendor 依赖在 rebuild-vendor.sh 才安装）')
+    console.log('      本门禁由 build-apk.yml 的「门禁：胶囊产物与源码一致（F-68）」补跑')
+    process.exit(0)
+  }
   console.log('  ✗ 找不到 typescript（试过 DSH_TS / DSH_TREE / 设备树 / 包的 node_modules）')
-  console.log('      用法：export PATH=/data/data/com.dshphone/files/bin:$PATH（设备树 TS 在 $DSH_TREE/node_modules/typescript）')
+  if (process.env.CAPSULE_ARTIFACT_GATE_REQUIRED === '1') {
+    console.log('      ⚠️ 本步是 CI 的**补跑步骤**（CAPSULE_ARTIFACT_GATE_REQUIRED=1）：缺 TS = 门禁没跑成，必须失败')
+    console.log('      检查 build-apk.yml 中 DSH_TS 是否指向 vendor/dsh-codearts-auth/node_modules/typescript')
+  } else {
+    console.log('      用法：export PATH=/data/data/com.dshphone/files/bin:$PATH（设备树 TS 在 $DSH_TREE/node_modules/typescript）')
+  }
   process.exit(1)
 }
 if (!QUIET) console.log(`  emit 用 typescript ${tsHit.ts.version}（${tsHit.path}）`)

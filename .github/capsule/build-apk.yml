@@ -146,6 +146,24 @@ jobs:
       - name: 编译 vendor 插件（胶囊接线重建 lib）
         run: bash .github/capsule/rebuild-vendor.sh
 
+      # Issue F-68 的**补跑点**：apply.sh 里那条产物一致性门禁在 CI 上拿不到
+      # typescript（vendor devDependencies 在 rebuild-vendor.sh 才安装，而 apply.sh
+      # 跑在它之前），故它在 CI 上打印「跳过」，真正判定延迟到这里执行。
+      # 本步骤失败 = 胶囊里提交的 tsc 产物与源码漂移（纯净构建会用提交的 lib/，
+      # 于是设备上跑的是与源码不一致的代码，且没有任何报错）。
+      - name: 门禁：胶囊产物与源码一致（F-68）
+        env:
+          # 显式声明「本步必须真的跑」：缺 typescript 时脚本硬失败而不是跳过，
+          # 防「apply.sh 跳过 + 这里也跳过」的静默失效。
+          CAPSULE_ARTIFACT_GATE_REQUIRED: '1'
+          DSH_TS: ${{ github.workspace }}/vendor/dsh-codearts-auth/node_modules/typescript
+        run: |
+          if [ -f .github/capsule/DISABLED ]; then
+            echo "::warning::纯净构建（DISABLED）：rebuild-vendor.sh 刻意不装 vendor devDependencies，本门禁本次未执行 —— 请在本机跑 apply.sh 覆盖它（本机有设备树 typescript）。"
+            exit 0
+          fi
+          node .github/capsule/files/scripts/check-capsule-artifacts.mjs
+
       - name: 组装运行时资源
         run: |
           cd runtime
