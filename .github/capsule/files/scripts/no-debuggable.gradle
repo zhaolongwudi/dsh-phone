@@ -1,0 +1,35 @@
+// 胶囊独有（Issue F-01）：把对外分发的 debug 变体关掉 `android:debuggable`。
+//
+// ## 为什么用 init script 而不是覆盖 `app/build.gradle`
+// `app/build.gradle` 是**上游文件**。胶囊覆盖它的代价是整份冻结：上游日后给
+// buildTypes / packaging / 依赖表加任何一项，都会被这份覆盖**静默遮蔽**
+// （正是 F-03 记录的形态）。而本 issue 只需要改**一个属性**，故用 Gradle 官方的
+// `--init-script` 通道：它是**全新增文件**，不覆盖任何上游文件，也就不存在漂移。
+//
+// 用法（见 build-apk.yml 的「编译 APK」步骤）：
+//   ./gradlew :app:clean :app:assembleDebug --no-daemon -I .github/capsule/files/scripts/no-debuggable.gradle
+//
+// ## 为什么要关（Issue F-01）
+// README 对外分发的正是 `assembleDebug` 产物，于是正式分发包带着
+// `android:debuggable=true`：`run-as` / `adb pull` 可读应用私有目录
+// （node 运行树、会话 JSONL、账号凭据），WebView 远程调试还能读到页面内 Cookie
+// —— 而本机 Cookie 就是管理员凭据（见 MainActivity 的 Cookie 注入路径）。
+// debug 包另有性能与体积代价。
+//
+// ## ⚠️ 验证边界（如实登记）
+// 本仓库的自检无法在这台设备上跑 Gradle（无 Android SDK / 无网络），
+// 故「init script 是否真的生效」**没有被本机构建验证过**。为此 build-apk.yml 增设了
+// **构建后硬门禁**：用 `aapt dump badging` 检查产物，出现 `application-debuggable`
+// 即**构建失败并阻止发布**。门禁的意义正在于此——机制若失效，失败是**响亮**的，
+// 而不是把 debuggable 包发出去。
+//
+// ## ⚠️ 为什么连 `testCoverageEnabled` 一起关
+// AGP 在 `debug` 变体上默认可能附带测试覆盖率插桩（`testCoverageEnabled`），
+// 它同样是 debug-only 的调试面。这里显式关掉，保持「分发包无调试面」的语义一致。
+gradle.allprojects { proj ->
+    proj.plugins.withId('com.android.application') {
+        // ⚠️ 必须用 `proj.` 前缀：闭包的 delegate 是插件对象，不是 Project。
+        proj.android.buildTypes.debug.debuggable = false
+        proj.android.buildTypes.debug.testCoverageEnabled = false
+    }
+}
