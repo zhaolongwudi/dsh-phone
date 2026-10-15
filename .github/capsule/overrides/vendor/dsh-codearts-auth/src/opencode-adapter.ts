@@ -133,7 +133,19 @@ export async function loadOpencodeCatalog(
   } catch {
     entries = OPENCODE_FALLBACK_MODELS
   }
-  catalogCache.set(slot.id, { at: Date.now(), entries })
+  /**
+   * ⚠️ **顺手回收已过期的**其他槽条目（Issue F-61）。
+   *
+   * 本表此前只判 TTL、**从不删条目**：被删除的账号（或换掉的槽）留下的条目
+   * 会永久驻留，而每个条目挂着一整份目录数组。TTL 到期即无人再需要它
+   *（读取路径本来就是「过期就重新拉」），故在**写入这一处**按同一个 TTL 清扫。
+   * 迭代中 `delete` 在 Map 上是安全的（规范保证）。
+   */
+  const now = Date.now()
+  for (const [key, value] of catalogCache) {
+    if (key !== slot.id && now - value.at >= ttlMs) catalogCache.delete(key)
+  }
+  catalogCache.set(slot.id, { at: now, entries })
   return entries
 }
 
