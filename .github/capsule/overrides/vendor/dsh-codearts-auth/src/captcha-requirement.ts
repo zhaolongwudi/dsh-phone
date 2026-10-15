@@ -75,9 +75,35 @@ export function isCaptchaKnownRequired(key: string, now: number): boolean {
   return true
 }
 
+/**
+ * 本表的条目上限（Issue F-62）。
+ *
+ * 键是「账号 × 模型」，一个装了几十个账号、每个账号几十个模型的用户足以让
+ * 这张表长到几千条 —— 而**过期条目只有被查询到才会删**（上面的惰性回收），
+ * 没再被问到的账号/模型会一直留着。TTL 只有 2 分钟，故按容量兜底淘汰最旧的
+ * 一条，代价上限是「多白吃一次 3007」（该 key 的语义本来就是可丢的短时记忆）。
+ */
+const MAX_CAPTCHA_REQUIREMENT_ENTRIES = 512
+
 /** 记下「上游要验证」。 */
 export function noteCaptchaRequired(key: string, now: number, ttlMs: number = CAPTCHA_REQUIRED_TTL_MS): void {
+  /**
+   * ⚠️ 写入前**清扫已过期条目**（Issue F-62）：读取侧的惰性回收只覆盖
+   *「之后还被问到」的 key，而这张表的键是「账号 × 模型」—— 换号 / 换模型 /
+   * 删账号之后，旧 key 可能再也不会被查询，于是永远留在表里。
+   * 这里按**同一份过期判据**（`until <= now`）全表扫一遍：TTL 只有 2 分钟，
+   * 扫描成本 O(表大小)，而表大小由下面的容量兜底封顶。
+   */
+  for (const [existing, until] of requiredUntilMs) {
+    if (until <= now) requiredUntilMs.delete(existing)
+  }
   requiredUntilMs.set(key, now + ttlMs)
+  // 容量兜底：仍超限就按**插入序**淘汰最旧的一条（Map 保序）。
+  // 丢一条的代价上限是「该 key 多白吃一次 3007」，与「表无界增长」不可比。
+  if (requiredUntilMs.size > MAX_CAPTCHA_REQUIREMENT_ENTRIES) {
+    const oldest = requiredUntilMs.keys().next().value
+    if (oldest !== undefined) requiredUntilMs.delete(oldest)
+  }
 }
 
 /** 上游不要验证了：清掉记忆，回到「先探」。 */
