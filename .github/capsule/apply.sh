@@ -439,6 +439,21 @@ fi
 #   WebView 远程调试必须显式关闭（默认值随 debuggable 走，不能依赖默认）。
 grep -qF -e "setWebContentsDebuggingEnabled(false)" app/src/main/java/com/dshphone/MainActivity.kt
 #
+# —— F-68 产物一致性门禁的「补跑点」必须存在 ——
+#   该门禁在 apply.sh 里跑时 CI 还没有 typescript（vendor devDependencies 要到
+#   rebuild-vendor.sh 才装），故 CI 上它打印「⏭ 跳过」，真正的判定被**延迟**到
+#   workflow 的补跑步骤。⇒ 补跑步骤就是这道门禁在 CI 上的唯一执行点：
+#   一旦它被误删/被改名，CI 会**全绿地失去这道门禁**（本步只是普通调用，
+#   不带 REQUIRED，跳过不报错）。故这里把「补跑点存在」钉成构建期断言。
+#   跑在**胶囊模板**上（真相源）；运行期那份同 F-01，一致时才断言。
+grep -qF -e "CAPSULE_ARTIFACT_GATE_REQUIRED" .github/capsule/build-apk.yml
+grep -qF -e "check-capsule-artifacts.mjs" .github/capsule/build-apk.yml
+if [ -f .github/workflows/build-apk.yml ] \
+   && cmp -s .github/capsule/build-apk.yml .github/workflows/build-apk.yml; then
+  grep -qF -e "CAPSULE_ARTIFACT_GATE_REQUIRED" .github/workflows/build-apk.yml
+  grep -qF -e "check-capsule-artifacts.mjs" .github/workflows/build-apk.yml
+fi
+#
 # —— F-02 / F-17 破坏性操作确认按钮文案 + `alert()` 接管 ——
 #   肯定按钮不得再是「更新」；必须有 `onJsAlert`。
 ! grep -qF -e 'setPositiveButton("更新")' app/src/main/java/com/dshphone/MainActivity.kt

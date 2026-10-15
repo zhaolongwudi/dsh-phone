@@ -147,7 +147,15 @@ describe('聚合层接线（源码文本断言）', () => {
     expect(source).toContain("chunk.type === 'finish' && chunk.reason.kind === 'max-tokens'")
     expect(source).toContain('rememberContextWindowCeiling(')
     expect(source).toContain('const seen = contextTokensOfUsage(chunk.usage)')
-    expect(source).toContain('self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)')
+    // ⚠️ F-04 后，观测规模**按会话分桶**（`lastContextTokensBySession`）：原先那个
+    //    进程级 `self.lastContextTokens = Math.max(...)` 只增不减、且跨会话串味
+    //    （一个小会话会被别的大会话的峰值判成「装不下」）⇒ 已改为此形态。
+    //    断言同步改为新写法：请求内取最大落局部变量，落桶交给
+    //    `recordSessionContextTokens`（**覆盖**语义，压缩变小后能如实下降）。
+    expect(source).toContain('requestTokens = Math.max(requestTokens ?? 0, seen)')
+    expect(source).toContain('self.recordSessionContextTokens(sessionKey, requestTokens)')
+    // 反向：进程级只增峰值那个字段不得回来（F-04 的根因形态）。
+    expect(source).not.toContain('self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)')
     // ⚠️ 同样只记**候选键**（2026-10-12 修正）：虚拟模型那侧自本次修正起不再记学习值。
     expect(source).toContain('contextWindowKey(target.provider, target.realId), observed,')
     expect(source).not.toContain('const virtual = rememberContextWindowCeiling(')
