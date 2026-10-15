@@ -312,6 +312,9 @@ var SessionProjectionCache = class extends Service {
 			}, this.config.writeIntervalMs);
 		});
 		this.ctx.on("session/created", (session) => {
+			/* ⚠️ Issue F-63：同 id 被删除后重建时，旧 tombstone 会让 put() 永久短路该 id 的写入
+			   （该会话的投影缓存终身失效）。重建即撤销墓碑；删除窗口内的写入仍照旧被抑制。 */
+			this.deletedIds.delete(session.id);
 			this.flushSoft(session, "create");
 		});
 		this.ctx.on("session/disposed", (session) => {
