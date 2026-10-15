@@ -30,6 +30,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.PopupMenu
+import android.util.Log
 import org.json.JSONObject
 
 /**
@@ -40,6 +41,19 @@ import org.json.JSONObject
  * 授权回调打回 127.0.0.1，与 dsh 同机，天然可达。
  */
 class MainActivity : Activity() {
+    private companion object {
+        /** Logcat 标签（Issue F-27 的 asset 读取失败、F-29 的通知权限都要记日志）。 */
+        const val TAG = "DshMainActivity"
+
+        /** Android 13+ 的运行时通知权限请求码（Issue F-29）。 */
+        const val REQUEST_POST_NOTIFICATIONS = 2602
+
+        /** 旋转/重建时保存的「电脑模式」状态（Issue F-28）。 */
+        const val STATE_REMOTE_MODE = "dsh_remote_mode"
+        const val STATE_POCKET_URL = "dsh_pocket_url"
+        const val STATE_PAGE_URL = "dsh_page_url"
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var statusDot: TextView
     private lateinit var statusText: TextView
@@ -157,6 +171,23 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // ⚠️⚠️ **必须在任何 WebView 实例创建之前**（Issue F-01）——
+        // 故这两句刻意排在 `bypassVpn()` 与整个 UI 构造**之前**。
+        //
+        // ① 关闭 WebView 远程调试：本机 WebView 打开的是 `http://127.0.0.1:3080`，
+        //    而本文件把该源的 **Cookie 当本机服务凭据**使用 ⇒ 远程调试可用即等于
+        //    「物理接触 + adb 授权即可读走管理员凭据」。默认值随
+        //    `android:debuggable` 走，而分发包历史上正是 debug 变体
+        //    （见 build-apk.yml 的 `-I no-debuggable.gradle` 与
+        //    「门禁：产物必须不是 debuggable」两步）⇒ **不能依赖默认值**。
+        //
+        // ② Android 13+ 申请 `POST_NOTIFICATIONS`（Issue F-29）：本文件有 5 处
+        //    `startForegroundService(...)`，而 manifest 里虽已声明该权限、
+        //    **从未在运行期申请** ⇒ 前台服务通知被静默抑制，用户既看不到
+        //    「服务正在运行」，也无法从通知里停止服务。
+        //    声明缺失会在构建期报错；「声明了但没申请」则完全静默。
+        WebView.setWebContentsDebuggingEnabled(false)
+        requestNotificationPermissionIfNeeded()
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         if (android.os.Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         bypassVpn()
@@ -269,10 +300,28 @@ class MainActivity : Activity() {
                 override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
                     params: FileChooserParams): Boolean = chooseConfigFile(view, callback, params)
                 override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                    // ⚠️ 肯定按钮文案必须是「确定」（Issue F-02）。这里原先硬编码「更新」，
+                    // 于是删除账号的确认框（`确认删除此账号？关联的凭据也将被清除。`）在手机上
+                    // 显示成「更新 / 取消」—— 语义与操作**相反**，极易误确认不可逆的删除。
+                    // 桌面浏览器由系统渲染成「确定」，故该缺陷只在手机出现。
+                    // ⚠️ WebView 的 `onJsConfirm` 拿不到调用方上下文，无法按语义传文案，
+                    // 故统一用中性的「确定」（与登录 WebView 的既有口径一致）。
                     AlertDialog.Builder(this@MainActivity).setMessage(message)
-                        .setPositiveButton("更新") { _, _ -> result.confirm() }
+                        .setPositiveButton("确定") { _, _ -> result.confirm() }
                         .setNegativeButton("取消") { _, _ -> result.cancel() }
                         .setOnCancelListener { result.cancel() }.show()
+                    return true
+                }
+                // ⚠️ 必须接管 `alert()`（Issue F-17）：主 WebView 原先**只覆写 `onJsConfirm`**，
+                // 而 `jet-hub.js` 有 `alert('轮换失败：' + …)` 这类失败提示 ⇒ 手机上提示
+                // 完全不显示，用户看到的是「点了没反应」。同一文件里备份面板早已因
+                // 「沙箱里 `prompt()` 直接抛 not supported」改成应用内两步确认，`alert` 是漏网。
+                // ⚠️ 必须调 `result.confirm()` 收尾：否则 WebView 的 JS 回调悬挂，
+                // 后续脚本执行会被阻塞（`alert` 是同步阻塞式 API）。
+                override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                    AlertDialog.Builder(this@MainActivity).setMessage(message)
+                        .setPositiveButton("确定") { _, _ -> result.confirm() }
+                        .setOnCancelListener { result.confirm() }.show()
                     return true
                 }
                 override fun onCreateWindow(view: WebView, isDialog: Boolean,
@@ -401,7 +450,66 @@ class MainActivity : Activity() {
         handleChatGptReturn(intent)
     }
 
-    private fun switchPage(computer: Boolean, pocket: String? = null) {
+    /**
+     * Android 13+ 的运行时通知权限申请（Issue F-29）。
+     *
+     * ⚠️ 只在系统版本够、且**尚未授予**时申请一次；被拒不重试、不阻断任何功能
+     * （前台服务照常运行，只是通知不可见）。见 `onCreate` 处的完整说明。
+     */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
+    }
+
+    /**
+     * 配置变化（旋转 / 深色切换 / 字号密度变化）——**不再重建 Activity**（Issue F-28）。
+     *
+     * 修法分两半，缺一不可：
+     * - **manifest 侧**：`MainActivity` 加 `android:configChanges=…`
+     *   （见 `overrides/app/src/main/AndroidManifest.xml`）。没有它，本回调**根本不会被调用**，
+     *   Activity 会被销毁重建 ⇒ WebView 整页重载、`fileCallback`（网页 file input 的
+     *   回调）随旧 Activity 一起丢失、电脑模式被打回手机模式。
+     * - **代码侧**：本回调 + `onSaveInstanceState` / `onRestoreInstanceState`。
+     *   即便仍有重建路径（如进程被回收），模式与目标 URL 也能恢复。
+     *
+     * ⚠️ 这里**刻意不重新注入移动端样式**：`dsh-phone.js` 的 DOM 注入不是幂等的，
+     * 重复注入会产生重复节点。旋转时 WebView 本身不重载，已注入的样式与脚本
+     * 仍在生效，只需让系统栏/输入法内边距按新配置重算。
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 旋转后系统栏（尤其横屏的左右挖孔）与 IME 高度都会变，重新触发一次 inset 分发。
+        window.decorView.requestApplyInsets()
+        Log.i(TAG, "配置变化：orientation=${newConfig.orientation} uiMode=${newConfig.uiMode}")
+    }
+
+    /** 保存「电脑模式」状态与目标 URL（Issue F-28），供 Activity 重建后恢复。 */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_REMOTE_MODE, remoteMode)
+        pocketUrl?.let { outState.putString(STATE_POCKET_URL, it) }
+        // ⚠️ 只在 WebView 已初始化时读：本回调可能在 `onCreate` 早期（异常路径）被调用。
+        if (this::webView.isInitialized) webView.url?.let { outState.putString(STATE_PAGE_URL, it) }
+    }
+
+    /** 恢复「电脑模式」状态（Issue F-28）：`onCreate` 已按手机模式加载，这里改道到电脑模式。 */
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        if (!savedInstanceState.getBoolean(STATE_REMOTE_MODE, false)) return
+        val pocket = savedInstanceState.getString(STATE_POCKET_URL)
+        val page = savedInstanceState.getString(STATE_PAGE_URL)
+        // ⚠️ 复用 `switchPage`（它负责收尾弹窗导航回调、重置 remotePageReady 等全部状态），
+        // 不要自己再写一份切模式的逻辑 —— 那正是本仓库反复出静默漂移的形态。
+        // ⚠️ 目标 URL 必须**经参数传进去**：`switchPage` 内部是 `handler.post { … }`，
+        //    在它之后直接 `webView.loadUrl(page)` 会被那个 post **覆盖掉**（竞态）。
+        val target = page?.takeIf { PocketConnection.sameOrigin(it, pocket) }
+        switchPage(true, pocket, target)
+    }
+
+    private fun switchPage(computer: Boolean, pocket: String? = null, targetUrl: String? = null) {
         // Finish the popup navigation callback before destroying its WebView.
         handler.post {
             if (destroyed) return@post
@@ -415,7 +523,10 @@ class MainActivity : Activity() {
             webView.stopLoading()
             lastLoadedOk = computer
             if (computer && !showingLogs) bootOverlay.visibility = View.GONE
-            webView.loadUrl(if (computer) pocketUrl ?: "http://127.0.0.1:3081/" else DshService.localStartUrl())
+            // ⚠️ `targetUrl` 只在「Activity 重建后恢复原页面」时非空（Issue F-28）；
+            //    其余调用点保持旧行为逐字节不变。
+            webView.loadUrl(targetUrl
+                ?: if (computer) pocketUrl ?: "http://127.0.0.1:3081/" else DshService.localStartUrl())
         }
     }
 
@@ -434,10 +545,28 @@ class MainActivity : Activity() {
     }
 
     private fun installMobilePresentation(view: WebView) {
-        val css = assets.open("dsh-phone.css").bufferedReader().use { it.readText() }
-        val js = assets.open("dsh-phone.compat.js").bufferedReader().use { it.readText() } + "\n" +
-            assets.open("dsh-phone.js").bufferedReader().use { it.readText() }
-        view.evaluateJavascript("""
+        // ⚠️⚠️ **四个 asset 的读取必须包在 try/catch 里**（Issue F-27）。
+        // 这里原先是无保护的同步 `assets.open(...)`，任一文件缺失即抛
+        // `FileNotFoundException`，而调用点是 `onPageFinished` 回调 ⇒ **整页白屏且无提示**。
+        // 现状尤其危险：`dsh-phone.compat.js` 与 `dsh-phone.export.js` **不在胶囊内**
+        // （是上游文件），`apply.sh` 也没有对它们做 `test -f` 断言 ⇒ 上游一旦改名，
+        // 手机端表现就是「页面打不开」，而构建、类型检查、单测全绿。
+        // 构建期断言已同步补进 `apply.sh`；这里的 try/catch 是**运行期最后一道防线**：
+        // 失败时至少让主页面可用（丢的是移动端样式/导出能力，不是整个界面）。
+        val css = try {
+            assets.open("dsh-phone.css").bufferedReader().use { it.readText() }
+        } catch (error: Exception) {
+            Log.e(TAG, "移动端样式 dsh-phone.css 读取失败，跳过注入", error)
+            null
+        }
+        val js = try {
+            assets.open("dsh-phone.compat.js").bufferedReader().use { it.readText() } + "\n" +
+                assets.open("dsh-phone.js").bufferedReader().use { it.readText() }
+        } catch (error: Exception) {
+            Log.e(TAG, "移动端脚本读取失败，跳过注入", error)
+            null
+        }
+        if (css != null) view.evaluateJavascript("""
             (() => {
                 let style = document.getElementById('dsh-phone-presentation');
                 if (!style) {
@@ -447,14 +576,21 @@ class MainActivity : Activity() {
                 }
                 style.textContent = ${JSONObject.quote(css)};
             })();
-            $js
         """.trimIndent(), null)
+        if (js != null) view.evaluateJavascript(js, null)
         installJsonFileExport(view)
     }
 
     private fun installJsonFileExport(view: WebView) {
-        if (JsonFileExport.trusted(view.url)) view.evaluateJavascript(
-            assets.open("dsh-phone.export.js").bufferedReader().use { it.readText() }, null)
+        // ⚠️ 与 `installMobilePresentation` 同因（Issue F-27）：该 asset 不在胶囊内，
+        // 缺失时不能让整个 `onPageFinished` 抛异常。
+        val script = try {
+            assets.open("dsh-phone.export.js").bufferedReader().use { it.readText() }
+        } catch (error: Exception) {
+            Log.e(TAG, "导出脚本 dsh-phone.export.js 读取失败，跳过注入", error)
+            return
+        }
+        if (JsonFileExport.trusted(view.url)) view.evaluateJavascript(script, null)
     }
 
     /** 保留主界面，用独立 WebView 承接 Jet Hub 的 window.open 登录窗口。 */
@@ -605,6 +741,12 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // ⚠️ 通知权限被拒**不阻断任何功能**（服务照常前台运行，只是通知不可见），
+        // 故只记日志、不弹错误提示 —— 反复提示一个「不影响使用」的权限只会打扰用户。
+        // （Issue F-29）
+        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
+            Log.i(TAG, "通知权限请求结果: ${grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED}")
+        }
         if (requestCode == StorageAccess.REQUEST_CODE) {
             Toast.makeText(this, if (StorageAccess.granted(this)) "已授权，请重新打开工作区目录选择"
                 else "未授权共享文件访问，仍可使用 DSH 内部工作区", Toast.LENGTH_LONG).show()
