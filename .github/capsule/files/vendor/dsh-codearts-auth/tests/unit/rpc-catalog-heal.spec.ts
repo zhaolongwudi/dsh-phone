@@ -112,12 +112,20 @@ function makeRpc(options: HarnessOptions = {}) {
   // ⚠️ 逐个**位置**传入（不展开数组）：手机版的 13 个 auth 形参是**位置参数**，
   // 展开会让 tsc 报「spread argument must have a tuple type」，也会在将来
   // 形参表变动时把「少传/错位」这类故障藏进类型断言里。
+  /* ⚠️ 调用形态随 rc.11 更新（2026-10-15）：`registerJetHubRpc` 的第 3 参从
+     「13 个位置形参」改成 **`auths` 命名对象**（键是 provider id）。
+     理由（rc.11 的注释）：位置形参错位已复发多次，命名对象从类型上消除该风险。
+     ⚠️ rc.11 多了 `officeace` 键（第 14 家），本 spec 的桩一并补上。 */
   registerJetHubRpc(
     ctx, pool,
-    authStubs[0] as never, authStubs[1] as never, authStubs[2] as never, authStubs[3] as never,
-    authStubs[4] as never, authStubs[5] as never, authStubs[6] as never, authStubs[7] as never,
-    authStubs[8] as never, authStubs[9] as never, authStubs[10] as never, authStubs[11] as never,
-    authStubs[12] as never,
+    {
+      codearts: authStubs[0] as never, buddy: authStubs[1] as never, workbuddy: authStubs[2] as never,
+      lobsterai: authStubs[3] as never, qoder: authStubs[4] as never, qodercn: authStubs[5] as never,
+      trae: authStubs[6] as never, cline: authStubs[7] as never, loomy: authStubs[8] as never,
+      raccoon: authStubs[9] as never, minimax: authStubs[10] as never, zcode: authStubs[11] as never,
+      gemini: authStubs[12] as never,
+      officeace: authStubs[12] as never,
+    },
     options.modelAdapters as never,
   )
   const h = handler
