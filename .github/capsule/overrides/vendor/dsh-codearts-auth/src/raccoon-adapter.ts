@@ -686,13 +686,17 @@ export class RaccoonAdapter extends LlmAdapter {
           // 每次失败后立即记账，包括轮换预算用尽的最后一个账号。
           // 认证错误只换号，不写模型冷却。
           if (!activeAccountId || !recordsRaccoonRateLimit(failureClass)) return
+          // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：这条标记只是「下次别再选它」
+          //    的提示，写盘失败（磁盘满 / 权限 / 并发写冲突）不该把一次普通的
+          //    限流失败升级成整轮请求抛错 —— 用户看到的是完全无关的报错。
+          //    处置与 `gemini-adapter.ts` 的同名调用逐字同源。
           await accountPool.updateModelRateLimit(
             activeAccountId,
             options.model,
             Date.now() + (failureClass === 'rate'
               ? RACCOON_RATE_LIMIT_COOLDOWN_MS
               : RACCOON_QUOTA_COOLDOWN_MS),
-          )
+          ).catch(() => {})
         }
         await markCurrentAccount()
         const maxRotate = RACCOON_MAX_ROTATE - 1
