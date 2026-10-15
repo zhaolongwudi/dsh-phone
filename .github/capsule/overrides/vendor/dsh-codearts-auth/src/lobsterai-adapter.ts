@@ -63,7 +63,7 @@ import { reportLedgerAccount } from './token-ledger.js'
 import { planSessionTitleThinking } from './session-title.js'
 // ⚠️ `detail` 那条腿**只留一份实现**（`openai-compat.ts`）：本仓库 6 份同义的
 // `errorDetail` 各写一条判据必然漂移（IKLBSH A1）。
-import {detailFieldText, TOOL_RESULT_IMAGE_TEXT, sseFailureCode } from './openai-compat.js'
+import { detailFieldText, TOOL_RESULT_IMAGE_TEXT, httpErrorCode, sseFailureCode } from './openai-compat.js'
 
 /** 本适配器注册的 provider 路由名（历史常量，等价于 `LOBSTERAI.id`）。 */
 export const PROVIDER = 'lobsterai'
@@ -740,12 +740,12 @@ function buildLobsteraiFailure(input: LobsteraiFailureInput): LlmError {
   if (exhausted) {
     return new LlmError(
       `lobsterai: 模型 ${model} 所有账号均不可用（${detail}）`,
-      fromStream ? sseFailureCode(detail) : httpErrorCode(status),
+      fromStream ? sseFailureCode(detail) : httpErrorCode(status, detail),
       { status },
     )
   }
 
-  return new LlmError(`lobsterai: ${detail}`, fromStream ? sseFailureCode(detail) : httpErrorCode(status), { status })
+  return new LlmError(`lobsterai: ${detail}`, fromStream ? sseFailureCode(detail) : httpErrorCode(status, detail), { status })
 }
 
 /** 从错误体提取可读 detail 文本。 */
@@ -767,15 +767,7 @@ function errorDetail(body: string): string {
   return body
 }
 
-/** 将 HTTP 状态码映射为 harness 错误码。 */
-function httpErrorCode(status: number): string {
-  if (status === 401 || status === 403) return 'AUTH'
-  if (status === 429) return 'RATE_LIMIT'
-  if (status === 400) return 'INVALID_REQUEST'
-  if (status >= 500) return 'SERVER'
-  return `HTTP_${status}`
-}
-
+/* ⚠️ 本文件此前有一份**自己的** httpErrorCode（无超限判定）——已删除（2026-10-15）。
 /**
  * 判断是否为传输级错误（可重试的 TRANSPORT）。
  *

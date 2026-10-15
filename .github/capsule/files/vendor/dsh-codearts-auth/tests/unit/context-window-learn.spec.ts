@@ -101,101 +101,12 @@ describe('context-window-learn：解析不出时减半收敛', () => {
   })
 })
 
-describe('聚合层接线（源码文本断言）', () => {
-  const source = read('src/aggregate-adapter.ts')
 
-  it('声明值 = 候选最大值；**学习值不得再收窄它**（2026-10-12 修正）', () => {
-    // ⚠️ 这是**反向**断言。9.22 之前这里有个 `applyLearnedWindow`：它按**虚拟模型**收窄
-    //    声明值 ⇒ 一个窄候选撞墙就把整个虚拟模型压低，之后**换回宽窗口的候选也不恢复**
-    //    （用户 2026-10-12 实测提出：「换回 100 万的模型后上限还是 25.6 万」）。
-    //    而虚拟声明本就取候选最大值 ⇒ 池整体窄时它自然就窄 —— 那层收窄既多余又有害。
-    expect(source).toContain('const declared = widest ?? dynamicContextWindowFor(contextWindowKey(AGGREGATE_PROVIDER, modelKey))')
-    expect(source).toContain('const resolved = declared')
-    // 反向：任何「再把学习值套回声明值」的写法都不得回来。⚠️ 判据用**方法调用**形态，
-    // 因为 JSDoc 里正当地提到了这个名字（裸词断言会误判自己的注释）。
-    expect(source).not.toContain('this.applyLearnedWindow')
-    expect(source).not.toContain('if (learned < declared) {')
-    // 反向：旧的「真值优先、动态值只做 fallback」一行式也不得回来。
-    expect(source).not.toContain('const resolved = widest ?? dynamicContextWindowFor(')
-  })
-
-  it('学习值只用于**筛选候选**（按候选键）；zcode 的单渠道收窄口径不变', () => {
-    expect(source).toContain('const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))')
-    // zcode 的键**就是该渠道自己**（单渠道），不存在「一个候选压低整个池」的问题 ⇒ 判据不变。
-    expect(read('src/zcode-adapter.ts')).toContain(
-      'learned !== undefined && (contextWindow === undefined || learned < contextWindow)',
-    )
-  })
-
-  it('缓存存的就是对外值（候选最大值），记忆化分支不再套学习值', () => {
-    expect(source).toContain('this.contextWindowCache.set(modelKey, widest)')
-    expect(source).not.toContain('this.contextWindowCache.set(modelKey, resolved)')
-    expect(source).toContain('if (remembered !== undefined) return remembered')
-  })
-
-  it('撞墙处（且仅在归成溢出码时）**按该候选**记录学习', () => {
-    expect(source).toContain('if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {')
-    expect(source).toContain('rememberContextWindowFailure(')
-    // ⚠️ 必须记**候选键**：记虚拟模型会粘性压低整个虚拟模型的对外声明（见上一条）。
-    expect(source).toContain('contextWindowKey(target.provider, target.realId), message,')
-    // 反向：不得再把虚拟模型键喂给失败学习。
-    expect(source).not.toContain('contextWindowKey(AGGREGATE_PROVIDER, modelKey), message')
-  })
-
-  it('**截断也算证据**：`finish: max-tokens` 时用观测规模记上限（方案 B，2026-10-12）', () => {
-    // 上游常常不报错、只按自己的上限截断 ⇒ 只挂失败路径的学习器完全收不到信号。
-    expect(source).toContain("chunk.type === 'finish' && chunk.reason.kind === 'max-tokens'")
-    expect(source).toContain('rememberContextWindowCeiling(')
-    expect(source).toContain('const seen = contextTokensOfUsage(chunk.usage)')
-    // ⚠️ F-04 后，观测规模**按会话分桶**（`lastContextTokensBySession`）：原先那个
-    //    进程级 `self.lastContextTokens = Math.max(...)` 只增不减、且跨会话串味
-    //    （一个小会话会被别的大会话的峰值判成「装不下」）⇒ 已改为此形态。
-    //    断言同步改为新写法：请求内取最大落局部变量，落桶交给
-    //    `recordSessionContextTokens`（**覆盖**语义，压缩变小后能如实下降）。
-    expect(source).toContain('requestTokens = Math.max(requestTokens ?? 0, seen)')
-    expect(source).toContain('self.recordSessionContextTokens(sessionKey, requestTokens)')
-    // 反向：进程级只增峰值那个字段不得回来（F-04 的根因形态）。
-    expect(source).not.toContain('self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)')
-    // ⚠️ 同样只记**候选键**（2026-10-12 修正）：虚拟模型那侧自本次修正起不再记学习值。
-    expect(source).toContain('contextWindowKey(target.provider, target.realId), observed,')
-    expect(source).not.toContain('const virtual = rememberContextWindowCeiling(')
-  })
-
-  it('**派发前按本轮体积跳过太窄的候选**（方案 C，2026-10-12）', () => {
-    expect(source).toContain('let attemptTargets: readonly DispatchTarget[] = targets')
-    expect(source).toContain('for (let index = 0; index < attemptTargets.length; index += 1)')
-    expect(source).toContain('const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))')
-    // 留 5% 余量（上游按「输入 + 输出」计总量）。
-    expect(source).toContain('Math.ceil(observedTokens * 1.05)')
-    // ⚠️ 兜底：全被筛掉时**不得**凭空得出「没有可用候选」。
-    expect(source).toContain('放弃筛选、照常逐个尝试')
-  })
-
-
-  it('**零输出撞墙 ⇒ 换下一个候选重发**（方案 F，2026-10-12 接线；此前只有 auto 接了）', () => {
-    // 判据必须复用共享守卫（`zero-output-guard.ts` 是唯一权威），不得另写一份。
-    expect(source).toContain("import {")
-    expect(source).toContain("} from './zero-output-guard.js'")
-    expect(source).toContain('zeroProbe = noteChunk(zeroProbe, chunk)')
-    expect(source).toContain('if (chunk.type === \'finish\' && isZeroOutputWallHit(zeroProbe)) {')
-    expect(source).toContain('self.zeroOutputCooldowns = noteZeroOutputHit(')
-    expect(source).toContain('if (reroute) continue')
-    // ⚠️ 已开块/已吐内容**不得**重发（重发会让内容灌进错误的块类型）。
-    expect(source).toContain('if (emitted || openedBlocks.size > 0) {')
-  })
-
-  it('冷却中的候选在派发前被跳过（与体积筛选同一处，避免重复撞墙）', () => {
-    expect(source).toContain('isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId')
-  })
-
-  it('动态值不进记忆化缓存（解析到真值才缓存，学过才能立刻生效）', () => {
-    expect(source).toContain('allResolved && widest !== undefined')
-  })
-
-  it('写死的 200K 兜底常量已删除', () => {
-    expect(source).not.toContain('AGGREGATE_FALLBACK_CONTEXT_WINDOW')
-  })
-})
+/* ⚠️ **聚合层接线的源码文本断言（原 30+ 条）已删除**（2026-10-15，随 Gitee rc.11 同步）。
+   理由：rc.11 用 contextWindowFor 从候选集**推导**窗口上限，取代了胶囊的「按会话分桶观测 + learnedContextWindow 覆盖」架构；且 context-window-learn.ts 的注释明确写着「不要拿历次观测的峰值」。逐条改写等于为重写整个 spec，而它们测的架构已不存在。
+   删除依据：这些断言钉的是**已不存在的架构**（逐条对照 rc.11 源码确认）。
+   保留的用例测的是胶囊自有模块（context-window-learn / context-window-store）
+   的纯函数与持久化行为，与聚合层架构无关，仍然有效。 */
 
 describe('截断学习与 loomy spark-x 口径（2026-10-12 用户实测）', () => {
   it('`rememberContextWindowCeiling`：只收窄、不放大，且低于下限不记', () => {
@@ -228,36 +139,13 @@ describe('截断学习与 loomy spark-x 口径（2026-10-12 用户实测）', ()
   })
 })
 
-describe('zcode 接线（源码文本断言）', () => {
-  const adapter = read('src/zcode-adapter.ts')
-  const upstream = read('src/zcode-upstream.ts')
 
-  it('目录对缺窗口的模型给起步值，不再写死 200K', () => {
-    expect(upstream).toContain(': DYNAMIC_CONTEXT_WINDOW_START,')
-    expect(upstream).not.toContain(': 200_000,')
-  })
+/* ⚠️ **zcode 接线的源码文本断言已删除**（2026-10-15，随 Gitee rc.11 同步）。
+   理由：rc.11 的 zcode 适配器改用目录声明值 + 学习值覆盖，不再有本 spec 钉的那两处写法。
+   删除依据：这些断言钉的是**已不存在的架构**（逐条对照 rc.11 源码确认）。
+   保留的用例测的是胶囊自有模块（context-window-learn / context-window-store）
+   的纯函数与持久化行为，与聚合层架构无关，仍然有效。 */
 
-  it('适配器只在「学到的值更小」时才覆盖目录声明值（真值仍优先）', () => {
-    expect(adapter).toContain(
-      'learned !== undefined && (contextWindow === undefined || learned < contextWindow)',
-    )
-  })
-
-  it('撞墙处（且仅在归成溢出码时）记录学习', () => {
-    expect(adapter).toContain('if (code === CONTEXT_WINDOW_EXCEEDED_CODE) {')
-    expect(adapter).toContain('rememberContextWindowFailure(')
-  })
-})
-
-/**
- * ★ 已学窗口的**持久化**（9.22 要点 2）：只落硬证据、重启读回、成功自愈、disposer 所有权。
- *
- * ## 为什么「只落硬证据」必须被用例钉住
- *
- * 落盘**推翻了** 9.11「只记进程内」的决定，而那次决定防的是「把学错的值永久固化」。
- * 能否安全落盘**完全取决于**「只落有证据的值」这一条 —— 一旦有人顺手把「减半猜」
- * 的值也写下去，固化的风险立刻回来。故此处逐条钉死。
- */
 describe('★ 已学窗口持久化（9.22）：只落硬证据 / 读回 / 自愈', () => {
   /** 假后端：只记录 `remember` 调用，不碰文件系统（真文件的 round-trip 见最后一条）。 */
   function makeFakeStore(initial: Array<[string, number]> = []) {

@@ -132,7 +132,9 @@ describe('三条通道同源（源码文本断言）', () => {
 
   it('zcode 复用共享判据，不再只喂宿主分类器', () => {
     const source = read('src/zcode-adapter.ts')
-    expect(source).toContain('import { collectImages, isContextOverflowBody, serializeMessages }')
+    /* ⚠️ 同上：只验证符号被导入，不钉顺序与空格。 */
+    expect(source).toMatch(/import \{[^}]*\bcollectImages\b[^}]*\} from '\.\/openai-compat\.js'/)
+    expect(source).toMatch(/import \{[^}]*\bisContextOverflowBody\b[^}]*\} from '\.\/openai-compat\.js'/)
     expect(source).toContain('if (isContextOverflowBody(trimmed)) return CONTEXT_WINDOW_EXCEEDED_CODE')
     // 旧的漏判形态必须消失（它漏掉 Anthropic 原生措辞）。
     expect(source).not.toContain('if (isContextWindowExceededError(trimmed)) return CONTEXT_WINDOW_EXCEEDED_CODE')
@@ -140,7 +142,11 @@ describe('三条通道同源（源码文本断言）', () => {
 
   it('lobsterai 流内失败复用共享判据，不再固定 SERVER', () => {
     const source = read('src/lobsterai-adapter.ts')
-    expect(source).toContain("import { httpErrorCode, sseFailureCode } from './openai-compat.js'")
+    /* ⚠️ 改为**语义判据**（2026-10-15）：只验证两个符号确实从共享层导入，
+       不钉 import 的精确文本 —— rc.11 与胶囊的导入顺序/空格不同但语义相同，
+       钉精确文本会随任何一次 import 重排假红（「验证手段自身腐坏」）。 */
+    expect(source).toMatch(/import \{[^}]*\bhttpErrorCode\b[^}]*\} from '\.\/openai-compat\.js'/)
+    expect(source).toMatch(/import \{[^}]*\bsseFailureCode\b[^}]*\} from '\.\/openai-compat\.js'/)
     expect(source).toContain('fromStream ? sseFailureCode(text) : httpErrorCode(status, text)')
     // 旧的固定 SERVER 形态必须消失。
     expect(source).not.toContain("fromStream ? 'SERVER' : httpErrorCode(status, text)")
