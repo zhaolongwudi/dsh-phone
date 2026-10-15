@@ -123,7 +123,6 @@
                 disabled: true
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
-            config: { mode: timed, timeout: 120 }
           - id: tool-todo
             name: '@deepseek-ai/dsh-tool-todo'
             config:
