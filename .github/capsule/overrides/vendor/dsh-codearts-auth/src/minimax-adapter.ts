@@ -766,13 +766,15 @@ export class MinimaxAdapter extends LlmAdapter {
       // ⚠️ auth 类**不写标记**：认证失败是账号态而非模型冷却，写了会把网关侧
       //    授权故障放大成「全池封 24h」（2026-10-06 事故，见文件头的语义表）。
       if (activeAccountId === '' || !recordsMinimaxRateLimit(failureClass)) return
+      // ⚠️ 落盘失败**不得冒泡**（Issue F-40）：标记只是「下次别再选它」的提示，
+      //    写盘失败（磁盘满 / 权限）不该把限流失败升级成整轮抛错。
       await accountPool.updateModelRateLimit(
         activeAccountId,
         options.model,
         Date.now() + (failureClass === 'rate'
           ? MINIMAX_RATE_LIMIT_COOLDOWN_MS
           : MINIMAX_QUOTA_COOLDOWN_MS),
-      )
+      ).catch(() => {})
     }
 
     /**
