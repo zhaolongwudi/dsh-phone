@@ -21,8 +21,12 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /**
- * 特性 → { 要求, 说明, 风险 }。
+ * 特性 → { 要求, 说明, 风险, allow? }。
  * 数值取自各特性首次可用的 Chrome 版本（Android WebView 与 Chrome 同源）。
+ *
+ * `allow`（可选）= **已登记的、有等价兜底或仅降级的写法**（Issue F-66）：命中这些
+ * 正则的片段先从待检文本里剔除，剩下的命中才算越界。逐条都必须在注释里写明依据，
+ * 且**形状要尽可能窄** —— 宽正则等于换个地方继续假绿。
  */
 export const FEATURES = {
   // CSS
@@ -33,6 +37,34 @@ export const FEATURES = {
   ':focus-visible': { since: 86, kind: 'CSS', note: '焦点可见' },
   'aspect-ratio': { since: 88, kind: 'CSS', note: '宽高比' },
   'inset:': { since: 87, kind: 'CSS', note: 'inset 简写' },
+  // ⚠️ 下面两条是 Issue F-66 补的：它们都**高于下界 97**，而原先整表缺项 ⇒ 门禁对
+  //    本层真实用到的这两个特性一无所知，报「✓ 无越界」属**假绿**（与 F-57 同族的
+  //    「判据漏项」）。补上后，凡是**未登记**的新用法都会被报出来。
+  dvh: {
+    since: 108, kind: 'CSS', note: '动态视口高度单位',
+    allow: [
+      // 本层把高度/最大高度交给**自定义属性**，值由 JS 以 px 写入
+      //（`dsh-phone.js:150-157` 写 `--dsh-phone-viewport-height`，其余
+      //  `--dsh-phone-*-height` 由同一处 adapt 逻辑写入）⇒ `…dvh` 只是「拿不到变量」
+      //  时的兜底；内核 <108 时兜底失效、整条声明被丢弃，主路径仍由 px 变量驱动。
+      /var\(--dsh-phone-[a-z-]+,[^)]*dvh[^)]*\)/g,
+      // 全层**唯一**无兜底的一处：`dsh-phone.css:90` 的 `.dim-jh-modal` max-height。
+      // 内核 <108 时该 `!important` 声明被丢弃 ⇒ 回落到插件自身的
+      // `max-height:min(640px, calc(100vh - 48px))`（`jet-hub-styles.js:251`）
+      // ⇒ 只是少 24px 内缩、不溢出，属可接受的降级（审查报告亦判「影响面很小」）。
+      /max-height:calc\(100dvh - 24px\)/g,
+    ],
+  },
+  inert: {
+    since: 102, kind: 'JS', note: '惰性化（inert 属性）',
+    allow: [
+      // 本层只在 `rail` 上用它，且两处赋值都**同一条语句**里伴随 aria-hidden 兜底
+      //（`dsh-phone.js:186` / `:200`）；抽屉关闭时侧栏已被 CSS 移出视口 ⇒ 内核 <102 时
+      //  只少一层惰性化，无功能损失。※ 同一事实的**注释**（`:483`）也一并豁免，
+      //  否则门禁会被自己的注释打红（本仓库记过「锚裸字符串」的同型问题）。
+      /rail\.inert/g,
+    ],
+  },
   // JS
   'toSorted(': { since: 110, kind: 'JS', note: '数组复制排序' },
   'withResolvers(': { since: 119, kind: 'JS', note: 'Promise.withResolvers' },
@@ -98,6 +130,10 @@ export function inferFloor(compatText) {
 
 /**
  * 核查一段文本是否用了超出下界的特性。
+ *
+ * ⚠️ 先剔除该特性**已登记的等价兜底写法**（`info.allow`，见 `FEATURES` 的说明），
+ * 只对剩下的命中报越界 —— 否则「补了一条本来就安全用法的特性」会把门禁打成假红。
+ *
  * @param text 文本
  * @param floor 下界（Chrome 版本）
  * @returns {Array<{feat:string, since:number, kind:string, note:string}>}
@@ -106,8 +142,22 @@ export function violations(text, floor) {
   const out = []
   for (const [feat, info] of Object.entries(FEATURES)) {
     if (info.since <= floor) continue          // 不低于下界即安全
-    if (text.includes(feat)) out.push({ feat, ...info })
+    if (unregisteredUsage(text, info).includes(feat)) out.push({ feat, ...info })
   }
+  return out
+}
+
+/**
+ * 去掉该特性**已登记放行**的片段，返回仍需核查的文本（Issue F-66）。
+ * @param text 文本
+ * @param info FEATURES 的表项
+ * @returns {string} 待核查文本（无 `allow` 时原样返回）
+ */
+function unregisteredUsage(text, info) {
+  const allow = info.allow
+  if (allow === undefined || allow.length === 0) return text
+  let out = text
+  for (const pattern of allow) out = out.replace(pattern, '')
   return out
 }
 
