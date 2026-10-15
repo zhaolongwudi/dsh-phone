@@ -607,6 +607,12 @@ function serializeMessages(
     // ⚠️ 含工具结果时**整条延后**：OpenAI 兼容协议要求 tool 消息**紧跟**其
     // assistant `tool_calls`，中间插任何 user 消息都会 400。
     const deferred = toolResults.length > 0
+      || pendingToolImages.length > 0
+      || pendingOwnParts !== undefined
+    /* ⚠️ 三个条件缺一不可（Issue F-21，手机版补）：前两个覆盖「图还在排队」，
+       第三个覆盖「图已随上一条发出、但还有正文没走」—— 那种情况下 pendingOwnParts
+       非空而 pendingToolImages 已空，只看前两个会让本条正文被提前单独发出、
+       同样与提问分处两条。 */
     // ⚠️ 本条同时是上一条延后内容的「搭车机会」：`pendingOwnParts` 里的正文
     // 必须与本条内容、挂起图片**一起**发出一条。
     //

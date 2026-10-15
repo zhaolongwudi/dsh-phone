@@ -275,6 +275,12 @@ export function serializeMessages(
     // 无工具结果 → 立刻发出并让挂起图片搭车；含工具结果 → 整条延后到下一条
     // user 消息（tool 消息必须紧跟其 assistant `tool_calls`，中间插消息会 400）。
     const deferred = toolResults.length > 0
+      || pendingToolImages.length > 0
+      || pendingOwnParts !== undefined
+    /* ⚠️ 三个条件缺一不可（Issue F-21，手机版补）：前两个覆盖「图还在排队」，
+       第三个覆盖「图已随上一条发出、但还有正文没走」—— 那种情况下 pendingOwnParts
+       非空而 pendingToolImages 已空，只看前两个会让本条正文被提前单独发出、
+       同样与提问分处两条。 */
     // ⚠️⚠️ **无挂图且本条无图时必须保持「字符串」形态**（旧行为逐字节不变）：
     // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
     // 拒收整个请求（实测）。

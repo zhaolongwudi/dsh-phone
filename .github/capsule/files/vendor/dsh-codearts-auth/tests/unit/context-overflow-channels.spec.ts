@@ -173,13 +173,17 @@ describe('三条通道同源（源码文本断言）', () => {
    * （`prompt is too long: N tokens > M maximum`，宿主分类器认不出）在这道网上漏判。
    * 这正是 9.15/9.16 在另外三条通道上修掉的同一类缺陷 ⇒ 这里断言它也已同源。
    */
-  it('聚合层兜底网复用共享判据（不再只喂宿主分类器）', () => {
+  it('聚合层不再各自判超限（该职责已随 rc.11 归到窗口推导）', () => {
     const source = read('src/aggregate-adapter.ts')
-    /* ⚠️ 改语义判据：只验证符号从共享层导入，不钉 import 的精确文本。 */
-    expect(source).toMatch(/import \{[^}]*\bisContextOverflowBody\b[^}]*\} from '\.\/openai-compat\.js'/)
-    expect(source).toContain('return detail.length > 0 && isContextOverflowBody(detail)')
-    // 旧的「仅宿主分类器」形态必须消失。
-    expect(source).not.toContain('return detail.length > 0 && isContextWindowExceededError(detail)')
+    /* ⚠️ 本条断言随 rc.11 改写（2026-10-15）：
+       胶囊旧版在聚合层放了一张「兜底网」——`detail.length > 0 && isContextOverflowBody(detail)`，
+       用于把漏判的上游报文补成 CONTEXT_WINDOW_EXCEEDED。
+       rc.11 用 `contextWindowFor`（从候选集**推导**窗口上限）从源头规避溢出，
+       该兜底网因此不再存在（aggregate-adapter 里 isContextOverflowBody 零命中）。
+       ⇒ 改为断言 rc.11 的机制：窗口推导存在。
+       ⚠️ 超限分类本身**没有丢** —— 它在 llm-adapter / zcode / lobsterai / buddy / gemini
+          五条通道各自保留（本 spec 的其余用例仍在测它们）。 */
+    expect(source).toContain('private async contextWindowFor(')
   })
 
   /**

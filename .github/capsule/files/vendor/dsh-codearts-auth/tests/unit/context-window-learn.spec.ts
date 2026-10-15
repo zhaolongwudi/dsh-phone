@@ -131,14 +131,10 @@ describe('截断学习与 loomy spark-x 口径（2026-10-12 用户实测）', ()
     expect(product).not.toContain("spark-x', name: 'Spark X2.5 · x0.1', contextWindow: 1_048_576")
   })
 
-  it('usage 规模解析：totalTokens 优先，缺失时四项求和，全无则 undefined', () => {
-    const source = read('src/aggregate-adapter.ts')
-    /* ⚠️ 本条断言随 rc.11 移除（2026-10-15）：`contextTokensOfUsage` 是胶囊旧架构的
-       辅助函数，rc.11 的 aggregate-adapter 用 contextWindowFor 推导窗口、不再需要它。
-       该函数在 rc.11 源码中已不存在，断言无从命中。 */
-    expect(source).toContain('if (typeof usage.totalTokens === \'number\'')
-    expect(source).toContain('return sum > 0 ? sum : undefined')
-  })
+  /* ⚠️ 「usage 规模解析」用例已删除（2026-10-15，随 rc.11 同步）：
+     它测的 `contextTokensOfUsage`（totalTokens 优先 / 四项求和 / 全无则 undefined）
+     是胶囊旧架构的辅助函数，rc.11 的 aggregate-adapter 用 contextWindowFor 推导窗口、
+     该函数已不存在。usage 规模的解析职责现由 dsh-llm 侧承担。 */
 })
 
 
