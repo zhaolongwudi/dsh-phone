@@ -137,17 +137,35 @@ describe('Issue IKLIFH：工具结果图片必须与提问同条', () => {
     expect(imageIndex).toBeGreaterThan(toolIndex)
   })
 
-  it('★ 中间多一条 user 时，图与延后正文先合条、图片仍不得只有图', () => {
-    // 回归锁定旧缺陷形态：旧实现会把图单独发成一条（内容只有图 + 提示句），
-    // 提问在再下一条；而含工具结果的那条 user 消息内容也**必须延后**，
-    // 否则它会被后面那条吞掉。
+  it('★ 中间多一条 user 时，图、延后正文与提问必须合为**同一条**（F-21）', () => {
+    /**
+     * ⚠️⚠️ **本用例在 2026-10-14 的 F-21 修复里被改写**（原断言写反了）。
+     *
+     * 原断言是 `expect(askIndex).toBeGreaterThan(imageIndex)` —— 即「图与提问
+     * **分处两条**、提问在后面」。而 IKLIFH 自己的实测表写得明明白白：
+     *
+     * | wire 形态 | 上游行为 |
+     * |---|---|
+     * | 图单独一条 user（**有**提示句），问在下一条 | ❌「图像已被过滤」|
+     *
+     * ⇒ 原断言锁定的正是**要消灭的缺陷形态**（只是它比「纯图无文本」轻一档，
+     * 所以当时没被发现）。上游 `32681a8b` 补修 IKLIFH 漏网序列时给出的对照是
+     * 「修复前 [3]=`image_url+text(好的)`、[4]=`"这页写了什么？"`；
+     * 修复后 [3]=`image_url+text(好的)+text(这页写了什么？)`（同一条）」。
+     *
+     * 故改为断言**同一条**，并把中间那条 user 的正文也纳入（它不得被丢弃）。
+     * 判别力没有下降：把 F-21 的 `deferred` 判据回退成
+     * `toolResults.length > 0`，本用例立刻变红（已实测）。
+     */
     const wire = serializeMessages(messagesWithAsk('这页写了什么？', '好的'), IMAGE_URLS)
     const toolIndex = wire.findIndex((m) => m.role === 'tool')
     const imageIndex = imageIndexOf(wire)
     const askIndex = textIndexOf(wire, '这页写了什么')
+    const middleIndex = textIndexOf(wire, '好的')
     expect(imageIndex, '图片发出').toBeGreaterThan(-1)
     expect(imageIndex, '图排在 tool 之后').toBeGreaterThan(toolIndex)
-    expect(askIndex, '提问未被吞掉').toBeGreaterThan(imageIndex)
+    expect(askIndex, '提问未被吞掉').toBe(imageIndex)
+    expect(middleIndex, '中间那条 user 的正文未被吞掉').toBe(imageIndex)
     const imageMsg = wire[imageIndex] as { content: Array<{ type: string }> }
     expect(imageMsg.content.some((p) => p.type === 'text'), '图不得单独成一条（无任何文本）').toBe(true)
   })
@@ -330,15 +348,26 @@ describe('IKLIFH 三处同型实现的结构守卫（漏一处即那一家继续
         ).toContain('if (!hasImages) {')
       })
 
-      it('★ 必须保留「图与提问同条」的合条分支', () => {
+      it('★ 必须保留「图与提问同条」的合条分支（含 F-05 的补救文本）', () => {
+        // ⚠️ 2026-10-14（F-05）：合条分支在「本条无任何文本」时补一句说明文本，
+        // 故发出的是 `...ownTextOrHint` 而不是 `...ownText`。守卫同步跟上，
+        // 并**加强**到同时钉住补救文本本身 —— 否则「补文本」这一半可以被悄悄删掉。
         expect(
           src,
           `${name} 丢了合条分支 ⇒ 图片又会被单独发成一条 user 消息`,
-        ).toContain('wire.push({ role: \'user\', content: [...pendingToolImages, ...ownImages, ...ownText] })')
+        ).toContain("wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownTextOrHint] })")
+        expect(
+          src,
+          `${name} 丢了「无自身文本时补说明文本」⇒ 纯图无文本的独立条会复现（模型看不见图）`,
+        ).toContain("const ownTextOrHint = ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]")
       })
 
       it('★ 含工具结果的那条 user 消息必须整条延后（tool 配对约束）', () => {
-        expect(src, `${name} 丢了 deferred 判据`).toContain('const deferred = toolResults.length > 0')
+        // ⚠️ 2026-10-14（F-21）：延后判据从「只看本条有没有工具结果」扩成三个条件，
+        // 断言同步换成**完整形态**（原先只断言首行前缀，回退后两行也照样绿）。
+        expect(src, `${name} 丢了 deferred 判据`).toContain(`const deferred = toolResults.length > 0
+      || pendingToolImages.length > 0
+      || pendingOwnParts !== undefined`)
         expect(src, `${name} 丢了延后落点`).toContain('pendingOwnParts = combined ??')
       })
 
