@@ -240,14 +240,31 @@ export class AggregateAdapter extends LlmAdapter {
   private readonly candidateWindow = new Map<string, number>()
 
   /**
-   * 最近一次观测到的**本轮上下文规模**（token，来自 `usage` 帧的 `totalTokens`）。
+   * 各会话**最近一次观测到的本轮上下文规模**（token，来自 `usage` 帧的 `totalTokens`）。
    *
-   * ⚠️ 这是进程内的会话规模近似值，用于两个新机制：
-   * - 方案 C：派发前比较「候选窗口 vs 本轮体积」；
-   * - 方案 B：`finish: max-tokens` 截断时，把它当作该候选的**上限下界**记入学习表。
-   * ⚠️ 取观测值的**最大值**（同一次请求里 usage 可能到多帧）：规模只会增长，取最大才安全。
+   * ## ⚠️⚠️ 为什么必须按会话分桶、且必须逐请求覆盖（Issue F-04，2026-10-14）
+   *
+   * 修法前这里是**一个进程级字段 + `Math.max` 只增不减**，却被当成「本轮体积」喂给
+   * 两处消费（方案 C 的派发前筛选、方案 B 的 `finish: max-tokens` 学习）。后果：
+   *
+   * | # | 消费点 | 后果 |
+   * |---|---|---|
+   * | ① | 方案 C 筛选 | 进程内任一会话产生过一次大 usage（文档实测过 90 万）后，**另一个几千 token 的小会话**发请求时 `required = 峰值 × 1.05` 高于池内全部候选已知上限 ⇒ `kept` 与 `cooling` 同时为空 ⇒ 主动抛 `CONTEXT_WINDOW_EXCEEDED` ⇒ DSH 压缩后重发 ⇒ 值不变 ⇒ **压缩重试死循环**，该会话在进程存活期内永久不可用 |
+   * | ② | 方案 B 学习 | 把**峰值**而非本次尝试的 `turnTokens` 喂给 `rememberContextWindowCeiling`，而它**只在更小时覆盖** ⇒ 宽候选观测过 90 万后，窄候选真实撞墙 26.2 万时永远学不进 ⇒ cap 恒 90 万 ⇒ 恒不跳过窄候选 ⇒ 反复截断 |
+   *
+   * 故语义收窄为两条：
+   * 1. **按 `options.sessionId` 分桶** —— 一个会话的规模不得成为另一个会话的判据；
+   * 2. **逐请求覆盖**（不再跨请求 `Math.max`）—— 会话被压缩变小后，下一次观测要能
+   *    如实降到小值。`Math.max` 只保留在**同一次请求内部**（一次请求里 usage 可能
+   *    到多帧，规模只会增长，取最大才安全）。
+   *
+   * ⚠️ 无 `sessionId` 的请求落在同一个 `''` 桶里；它们**不会**因此互相锁死 ——
+   * 主动抛错时会清桶（见下方 `CONTEXT_WINDOW_EXCEEDED` 分支），退回「未知 ⇒ 不筛」。
+   *
+   * ⚠️ 容量上限 512：与会话数同阶，超出按插入序淘汰最旧的一条（与
+   * `candidateWindow` 那种「只增不清」的表刻意不同 —— 那正是 F-53 的形态）。
    */
-  private lastContextTokens: number | undefined
+  private readonly lastContextTokensBySession = new Map<string, number>()
 
   /**
    * 「上次**实际**转发成功的渠道」——按虚拟模型分别记录（P3，供用量徽标显示）。
@@ -643,6 +660,19 @@ export class AggregateAdapter extends LlmAdapter {
     // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
     // 目录重建 ⇒ 候选集可能变化 ⇒ 上下文窗口缓存全部失效（窗口取自候选能力）。
     this.contextWindowCache.clear()
+    /**
+     * ⚠️⚠️ **逐候选窗口表必须与上面那张缓存一起清**（Issue F-53）。
+     *
+     * 两张表的写入点都在 `contextWindowFor`（同一趟 `resolveModelInfo` 顺便记下），
+     * 但此前只清 `contextWindowCache` ⇒ `candidateWindow` **只增不清**：
+     * 渠道被停用/账号被删后，它名下的候选条目仍留在表里，而方案 C 的派发前筛选
+     * 正是读它（`cap < required` ⇒ 跳过）—— 于是一个**已经不在候选池里**的渠道
+     * 留下的窄窗口，会继续参与「这个虚拟模型装不装得下」的判断；反过来，
+     * 换渠道后重新解析出的更宽窗口也不会顶掉旧值（`set` 覆盖只发生在
+     * 该候选重新进入解析路径时，被清掉缓存才可能发生）。
+     * 两张表同源同生命周期，清一张留一张必有一处是错的。
+     */
+    this.candidateWindow.clear()
     this.catalogAt = now
     // ⚠️⚠️ **维持「整个 provider 已关闭」的语义**（真实缺陷，实测复现）。
     //
@@ -1441,26 +1471,81 @@ export class AggregateAdapter extends LlmAdapter {
        * - 全在**零输出冷却**中（**瞬时针**，不构成「装不下」的证据）⇒ 照常逐个尝试。
        */
       let attemptTargets: readonly DispatchTarget[] = targets
-      const observedTokens = self.lastContextTokens
-      if (observedTokens !== undefined && observedTokens > 0) {
+      /**
+       * ⚠️⚠️ **筛选用的「本轮体积」必须来自本会话，且不得是进程级峰值**（Issue F-04）。
+       * 判据与取舍见 `lastContextTokensBySession` 的声明处注释。
+       * ⚠️ 本会话没有观测过 ⇒ `undefined` ⇒ **不筛**（「未知不编造」；首轮无从判断）。
+       */
+      const sessionKey = String(options.sessionId ?? '')
+      const observedTokens = self.lastContextTokensBySession.get(sessionKey)
+      /**
+       * **本次请求**（本次 `dispatch`）观测到的最大上下文规模。
+       *
+       * ⚠️ 「请求内取最大」必须落在**这个局部变量**上，不能落进会话表：usage 帧在
+       * 一次请求里可能来多帧（规模只会增长，取最大才安全），而**跨请求必须覆盖**
+       * ——否则会话被压缩变小后观测值降不下来，又回到「只增峰值」的老毛病。
+       * 判据与后果见 `lastContextTokensBySession` 的声明处注释。
+       */
+      let requestTokens: number | undefined
+      /**
+       * 因**零输出冷却**被跳过的候选（与体积无关的**瞬时针**）。
+       *
+       * ⚠️ 必须与体积原因分开记：冷却不构成「装不下」的证据，故它不能参与
+       * 下方「全被筛掉 ⇒ 主动压缩」的判据（判据里的 `cooling.length === 0`）。
+       */
+      const cooling: string[] = []
+      /**
+       * ⚠️⚠️ **零输出冷却表必须无条件消费**（Issue F-54）。
+       *
+       * 原实现把冷却检查放在「本会话观测过 usage」（`observedTokens !== undefined`）
+       * 那个大 `if` **内部**，于是冷却表在两种情形下**永不消费**：
+       *
+       * ① 会话没观测过 usage（首轮，或 usage 帧丢失）⇒ 整块不执行；
+       * ② 观测到了，但**没有**候选因体积被跳过 ⇒ 末尾
+       *    `kept.length > 0 && skipped.length > 0` 不成立 ⇒ `attemptTargets`
+       *    仍是全量 ⇒ 冷却候选**照旧被派发**。
+       *
+       * 两种情形的后果一致：上一轮刚吞掉一次请求、零输出的候选，这一轮又拿到
+       * 请求 —— 方案 F 的「本次运行内别再三连撞同一堵墙」在大多数请求上压根
+       * 没生效。故把冷却筛选**提到体积判据之前独立做一遍**：它的依据
+       *（「这个目标上一轮零输出」）是已经发生的事实，与体积无关。
+       */
+      const liveTargets: DispatchTarget[] = []
+      for (const candidate of targets) {
+        // ⚠️ 零输出冷却中的目标**优先跳过**（与体积无关的理由）：它上一轮刚吞掉
+        //    一次请求、零输出（方案 F 记的冷却），再派给它只会重复一次失败。
+        if (isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId, self.options.now?.() ?? Date.now())) {
+          cooling.push(`${candidate.provider}(${candidate.realId})=零输出冷却中`)
+          continue
+        }
+        liveTargets.push(candidate)
+      }
+      if (cooling.length > 0 && liveTargets.length > 0) {
+        attemptTargets = liveTargets
+        self.ctx.logger?.info?.(
+          `[jet-hub] 候选筛选 ${modelKey}: 跳过 ${cooling.length} 个零输出冷却中的候选`
+          + `[${cooling.join(', ')}]`,
+        )
+      } else if (cooling.length > 0) {
+        // 全在冷却中（**瞬时针**，不是装不下）：压缩对它毫无帮助 ——
+        // 照常逐个尝试，冷却目标会自己失败并切换。
+        self.ctx.logger?.warn?.(
+          `[jet-hub] 候选筛选 ${modelKey}: ${cooling.length} 个候选全在零输出冷却中`
+          + `[${cooling.join(', ')}]，放弃筛选、照常逐个尝试`,
+        )
+      }
+      /**
+       * 全在冷却中 ⇒ 下方体积筛选**整块不做**：`attemptTargets` 此时仍是全量，
+       * 若照筛会把冷却候选按体积再判一次，与「冷却不构成装不下的证据」相矛盾
+       *（原实现在这种情况下也是全量尝试）。
+       */
+      const allCooling = cooling.length > 0 && liveTargets.length === 0
+      if (!allCooling && observedTokens !== undefined && observedTokens > 0) {
         const required = Math.ceil(observedTokens * 1.05)
         const kept: DispatchTarget[] = []
         const skipped: string[] = []
-        /**
-         * 因**零输出冷却**被跳过的候选（与体积无关的**瞬时针**）。
-         *
-         * ⚠️ 必须与体积原因分开记：冷却不构成「装不下」的证据，故它不能参与
-         * 下方「全被筛掉 ⇒ 主动压缩」的判据。
-         */
-        const cooling: string[] = []
-        for (const candidate of targets) {
+        for (const candidate of attemptTargets) {
           const sep = String.fromCharCode(0)
-          // ⚠️ 零输出冷却中的目标**优先跳过**（与体积无关的理由）：它上一轮刚吞掉
-          //    一次请求、零输出（方案 F 记的冷却），再派给它只会重复一次失败。
-          if (isTargetCoolingDown(self.zeroOutputCooldowns, candidate.provider, candidate.realId, self.options.now?.() ?? Date.now())) {
-            cooling.push(`${candidate.provider}(${candidate.realId})=零输出冷却中`)
-            continue
-          }
           const cap = learnedContextWindow(contextWindowKey(candidate.provider, candidate.realId))
             ?? self.candidateWindow.get(candidate.provider + sep + candidate.realId)
           if (cap !== undefined && cap < required) {
@@ -1483,17 +1568,24 @@ export class AggregateAdapter extends LlmAdapter {
           //    （`dsh-compaction-basic` 的 request-error listener 第一行即本判据），
           //    压缩后重发才是唯一出路（9.22 要点 5：不硬发被截断）。
           //    代价刻意取**不对称**：误判最多白压缩一次；硬发的代价是**回答被截断**。
+          // ⚠️⚠️ **必须先清掉本会话的观测再抛**（Issue F-04）：这条判词的含义是
+          //    「按**陈旧**观测看，没有候选装得下」，而不是「我们量到了本轮的真实体积」。
+          //    留着它，DSH 压缩后重发的下一次请求会读到**同一个数字**、再抛一次 ⇒
+          //    **压缩重试死循环**（进程存活期内该会话永久不可用）。
+          //    清掉后退回「未知 ⇒ 不筛」（与没有观测的既有分支同一条路径），
+          //    硬发的代价最多是被上游截断，而循环的代价是**会话彻底不可用**。
+          self.lastContextTokensBySession.delete(sessionKey)
           throw new LlmError(
-            `aggregate: 本轮约 ${observedTokens} tokens，已超出全部 ${targets.length} 个候选的`
-            + `已知上限 [${skipped.join(', ')}]，已在压缩上下文后重试。`,
+            `aggregate: 本轮约 ${observedTokens} tokens（本会话最近一次观测），已超出全部 `
+            + `${targets.length} 个候选的已知上限 [${skipped.join(', ')}]，已在压缩上下文后重试。`,
             CONTEXT_WINDOW_EXCEEDED_CODE,
           )
         } else if (kept.length === 0) {
-          // 剩下的唯一成因是「候选全在零输出冷却中」（**瞬时针**，不是装不下）：
-          // 压缩对它毫无帮助 —— 照常逐个尝试，冷却目标会自己失败并切换。
+          // 剩下的唯一成因是「非冷却候选全被体积筛掉，而池里仍有候选在零输出冷却中」：
+          // 冷却（**瞬时针**）不是装不下的证据，压缩对它毫无帮助 —— 照常逐个尝试。
           self.ctx.logger?.warn?.(
-            `[jet-hub] 候选筛选 ${modelKey}: ${cooling.length} 个候选全在零输出冷却中`
-            + `[${cooling.join(', ')}]，放弃筛选、照常逐个尝试`,
+            `[jet-hub] 候选筛选 ${modelKey}: 非冷却候选全部装不下（需 ${required}），`
+            + `但仍有 ${cooling.length} 个候选在零输出冷却中 [${cooling.join(', ')}]，照常逐个尝试`,
           )
         }
       }
@@ -1732,11 +1824,29 @@ export class AggregateAdapter extends LlmAdapter {
               const seen = contextTokensOfUsage(chunk.usage)
               if (seen !== undefined) {
                 turnTokens = seen
-                self.lastContextTokens = Math.max(self.lastContextTokens ?? 0, seen)
+                // ⚠️ `Math.max` **只作用于同一次请求内部**（落在这个局部变量上）；
+                //    落桶是**覆盖**，这样会话被压缩变小后观测值能如实下降
+                //    ——「只增峰值」正是 F-04 的根因。详见字段声明处注释。
+                requestTokens = Math.max(requestTokens ?? 0, seen)
+                self.recordSessionContextTokens(sessionKey, requestTokens)
               }
             }
             if (chunk.type === 'finish' && chunk.reason.kind === 'max-tokens') {
-              const observed = self.lastContextTokens
+              /**
+               * ⚠️⚠️ **学习值必须取「本次尝试」的规模，不是进程/会话峰值**（Issue F-04 第 ② 条）。
+               *
+               * 原先读的是那个进程级只增峰值 ⇒ 一处**静默的学习失效**：宽候选观测过
+               * 90 万之后，窄候选（真实上限 26.2 万）以 max-tokens 收场时送进去的是
+               * 90 万 ⇒ `rememberContextWindowCeiling` 「只在更小时覆盖」⇒
+               * **永远学不进 26.2 万** ⇒ cap 恒 90 万 ⇒ 方案 C 恒不跳过该窄候选 ⇒
+               * 每轮都派给它、每轮都被截断。
+               *
+               * ⇒ 改用 `turnTokens`（只由本次尝试的 usage 帧记录）。这与它在
+               * :1511 声明处的自警「拿峰值去放宽窄候选就是填大（危险方向）」同一口径，
+               * 本条只是把同一判断补到学习点上。
+               * ⚠️ 没观测到 usage ⇒ `undefined` ⇒ **不学**（「未知不编造」）。
+               */
+              const observed = turnTokens
               if (observed !== undefined) {
                 // ⚠️ **只记该候选**（2026-10-12 修正，与上面的失败路径同口径）：记虚拟模型
                 //    会把整个虚拟模型的对外声明粘性压低 ⇒ 换回宽候选也不恢复。
@@ -1933,6 +2043,24 @@ export class AggregateAdapter extends LlmAdapter {
   }
 
   /** 把请求转发给一个候选，按目标档位表翻译 `reasoningEffort`。 */
+  /**
+   * 记录某会话**最近一次请求**观测到的上下文规模（Issue F-04）。
+   *
+   * ⚠️ 语义是**覆盖**，不是取最大 —— 会话被压缩变小后观测值必须能如实下降，
+   * 否则又回到「只增峰值」的老毛病（那正是 F-04 的根因）。
+   * 「请求内取最大」由调用方的局部变量负责（usage 一次请求可能来多帧）。
+   * ⚠️ 容量上限 512（超出淘汰最旧一条）：与会话数同阶，防无界增长。
+   */
+  private recordSessionContextTokens(sessionKey: string, value: number): void {
+    // `delete` + `set` 保证插入序即「最近写入序」，淘汰最旧一条时才有确定语义。
+    this.lastContextTokensBySession.delete(sessionKey)
+    this.lastContextTokensBySession.set(sessionKey, value)
+    if (this.lastContextTokensBySession.size > 512) {
+      const oldest = this.lastContextTokensBySession.keys().next()
+      if (!oldest.done) this.lastContextTokensBySession.delete(oldest.value)
+    }
+  }
+
   private streamThrough(target: DispatchTarget, options: GenerateOptions): AsyncIterable<StreamChunk> {
     const base = { ...options, provider: target.provider, model: target.realId }
     const requested = options.reasoningEffort
