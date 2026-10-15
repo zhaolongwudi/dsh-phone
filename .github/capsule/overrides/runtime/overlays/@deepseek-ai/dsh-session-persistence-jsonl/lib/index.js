@@ -2559,7 +2559,13 @@ var JsonlSessionPersistence = class extends SessionPersistence {
 		if (this.tracker.writers.has(id)) throw new Error("Session writer has not released");
 		this.tracker.pending.delete(id); this.coldLogMemo.delete(id);
 		const directory = dirname(this.locate(header).path);
-		if (basename(directory) !== id || !directory.startsWith(this.root + "/") || (await lstat(directory)).isSymbolicLink()) throw new Error("Unsafe session directory");
+		// ⚠️ Issue F-13：目录名是 encodeSegment(id)（见 :914-915），而旧断言拿**原始 id** 比对 —— 只要 id
+		// 含 `:`/`/`/`~`/中文等需要转义的字符，断言就恒真，该会话永远删不掉（它同时是 F-10 的抛错点）。
+		// 断言按实际编码比对；目录已不存在时按 rm(force) 的幂等意图直接返回，而不是抛 ENOENT。
+		if (basename(directory) !== encodeSegment(id) || !directory.startsWith(this.root + "/")) throw new Error("Unsafe session directory");
+		let info;
+		try { info = await lstat(directory); } catch (error) { if (isENOENT(error)) return; throw error; }
+		if (info.isSymbolicLink()) throw new Error("Unsafe session directory");
 		await rm(directory, {recursive: true, force: true});
 	}
 	async stat(id, options) {
@@ -3163,7 +3169,13 @@ var JsonlSessionPersistence = class extends SessionPersistence {
 		await this.rejectExistingLog(finalPath, id);
 		// The SDK's write lease creates session.lock before materialization.
 		// Keep its inode stable: replacing the directory would break exclusion.
-		if ((await readdir(dir)).some(name => name !== LEASE_FILENAME)) throw new Error(`refusing to materialize "${id}": unexpected files in session directory`);
+		// ⚠️ Issue F-11：进程若在「临时文件已写 → publish 完成」窗口内被杀（Android 后台回收/省电杀进程很常见），
+		// 目录里会永久留下 `<log>.<hex>.tmp`。旧判据把它当非法文件 ⇒ 该 session id 此后**每次**首次落盘
+		// 都在这里抛错，而日志从未发布，既打不开也不能重建，且没有 GC 路径。这里只放行 `.tmp`
+		// 并在 materialize 前回收它们（同 id 由 session.lock 写租约独占，不存在并发写者）。
+		const leftovers = (await readdir(dir)).filter(name => name !== LEASE_FILENAME);
+		if (leftovers.some(name => !name.endsWith(".tmp"))) throw new Error(`refusing to materialize "${id}": unexpected files in session directory`);
+		for (const name of leftovers) await rm(join(dir, name), { force: true });
 		const temporary = await this.writeSyncedTempFile(finalPath, content);
 		try {
 			await this.publishNewFileAndroid(temporary, finalPath);
