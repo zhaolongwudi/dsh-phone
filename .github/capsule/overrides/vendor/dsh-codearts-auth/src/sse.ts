@@ -77,8 +77,12 @@ export async function readWithIdleTimeout(
  * ⚠️ **不能用 `String(name).length > 0` 代替**：`undefined` / `null` 经 `String()`
  * 会变成 `"undefined"` / `"null"` 这类**非空**字符串，于是"缺名字"被误判成
  * "有名字"，原样发给上游照样 400。判据必须落在原始值上。
+ *
+ * ⚠️ `name is string` 这个类型谓词是**纯编译期**的收窄（运行期行为逐字节不变），
+ * 它让调用方在判过之后可以直接使用 `name` 而无需再断言 —— 网关侧因此不必写
+ * `String(...)` 或 `!`，那两种写法都会把「判据」与「取值」拆成两份、进而漂移。
  */
-export function hasUsableToolName(name: unknown): boolean {
+export function hasUsableToolName(name: unknown): name is string {
   return typeof name === 'string' && name.trim().length > 0
 }
 
@@ -1067,8 +1071,28 @@ export function fixDsmlMarkers(text: string): string {
 export function createDsmlMarkerNormalizer() {
   /** 待定缓冲（可能构成模式前缀的尾部）。 */
   let pending = ''
-  /** 这些模式的**真前缀**都可能还差后续输入才算得清，必须扣住。 */
-  const PREFIX_PATTERNS = ['<｜｜DSML', '</｜｜DSML', 'DSML｜｜']
+  /**
+   * 这些模式的**真前缀**都可能还差后续输入才算得清，必须扣住。
+   *
+   * ⚠️⚠️ **两竖线与三竖线两种坏标记都要列**（Issue F-56）。
+   *
+   * 判据是「尾部是否可能是某个模式的**真前缀**」，而扣留靠的是候选串本身 ——
+   * 只列双竖线时，三竖线形态在「帧恰好停在第三根竖线之后」这一种切法下会漏：
+   * 尾部 `<｜｜｜` **不是** `<｜｜DSML` 的前缀（第 4 个字符 ｜ ≠ D）⇒
+   * `holdBackLen` 返回 0 ⇒ 半截标记当场作为正文下发，后续帧再也拼不回标记
+   *（`fixDsmlMarkers` 对 `<｜｜｜` 单独一段无能为力）⇒ 工具调用整段当正文。
+   * 实测形态（上游 `dsml.ts` 的 `isDsmlLabelPrefix` 同样按「三根冗余容错」写）：
+   * `<｜｜｜DSML｜ calls>`。
+   *
+   * ⚠️ **上界刻意是 3**（与上游同口径）：四根以上的异常形态宁可放过，
+   * 也不能把正文里任意长的竖线串无限期扣住（本函数只做**逐帧**归一，
+   * 不承担「正文过滤器」的职责 —— 那个边界见 `fixDsmlMarkers` 的 `DSML`
+   * 后必须跟分隔符那条）。
+   */
+  const PREFIX_PATTERNS = [
+    '<｜｜DSML', '</｜｜DSML', 'DSML｜｜',
+    '<｜｜｜DSML', '</｜｜｜DSML', 'DSML｜｜｜',
+  ]
   /** 最长模式长度（决定扣住窗口上限）。 */
   const MAX_PENDING = 9
   /** 计算应扣住的尾部长度（最长匹配优先）。 */
