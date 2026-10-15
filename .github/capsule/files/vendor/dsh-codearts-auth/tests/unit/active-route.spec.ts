@@ -82,9 +82,13 @@ describe('active-route：两处写入点', () => {
     //    写 modelKey 会让读数恒显示 `auto` 这类虚拟名，等于没做。
     expect(source).not.toMatch(/activeRoutes\.record\(\s*AGGREGATE_PROVIDER,\s*target\.provider,\s*modelKey\s*\)/)
     // 且必须在候选循环体内（每次尝试都覆盖写 ⇒ 失败切换后读数跟着变）。
-    // ⚠️ 循环头 2026-10-12 起是 `attemptTargets`（方案 C 的候选筛选后列表；
-    //    未筛时它与 `targets` 同一引用）—— 断言只关心「record 在循环体内」。
-    const loopIndex = source.indexOf('for (let index = 0; index < attemptTargets.length; index += 1)')
+    /* ⚠️ 断言只关心「record 在候选循环体内」，**不钉循环头的具体变量名**。
+       rc.11 的循环头是 `targets.length`（胶囊旧版是 `attemptTargets.length`）——
+       两者语义相同（未筛时同一引用），钉变量名会随上游重构假红。
+       本仓库反复记录过「验证手段自身腐坏」，故改为语义判据：
+       存在任一 `for (let index = 0; index < …length` 循环，且 record 在其后。 */
+    const loopMatch = source.match(/for \(let index = 0; index < \w+\.length/)
+    const loopIndex = loopMatch === null ? -1 : loopMatch.index ?? -1
     const recordIndex = source.indexOf('activeRoutes.record(AGGREGATE_PROVIDER')
     expect(loopIndex).toBeGreaterThan(-1)
     expect(recordIndex).toBeGreaterThan(loopIndex)

@@ -476,6 +476,21 @@ const PROMPT_TOO_LONG_BODY = /\bprompt\s+is\s+too\s+long\b[\s\S]{0,40}?\b\d[\d,]
  * ⚠️ **导出是给 `zcode-adapter.ts` 用的**（它的端点是 Anthropic 协议，原生超限
  * 报文宿主认不出）。两处**必须同源**，否则会重演「只改了一条通道」的缺陷。
  */
+/**
+ * **SSE 流内失败**的归码（手机版补）。
+ *
+ * ⚠️ 流内失败（HTTP 200 + SSE 错误帧）此前固定写 `SERVER`，而 `SERVER`
+ * **不触发** DSH 的压缩恢复链（`dsh-compaction-basic` 的 listener 第一行就是
+ * `if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE) return next()`）
+ * ⇒ 直连的长会话越过窗口后**每轮报废**。
+ *
+ * ⚠️ 与上面那个函数**同源**（都用 isContextOverflowBody 的判据），
+ * 不得各写一份（本仓库红线：同一语义不得两套判据）。
+ */
+export function sseFailureCode(text: string): string {
+  return isContextOverflowBody(text) ? CONTEXT_WINDOW_EXCEEDED_CODE : 'SERVER'
+}
+
 export function isContextOverflowBody(body: string): boolean {
   return body.length > 0
     && (isContextWindowExceededError(body) || PROMPT_TOO_LONG_BODY.test(body))
