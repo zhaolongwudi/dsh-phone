@@ -837,8 +837,120 @@ assistant 消息只有 `reasoning` + `text` 两块、**没有任何 `tool/call` 
 **聚合层零改动也照样中招**。即：这类缺陷的排查不能停在聚合层。
 
 
+## 5.9 ⚠️⚠️ 模型上下文窗口初版**全是估值**（2026-10-15 真机取证改正）
+
+**用户报障**：「验证一下 officeace 的 ds v4.1 flash 模型的上下文窗口是不是只有
+197k，还是可以 1m —— 我们设置的不对」。
+
+### ① 结论：初版小 5.3 倍，且**症状是静默降级**
+
+`OFFICEACE_MODELS` 初版的 `contextWindow` 一列**没有任何实测**：GLM 三行的
+`202_752` 与 CodeArts 表里的 `GLM-5.2` **逐字相同**（`llm-adapter.ts` 的
+`CONTEXT_WINDOWS`），`deepseek-v4.1-flash` 的 `196_608` 查无出处
+（`git log -S196_608` 只在 `a9dc173` 引入过一次，即 PR !89 的 rebase）。
+
+实测真实上限 **1_048_576**。后果**不是报错而是静默降级**：DSH 的自动压缩阈值是
+`min(contextWindow × 0.8, …)`（`dsh-compaction-basic`）⇒ 上下文涨到
+`0.8 × 196_608 ≈ 157K` 就压缩，**1M 的能力永远吃不到**；上下文占用指示器的分母
+也是错的。⚠️ **「设小了」比「设大了」更难发现**：设大了会 400，设小了只是提前压缩。
+
+### ② 取证手段：让**上游自己说数**（不需要穷举，被拒请求免费）
+
+发一个远超上限的 prompt（`content = ' the'.repeat(1_200_000)`），上游在**推理前**
+就拒绝，报文里**自报上限**：
+
+| 模型 | 上游原话 | 取值 |
+|---|---|---|
+| `deepseek-v4.1-flash` | `input token limit is 1048576` | **`1_048_576`** |
+| `deepseek-v4-flash` | `the prompt length 1200004 must less than the maximum input length 1044480` | `1_044_480` |
+| `glm-5.2` | 同上句式，`1044480` | `1_044_480` |
+| `glm-5.1` | 同上句式，`196608` | `196_608` |
+| `kimi-k2.6` | 同上句式，`262144` | `262_144` |
+| `qwen3-32b` / `qwen3-30b-a3b` | `This model's maximum context length is 131072 tokens` | `131_072`（原值即对）|
+| `glm-5.3` | 只回 `Prompt exceeds max length`，**不给数** ⇒ 改走**夹逼**（见下）| `1_048_576` |
+
+⚠️ **`glm-5.3` 是唯一不给数的**，故用**夹逼**：`1_200_004` 拒、`1_050_038` 拒、
+**`1_048_025` 接受（200，`usage.prompt_tokens=1_048_025`）**
+⇒ 上限落在 `(1_048_025, 1_050_038]`（宽 **2_013**），该区间内**只有 1 MiB = `1_048_576`
+这一个整数兆** ⇒ 取值确定。⚠️ 它的**针尖问句判不出来**：`glm-5.3` 是**思考型**模型，
+`max_tokens: 128` 被 `reasoning_content` 吃满后就 `finish_reason: 'length'` 且
+`content` **恒为空** —— 那是**判分口径**问题（探针已把输出预算提到 2048），
+**不是**截断；窗口结论**不依赖**针尖。
+
+⚠️ **两种报文三种形状**（`ModelArts.81001` / `InvalidParamException` / 通义原生），
+故上一行不能写成一条正则 —— 但**都自报数值**，除 `glm-5.3` 外。
+
+输出上限同理自报（小输入 + 超大 `max_tokens`）：
+
+- `deepseek-v4.1-flash` / `deepseek-v4-flash`：`max_tokens range is [1, 393216]`
+- `glm-5.3` / `5.2` / `5.1`：`max_tokens must be between 0 and 131072`
+- `kimi-k2.6`：`2_000_000` **都不拒**（未取到上限，留保守值）
+- ⚠️ 该轮里 `max_tokens=200001` 对 `deepseek-v4.1-flash` / `kimi-k2.6` 是 **HTTP 200**
+  —— **别把「200」读成「上限很高」**，它只是没触到阈值；要拿数必须发得足够大。
+
+### ③ 交叉验证：**针尖试验**（证明不是「只被接受」）
+
+只证明「请求被接受」不够 —— 网关**静默截断头部**也会得到同样的 200。
+故另做 needle-in-haystack：密码放**最头部**、提问放**最尾部**、`max_tokens: 128`：
+
+| 输入 `prompt_tokens` | 密码 | 模型回答 | 结论 |
+|---|---|---|---|
+| 250_054 | `CODE-413812` | `CODE-413812` | ✅ |
+| **1_020_054** | `CODE-674004` | `CODE-674004` | ✅ **头部真的可见** |
+| 1_100_000 | — | HTTP 400 `input token limit is 1048576` | 硬限 |
+
+⇒ 1_048_576 是**输入硬限**且头部不被截断。另：`/v2/models` **不返回任何窗口元数据**
+（只有 `id/object/created/owned_by`），`/v2/models/<id>` → 404 `APIG.0101`
+⇒ 上游自报是这一列**唯一**的可取证来源。
+
+### ④ 落地的三处口径
+
+1. `contextWindow` 填**输入上限**（上游措辞即 `input token limit`），而 DSH 的
+   `contextWindow` 是「输入 + 输出」总容量 ⇒ **偏保守**，压缩阈值稳落在硬限之下。
+2. ⚠️ 用户 2026-10-15 明确「1M 可以就用 1M」⇒ `deepseek-v4.1-flash` 取
+   **`1_048_576`**（= 上游自报值 = 1 MiB）。⚠️ 别为「凑整 1_000_000」改它 ——
+   CodeArts 那侧的 `1_000_000` 是**另一个网关的**实测值，两条渠道**不必等值**。
+3. ⚠️ `maxTokens` 顺手改成实测值，但**它目前是死字段**：`resolveModel` 只下发
+   `contextWindow` 与模态，**没有任何代码读 `maxTokens`**（见 §6）。
+
+### ⑤ 两个**渠道本身的坑**（不是窗口问题，但取证时都会撞上）
+
+1. ⚠️⚠️ **`glm-5.3` 的「非流式」200 响应在 Node/undici 下是坏 gzip**：报
+   `TypeError: terminated`（`cause: Z_DATA_ERROR`），而**同一 host** 的
+   `deepseek-v4.1-flash` 正常、`glm-5.3` 自己的 **400** 也正常
+   ⇒ 只有它的**非流式 200 体**坏。自建探针必须显式发 **`Accept-Encoding: identity`**，
+   否则**永远拿不到它的答案**、还会误判成「网络不稳 / 请求太大被掐」。
+   ⚠️ **对插件无影响，已实测**（2026-10-15）：**流式**（`stream: true` + SSE，即
+   `officeace-adapter.ts` 的**唯一**推理路径）对 glm-5.3 **正常**（`identity` 有无都一样），
+   而插件的另一处非流式调用是 `probe()` 打的 **`/v2/models`**（目录端点，也正常）
+   ⇒ 这条只坑**自建的非流式探针**，不是渠道缺陷。
+2. ⚠️ **`glm-5.3` 是思考型模型**：`reasoning_content` 与 `content` 是**两个字段**，
+   输出预算不够时 `content` 恒空、`finish_reason: 'length'`
+   ⇒ 只看 `content` 会把「预算不够」误读成「没读到针尖」。
+
+### ⑥ 复现脚本
+
+`scripts/probe-officeace-limits.mjs`（只读凭据 + 只发请求，`--ref` 选账号；
+⚠️ `scripts/` 已 gitignore，与其它探针同例 = **仅本机保留**）：
+`--limits` 自报上限一轮全打、`--needle --model <id>` 针尖试验、`--maxout` 输出上限。
+⚠️ 会真的消耗额度（针尖一轮约 1M input token；**超限被拒的请求不产生生成费用**）。
+⚠️ 本轮取证在 `OFFICEACE_ACCOUNT_DE2A4FB8` 上消耗约 **4.2M input token**
+（6 次被接受的请求：250K / 600K / 1.02M / 250K / 1.02M / 1.048M，另 1 次 20K；
+其中两次命中前缀缓存）。
+⚠️ 余额**读不到实时值**：`/v1/subscription` 仍要求 IAM/V11 签名（当前 `APIG.0301`）
+⇒ `fetchSubscriptionSummary` 回落到本地缓存（`stale: true`），**无法据此核对扣费**。
+
 ## 6. 待办 / 已知缺口
 
+- ✅ ~~**`glm-5.3` 的上下文窗口未取证**~~ —— **2026-10-15 已取证**：夹逼定在
+  `(1_048_025, 1_050_038]` ⇒ `1_048_576`（见 §5.9）。原文这条已过期，保留一行是
+  为了留下「上游不给数时**夹逼**仍然可判」这个手法。
+- ⚠️ **上游若调窗口，本插件不会知道**：`/v2/models` 零元数据（§5.9 ②）⇒ 这八行是
+  **快照**，只能靠重跑 `scripts/probe-officeace-limits.mjs --limits` 发现漂移。
+  若将来这列又可疑，**先跑探针再改值**。
+- ⚠️ **`OFFICEACE_MODELS` 的 `maxTokens` 是死字段**（2026-10-15 登记）：写了从没人读
+  （`resolveModel` 只下发 `contextWindow` 与模态）。值已按 §5.9 实测更新，但**填了不生效**；
+  要让 DSH 用上得先接 `defaultMaxTokens`（同 `minimax` / `raccoon` 的做法）。
 - ✅ ~~**`maasBaseUrl` 是死字段**：写了从不读~~ —— **2026-10-13 已修**（见 §5.7）：
   推理/探测三处改读凭据里的 `maasBaseUrl`（缺失回退默认域）；V11 管理面
   （`/v1/subscription`、`/v1/model-token-rates`）实测两个 host 都存在且都要求 IAM

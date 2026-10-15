@@ -478,34 +478,6 @@ export class OfficeAceAdapter extends LlmAdapter {
       toolsPayload = undefined
     }
 
-    // ⚠️⚠️ **本 payload 刻意不含 `reasoning_effort`**（2026-10-14 实测）。
-    //
-    // 起因：workbuddy 的 `deepseek-v4.1-flash` 实测存在「下发该字段 ⇒ 工具调用前
-    // 的正文前言被整段吞掉」的缺陷（`buddy-adapter.ts` 的
-    // `suppressesProseWhenEffortSent` 有完整表格），遂在本渠道复测同一问题。
-    //
-    // **实测结论：本渠道没有这个缺陷，故此处保持不下发，但原因与 workbuddy 不同 ——
-    // 是「关不掉」而不是「不必关」**：
-    //
-    // | `reasoning_effort` | 有正文 | 服务端权威计数 `reasoning_tokens` |
-    // |---|---|---|
-    // | 不下发（本适配器现状） | 1/10 | **0/8 为 0**，中位 172 |
-    // | `low`  | 0/10 | 正常 |
-    // | `high` | 3/10 | 正常 |
-    // | `max`  | 2/10 | 正常 |
-    //
-    // 关键差别：**不下发该字段时思考照跑**（8 次采样 `reasoning_tokens`
-    // 无一次为 0），所以「不发」在本渠道**并不能关掉思考**；四格正文率都在
-    // 噪声区间内（0/10~3/10），即 `deepseek-v4.1-flash` 经**华为 MaaS 网关**
-    // 无论是否指定档位都会吞掉工具调用前的前言。
-    //
-    // ⇒ 结论：**本渠道无法靠「不发 `reasoning_effort`」解决**，workbuddy 那个
-    // 修法搬不过来。控制点在本文件上方 `MAX_TOKENS_FLOOR` 处记的同源现象
-    // （小预算被思考烧光、正文 0 字），那才是本渠道真正的可用性风险。
-    //
-    // 另记：服务端对档位**有**校验（`off` 与任意垃圾值 → HTTP 400
-    // `ModelArts.81001`，报文写明白名单 `none|low|medium|high|xhigh|max`），
-    // 与 workbuddy 的 `code:11150` 是两套错误码，别混用判据。
     const payload = JSON.stringify({
       model,
       messages: wireMessages,

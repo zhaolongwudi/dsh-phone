@@ -55,7 +55,7 @@ export const OPENCODE: OpencodeProduct = {
   // ⚠️ 必须与客户端 `PROVIDERS` 里的 label 逐字一致（rail 宽度算式依赖它，
   // 且 `opencode-client-panel.spec.ts` 有跨文件一致性断言）。
   displayName: 'OpenCode',
-  baseUrl: 'https://opencode.ai/zen',
+  baseUrl: 'https://opencode.ai/inference',
   chatPath: '/v1/chat/completions',
   modelsPath: '/v1/models',
   // ⚠️ 与本仓库其余 provider 的流式超时常量同档（保守值）。
@@ -64,8 +64,8 @@ export const OPENCODE: OpencodeProduct = {
   // ⚠️ 匿名凭证是**字面量** `public`：opencode 官方 CLI 在没有 key 时自己就用它
   // （其 provider.ts 的 opencode 分支：`options: ok ? {} : { apiKey: 'public' }`）。
   anonymousKey: 'public',
-  // ⚠️ 兜底 UA 版本号。接线层会用真机 `opencode --version` 的结果覆盖它。
-  defaultUserAgent: 'opencode/1.18.22',
+  // V2 UA；旧版 CLI 探测值由 opencodeUserAgent 拦截，不能降级到已失效的协议。
+  defaultUserAgent: 'opencode/latest/2.0.29/cli',
   /**
    * 模型能力元数据源（**远端**，能力的主来源）。
    *

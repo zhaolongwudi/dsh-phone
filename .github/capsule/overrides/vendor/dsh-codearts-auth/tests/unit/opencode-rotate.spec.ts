@@ -253,9 +253,10 @@ describe('轮换：认证与形状门禁', () => {
       markLimited: async () => {},
       warn: (m) => warns.push(m),
     })
-    await expect(run(a)).rejects.toThrow(/形状/)
+    await expect(run(a)).rejects.toThrow(/协议门禁/)
     expect(count).toBe(1)
-    expect(warns.join()).toContain('session id')
+    expect(warns.join()).toContain('session 算法')
+    expect(warns.join()).toContain('工具 schema')
   })
 
   /**
@@ -290,7 +291,7 @@ describe('轮换：认证与形状门禁', () => {
     expect(error).toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(error.code).not.toBe('AUTH')
     // ② 指路的文案必须还在（客户端对 `PERMISSION_DENIED` 原样透传 message）。
-    expect(String(error.message)).toContain('形状')
+    expect(String(error.message)).toContain('协议门禁')
     expect(String(error.message)).toContain('换 API key 或换出口都无效')
   })
 
@@ -360,7 +361,7 @@ describe('请求指纹', () => {
     expect(seen[0]).not.toBe(seen[1])
   })
 
-  it('⚠️ 不发 x-session-affinity（真实 CLI 不发，多发是可检测差异）', async () => {
+  it('V2 关联头使用同一 session，不发旧版 request ID', async () => {
     let seen: Record<string, string> = {}
     vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
       seen = init.headers as Record<string, string>
@@ -368,13 +369,15 @@ describe('请求指纹', () => {
     })
     const a = new OpencodeAdapter({ identitySlots: async () => [account('a', 'sk-a')] })
     await run(a)
-    expect(seen['x-session-affinity']).toBeUndefined()
-    expect(seen['X-Session-Id']).toBeUndefined()
+    expect(seen['x-session-affinity']).toBe(seen['x-opencode-session'])
+    expect(seen['X-Session-Id']).toBe(seen['x-opencode-session'])
+    expect(seen['x-opencode-session-id']).toBe(seen['x-opencode-session'])
+    expect(seen['x-opencode-request']).toBeUndefined()
     expect(seen['x-opencode-session']).toMatch(/^ses_/)
     expect(seen['x-opencode-client']).toBe('cli')
   })
 
-  it('body 恒带 stream:true 与 bash/read 门禁工具', async () => {
+  it('body 恒带 stream:true 与 read 门禁工具（不注入 shell）', async () => {
     let body: Record<string, unknown> = {}
     vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
       body = JSON.parse(String(init.body)) as Record<string, unknown>
@@ -384,8 +387,7 @@ describe('请求指纹', () => {
     await run(a)
     expect(body.stream).toBe(true)
     const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name)
-    expect(names).toContain('bash')
-    expect(names).toContain('read')
+    expect(names).toEqual(['read'])
   })
 
   it('同一会话内 session id 稳定（跨请求不漂移）', async () => {

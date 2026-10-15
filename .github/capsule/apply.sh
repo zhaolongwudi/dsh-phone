@@ -672,9 +672,17 @@ done
 grep -qF -e "toolResultInlineImages" vendor/dsh-codearts-auth/src/gemini-messages.ts
 grep -qF -e "pendingToolImages.push(...innerImages)" vendor/dsh-codearts-auth/src/gemini-messages.ts
 #
-# —— F-18 workbuddy 不得下发 reasoning_effort ——
-grep -qF -e "suppressesProseWhenEffortSent" vendor/dsh-codearts-auth/src/buddy-adapter.ts
-grep -qF -e "!suppressesProseWhenEffortSent(this.product.id)" vendor/dsh-codearts-auth/src/buddy-adapter.ts
+# —— F-18 **已撤回**（Gitee IKLMIY revert，2026-10-15）：workbuddy 正常下发 reasoning_effort ——
+#     原判据 `suppressesProseWhenEffortSent` 被上游 revert：该字段正是 workbuddy 的
+#     「思考开关」，不发会让该渠道**完全不思考**；正文丢失的真因另在别处（撤回理由与
+#     真机复测记在上游 docs/agent-notes/providers-buddy.md）。
+#     故这里改为**反向断言**：原判据一旦被重新引回，构建期立刻红。
+grep -qF -e "bodyObj.reasoning_effort = plan.effort" vendor/dsh-codearts-auth/src/buddy-adapter.ts \
+  || { echo "::error::F-18：buddy-adapter 未按原样下发 reasoning_effort（撤回被改坏？）"; exit 1; }
+if grep -qF -e "suppressesProseWhenEffortSent" vendor/dsh-codearts-auth/src/buddy-adapter.ts; then
+  echo "::error::F-18 已撤回（IKLMIY）：suppressesProseWhenEffortSent 不应再出现在 buddy-adapter"
+  exit 1
+fi
 #
 # —— F-20 网关空名工具调用必须剔除而非 400 ——
 grep -qF -e "isUsableToolCallId" vendor/dsh-codearts-auth/src/openai-gateway/messages.ts

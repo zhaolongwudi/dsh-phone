@@ -28,7 +28,8 @@
  * `buddy` 与 `workbuddy` **共用** `buddyExpiry`、只换 product 配置 ——
  * 与 `BuddyProduct` 驱动其余差异同款，避免同族分叉。
  *
- * ## ⚠️ 只覆盖**已接入临期折算**的 7 家
+ * ## ⚠️ 只覆盖**已接入临期折算**的渠道（刻意不在此写数字：权威是
+ * `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`，抄一份必然漂移）
  *
  * 未接入的渠道（`qoder` / `qodercn` / `cline` / `raccoon` / `minimax` /
  * `gemini` / `opencode`）**刻意缺席**：它们的余额响应没有跨账号的到期口径
@@ -43,8 +44,9 @@
  * 源码里有没有为它写折算原语）—— 不是同一件事，故不能互为派生源。
  *
  * ⇒ **别把那个常量改成本表的派生值**（它看起来像一份冗余的手抄清单，其实不是）。
- * 它在源码里有 **4 个**消费点：`aggregate-adapter.ts` 的**三处**过滤
- *（探测过滤 / 候选过滤 / 虚拟模型过滤）加 `aggregate-expiry.ts` 的「未接入」短路；
+ * 它在源码里有 **5 个**消费点：`aggregate-adapter.ts` 的**四处**过滤
+ *（探测排序 / 面板候选 / 虚拟模型播报 / 选择器价格后缀）加 `aggregate-expiry.ts`
+ * 的「未接入」短路（⚠️ **轮换候选**的闸门正是这处短路，不是那四处过滤）；
  * 更要紧的是它被**大量不调 `apply()`** 的既有测试消费（实测：在 `tests/unit` 里
  * grep「临期探针工厂名 + 左括号」共 36 处，减去 `expiry-runtime-parity.spec.ts`
  * 自己的 7 处 ⇒ **既有 29 处**；grep「`new` + `AggregateAdapter` + 左括号」共

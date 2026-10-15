@@ -2671,7 +2671,7 @@ fallback**（宁可取不到值时背景异常、能一眼看出，也不要一�
 本机实测 `dshmarket` / `dsh-rewind-plugin` 都写了 `tag.dataset.plugin`）：
 
 ```js
-const PLUGIN_ID = 'dsh-codearts-auth'          // = build.mjs 的 loaderId
+const PLUGIN_ID = 'dsh-providers-hub'          // = build.mjs 的 loaderId（必须等于包名）
 const STYLE_TAG_ID = PLUGIN_ID + '/jet-hub.css'
 const STYLE_SELECTOR = 'style[data-plugin-css=' + JSON.stringify(STYLE_TAG_ID) + ']'
 
@@ -2686,19 +2686,25 @@ export function installJetHubStyles() {
 }
 ```
 
-⚠️⚠️ **`PLUGIN_ID` 必须等于 `build.mjs` 的 `loaderId`**：宿主用的 `ownerId` 是
-`stripClientSuffix(registration.id)`，而 `registration.id` 就是构建脚本注入的 `loaderId`
-（本插件产物顶部 `window.__ModuleLoader__.load({ id: "dsh-codearts-auth", ... })`）。
-两边不一致时署名等于没署（`removeOwnedStyles('真实 id')` 删不到我们、
-`claimStyles` 也认不走）——代价是**它永远无主，缺陷原样复发**。
-`tests/unit/jet-hub-styles-ownership.spec.ts` 有一条用例逐字比对这两处。
+⚠️⚠️ **`PLUGIN_ID` 必须等于包名**（同一条腿的另一个入口，见
+[issue IKLUME](#⚠️⚠️-包名--插件身份四处载体必须逐字相同issue-iklume)）：宿主用的
+`ownerId` 是 `stripClientSuffix(registration.id)`，而 `registration.id` 就是构建脚本
+注入的 loader id（本插件产物顶部 `window.__ModuleLoader__.load({ id: "dsh-providers-hub", ... })`）。
+
+⚠️ **代价要说准，不要夸大**（2026-10 审计修正）：署名错了**不会**让 IKK764 原样复发 ——
+本插件自己闭包里的 disposer 照样会删掉自己那张表。真实代价只有两条，且都**静默**：
+
+1. 宿主侧样式 inventory 里**没有它**（`claimStyles(ownerId)` 认不走 ⇒ `data-plugin-css`
+   这条腿在宿主那里等于不存在）；
+2. 宿主的两道安全网对它失效（别的插件的 `claimStyles` 认领不走它、宿主的 `prune`
+   也回收不掉它）—— 失效方向是「少了一层保护」，不是「多了一次误删」。
 
 ⚠️ **本文件不得再出现模板字符串**：整份文件只允许 `STYLES` 首尾那两个反引号
 （三条既有护栏用例会计数，2026-10-08 我加 `data-plugin-css` 时用模板字符串
 接线，一次触发 3 条红）。故 `STYLE_TAG_ID` / `STYLE_SELECTOR` 一律用 `+` 拼接。
 
 ⚠️ **不需要 MutationObserver**：署名之后，唯一还能删掉这条标签的是
-`removeOwnedStyles('dsh-codearts-auth')`，它只出现在两条路径 ——
+`removeOwnedStyles('dsh-providers-hub')`，它只出现在两条路径 ——
 `replace(自己)`（factory **必然重跑**，DOM 存在性判断随之复位）与
 `prune`（此时本插件已不在模块图里，删样式是**正确**行为）。「DOM 存在性判断」已覆盖。
 
@@ -2732,5 +2738,199 @@ export function installJetHubStyles() {
 产物与源码构建结果经 sha256 逐字节比对确认同源。
 
 ⚠️ 变异验证时**不要**用 `git checkout -- <文件>` 还原（AGENTS.md 明令禁止）——
-我本次这么做过一次，把尚未提交的修复整个丢掉了、只能重做。
+本项目已因此丢过两次未提交的修复（2026-10-08 一次、2026-10 审计 IKLUME 一次）。
 还原应当用**事先备份的副本**（如 `$env:TEMP` 下的备份），或 `git stash` 之外的安全手段。
+
+## ⚠️⚠️ 包名 = 插件身份：四处载体必须逐字相同（issue IKLUME）
+
+**真实缺陷**（Gitee issue IKLUME）：`0.2.0-rc.11` 把包名从 `dsh-codearts-auth` 改成
+`dsh-providers-hub` 时，`build.mjs` 的 `loaderId` 与 `jet-hub-styles.js` 的 `PLUGIN_ID`
+**一起**留在了旧名上，而宿主那侧从来没有变 —— 它按**加载行名解析出的包名**建 client entry。
+于是前端产物注册 `dsh-codearts-auth`、宿主等 `dsh-providers-hub` ⇒ 该 entry 永远
+import 不到，启动即 `N entry did not activate`，桌面端落进恢复模式并把插件自动禁用。
+
+### 四处载体（缺一处都是静默失效）
+
+| # | 位置 | 谁在读它 |
+|---|---|---|
+| ① | `package.json` 的 `name` | **唯一真源**。宿主 `locatePkgJson()` 用 `nearestPackage(moduleUrl, expectedPackageName)` 校验它，`reconcilePackage(packageName)` 以它作 client graph 的**行 id** |
+| ② | `cordis.patch.yml` 加载行的 `name:` | 宿主 `resolveSource()` 读的**输入**；不匹配则 client 半边**静默跳过**（不是报错） |
+| ③ | `build.mjs` 产物首行 `__ModuleLoader__.load({ id })` | 前端 `register(registration)` 用 `registration.id`；宿主按它报 `loaded without registering "<pkg>"` |
+| ④ | `jet-hub-styles.js` 的 `PLUGIN_ID` | 样式标签的 `data-plugin` == 宿主 `ownerId`（见上一节） |
+
+⚠️ **① 之外的三个都必须从 ① 派生或与 ① 对齐**。③ 现在**直接由 ①（`package.json.name`）
+生成**，不再有字面量；④ 仍是字面量（浏览器模块运行期读不到 `package.json`，
+彻底消除它需要 esbuild `define` 构建期注入，**本轮刻意不做**），但已被
+**安装期闸门** + **行为用例**双重锁住。
+
+⚠️ **不要动**这两个里的 `codearts-auth`：`cordis.patch.yml` 加载行的 `id: codearts-auth`
+（loader 行锚点，与包名无关）与 `src/index.ts` 的 `export const name`（cordis 插件名）。
+同理 `JET_HUB_NS = 'jet-hub'`、`~/.dsh/jet-hub/` 状态目录、日志前缀、凭据 ref 前缀
+**全都与包名解耦**，改名时一个都不要跟。
+
+⚠️ 上面这组「与包名解耦」是**核过读点**的（2026-10 审计要求补证据，原先属未举证断言）：
+`git grep codearts-auth -- src/ plugin-src/` 命中的全部是**日志前缀**、五处 store 的
+`schema`、`BACKUP_FORMAT`（真读点，见本节末尾的落盘标记表）与 `cordis.patch.yml` 的行
+`id:`；**没有任何一处把它与 `package.json.name` 比较**。`src/index.ts:184` 的
+`export const name = 'codearts-auth'` 是 cordis 插件名 —— 它的对齐对象是 patch 行的
+`id:`，**不是**包名，所以它不是第 5 个身份载体；但它同样没有守卫，改名时容易被顺手
+误伤，故在此点名。
+
+### ⚠️⚠️ 安装期闸门：`pnpm add git+…` 不跑 vitest
+
+`plugin-src/client/build.mjs` 在构建前跑一次**身份自检**（判据本体住在
+`plugin-src/client/registration-id-check.mjs`，与单元测试**共用同一份**），不一致就
+**抛错中止**。⚠️ 它检查的**不是**「②③④ 都与 ① 逐字相同」这么整齐的一件事
+（2026-10 审计指出原话夸大：③ 本来就是从 ① **派生**的，谈不上「对齐」）——
+真正被检查的是这四条：
+
+1. ② `cordis.patch.yml` 的**加载行 `name:`** == ①；
+2. ④ `jet-hub-styles.js` 的 `PLUGIN_ID` **声明** == ①；
+3. ④ 的**署名使用点**没有写死字面量（`.plugin = '…'` / `setAttribute('data-plugin', '…')`）；
+4. **产物文本里回读到的注册 id** == ①（这一条与 ③ 的生成方式是两件事）。
+
+这条**必须**放在构建脚本里，理由（审计实测）：
+
+- `pnpm add git+https://…` 走的是 `prepare → build:all`（`tsc` + `copy-assets` + `build.mjs`），
+  **一次 vitest 都不会执行** ⇒ 单元测试里的守卫在**安装路径上保护力为 0**；
+- 构建脚本在**两条路径上都跑**（安装时经 `prepare`、开发时经 `pnpm build:client`）。
+
+熔断形态（改一处身份载体 ⇒ 文案指名到具体载体；改**产物生成方式** ⇒ 走下面第二条）：
+
+```
+Error: 客户端注册 id 自检失败（issue IKLUME）：
+- plugin-src/client/jet-hub-styles.js 的 PLUGIN_ID 必须是 "dsh-renamed-again"，实际 "dsh-providers-hub"（…）
+- cordis.patch.yml 的加载行 name: 必须是 "dsh-renamed-again"，实际 "dsh-providers-hub"（…）
+```
+
+```
+Error: 内部错误：产物里注册的 id 是 "dsh-codearts-auth"，与 package.json 的 name "dsh-providers-hub" 不一致
+```
+
+⚠️ 第二条是 **2026-10 对抗审计第一轮打穿后补的**，也是唯一「**不改任何身份载体、
+只改产物的 id 生成方式**」也拦得住的一格（见下）。
+
+### ⚠️⚠️ 闸门自己的四个洞（2026-10 两轮对抗审计，均已修）
+
+第一版闸门能拦「载体之间不一致」，但它自己有四个洞，其中三个是**零守卫**：
+
+| # | 洞 | 审计实测 | 现在的判据 |
+|---|---|---|---|
+| F1 | 写盘前的自检 `if (!wrapped.startsWith(header))` 是**恒真式**（`wrapped` 就是用 `header` 拼出来的） | 把产物 id 换成**写死的旧名** ⇒ 构建 **exit 0**、产物注册错名，而 stdout 照样打印 `registered id: dsh-providers-hub`（**成功日志谎报**） | 从**最终文本回读** `readRegisteredId()` 再比对（实测：同一变异现在 exit 1、且**产物没被写坏**） |
+| F2 | 只校验 ④ 的**声明**，不校验**使用点** | 把 `style.dataset.plugin` 的取值写成字面量 ⇒ 闸门 exit 0（单测红 8 条） | 闸门扫使用点；单测有专门一格（实测红） |
+| F3 | 闸门**本体零守卫**：`if (problems.length > 0)` 改成 `if (false)` ⇒ **21/21 全绿**（全仓找不到一条**代码**引用 `build.mjs`） | 同上 | ① 判据搬进 `registration-id-check.mjs`，单测用**临时目录夹具**直接打（6 条，含反向验证）；② `build.mjs` 改成**顶层无条件调用**（没有分支可以短路）；③ 再加一条**接线断言**（必须 import 且顶格调用）—— 实测：删掉调用 ⇒ 恰好那条红 |
+| F8 | 同一判据**两份**且语义不同（闸门「每一处 `name:` 都等于包名」vs 用例 `toHaveLength(1)`） | `cordis.patch.yml` 里放两条**都正确**的 `name:` ⇒ 闸门绿、用例红 | 收敛成**共享模块**：用例只断言「真实仓库 `checkRegistrationId(…) === []`」 |
+
+⚠️ 还修了两类**假红**（判据把合法写法判成错）：
+
+- **合法 YAML 尾注释**：`name: "dsh-providers-hub" # 加载行` 被旧判据报成
+  「**没有找到**加载行 name:」并让安装硬失败 —— 最坏的一种误导（把惯用写法说成
+  「你没写」），而真实的 `yaml` 解析器读到的值是对的（审计实测）。现在**先剥行尾
+  注释**（引号内的 `#` 不当注释）。
+- **产物头部逐字节锚定**：旧用例断言 `toContain('window.__ModuleLoader__.load({\n  id: "…",')`，
+  把头部**多行改单行**（行为等价，只读探针实测 `executed=1`）判红 2 条。现在用
+  `readRegisteredId()` 的正则回读，对形态不敏感（⚠️ 而**回读本身**必须有，否则就是
+  F1 那个恒真式 —— 两者是一枚硬币的两面）。
+
+⚠️ **已知射程**（不要当成全覆盖）：
+
+- 使用点判据只拦「直接写字面量」；把正确的声明复制进同名遮蔽作用域再用它署名
+  （审计 G13）拦不住 —— 那一格由**行为用例**拦（实测 8 条红），而行为用例在安装
+  路径上不跑。
+- 加载行判据**对缩进深度不敏感**：`config:` 块里的 `name:` 也会被当成加载行
+  （审计 G5，合成场景；10 个真实 patch 无反例，标**推断**）。
+- `package.json` 的 `name` 首尾带空白 ⇒ 已单列一条指出**真因就是它自己**
+  （审计 F9：原先两条 problem 都在指责另外两处载体，把该改的地方藏起来了）。
+
+### ⚠️ 宿主真身不在场时：需要宿主的那两条断言会**整组跳过**
+
+`tests/unit/client-registration-id.spec.ts` 里只有**两条**断言真的需要宿主真身
+（`@deepseek-ai/dsh-client-modules/lib/client.js`）：装载成功、以及它的反向验证。
+本仓库 devDependencies **不含**这个包（宿主侧包，只随 DSH 安装），所以：
+
+- 找不到时那两条 `describe.skip`，并**在控制台显式告警**（审计 F6：原先整组静默跳过、
+  `vitest` 仍 exit 0 —— 等于把「绿」当成「验过」）；
+- **不需要**宿主的断言（产物 id 回读、安装期闸门本体、三处载体一致性）**刻意留在
+  skip 组之外**，干净克隆 / CI 上仍然真的在验；
+- 要强制验真身（例如 CI 里挂了 DSH）用 **`DSH_HOST_CLIENT=<client.js 绝对路径>`**；
+  此时路径不存在会**抛错**而不是回退 —— 那是「必须验」的显式承诺，静默回退会骗人。
+
+⚠️ 三级查找（本仓库依赖树 → 运行测试的 node 的全局 `node_modules` → 用户 profile）
+的**排序**只有源码可读，本机只有一份宿主副本故未实测；换一台装了多个 DSH 的机器时
+可能拿到与运行时不同版本的那一份。
+
+### ⚠️⚠️ 判据必须打在**行为**上，不能读源码正则
+
+上一版守卫（PR !98 引入）用正则读 `build.mjs` / `jet-hub-styles.js` 里的字面量再比对包名。
+变异验证（10 个变异体 + 5 个边界体）实测它同时具备**三类假红**与**两类假绿**：
+
+| 形态 | 变异 | 旧守卫 |
+|---|---|---|
+| 假红 | `build.mjs` 改从 `package.json` 读包名（issue 自己推荐的修法；产物 SHA256 **逐字节不变**） | 红 |
+| 假红 | `const loaderId = "dsh-providers-hub"`（改双引号，行为等价） | 红 |
+| 假红 | 真定义上方多一行**写着旧名**的注释（`// const loaderId = 'dsh-codearts-auth'`）—— 正则读到注释里的值，而产物其实是对的 | 红 |
+| **假绿** | 注释诱饵写新名、真定义留旧名、且**不重建** ⇒ 被断言的**真定义**根本不生效 | **全绿** |
+| **假绿** | 只动产物：`id: "wrong-id", // was id: "dsh-providers-hub"` | **全绿** |
+
+⚠️ 第三行**原先写作「注释放新名也红」，那是错的**（2026-10 第二轮审计实测纠正）：
+旧正则 `/const loaderId = '([^']+)'/` 取**首个**匹配，注释里放新名时读到的就是正确值
+⇒ 照常**绿**。要让这一格红，注释里必须放**旧名**，而那时它是「产物对、断言红」的
+假红 —— 与第四行「同一个变异、相反结论」，这本身就说明旧判据不可信。
+
+⇒ 现行判据换成 **`tests/unit/client-registration-id.spec.ts` 的端到端装载**：
+拿**真实的** `lib/client/jet-hub.js` 字节，交给**真实的** `dsh-client-modules` 加载器
+（`createClientModuleSystem` + 一行 boot 图）按包名 `prefetch`，装载不上就红。
+它对引号形态、注释诱饵、产物陈旧免疫；对头部**形态**重构（多行改单行）也免疫
+（回读用正则，不逐字节锚定 —— 见上面那一组假红）。并且内含一条**反向验证**
+（把产物 id 换掉 ⇒ 必须以 issue 原文的三段报错刷红），证明它**不是恒真**。
+
+⚠️ 而「② 的直读断言」（`cordis.patch.yml` 的 `name:`）现在**与安装期闸门共用
+`registration-id-check.mjs` 的 `checkRegistrationId()`** —— 这一处在旧守卫下**零守卫**
+（`git grep cordis.patch.yml tests/` = **0**，把它改回旧名全绿），而且两份判据语义不同
+还会互相矛盾（闸门「每一处都等于包名」vs 用例「恰好一条」），已收敛为一份。
+
+⚠️ 本节数字（「17/17」等）已按 AGENTS.md 自己的规矩删除：条数是**必然腐坏**的快照，
+以 `pnpm test` 输出为准。
+
+### ⚠️ 改名的**第三条腿在用户机器上**（本仓库修不完）
+
+宿主在 **profile** 里按**包名字符串**寻址 bundle
+（`dsh-app-boot` 的 `resolveBundleDir()` → `node_modules/<name>`，**不校验** manifest 的
+`name`），而老 profile 两处都锁着旧名：
+
+```jsonc
+// ~/.dsh/profiles/<name>/package.json
+{ "dependencies": { "dsh-codearts-auth": "link:…" },
+  "dsh": { "profile": { "bundles": [ …, "dsh-codearts-auth" ] } } }
+```
+
+⚠️ **这一格的失败是静默的**：`resolveBundleDir` 抛错 ⇒ 该 bundle 进 `skippedBundles` ⇒
+**插件行根本不插入**，宿主只在 stderr 留一行（无异常、无 UI 提示）。
+
+⚠️ 别把它与「两处**都**不改成」那一格混为一谈（2026-10 审计指出同一补丁里三处表述
+互斥：README 顶部说「静默消失」、README 对照表第一格说「界面不出现」、本节说
+「`N entry did not activate` + 自动禁用」）。权威表述是本节的这一条：
+
+- **两处都锁旧名**（老 profile 的现状）：bundle 目录**解析得到**，但包里 patch 的
+  加载行写的是**新包名**、它在「profile 目录」这个解析基准下解析不到 ⇒ **该行在宿主
+  侧 import 失败** ⇒ 宿主报 `N entry did not activate` 并把插件**自动禁用**；
+  宿主 `preflight()` 只 deny「兼容性冲突」，其余失败**留给 cordis Loader 自己报**。
+  这与「静默消失」**同向但更准确** —— 症状不是「UI 少了一块」，而是插件被禁用。
+- **只改一处**（无论哪一处）：走上面那条 `skippedBundles` 的**静默**路径。
+
+两处**必须一起改**。推荐不手改，用 `dsh plugin --profile <name> remove/add` 各走一遍，
+且**逐个 profile 都要走**（本机 `desktop` / `headless` / `tui` / `web` 四个都锁旧名）；
+迁移说明见 README「⚠️ 从旧包名 `dsh-codearts-auth` 升级」。
+
+### ⚠️ 改名时**必须保留旧值**的落盘标记
+
+| 位置 | 是否真读点 | 依据 |
+|---|---|---|
+| `src/types.ts` 的 `BACKUP_FORMAT`（`dsh-codearts-auth/backup`） | ✅ **真读点** | `src/backup.ts` 里 `record.format !== BACKUP_FORMAT` 即抛 `BackupFormatError` ⇒ 改了老备份**全部读不出**；`plugin-src/client/backup-convert.js` 里同一字面量的副本也真读（`looksLikeForeignAccountList()` 会因此把老备份**误判成外域账号清单**） |
+| `plugin-src/client/backup-crypto.js` 的 `format` | ⚠️ **写点无读点** | `isEncryptedBackup()` 只判 `kdf` + `ciphertext`；`decryptBackup()` 不读 `format` |
+| 五处 store 的 `schema`（auto-checkin / badge-preferences / dead-model-store / permanent-lock-store / token-ledger） | ⚠️ **写点无读点** | 逐条核过读路径：`locksFieldOf()` 只判 `schema === undefined`，其余四处**不比较值** |
+
+⇒ 结论：**都保留旧值**（改了对存量用户没有收益，只有风险），但理由要写准 ——
+**只有 `BACKUP_FORMAT` 是兼容读取点**，其余是「写点无读点」的落盘标记
+（真实用户的 `~/.dsh/jet-hub/*.json` 里确实躺着这 5 个旧值）。
+⚠️ 把整组说成「跟着改名会让用户读不出已落盘状态」是**过度陈述**（2026-10 审计）。

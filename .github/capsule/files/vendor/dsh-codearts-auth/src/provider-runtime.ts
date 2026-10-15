@@ -300,10 +300,11 @@ export interface ProviderRuntime {
    *
    * ⚠️⚠️ **但「已接入清单」并不由本表派生**（2026-10-08 设计复审更正）：
    * `WIRED_EXPIRY_PROVIDERS`（同文件）是**编译期常量**，理由见那里的长注释 ——
-   * 它在源码里有 **4 个**消费点（`aggregate-adapter.ts` 的**三处**目录/候选过滤，
-   * 加 `aggregate-expiry.ts` 的「未接入」短路），更要紧的是被**大量不调 `apply()`
-   * 的既有测试**消费（实测：在 `tests/unit` 里 grep「临期探针工厂名 + 左括号」共
-   * 36 处，减去 `expiry-runtime-parity.spec.ts` 自己的 7 处 ⇒ **既有 29 处**；
+   * 它在源码里有 **5 个**消费点（`aggregate-adapter.ts` 的**四处**过滤，
+   * 加 `aggregate-expiry.ts` 的「未接入」短路 —— **后者才是轮换候选的闸门**），
+   * 更要紧的是被**大量不调 `apply()` 的既有测试**消费（实测：在 `tests/unit` 里
+   * grep「临期探针工厂名 + 左括号」共 36 处，减去 `expiry-runtime-parity.spec.ts`
+   * 自己的 7 处 ⇒ **既有 29 处**；
    * grep「`new` + `AggregateAdapter` + 左括号」共 **86 处**。⚠️ 注释刻意不写出
    * 左括号，否则注释自己会被下一次 grep 计进去），而本表要到 `apply()` 才填充 ⇒
    * 派生版本在那些场景下**恒为空数组**，会把**所有虚拟模型过滤掉**

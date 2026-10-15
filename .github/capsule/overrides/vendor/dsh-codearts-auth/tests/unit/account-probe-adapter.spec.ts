@@ -842,7 +842,7 @@ describe('account-probe 适配器选择 · qoder / qodercn / cline / zcode 不�
     expect(calls).toHaveLength(1)
     const url = new URL(calls[0]!.url)
     expect(url.host).toBe('opencode.ai')
-    expect(url.pathname).toBe('/zen/v1/chat/completions')
+    expect(url.pathname).toBe('/inference/v1/chat/completions')
     const flat = Object.entries(calls[0]!.headers).map(([k, v]) => `${k}: ${v}`).join('\n')
     expect(flat).not.toContain('SDK-HMAC-SHA256')
     expect(flat).not.toContain('SignedHeaders')

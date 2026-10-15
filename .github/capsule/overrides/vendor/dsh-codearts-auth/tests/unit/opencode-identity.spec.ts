@@ -28,27 +28,34 @@ describe('指纹派生', () => {
       expect(id).toHaveLength(4 + 26)
     }
   })
+  it('session 时间段使用 descending 算法而非裸时间戳', () => {
+    expect(deriveSessionId(1).slice(4, 16)).toBe('ffffffffeffe')
+    const timestamp = 1791900000000
+    const expected = (~(BigInt(timestamp) * 0x1000n + 1n) & 0xffffffffffffn).toString(16).padStart(12, '0')
+    expect(deriveSessionId(timestamp).slice(4, 16)).toBe(expected)
+  })
   it('request id 每次不同', () => {
     expect(deriveRequestId()).not.toBe(deriveRequestId())
   })
 })
 
-describe('opencodeHeaders', () => {
+describe('opencodeHeaders（V2）', () => {
   const headers = opencodeHeaders({ projectId: 'p'.repeat(40), generation: 0 }, 'ses_abc', 'req_xyz', 'opencode/1.18.22')
 
-  it('带齐真实 CLI 1.18.22 的四个关联头 + UA', () => {
+  it('保留槽指纹，所有关联头复用同一 session，不再发旧 request ID', () => {
     expect(headers['x-opencode-project']).toBe('p'.repeat(40))
-    expect(headers['x-opencode-session']).toBe('ses_abc')
-    expect(headers['x-opencode-request']).toBe('req_xyz')
+    for (const header of ['x-opencode-session', 'x-opencode-session-id', 'x-session-affinity', 'X-Session-Id']) {
+      expect(headers[header]).toBe('ses_abc')
+    }
+    expect(headers['x-opencode-request']).toBeUndefined()
     expect(headers['x-opencode-client']).toBe('cli')
-    expect(headers['user-agent']).toBe('opencode/1.18.22')
+    expect(headers['user-agent']).toBe('opencode/latest/2.0.29/cli')
   })
-  it('⚠️ 不发 x-session-affinity / X-Session-Id（真实 CLI 对 opencode provider 不发）', () => {
-    expect(headers['x-session-affinity']).toBeUndefined()
-    expect(headers['X-Session-Id']).toBeUndefined()
-  })
-  it('UA 缺省时回退到产品默认版本串', () => {
-    expect(opencodeUserAgent()).toMatch(/^opencode\/\d+\.\d+\.\d+/)
+  it('UA 缺省与旧本机版本都回落 V2，不能降级协议', () => {
+    expect(opencodeUserAgent()).toBe('opencode/latest/2.0.29/cli')
+    expect(opencodeUserAgent('opencode/1.19.0')).toBe(opencodeUserAgent())
+    expect(opencodeUserAgent('opencode/2.0.30')).toBe('opencode/latest/2.0.30/cli')
+    expect(opencodeUserAgent('opencode/latest/2.0.30/cli')).toBe('opencode/latest/2.0.30/cli')
   })
 })
 

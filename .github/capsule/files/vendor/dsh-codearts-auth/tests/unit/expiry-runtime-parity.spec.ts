@@ -12,8 +12,8 @@
  * | `WIRED_EXPIRY_PROVIDERS` | 「这个渠道**接入了**临期折算吗」 | **编译期**（本文件有没有为它写折算原语） |
  * | `ProviderRuntime.expiry` | 「运行时该调**哪个**原语」 | **`apply()` 时**（注册） |
  *
- * 前者被 `aggregate-adapter.ts` 的**三处**目录/候选过滤（加 `aggregate-expiry.ts`
- * 的「未接入」短路，共 4 个消费点）与**大量不调 `apply()` 的既有测试**消费
+ * 前者被 `aggregate-adapter.ts` 的**四处**过滤（加 `aggregate-expiry.ts`
+ * 的「未接入」短路，共 5 个消费点）与**大量不调 `apply()` 的既有测试**消费
  *（实测：在 `tests/unit` 里 grep「临期探针工厂名 + 左括号」共 36 处，减去本文件
  * 自己的 7 处 ⇒ **既有 29 处**；grep「`new` + `AggregateAdapter` + 左括号」共
  * **86 处**。⚠️ 注释刻意不写出左括号，否则注释自己会被下一次 grep 计进去）

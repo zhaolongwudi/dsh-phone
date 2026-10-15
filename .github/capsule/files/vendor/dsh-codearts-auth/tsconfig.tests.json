@@ -19,5 +19,16 @@
   },
   // ⚠️ 只有**需要类型层检查**的测试才列在这里（其余 spec 由 vitest/esbuild
   // 转译，不做类型检查）。`src` 一并纳入，使测试里对生产类型的用法也被检查。
-  "include": ["src", "tests/unit/jet-hub-rpc-signature.spec.ts"]
+  // ⚠️ 2026-10 审计 F10：`tests/unit/dsh-host-client.ts` 与它唯一的消费者
+  // `tests/unit/client-registration-id.spec.ts` 原先**不在任何 tsconfig 的
+  // include 里** —— 往它们里面注入一个类型错误（例如把
+  // `locateHostClient(): string | null` 改成 `(): string`）不会有任何反应。
+  // 本仓库的约定是「只有需要类型层检查的测试才列在这里」，而这两个文件恰好是
+  // IKLUME 的**唯一行为守卫**，值得列。
+  "include": [
+    "src",
+    "tests/unit/jet-hub-rpc-signature.spec.ts",
+    "tests/unit/client-registration-id.spec.ts",
+    "tests/unit/dsh-host-client.ts"
+  ]
 }

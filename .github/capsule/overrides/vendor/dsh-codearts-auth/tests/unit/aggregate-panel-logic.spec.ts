@@ -13,6 +13,9 @@ import {
   sortModelsForPanel,
   toggleRejection,
 } from '../../plugin-src/client/aggregate-panel-logic.js'
+// ⚠️ **值导入**宿主常量（测试里读宿主模块是本仓库既有做法，见 `expiry-runtime-parity.spec.ts`）：
+//    它是「哪些渠道已接入临期折算」的**唯一权威** —— 空态文案那份名单必须与它一致。
+import { WIRED_EXPIRY_PROVIDERS } from '../../src/aggregate-expiry.js'
 
 /** 仓库根（源码级断言用）。
  *
@@ -427,8 +430,8 @@ describe('★ 面板接线：默认零探测，点了才探测（防「面板没
     expect(panelCode).toContain('按临期')
   })
 
-  it('★ 空态提示的渠道清单必须含 lobsterai / trae（已接入）', () => {
-    // ⚠️ 白名单扩大后清单也要跟 —— 否则提示会漏掉两个真的可用的渠道。
+  it('★ 空态提示必须引用那份渠道清单（清单**内容**由下方 ★★ 守卫锁）', () => {
+    // ⚠️ 白名单扩大后清单也要跟 —— 否则提示会漏掉真的可用的渠道。
     const at = panelCode.indexOf('当前没有可聚合的模型')
     expect(at, '必须存在该空态提示').toBeGreaterThan(0)
     // ⚠️ **不要用魔数窗口**（真实脆弱点，审计实测指出）：原实现是
@@ -440,14 +443,23 @@ describe('★ 面板接线：默认零探测，点了才探测（防「面板没
     //    `React.createElement` 在它**之前** ⇒ 边界取负、窗口退化成 1200 字符，
     //    于是「去掉提示里的 trae」这个变异**不会变红**（`trae` 在文件里出现 22 次，
     //    窗口外的命中把断言喂饱了）——反向验证实测发现了这一点。
-    // ⇒ 改为**精确到该文案的结尾**（`登录账号。` 那句），窗口正好覆盖整段清单。
+    // ⇒ 改为**精确到该文案的结尾**（`登录账号。` 那句），窗口正好覆盖整段提示。
     const rest = panelCode.slice(at)
     const end = rest.indexOf('登录账号。')
     const snippet = end > 0 ? rest.slice(0, end + '登录账号。'.length) : rest.slice(0, 400)
     expect(snippet, '窗口必须精确覆盖该提示（否则断言会被窗口外的文本喂饱）')
       .toContain('当前没有可聚合的模型')
-    expect(snippet).toContain('lobsterai')
-    expect(snippet).toContain('trae')
+    // ⚠️ 2026-10-15（PR#101 复审）：原断言是「snippet 里含 `lobsterai` / `trae`」——
+    //    它只**抽查**两个名字。而清单当时被**写死**在这句里，2026-10-13 加
+    //    accio / officeace 时没人回头改 ⇒ 提示漏掉两家（只登了那两家的用户看到错话），
+    //    而这个抽查式断言**照样全绿**。现清单抽成具名常量 `AGG_WIRED_CHANNEL_LABELS`：
+    //    本用例守「提示真的引用了它、且不得再写死一份」，
+    //    **内容**由文件末尾的 ★★ 守卫与 `WIRED_EXPIRY_PROVIDERS` 锁成**集合相等**
+    //（覆盖全部渠道，比抽查两个名字更强）。
+    expect(snippet, '提示必须引用 AGG_WIRED_CHANNEL_LABELS')
+      .toContain('AGG_WIRED_CHANNEL_LABELS')
+    expect(snippet, '不得在提示里再写死一份渠道名单')
+      .not.toMatch(/'[^']*buddy[^']*'/)
   })
 })
 
@@ -596,5 +608,53 @@ describe('★ rejectionsFromCatalog：行为级（原先只有源码字符串断
     const models = [model('m1', [cand('buddy', 'a', true), cand('zcode', 'b', true)])]
     const table = rejectionsFromCatalog(models)
     expect(isAllCandidatesRejected(models[0], table), '两条都被拒 ⇒ 应识别为全拒').toBe(true)
+  })
+})
+
+/**
+ * ★★ 空态文案里的渠道名单必须与 `WIRED_EXPIRY_PROVIDERS` **集合相等**。
+ *
+ * ## 为什么需要它（真实缺陷，2026-10-15 PR#101 复审发现）
+ *
+ * 聚合面板的空态文案手抄了一份「已接入临期折算的渠道」名单（现为
+ * `AGG_WIRED_CHANNEL_LABELS`）。2026-10-13 接入 `accio` / `officeace` 之后**没人回头
+ * 改它** ⇒ **只登了这两家**的用户会看到「请先在……登录账号」这句**错话** ——
+ * 他们其实已经登录了，只是名单里没有那两家。而且该句**随客户端 bundle 发到了用户机器上**
+ *（实测已进 `lib/client/jet-hub.js`），不是只在源码里躺着。
+ *
+ * ⚠️ 客户端 bundle 是**独立 entry、不 import 宿主模块**（见 `plugin-src/client/build.mjs`），
+ * 所以这份名单只能是手抄 —— 本用例就是那条「必须同改」的守卫。
+ *
+ * ⚠️ **判据是源码文本**（名单是字面量、没有可观测行为），故按本仓库惯例做成
+ * **fail-closed**：抽不到常量就**抛错**。若退回 `null` 断言再比集合，两边都空会
+ * **恒真**（守卫静默失效）；改名/重构正是最容易触发它的动作。
+ */
+describe('★★ 空态文案的渠道名单 == WIRED_EXPIRY_PROVIDERS', () => {
+  /**
+   * 从客户端源码里抽出那份名单。
+   *
+   * @throws 抽不到 `AGG_WIRED_CHANNEL_LABELS` 的字面量时**抛错**（fail-closed）。
+   */
+  function clientChannelLabels(): string[] {
+    const source = readFileSync(resolve(here, '../../plugin-src/client/jet-hub.js'), 'utf8')
+    const matched = /const AGG_WIRED_CHANNEL_LABELS =\s*\n?\s*'([^']*)'/.exec(source)
+    if (matched === null) {
+      throw new Error(
+        '抽不到 `AGG_WIRED_CHANNEL_LABELS` 的字面量 —— 常量被改名/改写了？'
+        + '本守卫必须跟着改，**不得**让它静默失效（fail-closed）',
+      )
+    }
+    return matched[1].split('/').map((name) => name.trim()).filter((name) => name.length > 0)
+  }
+
+  it('两边的渠道集合相等（顺序无关）', () => {
+    expect(clientChannelLabels().sort()).toEqual([...WIRED_EXPIRY_PROVIDERS].sort())
+  })
+
+  it('★ 判据自检：两份名单都真的非空（否则上一条会退化成恒真）', () => {
+    expect(clientChannelLabels().length, '客户端名单抽出来是空的 ⇒ 上面那条是同义反复')
+      .toBeGreaterThan(0)
+    expect(WIRED_EXPIRY_PROVIDERS.length, '白名单为空 ⇒ 上面那条是同义反复')
+      .toBeGreaterThan(0)
   })
 })

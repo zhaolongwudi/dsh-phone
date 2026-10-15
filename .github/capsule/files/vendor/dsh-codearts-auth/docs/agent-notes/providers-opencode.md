@@ -1,6 +1,134 @@
 <!-- 搬自 AGENTS.md 的「深细节索引」惯例：事故史与逐项规则放本文件，按需阅读，
      不进每轮注入。内容与 src/opencode-proxy.ts 的 proxyFetch 注释互为对照。 -->
 
+## OpenCode V2 协议更新
+
+- 推理/目录端点改为 `https://opencode.ai/inference/v1`；默认 UA 为 `opencode/latest/2.0.29/cli`。⚠️ UA **不是**门禁的一部分（见下方逐变量矩阵）：`opencode/1.18.22` 在其余两项正确时照样 200，改成 `latest/<v>/cli` 只为外形一致，别再写成「不换就 403」。
+- session 外形仍是 `ses_ + 12hex + 14base62`，但首段必须按 `~(timestamp * 0x1000 + 1)` 的低 48 位生成，不能使用裸时间戳或随机 hex。
+- V2 不发送旧 `x-opencode-request`（⚠️ **它在场即 403**，即使 affinity 头齐全）；四个 session 头复用同一 session，但其中**只有 `x-opencode-session-id` 是必需的**。
+- 门禁工具**只保留 `read`**（名字与 `path/offset/limit` 参数 schema 必须保持上游形态，改名或空 properties 会 403）；不再注入 `shell`。⚠️ 「不再发显式 `tool_choice:none`」**与门禁无关**（实测 V2 接受 `none`/`auto`/`required`/`function` 全部 200），只是因为它**没有约束力**：同一句「读取 /tmp/a.txt」在 `tool_choice:none` 下后端照样产出 `read` 调用 —— 只发一条描述也拦不住。故「未启用工具」的不变式**必须**由响应层逐调用强制。
+- **客户端工具别名统一使用 `dsh_` 前缀**。所有客户端工具（包括 edit/write）都映射；定义、历史调用、指定工具选择同步改名，调用 id、参数 schema、结果正文不变。响应名字跨帧拼接后还原，缺失 index 按调用身份归并；保留/未知/不完整名字**剔除该次调用**（见下），不交给宿主执行、也不整轮报错。
+- 归一只在 `src/opencode-stream.ts` 的 OpenCode 专用前置流中完成，**不修改共享 `src/openai-compat.ts`**；不新增 SSE 单事件大小上限。取消/提前结束须释放前置流及上游连接。
+- 保留账号池的指纹代次、代理同源 fetch、额度分类/换槽与思考档位。不擅自设置默认输出预算；DSH `system` 转成标准 chat system 消息，不注入 OpenCode 身份提示词。
+
+### 匿名通道门禁：逐变量实测（2026-10-15，`POST /inference/v1/chat/completions`，每格 2 次）
+
+固定 body 形状：「`read` + 真 schema + `path`」才放行；提示词 `读取 /tmp/a.txt 这个文件。`。
+
+| 变量 | 取值 | 结果 |
+|---|---|---|
+| 端点 | `/inference/v1` | 200 |
+| 端点 | `/zen/v1`（旧） | **403** |
+| session 算法 | `~(ts*0x1000+1)` 低 48 位 | 200 |
+| session 算法 | 旧版小端裸时间戳 | **403** |
+| 头集 | `{project, session, client}` + `x-opencode-request` | **403** |
+| 头集 | 上三头 + `x-opencode-session-id` | 200 |
+| 头集 | 上三头 + 仅 `x-session-affinity` | **403** |
+| 头集 | 上三头 + 仅 `X-Session-Id` | **403** |
+| 头集 | 四个 affinity 头 + `x-opencode-request` | **403** |
+| UA | `opencode/1.18.22`（本机 1.x CLI 真值） | **200**（不参与门禁） |
+| `tool_choice` | `none`/`auto`/`required`/`{function read}` | 全部 200（但 `none` **不被执行**） |
+| 工具 schema | `read` 且 `properties` 为空 / 改名成 `bash` | **403** |
+| 鉴权 | 不带 `authorization` | **403**（`FreeTierError`，勿与形状门禁混淆） |
+
+⚠️ 探测时的两个坑：① 漏发 `authorization: Bearer public` 会让**所有格**返回 403，
+看起来像「修法无效」——曾据此误判过一轮（正是「对照矩阵里每个变量必须独立」那条
+教训的复发）；② `cat-jam-free` 在本机返回 `RegionError`（地域不可用），
+`muse-spark-1.2-contributor-free` 同样；`step-5-preview-free` 返回 429
+「Endpoint is unavailable」；`jev-1.13-free` 返回 400 `ModelProtocolUnsupported`
+（模型级，与端点无关）。免费档实测可用：`big-pickle` / `deepseek-v4.1-flash-free` /
+`mimo-v2.6-flash-free` / `nemotron-3.5-lightning-free` / `longcat-2.5-preview-free` /
+`space-bunny-free`。
+
+### ⚠️⚠️ 保留门禁工具会被模型真的调用：只能「剔除」，不能整轮报错
+
+`toolsDisabled`（调用方没传工具）时线上仍必须广告门禁 `read`，而模型**会**去调它 ——
+同一句「读取 /tmp/a.txt」，`big-pickle` **多次**产出 `read{path:"/tmp/a.txt"}`
+（3 次独立观测，含一次完整 SSE 实录，见 `tests/fixtures/opencode-gate-call.sse.txt`；
+⚠️ **非必然**：另有一次它直接作答、未调工具，故用例把它写成「两种收尾都算过」）。
+`tool_choice:none` 拦不住它（后端不执行该字段）。
+
+- **原实现**（PR 初版）在线性响应层对此抛 `LlmError(..., 'PERMISSION_DENIED')`
+  ⇒ **整轮对话死掉**，已流出的正文一并作废。对真机实录写成单测对照可复现：
+  HEAD 版归一器抛 `PERMISSION_DENIED`，修后版正常收尾。
+- **现修法**：未知/保留/残缺名字一律**剔除该次调用**（去掉 `name` 后照原样下发），
+  只记一条 `warn`。共享消费器对**无名** tool-call 本来就有既定语义：
+  **不发任何 chunk**（不执行、也不会把 `unknown tool ""` 写进会话，
+  那是会把整条会话打成 400 的形态 —— ⚠️ 注意它在内部**仍登记**一条不会 `announced`
+  的调用，正因如此剔除时必须**连参数一起丢**，见下表第二行），
+  又在没有别的可用调用时报 `max-tokens`（`droppedUnnamedCalls`）
+  —— 这正是「模型想调工具却被剔除」的既有信号。
+- **仍然 fail-closed 的只剩线上歧义**：同名 id / 同下标指向两条不同调用、
+  名字已确定后又改口 —— 那时无法判断参数属于谁，执行谁都是错的。
+- 判据（`tests/unit/opencode-stream.spec.ts`）：剔除后**一个 `block-end` 都不发**、
+  `finish` 为 `max-tokens`、`warn` 恰好一次且带被剔除的名字、
+  同批合法调用**不受连坐**（仍报 `tool-calls`）；另有一例直接跑真机实录 fixture。
+
+#### ⚠️⚠️ 用户可见症状 → 根因（**排障入口，别再从「token 不够」查起**）
+
+| 用户看到 | 实际根因 | 证据 |
+|---|---|---|
+| 一条回复**几乎没有正文**，却提示「已达到输出 token 上限」/「回答被截断…发送"继续"」 | **模型唯一意图是调门禁 `read`**，该调用被剔除 ⇒ 消费器报 `max-tokens` | 真机 fixture 34 帧里 `content` 分片 **0 个**（只有 reasoning）⇒ 客户端那句「已有输出保留在对话中」是**假话**；客户端 bundle 里没有任何「工具调用被剔除」文案（grep 零命中），用户唯一可见信号就是这条 token 提示 |
+
+⇒ 遇到该症状**先查宿主日志**（`[codearts-auth] opencode: 上游调用了保留门禁工具 read…`），
+不要按「输出上限」调 `maxTokens`：调大没用，模型下一轮还会去调它。
+真正的用户可见修复需要共享消费器新增一种 finish 变体（超本 PR 范围，**未做**）。
+
+验证：原匿名 E2E 夹具传空池，先修夹具后得到目录成功、两次真实聊天均 `FreeTierError` 的基线；V2 修复后目录、两条最小聊天、完整客户端工具集与工具历史回传均通过。付费 API key 通道未做真实额度测试。
+
+### ⚠️ 2026-10-15 审计（独立 + 对抗性，两轮 subagent）落地清单
+
+审计结论：**净改进、方向正确**（改前「门禁 `read` / 未知名 / 残缺名」三种真机形态都抛
+`PERMISSION_DENIED` 打死整轮；宿主异常路径只在 `signal.aborted` 时落 `assistant/message`，
+非 abort 的流中异常**只 settle `assistant/attempt`** ⇒ 正文真的会丢），
+但确证了 5 处缺陷，已全部落地 + 变异验证（每条都能被自己的用例抓住）：
+
+| 缺陷（审计确证） | 修法 | 守卫用例 |
+|---|---|---|
+| 名字**从未到达**的调用零告警消失（`assertState` 要求 `upstreamName.length > 0`，而 `longer` 被空串吸收）—— 「『空』被当成『正常的无』」那一类 | 判据改为「**没还原**就告警」，文案区分「始终没有名字」 | 「名字从未到达的调用被剔除时也要留痕」 |
+| 被剔除调用的**半截参数**让消费器的 `argsTruncated` 连坐同批**合法**调用（遍历全部块，含未 `announced` 者）⇒ 宿主丢弃并重试、合法调用白丢一轮 | 剔除时**连参数一起丢**（`delete next.arguments`；消费器对缺参按 `normalizeToolArguments` 归一） | 「坏调用的残缺参数不得把同批合法调用拖成 max-tokens」 |
+| `note`/`dropCall` 在 `TransformStream.transform` 里**同步**调 `warn` ⇒ 日志出口一抛错又打死整轮 | 告警出口加 `try/catch` 隔离 | 「告警出口抛异常不得打死本轮」 |
+| 被剔除的调用仍占 id/下标槽 ⇒ 上游在同一槽开另一条调用时新名字被拼进死调用（`bash`+`dsh_glob`），**零新告警**地消失 | 已放弃的调用 + 非空名字片段 ⇒ 摘槽另立调用（真机续传帧是 `"name":null`，不触发） | 「已剔除的调用占用的下标被复用时…」 |
+| `toolsDisabled` 那行是**注释声称的最后防线、实际无用例**（生产链路不可达，改回 `aliases.get(name)` 全量仍全绿） | 直接用「非空别名表 + `toolsDisabled`」直连归一器钉住（绕过请求构造器） | 「toolsDisabled 时别名表非空也不还原」 |
+
+附带修正（同为审计发现，不改行为）：
+- 剔除文案分流：`dsh_` 前缀单列（**我们自己**的别名表/历史重命名可能有缺陷，别记到模型头上）、
+  门禁名、幻觉名、名字始终为空四种原因不再混用一句话；前缀歧义说「**重叠**」而不是「不完整」。
+- `finish_reason` 降级处的注释**改准**：旧注释写「原样下发会让宿主等一个永不到来的工具结果」
+  与宿主实现不符（零 tool-call 块 ⇒ 宿主直接判 `completed`，改前是**静默正常完成**）；
+  真正的收益是走 `resolveEmptyResponseReason` 得到可重试的 `EMPTY_RESPONSE`。
+  另在「声称 tool_calls 却**一个调用都没有**」时补一条 warn（有调用被剔除时不补，避免与剔除告警重复刷屏）。
+
+**明确不做**（如实登记，避免下次重复讨论）：
+1. **裸门禁名 + 本轮确实广告过同名客户端工具 ⇒ 仍剔除**。审计建议「还原成客户端 `read` 并执行」，
+   但那等于把**门禁调用**猜成客户端意图（门禁 schema 是 `{path}`、客户端 `read` 要 `{file_path}`），
+   猜错就是执行一个模型没打算调的工具；剔除的代价只是**这一次**调用没发生且有 warn。
+   同一请求体里 `dsh_read`（执行）与 `read`（剔除）结局不同是**刻意**的，不是漏判。
+2. **前缀歧义下的无参调用仍会被剔**（同时启用 `read` 与 `read_image`、上游只给 `dsh_read`
+   且一个参数字节都没有）。放宽判据（如「出现过 `arguments` 键就算完整」）会引入更坏的
+   **还原成错工具**（名字先给短别名、后补长名 ⇒ 已按短别名发出去的名字收不回来），
+   线上未观察到该切法 ⇒ 保持保守，代价写在 `src/opencode-stream.ts` 文件头。
+3. **纯分片恰好落在前缀边界 + 参数已到**会让归一器走「改口」fail-closed（整轮失败，机制可达、
+   线上未观察到）。代码无法区分「模型改口」与「我们猜早了」，只能靠名字整帧到达的实测形态兜住。
+
+### ⚠️ 两条**上游侧**不稳定（与协议适配无关，勿记到本 PR 账上）
+
+2026-10-15 本机 `big-pickle` 实测，两条都会让**拿「正文非空」当判据的 gated e2e 假红**：
+
+1. **空正文**：HTTP 200 + 只有 2 个字符的 `reasoning_content`、`content` 为空、`finish_reason: stop`
+   —— 6 次裸探测命中 **2 次**。这不是「零块」（有一个思考块），故
+   `resolveEmptyResponseReason` 不会改写它，用户侧表现为「没有回复」。判据应写成
+   「本轮确有产出（正文或思考）」，而不是「正文长度 > 0」。
+2. **思考漏进正文**：约 11 次采样命中 **1 次**，上游把思考文本与**裸闭标签** `think`
+   直接写进 `content`（正文里出现 `…without calling any tools.</think>OK`）。
+   ⚠️ **这不是本 PR 的缺口**：共享消费器的 `splitThinkTaggedContent`（**恒开**、
+   `block-end` 权威覆盖，`tests/unit/think-tag-split.spec.ts` 已覆盖
+   `思考</think>真正文` 形态，跨帧 7/11 种切法也有用例）会把标签前的独白归位到
+   reasoning 块、正文只留 `OK` —— 已在 `tests/unit/opencode-stream.spec.ts` 用该形态
+   钉住（含「本适配器不自己造第二套解析」这条边界）。残余：切分发生在收尾，
+   **流式过程中**已发出的 `text-delta` 仍带该前缀，且被切出的 reasoning 块拿到更靠后的
+   index（全渠道同型，属既有设计，不在本次范围）。
+
 ## ⚠️⚠️ OpenCode 出口代理：dispatcher 与 fetch **必须同源**（Issue IKK4BY）
 
 **用户报障**（2026-10-08，Gitee issue IKK4BY）：「OpenCode 账号的代理按钮，

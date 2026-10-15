@@ -1185,3 +1185,72 @@ e2e 规格（`buddy-fingerprint-roles.e2e.spec.ts` / `buddy-first-message-role.e
 
 **⑤ 未采纳**：一条 `toLowerCase()` 预检的性能优化建议（5.4×，属优化非正确性，
 且实测非命中时 `String.replace` 返回**同一对象**、前缀缓存没被破坏）—— 留待需要时再做。
+
+## ⚠️⚠️ `reasoning_effort` 就是 buddy 系 deepseek 的**思考开关** —— IKLMIY 已撤回（2026-10-15）
+
+**结论先行**：buddy/workbuddy 的 `deepseek-*` 上，`reasoning_effort` **不是**可选的
+「强度微调」，而是**思考的存在性开关**。任何「为了保住正文而不发它」的修法都等于
+**关掉该渠道的思考**。**别再加第二遍**（IKLMIY 就是这么来的）。
+
+### 时间线
+
+| 日期 | 事件 |
+|---|---|
+| 2026-09 | 实测：裸请求 → `reasoning_content` 恒 0；仅 `reasoning_effort:high` → 返回思考；`thinking:{type:'enabled'}` **单独无效** |
+| 2026-10-14 | `8bb1035`（IKLMIY）：实测「下发该字段 ⇒ 工具调用前的正文前言被吞」，判据 `suppressesProseWhenEffortSent()` ⇒ **workbuddy 一律不发该字段**，注释里写明代价「等于完全关闭思考，为保住正文自愿付出」 |
+| 2026-10-14 | `46ed99d` 合并该分支 |
+| 2026-10-15 | **用户报障「调用 workbuddy 的 ds v4.1 flash 没有思考了」**，并定取舍：**思考优先于前言**（「宁可使用有思考输出的」）⇒ `e261cd6` **纯 revert**（原提交保留在历史里，可对照重评） |
+
+### 撤回后真机复测（2026-10-15）
+
+> **复现配方**（探针脚本本身**不入库** —— `scripts/` 在 `.gitignore` 里，与
+> `probe-workbuddy-gitstatus-fingerprint.mjs` 等同命；下面是自包含描述，照它重建即可）：
+> `POST {product.endpoint}/v2/chat/completions`，头部按 `BuddyAdapter.send()`
+> （`Authorization: Bearer <access_token>` / `X-Domain=www.workbuddy.ai` /
+> `X-Product-Code` / `X-Agent-Purpose: conversation` / `X-IDE-*` / `X-Product` /
+> `resolveUserAgent(product, model)`），凭据从 `~/.dsh/.credentials.yaml` 的
+> `WORKBUDDY_ACCOUNT_*` 解析（YAML 折行要还原成一个空格再 `JSON.parse`）。
+> body = `{model, messages, tools, stream:true, max_tokens:800, prompt_cache_key}` 再按格
+> 叠加 `thinking` / `reasoning_effort`；tools 两份（`read_file` / `list_dir`），
+> user 问「读 package.json 告诉我 name」。解析 SSE 只累加三个量：
+> `delta.reasoning_content` / `delta.content` / `delta.tool_calls`，外加
+> `usage.reasoning_tokens`。
+
+真实凭据、`www.workbuddy.ai`、`deepseek-v4.1-flash`、**带 2 个 tools**；
+同一请求体只切换「发不发 `reasoning_effort`」，每格 5 样本，两种 system 提示词对照：
+
+| 请求形态 | 有思考 | 有正文 |
+|---|---|---|
+| 发 `reasoning_effort:high` + `thinking:{type:'enabled'}`（**撤回后 = 现状**） | 3/5（preamble）/ 1/5（terse） | 5/5 / 4/5 |
+| 不发该字段 + `thinking:{type:'enabled'}`（**= IKLMIY 形态**） | **0/5 / 0/5** | 5/5 / 5/5 |
+| 裸请求（两个字段都不发，2026-09 的「关思考」形态） | 0/5 / 0/5 | 5/5 / 3/5 |
+
+判据取**服务端权威计数** `usage.reasoning_tokens`，不只数思考字符：
+
+1. **病因确证**：不发该字段的两格，`reasoning_tokens` **10/10 全为 0** ⇒ 它确实是开关，
+   与用户「没有思考了」逐字吻合。
+2. **撤回有效**：发档位后思考恢复（`reasoning_tokens` 0/6/45/46/47 等）。
+   ⚠️ 但**不是每次都思考**（3/5、1/5）—— 该模型对「读个 package.json」这种小任务
+   常常不起思考；「开档位」是**允许**思考，不是**强制**思考。
+3. ⚠️⚠️ **IKLMIY 的「吞正文」在本探针形态下未能复现**（发档位时正文 5/5、4/5）。
+   **不得据此宣布原结论被证伪**：原报告用的是**真实失败会话**（23 步、宿主全套 tools）
+   的固定 messages，这里是 2 个工具的新会话 —— 正文被吞很可能是**形态相关**
+   （历史长度 / tools 数量）。唯一与「两者互斥」相符的一格是 terse A#4：它是发档位那组里
+   **唯一真思考的一次**（220 字），其正文恰好为 0（n=1，远远不够定论）。
+
+### ⚠️ 一条方法论教训（差点又一次误判）
+
+探针**第一版只跑了一个 system 提示词**，里面写着「调用工具之前，用一句中文说明你打算做什么」
+—— 那句**把「有正文」这个可观测量钉死了**（5/5、3/3），于是差一点得出「原结论是错的」这种
+反向误判。**判据被提示词支配 = 变量不独立**（本仓库在 accio 的 `sgcookie` 那轮踩过同款坑），
+故脚本里**必须保留两套 system 对照**（`--prompt=all`）。
+
+### 随 revert 一并删除、但**仍然成立**的旁证：OfficeAce
+
+原提交在 `src/officeace-adapter.ts` 留了 28 行**纯注释**（行为无变化），记的是同一问题的
+另一渠道复测，实测量不变，故登记在此，别丢：
+
+- OfficeAce（华为 MaaS）也吞正文（不下发该字段 1/10 有正文），但 **workbuddy 的修法在此无效**
+  —— 该渠道**关不掉**思考：不下发时服务端 `reasoning_tokens` **8/8 无一次为 0**（中位 172）。
+- 它真正的可用性风险是同源的 `MAX_TOKENS_FLOOR`（小预算被思考烧光）。
+- 错误码两套：OfficeAce `ModelArts.81001`，workbuddy `11150`。

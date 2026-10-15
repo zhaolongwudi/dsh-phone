@@ -2967,9 +2967,10 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
    *    有**真实**实现。表若内联在此，那些用例只能各写一份自己的映射 ⇒
    *    「同一语义两套判据」（本仓库首条红线）。生产与单测**共用同一份**。
    *
-   * ⚠️ **只挂「已接入临期折算」的 7 家**（`expiry` 域存在即已接入，
-   *    `WIRED_EXPIRY_PROVIDERS` 与它的一致性由
-   *    `tests/unit/expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁死）：
+   * ⚠️ **只挂「已接入临期折算」的渠道**（`expiry` 域存在即已接入）——
+   *    **刻意不在此写数字、也不抄名单**：同一事实的多份抄写必然漂移（见本文件下方
+   *    `probeById` 那段教训）。`WIRED_EXPIRY_PROVIDERS` 与它的一致性由
+   *    `tests/unit/expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁死：
    *    未接入的渠道**不该**出现在聚合候选里。返回 `UNUSABLE` 也会被剔除，
    *    但让它压根不进目录更诚实 —— 见 `aggregate-expiry.ts` 的长注释。
    *
@@ -3142,7 +3143,7 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
         // ⚠️ 只有 loomy / raccoon 有条目 —— 其余如实为 `undefined`。
         onboarding: onboardingOf(onboardingTable, id),
         // ⚠️ 与 credits / onboarding 同法：`expiryOf` 而非下标（原型链键误判）。
-        // ⚠️ 只有**已接入临期折算**的 7 家有条目 —— 其余如实为 `undefined`
+        // ⚠️ 只有**已接入临期折算**的渠道有条目 —— 其余如实为 `undefined`
         //    （那是「未接入」的诚实表达：`credentialExpiry` 据此返回 `UNUSABLE`）。
         //    ⚠️ `WIRED_EXPIRY_PROVIDERS` **不**从这里派生（它是编译期常量），
         //    两者的一致性由 `expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁死。

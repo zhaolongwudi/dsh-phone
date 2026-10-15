@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import {
-  LoomyAdapter, classifyLoomyFailure, parseLoomyRemoteModels, recordsLoomyRateLimit,
+  LoomyAdapter, classifyLoomyFailure, loomyCooldownResetAtMs, parseLoomyRemoteModels,
+  recordsLoomyRateLimit,
 } from '../../src/loomy-adapter.js'
 import { classifyRaccoonFailure } from '../../src/raccoon-adapter.js'
 import { LOOMY, loomyContextWindow } from '../../src/loomy-product.js'
+import { allAccountsRateLimitedForModel } from '../../src/account-pool.js'
+import { nextUtc8DayStartMs } from '../../src/model-queue.js'
 import type { LoomyCredential } from '../../src/loomy.js'
 
 const CRED: LoomyCredential = {
@@ -526,7 +529,8 @@ describe('LoomyAdapter.providerInfo', () => {
  * loomy 的分类器初版与 raccoon 的**修复前**版本逐字同形（文案先判 +
  * `insufficient` 单独出现即算额度）。raccoon 已在 `7b524ff` 收窄，loomy 未同步
  * ⇒ 同一报文在两个 provider 上被判成**不同类别**，且危险方向恒定朝 loomy：
- * `quota` 会走 `recordsLoomyRateLimit` ⇒ **给账号写 24h 模型冷却**。
+ * `quota` 会走 `recordsLoomyRateLimit` ⇒ **给账号写模型冷却**（时长见
+ * `loomyCooldownResetAtMs`：quota = UTC+8 当日 24:00，rate = +1h）。
  *
  * 实测（临时探针，已删）三例 —— 403 + `insufficient permissions`、
  * 403 + 积分不足、401 + 余额不足：loomy 判 quota 并写冷却，raccoon 判 auth 不写。
@@ -626,8 +630,9 @@ describe('classifyLoomyFailure 判据（与 raccoon 逐格同构）', () => {
  * 两个时刻——查询时有钱、推理时上游报 `14018`，错误直接抛 harness，
  * 下次取号还是同一个号 ⇒ 「卡死在一个号上」。
  *
- * 本 describe 锁定：HTTP 层额度耗尽 → 标记坏号该模型 24h → `tried` 换下一个
- * → 重发成功；全部耗尽才报错且带最后一次真实原因；非额度类 4xx 不换号。
+ * 本 describe 锁定：HTTP 层额度耗尽 → 标记坏号该模型（终点 = UTC+8 当日 24:00，
+ * 见下方 IKL80H 一组）→ `tried` 换下一个 → 重发成功；全部耗尽才报错且带最后一次
+ * 真实原因；非额度类 4xx 不换号。
  * 语义与 raccoon / buddy 三处对齐（同一张判据形状，各家用各家的词表）。
  */
 describe('LoomyAdapter 请求级账号轮换（余额耗尽无感切号）', () => {
@@ -912,6 +917,107 @@ describe('LoomyAdapter 请求级账号轮换（余额耗尽无感切号）', () 
 
     // 真正耗尽的是 B —— A 只返回了 401（认证类，本就不该写标记）。
     expect(marks.map((m) => m.accountId)).toEqual(['loomy-B'])
+  })
+})
+
+/**
+ * ★★ 额度冷却的**终点**：UTC+8 当日 24:00，不是「撞墙时刻 + 24h」。
+ *
+ * ## 缺陷形态（Gitee IKL80H，2026-10-13 用户真机报障）
+ *
+ * 用户原话：「0 点后 loomy 能用，我自己的账号实测。但该插件的 loomy 会说模型未到
+ * 重置时间，不给用，目测是以积分耗尽的 24 小时做判定。」
+ *
+ * 根因：Loomy 的每日赠送额度（每日 5000）按 **UTC+8 自然日**重置，而旧实现记的是
+ * `Date.now() + 24h` 的**滑动窗口**。23:50 烧光 ⇒ 标记落到**次日 23:50** ⇒ 跨过 0 点
+ * 后上游已放行，插件仍判受限。
+ *
+ * ## 为什么必须有「反向」那一格
+ *
+ * 只断言「修复后 0 点后不再受限」是**可能恒真**的：判据整体失效（例如
+ * `allAccountsRateLimitedForModel` 恒返回 `undefined`）同样会让它通过。故最后一格
+ * 拿**变异体**（退回 +24h）跑同一时刻，要求它**必须判受限**——两侧一起才锁定方向。
+ *
+ * 证据出处：`src/loomy-adapter.ts` 的 `loomyCooldownResetAtMs` 逐格记录。
+ */
+describe('LoomyAdapter 额度冷却的终点（IKL80H：自然日 vs +24h）', () => {
+  /** 2026-10-13 23:50 UTC+8 —— 当天额度烧光的时刻。 */
+  const T_EXHAUST = Date.parse('2026-10-13T15:50:00.000Z')
+  /** 2026-10-14 00:10 UTC+8 —— 跨过 0 点，上游已重置放行。 */
+  const T_AFTER_MIDNIGHT = Date.parse('2026-10-13T16:10:00.000Z')
+
+  it('quota 的终点 = UTC+8 次日 0 点（只差 10 分钟），不是 +24h', () => {
+    expect(loomyCooldownResetAtMs('quota', T_EXHAUST)).toBe(nextUtc8DayStartMs(T_EXHAUST))
+    expect(loomyCooldownResetAtMs('quota', T_EXHAUST) - T_EXHAUST).toBe(10 * 60_000)
+    expect(loomyCooldownResetAtMs('quota', T_EXHAUST)).not.toBe(T_EXHAUST + 24 * 3_600_000)
+  })
+
+  /**
+   * ⚠️ **本格对本次修复「无牙」——如实登记**：在恰好 0 点这个输入上，
+   * `now + 24h` 与 `nextUtc8DayStartMs` 给出**同一个值**，故把实现退回旧写法
+   * 本用例**仍然通过**（实测：变异 1 只杀掉 3 条，不含本条）。
+   *
+   * 留它的理由不是「守修复」，而是守**边界语义**：0 点撞墙时终点必须是
+   * **再下一个** 0 点，不能返回「此刻」（那会让标记立即失效 ⇒ 同一请求内反复重试）。
+   * 不为它编一条恒真断言来假装有牙。
+   */
+  it('恰好 UTC+8 0 点撞墙 → 终点是**再下一个** 0 点（当天刚开始，不是立即解禁）', () => {
+    const midnight = Date.parse('2026-10-13T16:00:00.000Z')
+    expect(loomyCooldownResetAtMs('quota', midnight) - midnight).toBe(24 * 3_600_000)
+  })
+
+  it('rate 仍是撞墙时刻 + 1 小时（本次改动不影响频率类）', () => {
+    expect(loomyCooldownResetAtMs('rate', T_EXHAUST) - T_EXHAUST).toBe(3_600_000)
+  })
+
+  it('★★ 适配器写下的标记 = 自然日终点（注入时钟跑真实失败路径，端到端）', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(T_EXHAUST)
+    try {
+      const marks: number[] = []
+      const pool = {
+        updateModelRateLimit: async (_a: string, _m: string, resetAtMs: number) => {
+          marks.push(resetAtMs)
+        },
+        getAvailableAccount: async () => null,
+        findAccountIdByCredential: async () => 'loomy-A',
+      }
+      const adapter = makeAdapter({
+        resolveCredential: async () => CRED,
+        accountPool: pool as never,
+        fetchImpl: (async () => new Response(
+          JSON.stringify({ error: { message: '14018 Credits exhausted' } }), { status: 402 },
+        )) as unknown as typeof fetch,
+      })
+      await adapter.stream({
+        provider: 'loomy', model: 'MiniMax-M3', messages: [{ role: 'user', content: 'hi' }],
+      } as never).next().then(() => null).catch(() => null)
+
+      expect(marks).toHaveLength(1)
+      expect(marks[0]).toBe(nextUtc8DayStartMs(T_EXHAUST))
+      expect(marks[0]).not.toBe(T_EXHAUST + 24 * 3_600_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('★★ 用户症状回归：0 点后 10 分钟不再判「全部账号限流」（含反向对照）', () => {
+    const marked = (resetAtMs: number) => [
+      { id: 'loomy-A', provider: 'loomy', enabled: true, modelRateLimits: { 'MiniMax-M3': resetAtMs } },
+    ] as never
+
+    // 修复后的值：0 点已过 ⇒ 不再受限（用户要的行为）。
+    expect(
+      allAccountsRateLimitedForModel(marked(loomyCooldownResetAtMs('quota', T_EXHAUST)), 'MiniMax-M3', T_AFTER_MIDNIGHT),
+    ).toBeUndefined()
+
+    // 反向对照（变异体 = 旧实现）：同一时刻**必须**判受限，且距解禁 > 23h
+    // —— 这正是用户看到「没到重置时间」的那一幕，证明上面那一格不是恒真。
+    const regressed = allAccountsRateLimitedForModel(
+      marked(T_EXHAUST + 24 * 3_600_000), 'MiniMax-M3', T_AFTER_MIDNIGHT,
+    )
+    expect(regressed).toBeDefined()
+    expect((regressed!.resetAtMs - T_AFTER_MIDNIGHT) / 3_600_000).toBeGreaterThan(23)
   })
 })
 

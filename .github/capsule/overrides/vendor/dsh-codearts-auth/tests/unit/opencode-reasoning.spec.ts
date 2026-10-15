@@ -20,6 +20,7 @@
  * 客户端**直接渲染** `efforts[].name`（不本地化）⇒ `name` 必须是中文。
  */
 import { describe, expect, it } from 'vitest'
+import { buildOpencodePayload } from '../../src/opencode-messages.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -99,7 +100,7 @@ describe('档位必须真的发出去（否则只是 UI 装饰）', () => {
   })
 
   it('⚠️ none（关闭思考）照发 —— toggle 形态就产出这一档', () => {
-    expect(messages).toMatch(/none.*关闭思考.*照发/s)
+    expect(buildOpencodePayload({ model: 'big-pickle', messages: [], reasoningEffort: 'none' }).reasoning_effort).toBe('none')
   })
 })
 

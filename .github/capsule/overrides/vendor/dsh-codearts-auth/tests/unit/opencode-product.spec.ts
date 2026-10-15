@@ -116,7 +116,7 @@ describe('兜底目录', () => {
 
 describe('OPENCODE', () => {
   it('端点指向官方 Zen 通道', () => {
-    expect(OPENCODE.baseUrl).toBe('https://opencode.ai/zen')
+    expect(OPENCODE.baseUrl).toBe('https://opencode.ai/inference')
     expect(OPENCODE.chatPath).toBe('/v1/chat/completions')
     expect(OPENCODE.anonymousKey).toBe('public')
   })

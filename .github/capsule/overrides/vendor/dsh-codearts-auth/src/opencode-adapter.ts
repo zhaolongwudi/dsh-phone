@@ -44,7 +44,8 @@ import {
 } from './opencode-product.js'
 import { listIdentitySlots, type IdentitySlot } from './opencode-auth.js'
 import { deriveRequestId, deriveSessionId, opencodeHeaders, opencodeUserAgent } from './opencode.js'
-import { buildOpencodePayload } from './opencode-messages.js'
+import { buildOpencodeRequest } from './opencode-messages.js'
+import { normalizeOpencodeResponse } from './opencode-stream.js'
 import {
   getOpencodeCapabilitiesSync, opencodeEffortName, supportsOpencodeImage,
   type OpencodeModelCapability,
@@ -417,21 +418,16 @@ export class OpencodeAdapter extends LlmAdapter {
         }
         return
       } catch (error) {
+        if (options.signal?.aborted) throw options.signal.reason ?? error
         if (delivered) throw error
-        if (error instanceof LlmError && error.code === 'QUOTA_EXCEEDED') throw error
+        if (error instanceof LlmError && (error.code === 'QUOTA_EXCEEDED' || error.code === 'PERMISSION_DENIED')) throw error
 
         const info = classifyOpencodeFailure(error)
         if (info.kind === 'free_tier') {
-          // ⚠️⚠️ 根因是 **session id 形状**，不是「伪装不被认可」（真实报障
-          // 2026-10-01 定位）。证据：尾段写成 38 字符（12hex + 26 base62）时
-          // 一律 403；改成官方真实的 26 字符（12hex + 14 base62）后**同样的
-          // 请求立刻成功**（`tests/unit/opencode-identity.spec.ts` 有形状回归锁）。
-          //
-          // ⇒ 若这里还收到 FreeTierError，说明形状又错了（或上游加了新门禁）。
-          // **换槽/换 key 无用**（每槽发的形状完全相同），故不重试，
-          // 直接把「形状」这条线索写进文案，便于一眼定位。
+          // V2 同时校验 session 算法、UA/关联头、工具描述与 schema。
+          // 换槽不改变这些协议字段；不得把拒绝原因写死为 session 外形。
           this.options.warn?.(
-            `opencode: 免费通道被 FreeTierError 拒绝 —— 检查 session id 形状（应为 ses_ + 12hex + 14base62）：${info.detail}`,
+            `opencode: 免费通道被 FreeTierError 拒绝 —— 检查 V2 端点、session 算法、UA 与工具 schema：${info.detail}`,
           )
           // ⚠️⚠️ **错误码绝不能取 `AUTH`**（真实缺陷，Gitee issue IKLBSH 归位）。
           //
@@ -456,7 +452,7 @@ export class OpencodeAdapter extends LlmAdapter {
           // 与 `buddy` 的 11140（同样从 `AUTH` 改成 `PERMISSION_DENIED`）同款裁决。
           throw new LlmError(
             `opencode: 免费通道被上游拒绝（FreeTierError）。`
-            + '该错误由请求形状触发（session id 形状不对时出现），换 API key 或换出口都无效。',
+            + '该错误由请求协议门禁触发，请检查 V2 端点、session 算法、请求头及工具描述/schema；换 API key 或换出口都无效。',
             'PERMISSION_DENIED',
             { status: 403 },
           )
@@ -554,7 +550,7 @@ export class OpencodeAdapter extends LlmAdapter {
       declaredEfforts: getOpencodeCapabilitiesSync().find((c) => c.id === options.model)?.efforts ?? [],
       maxTokens: options.maxTokens,
     })
-    const payload = buildOpencodePayload({
+    const request = buildOpencodeRequest({
       model: options.model,
       messages,
       ...options.system !== undefined && options.system.length > 0 ? { system: options.system } : {},
@@ -577,14 +573,28 @@ export class OpencodeAdapter extends LlmAdapter {
     const init: RequestInit = {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(request.payload),
       ...options.signal !== undefined ? { signal: options.signal } : {},
     }
     // ⚠️ 走 `proxyFetch` 而不是裸 `fetch`：有代理时它会把请求交给**与
     // dispatcher 同源**的 undici fetch。用全局 fetch 会造成跨实例 handler
     // 契约冲突（Node 22/24 上恒失败），详见 `opencode-proxy.ts` 的 `proxyFetch`。
     // 它内部处理「无代理时退回全局 fetch」，故这里不再自行分支。
-    const response = await proxyFetch(`${OPENCODE.baseUrl}${OPENCODE.chatPath}`, init, slot.proxy)
+    // 只约束响应头等待；头到达即撤销定时器，不能误杀长回答。
+    const headerController = new AbortController()
+    const headerTimer = setTimeout(() => headerController.abort(new LlmError('opencode: 等待响应头超时', 'TIMEOUT')), OPENCODE.chatHeaderTimeoutMs)
+    let response: Response
+    try {
+      response = await proxyFetch(`${OPENCODE.baseUrl}${OPENCODE.chatPath}`, {
+        ...init,
+        signal: options.signal === undefined ? headerController.signal : AbortSignal.any([options.signal, headerController.signal]),
+      }, slot.proxy)
+    } catch (error) {
+      if (headerController.signal.aborted) throw headerController.signal.reason
+      throw error
+    } finally {
+      clearTimeout(headerTimer)
+    }
     if (!response.ok) {
       // ⚠️ **必须先读体**：Zen 的限流语义（`GoUsageLimitError`）在响应体里，
       // 而 body 只能读一次 —— 读了不传下去，轮换层就只能按状态码猜，
@@ -606,12 +616,20 @@ export class OpencodeAdapter extends LlmAdapter {
         },
       )
     }
-    yield* consumeOpenAiSse(response, options.signal !== undefined ? { signal: options.signal } : {}, {
-      label: 'opencode',
-      firstTokenTimeoutMs: OPENCODE.chatHeaderTimeoutMs,
-      chunkTimeoutMs: OPENCODE.chatChunkTimeoutMs,
-      ...options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {},
-    })
+    // ⚠️ 传 `warn`：响应层剔除未知/保留/残缺工具名时必须在宿主日志留痕，
+    // 否则「模型不再调工具」会变成一条查不出原因的静默退化。
+    const normalized = normalizeOpencodeResponse(response, request, this.options.warn)
+    try {
+      yield* consumeOpenAiSse(normalized, options.signal !== undefined ? { signal: options.signal } : {}, {
+        label: 'opencode',
+        firstTokenTimeoutMs: OPENCODE.chatHeaderTimeoutMs,
+        chunkTimeoutMs: OPENCODE.chatChunkTimeoutMs,
+        ...options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {},
+      })
+    } finally {
+      // 共享消费器只 releaseLock；提前结束、取消与抛错都由本渠道释放前置流/上游。
+      await normalized.body?.cancel().catch(() => {})
+    }
   }
 }
 

@@ -83,54 +83,6 @@ export const CHAT_API_BASE = 'https://copilot.tencent.com/v2'
 function isDeepSeekModel(model: string): boolean {
   return /^deepseek/i.test(model.trim())
 }
-
-/**
- * 该产品是否属于「**下发 `reasoning_effort` 会吞掉正文**」的一类。
- *
- * ## 实测依据（2026-10-14，`www.workbuddy.ai` + `deepseek-v4.1-flash`）
- *
- * 固定会话 111 的真实 messages + 标准 `tools`，逐格 13~15 个有效样本：
- *
- * | `reasoning_effort` | 有正文的比例 | 说明 |
- * |---|---|---|
- * | **不发该字段** | **15/15**（省略）/ 14/14（无 tools） | **唯一 100% 保住正文** |
- * | `low`  | 1/14  | |
- * | `high` | 4/15  | |
- * | `max`  | 6/13  | |
- *
- * 而**不带 tools** 时四个格全部 15/15 有正文 ⇒ 正文本身没丢，丢的是
- * 「模型在开思考 + 有工具可调」时那句「我先去做 X」的前言。上游把工具调用
- * 路由进 `tool_calls` 通道时，把同一轮里 `delta.content` 的前言一并吞掉。
- * 实测对照：同一请求体只换模型为 `hy4-preview-f` → 前言正常返回（75 字符）。
- *
- * ## 为什么判据挂在**产品**上而不是模型族上
- *
- * ① 同族的 CodeBuddy（中国版 `copilot.tencent.com`）不在本轮实测范围内，
- *    把它一并关掉是**未经证实的行为变更** —— 而 2026-09 的既有结论
- *    （`reasoning_effort` 是 deepseek 系的思考开关）恰恰依赖它，故保留。
- * ② OfficeAce（华为 MaaS）实测**同样吞正文，但本改法救不了**：见下方注释。
- *
- * ## ⚠️ 聚合 / auto 渠道**无需**另改
- *
- * 二者的 `streamThrough`（`aggregate-adapter.ts`）与 `withTranslatedEffort`
- * （`auto-adapter.ts`）只负责**按目标档位表翻译** `options.reasoningEffort`，
- * 最终仍经 `ctx.llm.stream()` 回到**本适配器**构造 wire body ⇒ 本函数是
- * 这些路径的**共同收口**，轮换到 workbuddy 时同样生效，无需第二份判据。
- * ⚠️ 反过来也成立：若把判据加在聚合层，就会漏掉直连路径，并让
- * 「同一模型直连与轮换行为不同」成为可能 —— 这正是本仓库反复出静默缺陷的形态。
- *
- * ## 代价：模型在该渠道上**完全不思考**
- *
- * 不发 `reasoning_effort` 对 deepseek 系等价于关闭思考（2026-09 实测
- * 「无 `reasoning_effort`、无 `thinking` → `reasoning_content` 恒为 0」），
- * 工具选错风险会上升。这是**为保住正文而自愿付出的代价**，不是副作用。
- * 若上游日后修复，该判据可整条删除。
- *
- * ## ⚠️ `thinking:{type:'enabled'}` 仍照发（见调用点注释）
- */
-function suppressesProseWhenEffortSent(productId: string): boolean {
-  return productId === 'workbuddy'
-}
 /**
  * CodeBuddy 的 provider 路由名（历史常量，保留导出以兼容既有导入方）。
  *
@@ -2034,22 +1986,7 @@ export class BuddyAdapter extends LlmAdapter {
       if (deepseek) {
         bodyObj.thinking = { type: 'enabled' }
       }
-      // ⚠️⚠️ **workbuddy 一律不发 `reasoning_effort`**（2026-10-14 实测，见
-      //    `suppressesProseWhenEffortSent` 的完整表格）。
-      //
-      //    实测：本渠道的 `deepseek-v4.1-flash` 在**带 tools** 时，一旦下发该字段，
-      //    工具调用前的正文前言会被上游**整段吞掉**（`delta.content` 为 0）——
-      //    不发该字段则 15/15 次都拿得到正文。真实报障：会话 `5cb92a4b`（标题「111」）
-      //    连续 23 步全是 reasoning + tool-call、**text 块为 0**，用户看不到正文。
-      //
-      //    ⚠️ **聚合 / auto 渠道轮换到 workbuddy 时同样生效**：那两条路径只翻译
-      //    `options.reasoningEffort`，最终仍经 `ctx.llm.stream()` 回到这里构造
-      //    wire body —— 本行是它们的**共同收口**，故不另写第二份判据。
-      //
-      //    ⚠️ `thinking:{type:'enabled'}` **仍照发**：它单独不改变思考开关
-      //    （2026-09 实测「仅带 thinking → `reasoning_content` 仍为 0」），
-      //    与本条判据正交，且删掉它会改变出站报文形态、对齐官方客户端。
-      if (plan.effort !== undefined && !suppressesProseWhenEffortSent(this.product.id)) {
+      if (plan.effort !== undefined) {
         bodyObj.reasoning_effort = plan.effort
       }
     }

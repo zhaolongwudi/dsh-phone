@@ -22,6 +22,7 @@ import type {
   GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { AccountPool } from './account-pool.js'
+import { nextUtc8DayStartMs } from './model-queue.js'
 import { createModelCatalog, type CatalogEntry, type ModelCatalog } from './model-catalog.js'
 import { RemoteCatalogGate } from './remote-catalog-gate.js'
 import { broadcastCatalogChanged } from './catalog-broadcast.js'
@@ -254,8 +255,6 @@ export interface LoomyAdapterOptions {
 
 /** 单次用户请求最多尝试的账号数（含首号）。与 buddy/raccoon 同语义，设上限只为防病态池。 */
 const LOOMY_MAX_ROTATE = 8
-/** 额度耗尽的冷却兜底：Loomy 的日额度（每日 5000）无可靠重置字段，按日配额记 24h。 */
-const LOOMY_QUOTA_COOLDOWN_MS = 24 * 3_600_000
 /** 429 限流冷却：1 小时（与 trae soft-rate 同档）。 */
 const LOOMY_RATE_LIMIT_COOLDOWN_MS = 3_600_000
 
@@ -337,9 +336,71 @@ export function shouldRotateLoomyAccount(errorText: string, status: number): boo
   return classifyLoomyFailure(errorText, status) !== 'other'
 }
 
-/** 该类别是否要写冷却标记（`auth` 不在其中，见 {@link LoomyFailureClass}）。 */
-export function recordsLoomyRateLimit(cls: LoomyFailureClass): boolean {
+/**
+ * 该类别是否要写冷却标记（`auth` 不在其中，见 {@link LoomyFailureClass}）。
+ *
+ * ⚠️ 返回**类型谓词**而不是 `boolean`：{@link loomyCooldownResetAtMs} 只接受这两个
+ * 类别，于是「先判类别、再算时长」这条顺序由**编译器**保证 —— 少了谓词，
+ * 调用点忘了守卫时 `auth` 会静默拿到一个冷却时长（旧实现正是那个形状：
+ * `status === 429 ? 1h : 24h` 的三元表达式对认证类也返回 24h）。
+ */
+export function recordsLoomyRateLimit(cls: LoomyFailureClass): cls is 'quota' | 'rate' {
   return cls === 'quota' || cls === 'rate'
+}
+
+/**
+ * 撞墙后把冷却标记写到**哪一刻**（UTC 毫秒）。
+ *
+ * | 类别 | 冷却终点 | 依据 |
+ * |---|---|---|
+ * | `quota` | **UTC+8 当日 24:00**（`nextUtc8DayStartMs`） | 每日赠送额度按自然日重置 |
+ * | `rate` | 撞墙时刻 + 1 小时 | 频率类分钟级恢复，与 trae soft-rate 同档 |
+ *
+ * ## ⚠️⚠️ `quota` 原先记的是「撞墙时刻 + 24h」—— 真实缺陷（Gitee IKL80H）
+ *
+ * 用户真机报障（2026-10-13）：**0 点后上游已经放行（用户自己的账号实测能用），
+ * 插件仍说该模型没到重置时间、不给用**。根因就是这个**滑动窗口**：Loomy 的每日赠送
+ * 额度（每日 5000 / `dailyBalance = dailyQuota - dailyConsumed`）按 **UTC+8 自然日**
+ * 重置，而旧实现从失败那一刻起算 24 小时。用户在 23:50 烧光 ⇒ 标记落到**次日 23:50**，
+ * 于是白等将近一整天。
+ *
+ * 实测取证（注入时钟，失败时刻 `2026-10-13 23:50 UTC+8`）：
+ *
+ * | | 时刻 |
+ * |---|---|
+ * | 修复前写下的标记 | `2026-10-14 23:50`（**+24h**） |
+ * | 正确的自然日终点 | `2026-10-14 00:00`（只差 10 分钟） |
+ * | 0 点后 10 分钟的判定 | 仍判「全部账号限流」，距解禁 **23.67 h** |
+ *
+ * 症状出口两处（都读同一个 `modelRateLimits`）：选号侧
+ * `allAccountsRateLimitedForModel` → `throwIfAllAccountsRateLimited` 报
+ * 「可用账号均在限流中，最近一个将于 <次日 23:50> 解禁」；面板侧的「限额中」徽章
+ * 与「限额重置」行。
+ *
+ * ⚠️ 这同时违反本仓库红线「**同一 provider 内不得有两套同义判据**」：
+ * `aggregate-expiry.ts` 的 `loomyExpiry` 对**同一件事**（Loomy 的每日赠送何时失效）
+ * 用的是 `nextUtc8DayStartMs()`，与适配器这里的 +24h 结论不同。现统一到自然日，
+ * 与 qoder / zcode / codearts 三家同口径。
+ *
+ * ## ⚠️ 与 raccoon 的**冷却时长**不再同档（刻意的，已登记）
+ *
+ * 两家的**失败分类表**（`classifyLoomyFailure` / `classifyRaccoonFailure`）仍必须
+ * 逐格同构（有对拍用例守着），但**冷却时长**由各自的额度结算周期决定：loomy 有
+ * 明确的每日赠送池（自然日），raccoon 侧的 24h 兜底尚未同批核对 ⇒ 本次**只改 loomy**。
+ * 这处不对称已记进 `docs/agent-notes/providers-loomy-raccoon-minimax.md`。
+ *
+ * ## ⚠️ 代价（如实登记）
+ *
+ * `classifyLoomyFailure` 判 `quota` 时**分不清**「每日赠送用尽」与「连永久积分也空了」
+ * ——报文只有 `14018 Credits exhausted`。改用自然日后标记**严格变短**（最多差近 24h）
+ * ⇒ 若某个号永久积分也空，0 点后会被重试一发再重新标记。这是刻意的取舍：
+ * 宁可多发一发失败请求，也不要让用户白等一整天（旧值让**每一个**配额耗尽的号都白等）。
+ *
+ * @param cls - 失败类别；只接受会写标记的两类（由类型谓词保证）。
+ * @param nowMs - 当前时刻（注入以便单测）。
+ */
+export function loomyCooldownResetAtMs(cls: 'quota' | 'rate', nowMs: number = Date.now()): number {
+  return cls === 'rate' ? nowMs + LOOMY_RATE_LIMIT_COOLDOWN_MS : nextUtc8DayStartMs(nowMs)
 }
 
 /** Loomy 模型适配器。chat 端点用 Bearer，业务端点用 token。 */
@@ -795,9 +856,9 @@ export class LoomyAdapter extends LlmAdapter {
           await accountPool.updateModelRateLimit(
             activeAccountId,
             options.model,
-            Date.now() + (failureClass === 'rate'
-              ? LOOMY_RATE_LIMIT_COOLDOWN_MS
-              : LOOMY_QUOTA_COOLDOWN_MS),
+            // ⚠️ 时长按类别算：quota = **UTC+8 当日 24:00**（自然日重置，不是 +24h，
+            //    见 `loomyCooldownResetAtMs` 记的 Gitee IKL80H）；rate = +1h。
+            loomyCooldownResetAtMs(failureClass),
           )
         }
         await markCurrentAccount()

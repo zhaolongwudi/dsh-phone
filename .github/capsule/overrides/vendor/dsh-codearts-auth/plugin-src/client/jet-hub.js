@@ -5411,6 +5411,21 @@ function GatewayPanel({ status, busy, notice, onToggle, onReload, onClose }) {
 }
 
 /**
+ * 聚合面板空态文案里那句「已接入临期折算的渠道」名单。
+ *
+ * ⚠️ 这是 `src/aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS` 的**手抄副本**
+ *（客户端 bundle 是独立 entry、**不** import 宿主模块 —— 见 `build.mjs`）。
+ * 加渠道时**必须同改这里**：2026-10-13 接入 `accio` / `officeace` 之后没人回头改，
+ * 于是**只登了这两家**的用户会看到「请先在……登录账号」这句**错话** ——
+ * 他们其实已经登录了，只是名单里没有那两家。
+ *
+ * 两边的一致性由 `tests/unit/aggregate-panel-logic.spec.ts` 末尾的 ★★ 守卫锁成
+ * **集合相等**（判据 fail-closed：抽不到这份名单就报红，改名/重构不会让它静默失效）。
+ */
+const AGG_WIRED_CHANNEL_LABELS =
+  'buddy / workbuddy / loomy / codearts / zcode / lobsterai / trae / accio / officeace';
+
+/**
  * 聚合 provider 的设置面板。
  *
  * ## ⚠️ 为什么是**独立组件**（不塞进 `ProviderPanel`）
@@ -5680,7 +5695,7 @@ function AggregatePanel({ rpcCall }) {
   models !== null && models.length === 0
     ? React.createElement('div', { className: 'dim-jh-aggEmpty' },
         '当前没有可聚合的模型：请先在至少一个已接入临期折算的渠道'
-        + '（buddy / workbuddy / loomy / codearts / zcode / lobsterai / trae）登录账号。')
+        + '（' + AGG_WIRED_CHANNEL_LABELS + '）登录账号。')
     : null,
   // ── 模型列表（**平铺**，全局按候选渠道数降序；不再有厂商分组标题）──
   // ⚠️ 用户 2026-10-07 明确要求去掉分组标题：渠道维度的信息在**展开后的子列表**里

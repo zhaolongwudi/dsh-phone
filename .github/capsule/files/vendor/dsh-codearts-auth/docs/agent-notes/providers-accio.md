@@ -882,6 +882,11 @@ DSH 会把 **`CatalogEntry.id` 注入给模型当身份** —— 而 accio 原�
 （有 `deductionEndTime`）⇒ **可接而未接**。接法同上，但需产品确认；
 在那之前它同样**进不了聚合候选表** —— 注释已如实登记，别读成「已经能进」。
 
+> ✅ **上面这段已于 2026-10-13 失效**（`026a7db` "feat(officeace): 接入聚合轮换"）：
+> officeace 已进 `WIRED_EXPIRY_PROVIDERS` 与 `AGGREGATE_CHANNELS`，折算原语
+> `officeaceExpiry` 也已接上（详见 `providers-officeace.md`）。
+> 上面那段是**当时的记录**，别再照它办事 —— 原文保留只为留痕。
+
 测试：`tests/unit/aggregate-expiry.spec.ts` 的 `★ accioExpiry` 4 条（当日 24:00 /
 只剩月包 ⇒ NEVER / 全 0 ⇒ UNUSABLE / 未登录 ⇒ UNUSABLE）+
 `expiry-runtime-parity.spec.ts` 的清单对拍。
@@ -1004,7 +1009,7 @@ accio 是**根本没有这组按钮的作用对象**。
 | U-A | **未验证** | **续期端点形状与轮换语义** | 参考实现记录「刷新会轮换 refresh_token」；三入口并发会标死账号（codearts 同型）。⚠️ 测它必须用**我们自己的**账号，不能拿用户的 IDE 会话试。⇒ 探针 `test:e2e:accio-refresh` **已就绪但尚未运行**，实现侧已按最坏假设做防御（见 §2） |
 | U-A′ | **未验证** | ⚠️⚠️ **`refresh_token` 是「会话级」还是「账号级」？** | **探针结构上无法回答这个**：它只能证明「凭据由本插件现场 PKCE 登录写入」，**不能**排除「用户用**同一账号**也登录了 IDE」。若服务端是**账号级**轮换，则轮换会作废**同账号** IDE 的登录 —— 即使用的是我们自己的凭据。⇒ **跑续期探针前请先确认该账号没在 IDE 上登录**，或接受这个风险。这是 E2E 探针 `test:e2e:accio-refresh` 的**已知残余风险**（Task 9 复审指出） |
 | U-B | ~~已定~~ | ~~`rateLimit` 是否该登记~~ ⇒ **已定：登记 `false`** | 依据不是「会不会限流」（未实测），而是「两个按钮对本家**恒为惰性**」：适配器不写 `modelRateLimits`、`probeById` 里没有它 ⇒ 零请求、零清除。理由与判据见 §9.1 ②。⚠️ 将来接上请求级换号 + 冷却时**这一行要一起改回 `true`** |
-| U-C | **未验证** | 是否纳入**临期折算**（`ProviderRuntime.expiry`） | 当前**未纳入**：Accio 的余额按**三类语义桶**下发（daily / monthly / referral），而折算层要的是**逐包到期时刻**。纳入须同时进 `WIRED_EXPIRY_PROVIDERS` 与 `aggregate-adapter.ts` 的参与清单 |
+| U-C | ✅ **已纳入（2026-10-13）** | 是否纳入**临期折算**（`ProviderRuntime.expiry`） | **已纳入**：`accioExpiry` + `WIRED_EXPIRY_PROVIDERS` + `provider-expiry.ts` 的 `createProviderExpiry()` 三处已同改（见上面「聚合里的归并」一节与 `tests/unit/aggregate-expiry.spec.ts` 的 `★ accioExpiry` 4 条）。⚠️ 判据是**三类语义桶**：有每日额度 ⇒ 当日 24:00；只剩每月/推荐 ⇒ `NEVER`（上游没下发作废时刻，不猜）；全 0 / 查询失败 ⇒ `UNUSABLE` |
 | U-D | ✅ **已验证（2026-10-14，issue IKLR7V）** | 图片通路 | **上游原生收图**，形状 `parts[].inline_data = {mime_type,data}`（Gemini 同构）；四象限色块图**四色全对**。⚠️ **`multimodal` 字段可信**（15 条可见模型从不缺失、与兜底表 100% 一致），但 **`multimodal:false` 的模型不报错、而是静默忽略图片**（GLM 5.1 据此**幻觉**出答案）⇒ `inputModalities` 必须按逐模型声明，`false` 写 `['text']`。详见 §4.6 |
 | U-E | **未验证** | 国际版账号能否用中国版登录页（反之） | 跨区域登录是否被拒。⚠️ 区域选择入口**已接上**（见 §9.1 ③），故现在**可以触发**这一条：选国际版登录域去登一个中国版账号（或反之）会得到什么。⇒ 探针 `test:e2e:accio` 未覆盖跨区域组合，仍待人工验证 |
 | **U-F** | ⚠️ **已验证，但证据未留存** | **`tools` 的扁平形态被上游接受**（§4.1.2） | Task 6 的 `probe-tool-shards.mjs` / `probe-tool-merge.mjs` **真机跑过**并拿到真实 `function_call` 帧（`task-6-report.md` §4.2 逐字记录 frame#8/#9/#10），两支探针下发的**都是扁平 `parametersJson` 形态** ⇒ 「扁平可用」是**跑出来的结论**。⚠️ 但探针在 `.tmp-accio/`（gitignore）、**没有日志入库**，且 `tests/unit/accio-adapter.spec.ts` 那条只写「实测该形状可用」而**未注明来源** ⇒ 属**证据未留存**：结论照用，但**没有可复核的产物**。要做成回归防线须**重跑并留存**（例如把探针搬进 `tests/e2e/` 的闸门探针并落日志） |

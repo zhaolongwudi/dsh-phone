@@ -1,7 +1,7 @@
 <!-- 搬自 AGENTS.md（2026-10-06 拆分：注入预算 65,536 B，超出部分每轮被截断永不可见）。
      内容逐字节原样保留；本文件按需阅读，不进每轮注入。 -->
 
-## ⚠️ Loomy（讯飞）provider：六个不能凭直觉改的点
+## ⚠️ Loomy（讯飞）provider：七个不能凭直觉改的点
 
 `loomy` 是第 8 个 provider，与其余七者**都不同源**。实现是独立一套
 `src/loomy*.ts`（`loomy-product` / `loomy` / `loomy-sign` / `loomy-oauth` /
@@ -124,6 +124,16 @@
      大小写区分模型；且「不归一 ⇒ 静默拒图」已经真实发生过一次）。
      守卫在 `tests/unit/loomy-product.spec.ts` 的「查表口径」三条 + 一张
      「两张覆盖表的键都必须已归一」的机器守卫（加新条目忘了小写会红）。
+
+7. **额度耗尽的冷却终点 = UTC+8 当日 24:00，不是「撞墙时刻 + 24h」**（Gitee
+   **IKL80H**，2026-10-15 修）。每日赠送额度按**自然日**重置，用滑动窗口会让
+   23:50 烧光的账号被封到**次日 23:50** —— 用户原话「0 点后 loomy 能用（自己账号
+   实测），但插件说模型未到重置时间，不给用」。时长判据抽在
+   `loomyCooldownResetAtMs`（`quota` = 当日 24:00、`rate` = 撞墙 +1h）。
+   ⚠️ `raccoon-adapter.ts` 的 `RACCOON_QUOTA_COOLDOWN_MS` 至今仍是 +24h ——
+   **别照抄它**，也别为「跟 raccoon 保持一致」把这里改回去：两家的**失败分类表**
+   必须逐格同构（有对拍用例），**冷却时长**自本条起**刻意分开**（各自取决于额度
+   结算周期）。实测取证与变异验证见下文「loomy 的 `quota` 冷却终点」一节。
 
 ### 短信登录：唯一没有 loginUrl 的 provider
 
@@ -685,7 +695,12 @@ pnpm test:e2e:raccoon-tools  # ⚠️ 发推理：**tools 是否被接受**（�
 `classifyLoomyFailure`（`src/loomy-adapter.ts`）与 `classifyRaccoonFailure`
 （`src/raccoon-adapter.ts`）**逐格同构**：接口形态同族（额度错误没有专用 HTTP
 状态码，文案是主通道）、四个类别同义（`quota` / `rate` / `auth` / `other`）、
-冷却时长同档（`quota` 24h、`rate` 1h）。
+`rate` 冷却同档（1h）。
+
+⚠️ **但 `quota` 的冷却时长自 2026-10-15 起刻意不再同档**（loomy `quota` =
+**UTC+8 当日 24:00**；raccoon 仍是 +24h 兜底）—— 见本节末「loomy 的 quota 冷却终点」。
+**分类表仍必须逐格同构**（有对拍用例），只有**时长**这一格分开了：时长取决于各自的
+额度结算周期，不属于分类判据。
 
 **真实缺陷（同型复发）**：raccoon 在 `7b524ff` 把判据收窄了两处，loomy **未同步**，
 于是同一报文在两个 provider 上被判成**不同类别**，危险方向恒定朝 loomy
@@ -693,11 +708,11 @@ pnpm test:e2e:raccoon-tools  # ⚠️ 发推理：**tools 是否被接受**（�
 
 | 报文 | loomy（未同步时） | raccoon（已修） |
 |---|---|---|
-| `403 + insufficient permissions to access this resource` | `quota` ⇒ **写 24h** | `auth` ⇒ 只换号 |
-| `403 + 积分不足` | `quota` ⇒ **写 24h** | `auth` ⇒ 只换号 |
-| `401 + 余额不足` | `quota` ⇒ **写 24h** | `auth` ⇒ 只换号 |
-| `401 + 14018 Credits exhausted`（网关故障常带余额提示） | `quota` ⇒ **写 24h** | `auth` ⇒ 只换号 |
-| `400 + the context window is insufficient for this model` | `quota` ⇒ **写 24h** | `other` ⇒ 不换号 |
+| `403 + insufficient permissions to access this resource` | `quota` ⇒ **写冷却** | `auth` ⇒ 只换号 |
+| `403 + 积分不足` | `quota` ⇒ **写冷却** | `auth` ⇒ 只换号 |
+| `401 + 余额不足` | `quota` ⇒ **写冷却** | `auth` ⇒ 只换号 |
+| `401 + 14018 Credits exhausted`（网关故障常带余额提示） | `quota` ⇒ **写冷却** | `auth` ⇒ 只换号 |
+| `400 + the context window is insufficient for this model` | `quota` ⇒ **写冷却** | `other` ⇒ 不换号 |
 
 前四行正是 AGENTS.md 记的 **2026-10-06「全池被封」事故形态**（那次触发词是
 `authorization_verify_error`，这次是 `insufficient permissions` / 「不足」类文案）：
@@ -712,12 +727,72 @@ pnpm test:e2e:raccoon-tools  # ⚠️ 发推理：**tools 是否被接受**（�
 2. `insufficient` **单独出现过宽**，必须与邻近的「钱」义词
    （`point` / `credit` / `balance` / `quota` / `token`）**共现**才算额度。
    中文三词（积分 / 额度 / 余额）**不要**收紧 —— 它们的方向是「宁可漏判不可误伤」。
-   漏判只是不换号，误判会封可用账号 24h。
+   漏判只是不换号，误判会封可用账号（loomy 现在封到当日 24:00，raccoon 封 24h）。
 
 **防复发的真正闸门是「对拍」而不是各写一份用例**：单方面把一侧「改严」时，
 两侧各自的用例**都能过**（本次的 loomy 侧就是这样漏掉的）。
 `tests/unit/loomy-adapter.spec.ts` 的「与 raccoon 对拍」段把**同一批真实报文
 喂两个分类器、断言逐条同结论**，分叉即红。
+
+### ⚠️⚠️ loomy 的 `quota` 冷却终点：**UTC+8 当日 24:00**，不是「撞墙时刻 + 24h」
+
+（Gitee **IKL80H**，2026-10-13 用户真机报障，2026-10-15 修复）
+
+用户原话：「**0 点后 loomy 能用，我自己的账号实测。但该插件的 loomy 会说模型未到
+重置时间，不给用，目测是以积分耗尽的 24 小时做判定。**」
+
+**根因**：Loomy 的每日赠送额度（每日 5000，`dailyBalance = dailyQuota - dailyConsumed`）
+按 **UTC+8 自然日**重置，而旧实现写的是 `Date.now() + 24h` 的**滑动窗口**
+（常量 `LOOMY_QUOTA_COOLDOWN_MS`，随 `raccoon-adapter.ts` 同形抄来）。
+用户在 23:50 烧光 ⇒ 标记落到**次日 23:50** ⇒ 跨过 0 点后上游已放行而插件仍判受限。
+
+| | 时刻（失败时刻 = 2026-10-13 23:50 UTC+8） |
+|---|---|
+| 修复前写下的标记 | `2026-10-14 23:50`（**+24h**） |
+| 修复后的自然日终点 | `2026-10-14 00:00`（只差 10 分钟） |
+| 0 点后 10 分钟的判定（修复前） | 仍判「全部账号限流」，距解禁 **23.67 h** |
+
+**症状出口两处**（都读同一个 `modelRateLimits`，故一处根因两处可见）：
+
+- 选号侧 `allAccountsRateLimitedForModel` → `throwIfAllAccountsRateLimited`
+  （`src/index.ts`）报「可用账号均在限流中，最近一个将于 <次日 23:50> 解禁」；
+- 面板侧 `plugin-src/client/jet-hub.js` 的「限额中」徽章与「限额重置」行。
+
+⚠️ 这同时是 AGENTS.md 红线「**同一 provider 内不得有两套同义判据**」的一处违反：
+`aggregate-expiry.ts` 的 `loomyExpiry` 对**同一件事**（Loomy 的每日赠送何时失效）用的是
+`nextUtc8DayStartMs()`，与适配器这里的 +24h 结论不同。现统一到自然日，与
+qoder / zcode / codearts 三家同口径。
+
+**改法与守卫**（`src/loomy-adapter.ts` 的 `loomyCooldownResetAtMs`）：
+
+- 时长**按类别**算，并把它抽成**导出的纯函数**（入参化 `nowMs`）才测得动 ——
+  旧写法是调用点上的三元表达式 `status === 429 ? 1h : 24h`，恒真断言抓不到它；
+- `recordsLoomyRateLimit` 改成**类型谓词** `cls is 'quota' | 'rate'`：
+  少了守卫时 `auth` 会静默拿到一个冷却时长（旧三元表达式正是这个形状），
+  现在由 `tsc` 拦（实测：退回 `boolean` ⇒ `TS2345` 编译失败）；
+- 回归用例在 `tests/unit/loomy-adapter.spec.ts` 的「IKL80H：自然日 vs +24h」段，
+  **含反向对照**（拿旧值当变异体，断言同一时刻**必须**判受限）——
+  只断言「修复后不再受限」是可能恒真的（判据整体失效也会通过）。
+
+**实测的变异验证**（登记结果，含一处无牙）：
+
+| 变异 | 结果 |
+|---|---|
+| `quota` 退回 `nowMs + 24h` | **3 红**（自然日终点、端到端标记、0 点后症状） |
+| `quota` / `rate` 两条分支对调 | **5 红** |
+| `recordsLoomyRateLimit` 谓词退回 `boolean` | **`tsc` `TS2345` 编译失败** |
+| ⚠️「恰好 0 点撞墙 ⇒ 终点是再下一个 0 点」 | **无牙**：该输入上两式**同值**，退回旧写法仍绿。如实登记，不为它编恒真断言（它的作用是守边界语义：不得返回「此刻」） |
+
+**代价（如实登记）**：`classifyLoomyFailure` 判 `quota` 时分不清「每日赠送用尽」与
+「连永久积分也空了」（报文只有 `14018 Credits exhausted`）。改用自然日后标记
+**严格变短**（最多差近 24h）⇒ 若某个号永久积分也空，0 点后会被重试一发再重新标记。
+刻意取舍：宁可多发一发失败请求，也不让用户白等一整天。
+
+**未同批修（留给后续）**：`raccoon-adapter.ts` 的 `RACCOON_QUOTA_COOLDOWN_MS`、
+`trae-cooldown-table.ts` 的 `quota-exceeded`（24h）、`minimax-adapter.ts` 的
+`MINIMAX_QUOTA_COOLDOWN_MS` 三处仍是「撞墙 + N」的滑动窗口。本次**只改 loomy**
+（用户报障的那一家）—— 这三家的额度结算周期尚未逐家核对，且 trae 的 24h 是有
+注释依据的「覆盖到下次签到」⇒ 需各自取证后再动，别顺手统一。
 ⚠️ 已做**反向验证**：把 loomy 的顺序与 `insufficient` 判据改回修复前 →
 3 条变红（含对拍那条）；恢复后 44/44 绿。
 

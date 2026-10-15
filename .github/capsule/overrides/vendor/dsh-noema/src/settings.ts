@@ -141,8 +141,15 @@ const NOEMA_MEMORY_SETTINGS_FIELDS: { [K in keyof NoemaMemorySettings]: NoemaMem
 /** Schemastery schema of the settings section. */
 export const NOEMA_MEMORY_SETTINGS_SCHEMA = z.object(NOEMA_MEMORY_SETTINGS_FIELDS)
 
-/** Entry-config face accepted by the cordis loader for this plugin. */
-export const Config = NOEMA_MEMORY_SETTINGS_SCHEMA.volatile()
+/**
+ * Entry-config face accepted by the cordis loader for this plugin.
+ * ⚠️ 本地修复（手机版）：原实现在此对根 schema 再调一次 .volatile()，而各字段已由 liveField()
+ *    标记为 volatile；schemastery 3.18.5 会以 "volatile fields require a fixed object path
+ *    without an enclosing volatile field" 拒绝这种嵌套，dsh-noema 条目因此整体不激活，
+ *    设置页只剩「当前浏览器会话中记忆设置不可用」。字段级 volatile 才是 DSH 0.2.x 的契约，
+ *    与上游 rc.6/main 的 `export const Config = NOEMA_MEMORY_SETTINGS_SCHEMA` 一致。
+ */
+export const Config = NOEMA_MEMORY_SETTINGS_SCHEMA
 
 type NumericSettingField = 'idleTimeoutMs' | 'callTimeoutMs' | 'restartDelayMs'
 
