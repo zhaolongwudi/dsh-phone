@@ -191,11 +191,31 @@ export function serializeMessages(
    */
   const flushToolImages = (own?: Array<Record<string, unknown>>): void => {
     const ownParts = own ?? []
-    if (pendingToolImages.length === 0 && ownParts.length === 0) return
-    // 图与提问**同条**：图在前、own 的文本在后（两种顺序实测都能被看到）。
+    const hasImages = pendingToolImages.length > 0
+    if (!hasImages && ownParts.length === 0) return
+    /* ⚠️⚠️ **只在真有挂起图片时才重排顺序**（手机版对上游的收窄）：
+       上游无条件把图排到文本之前，会翻转**普通贴图**的既有顺序
+       （`[text, image]` → `[image, text]`，使既有 spec 变红）。
+       顺序不影响模型能否看见图，故无挂图时 `own` 原样发出（旧行为逐字节不变）。 */
+    if (!hasImages) {
+      /* ⚠️⚠️ **纯文本 parts 数组会被上游以 `model_param_invalid` 400 拒收整个请求**
+         （Issue F-09）。`combined` 一旦把「上一条延后正文」与「本条正文」合并就必然是
+         parts 形态；此刻没有挂图就会原样落到这里 ⇒ 坏历史每轮重放 = **会话报废**。
+         故**全为 text 时 join 回字符串**。
+         ⚠️ 含非 text 的 part（本条自带的顶层图）时**不能** join：那会丢图。 */
+      const allText = ownParts.every((part) => part.type === 'text')
+      wire.push({
+        role: 'user',
+        content: allText ? ownParts.map((part) => String(part.text)).join('') : ownParts,
+      })
+      return
+    }
     const ownImages = ownParts.filter((part) => part.type !== 'text')
     const ownText = ownParts.filter((part) => part.type === 'text')
-    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownText] })
+    /* ⚠️⚠️ **纯图无文本的独立 user 条，模型看不见**（Issue F-05）：
+       无自身文本时补回说明文本，让图始终与一段文字同在一条消息里。 */
+    const ownTextOrHint = ownText.length > 0 ? ownText : [{ type: 'text', text: TOOL_RESULT_IMAGE_TEXT }]
+    wire.push({ role: 'user', content: [...pendingToolImages, ...ownImages, ...ownTextOrHint] })
     pendingToolImages = []
   }
 
@@ -259,7 +279,7 @@ export function serializeMessages(
     // 纯文本若被包装成 `[{type:'text',…}]`，上游会以 `model_param_invalid` 400
     // 拒收整个请求（实测）。
     const hasImage = parts !== undefined
-    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage
+    const combined: Array<Record<string, unknown>> | undefined = pendingToolImages.length > 0 || hasImage || pendingOwnParts !== undefined
       ? [
         ...(pendingOwnParts ?? []),
         ...(parts ?? (text.length > 0 ? [{ type: 'text', text }] : [])),

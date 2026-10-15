@@ -507,15 +507,16 @@ grep -qF -e "android:configChanges=" app/src/main/AndroidManifest.xml
 grep -qF -e "override fun onConfigurationChanged" app/src/main/java/com/dshphone/MainActivity.kt
 grep -qF -e "override fun onSaveInstanceState" app/src/main/java/com/dshphone/MainActivity.kt
 #
-# —— F-04 聚合层「本轮体积」必须按会话分桶且可降 ——
-#   丢掉 `lastContextTokensBySession` 会静默退回「进程级只增峰值」⇒ 小会话死循环。
-grep -qF -e "lastContextTokensBySession" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
-grep -qF -e "self.recordSessionContextTokens(sessionKey" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
-grep -qF -e "const observedTokens = self.lastContextTokensBySession.get(sessionKey)" \
-  vendor/dsh-codearts-auth/src/aggregate-adapter.ts
-#   学习点必须用**本次尝试**的 turnTokens，不能用峰值。
-grep -qF -e "const observed = turnTokens" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
-! grep -qF -e "const observed = self.lastContextTokens" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+# —— F-04 聚合层「上下文窗口」必须按候选集推导、且瞬时故障不记忆化 ——
+#   ⚠️ **2026-10-15 更新**：Gitee rc.11 用 `contextWindowFor`（从候选集**推导**窗口上限）
+#      取代了胶囊此前的「按会话分桶观测 + 超限主动抛 CONTEXT_WINDOW_EXCEEDED」机制 ——
+#      两套是不同架构，而 `context-window-learn.ts` 的注释里明确写着「**不要**拿历次观测的
+#      峰值（`lastContextTokens` 那种跨轮累积值）」，即上游**有意淘汰**了旧机制。
+#   ⇒ 断言改钉 rc.11 的机制：窗口推导存在、且「瞬时故障不记忆化」这条纪律仍在
+#      （后者是该 issue 的真正要害：把瞬时故障固化会变成持续错误）。
+grep -qF -e "private async contextWindowFor(" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+grep -qF -e "resolved: boolean" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
+grep -qF -e "后者绝不能" vendor/dsh-codearts-auth/src/aggregate-adapter.ts
 #
 # —— F-05 / F-06 / F-07 / F-09 图片与工具回执形态（三个适配器必须同型）——
 for adapter in openai-compat buddy-adapter lobsterai-adapter; do
@@ -528,9 +529,13 @@ for adapter in openai-compat buddy-adapter lobsterai-adapter; do
   # F-09：无图时必须 join 回字符串（纯文本 parts 数组会被上游 400）
   grep -qF -e "allText ? ownParts.map((part) => String(part.text)).join('') : ownParts" \
     "vendor/dsh-codearts-auth/src/$adapter.ts"
-  # F-21：延后判据必须把「有挂图」与「有延后正文」都算进来
-  grep -qF -e "|| pendingToolImages.length > 0" "vendor/dsh-codearts-auth/src/$adapter.ts"
-  grep -qF -e "|| pendingOwnParts !== undefined" "vendor/dsh-codearts-auth/src/$adapter.ts"
+  # F-21：延后判据必须把「有挂图」与「有延后正文」都算进来。
+  #   ⚠️ **2026-10-15 更新**：原断言钉的是**跨行写法**（`|| pendingToolImages.length > 0`），
+  #      而 rc.11 用**单行写法**（`pendingToolImages.length > 0 || hasImage || pendingOwnParts !== undefined`）。
+  #      语义相同、排版不同 ⇒ 改为**语义判据**：两个条件都必须出现在同一处 combined 判据里。
+  #      （教训：断言钉排版会随上游格式调整而假红 —— 本仓库反复记录过这类「验证手段自身腐坏」。）
+  grep -qE "pendingToolImages\.length > 0.*pendingOwnParts !== undefined|pendingOwnParts !== undefined.*pendingToolImages\.length > 0" \
+    "vendor/dsh-codearts-auth/src/$adapter.ts"
 done
 # F-07：gemini 工具结果内层图必须提升为 inlineData
 grep -qF -e "toolResultInlineImages" vendor/dsh-codearts-auth/src/gemini-messages.ts
