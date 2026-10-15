@@ -155,7 +155,27 @@ jobs:
           ls -l app/src/main/assets/ | head
 
       - name: 编译 APK
-        run: ./gradlew :app:clean :app:assembleDebug --no-daemon
+        # `-I` 引入胶囊的 init script：把 debug 变体的 `android:debuggable` 关掉
+        #（Issue F-01，见 `.github/capsule/files/scripts/no-debuggable.gradle`）。
+        # 用 init script 而不是覆盖上游 `app/build.gradle`，是为了不引入整份文件冻结
+        # 带来的静默遮蔽风险（F-03 同源问题）。
+        run: ./gradlew :app:clean :app:assembleDebug --no-daemon -I .github/capsule/files/scripts/no-debuggable.gradle
+
+      # ⚠️⚠️ **发布前的硬门禁**（Issue F-01）。上面那个 init script 是本仓库新增的
+      # 机制，而本机没有 Android SDK、**无法在设备上验证它在真实 Gradle 里生效**。
+      # 故这里不假设它一定生效，而是**直接检查产物**：只要 badging 里出现
+      # `application-debuggable`，立即失败 —— 绝不让 debuggable 包被发出去。
+      # 这正是本项目「防静默失效」的既定纪律：机制可以失效，但失效必须响亮。
+      - name: 门禁：产物必须不是 debuggable
+        run: |
+          BADGING=$(aapt dump badging app/build/outputs/apk/debug/app-debug.apk)
+          echo "$BADGING" | grep -E '^package:|^application-'
+          if echo "$BADGING" | grep -q '^application-debuggable'; then
+            echo "::error::发布产物是 debuggable 包（Issue F-01 回归）：run-as / adb pull 可读应用私有目录，WebView 远程调试可读页面内 Cookie（= 管理员凭据）。"
+            echo "::error::请检查 -I .github/capsule/files/scripts/no-debuggable.gradle 是否被 Gradle 接受（AGP 版本变更可能让 init script 失效）。"
+            exit 1
+          fi
+          echo "✓ 产物非 debuggable"
 
       - name: 发布 Release
         env:
