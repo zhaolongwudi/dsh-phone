@@ -165,6 +165,23 @@ patch('home-template/profiles/phone/package.json',
   '        "dsh-providers-hub",',
   'profile 模板 bundles 项');
 
+// ②b **退役**（2026-10-17）：出厂模板不再装老 Jet Hub —— 改名链到此终止。
+//     依赖键与 bundles 项必须**同时**消失：只留其一会让加载期静默失败。
+//     ⚠️ 为什么必须退役：老 Jet Hub（`dsh-providers-hub`）与 OFM 会在**三个槽位**
+//        重复注册，这是实测（headless 注册期 + 浏览器 DOM）不是推断 ——
+//        `settings.section id=jet-hub`（两个设置入口）、
+//        `conversation.input.right id=*-usage`（两枚余额胶囊）、
+//        `conversation.composer.dock`（一枚多出的活动模型胶囊）。
+//        渠道引擎与 26 项设置页早已并入 OFM（补丁 C/G），故并存只剩冲突。
+patch('home-template/profiles/phone/package.json',
+  '    "dsh-providers-hub": "file:./node_modules/dsh-providers-hub",\n',
+  '',
+  'profile 模板退役：移除 providers-hub 依赖键');
+patch('home-template/profiles/phone/package.json',
+  '        "dsh-providers-hub",\n',
+  '',
+  'profile 模板退役：移除 providers-hub 入口');
+
 // ③ 恢复模式的保护清单（RecoveryManager.protectedBundles）：
 //    它决定「快照回滚时哪些 bundle 不受影响」。用旧名会让插件**不被识别为受保护**
 //    ⇒ 一旦走恢复流程，它可能被当作用户安装的条目回滚掉。
@@ -182,7 +199,11 @@ patch('peer/controlled-market/catalog.mjs',
   "export const BUILTINS = new Set(['@zseven-w/dsh-noema', 'dsh-providers-hub',",
   'peer 受保护内置清单');
 
-// ⑤ 设备端**升级**迁移（老设备的 profile 里已是旧名，必须双向改）
+// ⑤ 设备端**升级**迁移：**退役**退役插件入口（2026-10-17 改）。
+//    ⚠️ 这里原先写的是 rc.11 的「dsh-codearts-auth → dsh-providers-hub 改名」，
+//       它会在**每次升级**（ASSET_VERSION 变化）把老 Jet Hub 塞回 profile.bundles
+//       —— 这正是用户报的「右下角胶囊又出现了 / 两个模型积分胶囊」的根因：
+//       升级逻辑把已退场的插件重新装了回来。改名链由本段终止为**移除**。
 patch('app/src/main/java/com/dshphone/NodeRunner.kt',
   [
     '            listOf("dsh-codearts-auth", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
@@ -191,27 +212,41 @@ patch('app/src/main/java/com/dshphone/NodeRunner.kt',
     '            }',
   ].join('\n'),
   [
-    '            /* ⚠️ 手机版改名迁移（rc.11：dsh-codearts-auth → dsh-providers-hub，见 apply.sh §2.8）。',
-    '               必须**双向**：只加新名 ⇒ 旧入口残留 ⇒ 同一插件被加载两次',
-    '               （client-modules 报 resolves from multiple active Loader sources）；',
-    '               只删旧名不加新名 ⇒ 插件完全不加载。两者都是静默失效。 */',
-    '            for (legacy in listOf("dsh-codearts-auth")) {',
-    '                for (i in bundles.length() - 1 downTo 0) if (bundles.optString(i) == legacy) bundles.put(i, "dsh-providers-hub")',
+    '            /* ⚠️ 渠道插件**退役**（2026-10-17；此前是 rc.11 的 dsh-codearts-auth → dsh-providers-hub 改名链）。',
+    '               老 Jet Hub 的渠道引擎与 26 项设置页已并入 dsh-our-free-model（补丁 C/G），',
+    '               两者并存会在**三个槽位**重复注册（实测，非推断）：',
+    '                 settings.section id=jet-hub / conversation.input.right id=*-usage',
+    '                 / conversation.composer.dock',
+    '               ⇒ 用户看到两枚余额胶囊 + 两个 Jet Hub 设置入口 + 一枚多出的活动模型胶囊。',
+    '               故升级时**移除**旧名与新名两个入口：不再改名、不再补装。',
+    '               ⚠️ 依赖键与 bundles 项必须**同时**移除：2026-10-16 的事故正是只清一半',
+    '               （bundles 清了、dependencies 还在）导致聚合 provider 适配器静默缺失。 */',
+    '            /* ⚠️ 只用上游**已经用过**的 JSON API（length / optString / put / getJSONArray）。',
+    '               刻意**不用** `bundles.remove(i)`：本机无 gradle，无法验证 JSONArray.remove(int)',
+    '               这个重载在 Android 的 org.json 上确实可用；"重建数组"写法零新 API 风险。',
+    '               （`dependencies.remove(legacy)` 是既有写法，已在 CI #316/#318 编译通过。） */',
+    '            val keptBundles = JSONArray()',
+    '            for (i in 0 until bundles.length()) {',
+    '                val name = bundles.optString(i)',
+    '                if (name != "dsh-codearts-auth" && name != "dsh-providers-hub") keptBundles.put(name)',
+    '            }',
+    '            profile.put("bundles", keptBundles)',
+    '            for (legacy in listOf("dsh-codearts-auth", "dsh-providers-hub")) {',
     '                dependencies.remove(legacy)',
     '                File(installedModules, legacy).deleteRecursively()',
     '            }',
-    '            listOf("dsh-providers-hub", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
-    '                if ((0 until bundles.length()).none { bundles.optString(it) == bundle }) bundles.put(bundle)',
+    '            listOf("dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema").forEach { bundle ->',
+    '                if ((0 until keptBundles.length()).none { keptBundles.optString(it) == bundle }) keptBundles.put(bundle)',
     '                dependencies.put(bundle, "file:./node_modules/$bundle")',
     '            }',
   ].join('\n'),
-  'NodeRunner 双向 profile 迁移');
+  'NodeRunner：退役 Jet Hub 入口（原为改名迁移）');
 
-// ④ 落地断言：三处新名必须真的出现（防「patch 静默没生效」）
+// ④ 落地断言：改名目标必须真的出现（防「patch 静默没生效」）
+//    ⚠️ profile 模板已从本清单**移除**：②b 把它退役了，它改由下面的 ④b 反向断言。
 let checked = 0;
 for (const [file, needle, label] of [
   ['scripts/build-assets.py', "'dsh-providers-hub',", 'build-assets.py'],
-  ['home-template/profiles/phone/package.json', '"dsh-providers-hub"', 'profile 模板'],
   ['app/src/main/java/com/dshphone/NodeRunner.kt', '"dsh-providers-hub"', 'NodeRunner.kt'],
   ['app/src/main/java/com/dshphone/RecoveryManager.kt', '"dsh-providers-hub"', 'RecoveryManager.kt'],
   ['peer/controlled-market/catalog.mjs', 'dsh-providers-hub', 'peer BUILTINS'],
@@ -222,9 +257,128 @@ for (const [file, needle, label] of [
     bad++;
   }
 }
+
+// ④b **退役断言**（2026-10-17）：这两处**不得**再出现 providers-hub 入口。
+//     ⚠️ 断言方向与上面相反，因为「退役」的失效形态是**静默复发**：构建全绿、
+//        装完却多出两枚胶囊 —— 只有真机点开才看得见（2026-10-17 的现场就是它）。
+for (const [file, needle, label] of [
+  ['home-template/profiles/phone/package.json', 'dsh-providers-hub', '出厂 profile 模板（新装用户）'],
+  ['app/src/main/java/com/dshphone/NodeRunner.kt', 'listOf("dsh-providers-hub", "dsh-phone-account"', 'NodeRunner.kt 仍把 providers-hub 当补装目标'],
+]) {
+  checked++;
+  if (fs.readFileSync(file, 'utf8').includes(needle)) {
+    console.error('::error::退役校验失败：' + label + ' 仍在引用 / 补装 dsh-providers-hub');
+    bad++;
+  }
+}
 if (bad > 0) { console.error('::error::改名迁移未完成（' + bad + ' 处）'); process.exit(1); }
 console.log('  ✓ 改名迁移落地（' + patched + ' 处替换 + ' + checked + ' 处校验）');
 CAPSULE_RENAME_PATCH
+
+# 2.9) **出厂内置 Our Free Model**（2026-10-17，用户决策 = 新装即用）。
+#
+#      背景：Jet Hub 退役（§2.8）后，出厂模板里**一个渠道插件都没有** ⇒ 新装用户没有
+#      渠道功能，得自己用 `_ofm` 工具装 OFM。本段把 OFM 的**发行形态**随 APK 一起部署：
+#
+#        · 源 = `.github/capsule/files/vendor/dsh-our-free-model/`（由 `_ofm` 工作区导出，
+#          已是**打过补丁 B/C/D/E/F/G/H/I/J** 的版本 —— 原样入库即可直接用）
+#        · 只带**运行时必需**文件（15 个 / 5.4 MB），刻意**不带**：
+#            - `src/`（OFM 自身源码 0.9 MB）与 `vendor/channel-pack/src/`（渠道包 197 个 .ts，4.5 MB）
+#              ⇒ 都是**维护期**素材（`patch-channelpack-port.mjs` 用），运行时只用 `pack.js`
+#            - `*.pre-patch*`（本地补丁备份，7.3 MB）⇒ 本地产物，**绝不该入库**
+#          不剔除的话是 18 MB，剔除后 5.4 MB。
+#        · 为什么放 `files/`（而非 `overrides/`）：它是**全新增路径**，由 §1.5 门禁保证
+#          不会静默覆盖上游文件。
+#
+#      ⚠️ 由此产生一条**新的维护约定**：OFM 上游更新后，`_ofm/update.mjs` 装到设备上的
+#         是**打过补丁**的版本；要让它随 APK 出厂，必须**重新导出**到
+#         `files/vendor/dsh-our-free-model/`（否则出厂版会落后于设备版）。
+#         导出清单见本段 ④ 的 `NEED` 列表 —— 它就是"运行时必需"的权威定义。
+node - <<'CAPSULE_EMBED_OFM'
+const fs = require('fs');
+let bad = 0;
+let patched = 0;
+const patch = (file, from, to, label) => {
+  if (!fs.existsSync(file)) { console.error('::error::OFM 内置：找不到 ' + file); bad++; return; }
+  const s = fs.readFileSync(file, 'utf8');
+  const hits = s.split(from).length - 1;
+  if (hits !== 1) {
+    console.error('::error::OFM 内置：' + label + ' 的锚点命中 ' + hits + ' 次（应为 1）—— 上游挪动了这段文本。');
+    bad++;
+    return;
+  }
+  fs.writeFileSync(file, s.replace(from, to));
+  patched++;
+  console.log('  ✓ ' + label);
+};
+
+// ① 部署清单：BUNDLES + 部署映射 + copy_bundle 白名单
+patch('scripts/build-assets.py',
+  "'@zseven-w/dsh-noema')",
+  "'@zseven-w/dsh-noema', 'dsh-our-free-model')",
+  'build-assets.py BUNDLES 加入 OFM');
+patch('scripts/build-assets.py',
+  "('@zseven-w/dsh-noema', ROOT / 'vendor/dsh-noema')]",
+  "('@zseven-w/dsh-noema', ROOT / 'vendor/dsh-noema'),\n                         ('dsh-our-free-model', ROOT / 'vendor/dsh-our-free-model')]",
+  'build-assets.py 部署映射加入 OFM');
+// copy_bundle 的 entries 是共用白名单。⚠️ 实测：它**没有** `client.js`（表里只有
+// `cards-client.js`）—— 而 OFM 的浏览器半身正是 `client.js`，漏了就只剩服务端半身，
+// 界面（渠道页 / 设置页 / 两枚胶囊）全都不出现。故这里必须补 `client.js`。
+patch('scripts/build-assets.py',
+  "'page.html', 'cordis.patch.yml')",
+  "'page.html', 'cordis.patch.yml', 'client.js', 'adapter', 'icon.svg')",
+  'build-assets.py copy_bundle 白名单加入 client.js / adapter / icon.svg');
+
+// ② 出厂 profile 模板：dependencies + bundles
+//    ⚠️ 锚点**不带尾逗号**：`@zseven-w/dsh-noema` 在 §2.8 ②b 退役之后是 dependencies
+//       的**最后一项**（无逗号）。带逗号的锚点会 0 次命中并硬失败 —— 实测踩过。
+patch('home-template/profiles/phone/package.json',
+  '    "@zseven-w/dsh-noema": "file:./node_modules/@zseven-w/dsh-noema"\n',
+  '    "@zseven-w/dsh-noema": "file:./node_modules/@zseven-w/dsh-noema",\n    "dsh-our-free-model": "file:./node_modules/dsh-our-free-model"\n',
+  '出厂模板 dependencies 加入 OFM');
+patch('home-template/profiles/phone/package.json',
+  '        "@zseven-w/dsh-noema"\n',
+  '        "@zseven-w/dsh-noema",\n        "dsh-our-free-model"\n',
+  '出厂模板 bundles 加入 OFM');
+
+// ③ 落地断言（**正向**：防「新装即用」被静默丢掉 —— 与 §2.8 ④b 的反向断言相对）
+let checked = 0;
+for (const [file, needle, label] of [
+  ['scripts/build-assets.py', "'dsh-our-free-model'", 'build-assets.py BUNDLES'],
+  ['scripts/build-assets.py', "ROOT / 'vendor/dsh-our-free-model'", 'build-assets.py 部署映射'],
+  ['home-template/profiles/phone/package.json', '"dsh-our-free-model"', '出厂 profile 模板'],
+]) {
+  checked++;
+  if (!fs.readFileSync(file, 'utf8').includes(needle)) {
+    console.error('::error::OFM 内置校验失败：' + label + ' 里没有 dsh-our-free-model');
+    bad++;
+  }
+}
+
+// ④ 发行文件齐备性 + 禁止本地产物入库
+const NEED = [
+  'package.json', 'client.js', 'index.js', 'adapter', 'locale', 'icon.svg',
+  'cordis.patch.yml', 'LICENSE',
+  'vendor/channel-pack/pack.js', 'vendor/channel-pack/qoder-auth-wasm.wasm',
+  'vendor/channel-pack/locale', 'vendor/channel-pack/package.json',
+];
+for (const rel of NEED) {
+  const p = 'vendor/dsh-our-free-model/' + rel;
+  if (!fs.existsSync(p)) { console.error('::error::OFM 发行文件缺失：' + p + '（导出时漏了？见 §2.9 的 NEED 清单）'); bad++; }
+}
+const src = 'vendor/dsh-our-free-model';
+if (fs.existsSync(src)) {
+  const stray = fs.readdirSync(src).filter((f) => f.includes('.pre-patch'));
+  if (stray.length > 0) { console.error('::error::OFM 目录混入了本地补丁备份（不该入库）：' + stray.join(', ')); bad++; }
+  if (fs.existsSync(src + '/vendor/channel-pack/src')) {
+    console.error('::error::OFM 目录混入了渠道包源码 src/（4.5 MB，运行时不需要，见 §2.9 说明）');
+    bad++;
+  }
+}
+
+if (bad > 0) { console.error('::error::OFM 出厂内置未完成（' + bad + ' 处）'); process.exit(1); }
+console.log('  ✓ OFM 出厂内置（' + patched + ' 处替换 + ' + checked + ' 处清单校验 + ' + NEED.length + ' 项发行文件齐备）');
+CAPSULE_EMBED_OFM
 
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
 #    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
@@ -435,6 +589,46 @@ _ovl_check dsh-client-ui-conversation/lib/client.js '发送按钮沿用内部' '
 # 上游 alpha.5 的新内容在场（证明不是旧引擎换了版本号）
 _ovl_check dsh-web-app/presets/standard.patch.yml 'tool-plugin-market' '上游 alpha.5 的 plugin-market 预设'
 echo "  ✓ overlay 功能回归断言：$_ovl_n 个文件 / $_ovl_checks 条本地适配全部在场"
+
+# 5.94) **dsh-phone-control 的 engines.dsh 同步**（2026-10-17 发现并修）。
+#
+#       症状：本机跑 §5.97 时 CI 会红 —— 报「插件 dsh-phone-control@0.2.0 与引擎
+#             0.2.1-alpha.5 不兼容」。（它的报错文案写的是 peerDependencies，但
+#             **真实判据读的是 `engines.dsh`** —— 见下面的实测记录，别被文案带偏。）
+#
+#       为什么它虽不在 profile.bundles 也要修：§5.97 是**故意的**泛化扫描，
+#       连「潜伏地雷」一起报红（见该段注释：dsh-channel-qq 同类）。dsh-phone-control
+#       是手机操作功能的后端（壳子层经 bridge / CLI 调用，不进 bundles），
+#       engines.dsh 仍钉 alpha.1 ⇒ 一旦某天被加进 bundles/patch，引擎会静默跳过它
+#       （启动日志一行 "skipping profile bundle: …"）⇒ 手机工具整块消失。
+#
+#       判定实测（2026-10-17，直接调引擎 evaluatePluginCompatibility，alpha.5）：
+#         现状 "0.2.1-alpha.1"     → ✗ 不兼容
+#         "^0.2.1-alpha.1"（本段） → ✓ 放行（且引擎升到 alpha.9 仍放行）
+#         精确 "0.2.1-alpha.5"     → ✓ 放行，但每次升内核都要回来改（不取）
+#       故取 caret 范围 —— 与 @zseven-w/dsh-noema 的真实写法一致，天然抗升级。
+#
+#       ⚠️ 为什么用「就地精确替换 + 锚点断言」而不是往 overrides/ 丢整份 package.json：
+#          package.json 上游仍在演进，整份覆盖会静默遮蔽上游后续修改（同 §2.8 的告诫）。
+node - <<'CAPSULE_PHONE_CONTROL_ENGINE'
+const fs = require('fs');
+const file = 'phone-control/package.json';
+const from = '"dsh": "0.2.1-alpha.1"';
+const to = '"dsh": "^0.2.1-alpha.1"';
+if (!fs.existsSync(file)) {
+  console.error('::error::§5.94 找不到 ' + file + '（上游把它挪了位置？核对后修正本段）');
+  process.exit(1);
+}
+const s = fs.readFileSync(file, 'utf8');
+if (s.includes(to)) { console.log('  · dsh-phone-control engines.dsh 已是 caret 范围，跳过'); process.exit(0); }
+const hits = s.split(from).length - 1;
+if (hits !== 1) {
+  console.error('::error::§5.94 锚点 ' + from + ' 命中 ' + hits + ' 次（应为 1）—— 上游可能已改，请复核。');
+  process.exit(1);
+}
+fs.writeFileSync(file, s.replace(from, to));
+console.log('  ✓ dsh-phone-control engines.dsh → ^0.2.1-alpha.1（§5.97 的泛化扫描将放行）');
+CAPSULE_PHONE_CONTROL_ENGINE
 
 # 5.95) vendor 插件 peer 版本自检（2026-10-14 alpha.1→alpha.2 事故引入）。
 #      失效形态：引擎升到 alpha.2，而 vendor/dsh-codearts-auth 的 peerDependencies
