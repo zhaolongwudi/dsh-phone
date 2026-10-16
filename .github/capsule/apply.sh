@@ -379,11 +379,16 @@ grep -q "materializeAndroid" runtime/overlays/@deepseek-ai/dsh-session-persisten
 #      不依赖上游文本 —— 上游改写这些位置时本段会硬失败，那正是要人工复核的信号。
 #      ⚠️ 不要为了让它变绿而放宽：每一条背后都是一次真机踩过的坑。
 OVL=runtime/overlays/@deepseek-ai
-# 40 = @deepseek-ai/ 下的适配文件数（另有 overlays/README.md，不计入）
+# 40 = capsule 自己带的 @deepseek-ai 适配文件数（另有 overlays/README.md，不计入）
 OVL_EXPECT_FILES=40
 _ovl_n=$(find "$OVL" -type f | wc -l | tr -d ' ')
-[ "$_ovl_n" = "$OVL_EXPECT_FILES" ] \
-  || { echo "::error::overlay 文件数 $_ovl_n ≠ $OVL_EXPECT_FILES（有 overlay 静默丢失，Android 适配会缺失）"; exit 1; }
+# ⚠️ 判据必须是「**不少于**」而不是「等于」：apply.sh 是**覆盖式**铺开，它不删除上游
+#    runtime/overlays/ 下已有的、capsule 没有的文件。实测上游留着一份
+#    `dsh-client-connection/lib/client.js`（capsule 已改用 client.browser.js，
+#    而 alpha.5 官方包也不含 client.js）⇒ **CI 上此处恒为 41**。
+#    ⇒ 少于 40 才是真信号：我们自己的 overlay 丢了。
+[ "$_ovl_n" -ge "$OVL_EXPECT_FILES" ] \
+  || { echo "::error::overlay 文件数 $_ovl_n < $OVL_EXPECT_FILES（我们的 overlay 丢了，Android 适配会缺失）"; exit 1; }
 _ovl_checks=0
 _ovl_check() {
   _ovl_checks=$((_ovl_checks + 1))
