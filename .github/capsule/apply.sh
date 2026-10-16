@@ -351,8 +351,8 @@ grep -q "R.color.ds_" app/src/main/java/com/dshphone/MainActivity.kt || { echo "
 #      runtime/ 是**上游仓库内容**，本层通过 overrides/runtime/ 覆盖它。这类覆盖的
 #      失效形态很隐蔽：文件铺过去了，但版本号仍是旧值 ⇒ pnpm 装回旧引擎，
 #      而构建照样成功，只有设备上跑的是旧引擎（「静默退回」）。
-#      故在此把「铺的是 alpha.2」钉成硬断言。
-ENGINE_VER_EXPECT='0.2.1-alpha.3'
+#      故在此把「铺的是 alpha.5」钉成硬断言。
+ENGINE_VER_EXPECT='0.2.1-alpha.5'
 grep -q "\"@deepseek-ai/dsh\": \"$ENGINE_VER_EXPECT\"" runtime/package.json \
   || { echo "::error::runtime/package.json 未指向 $ENGINE_VER_EXPECT（覆盖失效，会装回旧引擎）"; exit 1; }
 grep -q "'@deepseek-ai/dsh-llm': $ENGINE_VER_EXPECT" runtime/pnpm-workspace.yaml \

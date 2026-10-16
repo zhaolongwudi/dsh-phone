@@ -249,7 +249,7 @@ var Include = class extends EntryTree {
 };
 //#endregion
 //#region lib/types/plugin-compatibility.js
-/** Evaluate plugin dsh peer requirements without importing plugin code. */
+/** Evaluate plugin dsh requirements (`engines.dsh`, else dsh peers) without importing plugin code. */
 function objectOf$1(value, field) {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${field} must be an object`);
 	return value;
@@ -260,7 +260,7 @@ function runtimeVersionOf(value) {
 }
 function identityField(manifest, field) {
 	const value = Object.hasOwn(manifest, field) ? manifest[field] : void 0;
-	if (typeof value !== "string" || value.trim() === "") throw new Error(`Plugin manifest ${field} must be a non-empty string when dsh peers are incompatible`);
+	if (typeof value !== "string" || value.trim() === "") throw new Error(`Plugin manifest ${field} must be a non-empty string when dsh requirements are unmet`);
 	return value;
 }
 /**
@@ -273,33 +273,46 @@ function getDshRuntimeVersion() {
 	const manifest = objectOf$1(JSON.parse(fs.readFileSync(filename, "utf8")), "app-boot package.json");
 	return runtimeVersionOf(Object.hasOwn(manifest, "version") ? manifest.version : void 0);
 }
+function satisfies(runtimeVersion, range) {
+	return range.trim() !== "" && semver.satisfies(runtimeVersion, range, { includePrerelease: true });
+}
+function unmetRequirements(fields, runtimeVersion) {
+	const engines = Object.hasOwn(fields, "engines") ? objectOf$1(fields.engines, "Plugin manifest engines") : {};
+	if (Object.hasOwn(engines, "dsh")) {
+		const range = engines.dsh;
+		if (typeof range !== "string") throw new Error("Plugin manifest engines.dsh must be a string");
+		return satisfies(runtimeVersion, range) ? {} : { "engines.dsh": range };
+	}
+	if (!Object.hasOwn(fields, "peerDependencies")) return {};
+	const dependencies = objectOf$1(fields.peerDependencies, "Plugin manifest peerDependencies");
+	const unmet = {};
+	for (const [name, range] of Object.entries(dependencies)) {
+		if (typeof range !== "string") throw new Error(`Plugin manifest peerDependencies[${JSON.stringify(name)}] must be a string`);
+		if (name !== "@deepseek-ai/dsh" && !name.startsWith("@deepseek-ai/dsh-")) continue;
+		if (!satisfies(runtimeVersion, [
+			"workspace:^",
+			"workspace:~",
+			"workspace:*"
+		].includes(range) ? runtimeVersion : range)) unmet[name] = range;
+	}
+	return unmet;
+}
 /**
-* Check every @deepseek-ai/dsh or @deepseek-ai/dsh-* peer against the runtime.
-* Prereleases participate in ranges. workspace:^, workspace:~, and workspace:*
-* refer to the current runtime; other invalid ranges are incompatible.
+* Check the plugin's dsh requirements against the runtime. An own `engines.dsh` range decides alone and
+* peerDependencies are ignored; otherwise every @deepseek-ai/dsh or @deepseek-ai/dsh-* peer must match.
+* Prereleases participate in ranges. For peers only, workspace:^, workspace:~, and workspace:* refer to
+* the current runtime; other empty or invalid ranges, including any workspace: `engines.dsh`, are unmet.
 * @param manifest - parsed plugin package.json; inherited fields are ignored.
 * @param exemptions - exact plugin name@version keys mapped to exact runtime versions.
 * @param runtimeVersion - running dsh version, defaulting to this app-boot package.
-* @returns incompatible peers and exemption status, or undefined when none are incompatible.
-* @throws for malformed manifest peer fields, invalid runtime versions, or missing identity on a mismatch.
+* @returns unmet requirements and exemption status, or undefined when every requirement is met.
+* @throws for malformed manifest engines or peer fields, invalid runtime versions, or missing identity on a mismatch.
 */
 function evaluatePluginCompatibility(manifest, exemptions = {}, runtimeVersion = getDshRuntimeVersion()) {
 	runtimeVersionOf(runtimeVersion);
 	const fields = objectOf$1(manifest, "Plugin manifest");
-	if (!Object.hasOwn(fields, "peerDependencies")) return void 0;
-	const dependencies = objectOf$1(fields.peerDependencies, "Plugin manifest peerDependencies");
-	const peers = {};
-	for (const [name, range] of Object.entries(dependencies)) {
-		if (typeof range !== "string") throw new Error(`Plugin manifest peerDependencies[${JSON.stringify(name)}] must be a string`);
-		if (name !== "@deepseek-ai/dsh" && !name.startsWith("@deepseek-ai/dsh-")) continue;
-		const requirement = [
-			"workspace:^",
-			"workspace:~",
-			"workspace:*"
-		].includes(range) ? runtimeVersion : range;
-		if (requirement.trim() === "" || !semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })) peers[name] = range;
-	}
-	if (Object.keys(peers).length === 0) return void 0;
+	const requirements = unmetRequirements(fields, runtimeVersion);
+	if (Object.keys(requirements).length === 0) return void 0;
 	const name = identityField(fields, "name");
 	const version = identityField(fields, "version");
 	const key = `${name}@${version}`;
@@ -307,19 +320,19 @@ function evaluatePluginCompatibility(manifest, exemptions = {}, runtimeVersion =
 		name,
 		version,
 		runtimeVersion,
-		peers,
+		requirements,
 		exempted: (Object.hasOwn(exemptions, key) ? exemptions[key] : void 0)?.includes(runtimeVersion) === true
 	};
 }
 /**
-* Describe incompatible peers, their risk, and the exact-version remedy.
+* Describe unmet requirements, their risk, and the exact-version remedy.
 * Surfaces with their own grant mechanism or locale render the structured result themselves.
 * @param issue - incompatible plugin/runtime result, including exempted mismatches.
 * @returns an English diagnostic for logs and stderr.
 */
 function pluginCompatibilityWarning(issue) {
 	const key = `${issue.name}@${issue.version}`;
-	return `Plugin ${key} is incompatible with dsh ${issue.runtimeVersion}: peerDependencies ${JSON.stringify(issue.peers)}. Running it may cause crashes or data loss. Update the plugin or install a plugin version compatible with this dsh runtime. To accept this risk explicitly, grant the exact-version exemption for ${key} on dsh ${issue.runtimeVersion} with \`dsh plugin allow-version\` or the plugin manager, then retry the installation or restart dsh. Exact-version exemption: ${issue.exempted ? "active" : "not active"}.`;
+	return `Plugin ${key} is incompatible with dsh ${issue.runtimeVersion}: requirements ${JSON.stringify(issue.requirements)}. Running it may cause crashes or data loss. Update the plugin or install a plugin version compatible with this dsh runtime. To accept this risk explicitly, grant the exact-version exemption for ${key} on dsh ${issue.runtimeVersion} with \`dsh plugin allow-version\` or the plugin manager, then retry the installation or restart dsh. Exact-version exemption: ${issue.exempted ? "active" : "not active"}.`;
 }
 //#endregion
 //#region lib/types/profile-compatibility.js
@@ -574,6 +587,7 @@ const OPTIONAL_BUNDLES = [
 	"@deepseek-ai/dsh-experimental-cot-translation-bundle",
 	"@deepseek-ai/dsh-experimental-auto-review",
 	"@deepseek-ai/dsh-experimental-inspector-profile",
+	"@deepseek-ai/dsh-experimental-plugin-market-bundle",
 	"@deepseek-ai/dsh-experimental-tool-worktree"
 ];
 const PROFILE_PATCH_TEMPLATE = `# Your patch layer for this dsh profile, applied after every bundle layer:
@@ -990,7 +1004,7 @@ function resolveBundleDir(binName, packageName, installAnchor, profileDir) {
 * the shared Harness home. This is used by application-owned profiles whose
 * package project and lifecycle belong to that application.
 * Retired bundles are removed from the stored bundle list first, rewriting the
-* manifest when it listed one. Unreadable bundles, and bundles whose own dsh peers the profile does not exempt, are skipped
+* manifest when it listed one. Unreadable bundles, and bundles whose own dsh requirements the profile does not exempt, are skipped
 * without changing the manifest and listed in `skippedBundles`; nothing is printed.
 * @param binName - the diagnostic prefix on thrown errors.
 * @param dir - absolute profile package directory.
@@ -2341,7 +2355,7 @@ function preflight(ctx, entries, parentURL, report) {
 			const issue = evaluatePluginCompatibility(manifest, exemptions);
 			return issue === void 0 || issue.exempted ? void 0 : pluginCompatibilityWarning(issue);
 		} catch (error) {
-			return `its declared peer dependencies cannot be validated: ${error instanceof Error ? error.message : String(error)}`;
+			return `its declared dsh requirements cannot be validated: ${error instanceof Error ? error.message : String(error)}`;
 		}
 	};
 	const deny = (row, reason) => {

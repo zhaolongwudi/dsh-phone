@@ -4343,18 +4343,22 @@ window.__ModuleLoader__.load({
 			clipboardText: zod.z.string(),
 			invalid: zod.z.boolean().optional()
 		});
+		const commandSchema = zod.z.object({ token: zod.z.string() });
 		const snapshotSchema = zod.z.object({
 			text: zod.z.string(),
-			references: zod.z.array(referenceSchema)
+			references: zod.z.array(referenceSchema),
+			command: commandSchema.optional()
 		}).refine((draft) => {
-			let end = 0;
+			const spelling = draft.command?.token.trimEnd();
+			if (spelling !== void 0 && (!/^\/\S/u.test(spelling) || !draft.text.startsWith(spelling))) return false;
+			let end = spelling?.length ?? 0;
 			for (const reference of draft.references) {
 				if (reference.offset < end || reference.length !== reference.clipboardText.length) return false;
 				end = reference.offset + reference.length;
 				if (end > draft.text.length || draft.text.slice(reference.offset, end) !== reference.clipboardText) return false;
 			}
 			return true;
-		}, "Draft references must identify ordered, non-overlapping text spans");
+		}, "Draft references must identify ordered, non-overlapping text spans after the leading command token");
 		/**
 		* Copy input into the semantic draft representation without editor runtime identities.
 		* @param input - plain text or caller-owned structured content.
@@ -4367,7 +4371,8 @@ window.__ModuleLoader__.load({
 			};
 			return {
 				text: input.text,
-				references: input.references.map(copyReference)
+				references: input.references.map(copyReference),
+				...input.command === void 0 ? {} : { command: { token: input.command.token } }
 			};
 		}
 		/**
@@ -4385,19 +4390,22 @@ window.__ModuleLoader__.load({
 					...reference,
 					...appearance === void 0 ? {} : { appearance },
 					...invalid === void 0 ? {} : { invalid }
-				}))
+				})),
+				...parsed.data.command === void 0 ? {} : { command: { token: parsed.data.command.token } }
 			};
 		}
 		/**
 		* Export reference identities without their editor-local occurrence ids.
 		* @param text - current clipboard projection.
 		* @param occurrences - matching reference projections from the same document revision.
+		* @param commandToken - claim token of the command chip opening the document, if any.
 		* @returns an editor-independent snapshot.
 		*/
-		function snapshotDraft(text, occurrences) {
+		function snapshotDraft(text, occurrences, commandToken) {
 			return {
 				text,
-				references: occurrences.map(copyReference)
+				references: occurrences.map(copyReference),
+				...commandToken === void 0 ? {} : { command: { token: commandToken } }
 			};
 		}
 		function copyReference(reference) {
@@ -5063,10 +5071,6 @@ window.__ModuleLoader__.load({
 			}
 			return "";
 		}
-		/** A claimed name may stand alone; arguments require the token's separator. */
-		function retainsClaim(draft, token) {
-			return draft.startsWith(token) || draft === token.trimEnd();
-		}
 		/** Pure phase, claim, and attempt owner for one Session input. */
 		var SubmitMachine = class {
 			phase = "plain";
@@ -5095,8 +5099,8 @@ window.__ModuleLoader__.load({
 			*/
 			dispatch(ev) {
 				switch (ev.type) {
-					case "draft-changed": return this.onDraftChanged(ev.draft);
-					case "claim": return this.onClaim(ev.claim);
+					case "draft-changed": return this.followCommand(ev.command);
+					case "claim": return this.followCommand(ev.claim);
 					case "enter": return this.onEnter(ev.mode, ev.draft, ev.submission);
 					case "adjudicated": return this.onAdjudicated(ev.attempt, ev.outcome);
 					case "adjudication-failed": return this.onAdjudicationFailed(ev.attempt, ev.message);
@@ -5107,19 +5111,17 @@ window.__ModuleLoader__.load({
 					default: return unreachable(ev);
 				}
 			}
-			/** The complete command name retains its claim with or without the argument separator. */
-			onDraftChanged(draft) {
-				if (this.phase === "claimed" && this.claim !== void 0 && !retainsClaim(draft, this.claim.token)) {
-					this.phase = "plain";
-					this.claim = void 0;
-				}
-				return [];
-			}
-			/** The editor applied a claim-token replacement; busy phases refuse another claim. */
-			onClaim(claim) {
+			/**
+			* Outside a transaction the claim follows the document's leading command
+			* chip: deleting or displacing the chip releases it, and a history restore
+			* of the chip re-enters claimed. The claim event applies the same rule to a
+			* chip the editor just inserted, before its update commits; busy phases
+			* refuse both.
+			*/
+			followCommand(command) {
 				if (this.phase !== "plain" && this.phase !== "claimed") return [];
-				this.claim = claim;
-				this.phase = "claimed";
+				this.claim = command;
+				this.phase = command === void 0 ? "plain" : "claimed";
 				return [];
 			}
 			/** Mint an attempt and controller without assigning its lifecycle owner. */
@@ -5217,7 +5219,7 @@ window.__ModuleLoader__.load({
 					text: message
 				}];
 			}
-			/** Claimed command settlement retains the frozen transaction semantics. */
+			/** Claimed command settlement; after a failure the claim follows the leading command chip again. */
 			onSubmitSettled(ev) {
 				const flight = this.inflight;
 				if (this.phase !== "submitting" || flight === void 0 || flight.attempt.seq !== ev.attempt.seq) return [];
@@ -5237,16 +5239,8 @@ window.__ModuleLoader__.load({
 					return effects;
 				}
 				const text = ev.message ?? ev.outcome?.text;
-				if (ev.draft === flight.attempt.draftSnapshot && this.claim !== void 0 && retainsClaim(ev.draft, this.claim.token)) {
-					this.phase = "claimed";
-					return text === void 0 ? [] : [{
-						type: "notice",
-						level: "error",
-						text
-					}];
-				}
-				this.phase = "plain";
-				this.claim = void 0;
+				this.claim = ev.command;
+				this.phase = ev.command === void 0 ? "plain" : "claimed";
 				return text === void 0 ? [] : [{
 					type: "notice",
 					level: "error",
@@ -13606,7 +13600,7 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/input/editor/composer-editor.module.css.mjs
-		const css$7 = ".q44v1G_reference{border-radius:var(--dsw-radius-sm);line-height:inherit;vertical-align:baseline;color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background:0 0;padding:0 4px}.q44v1G_reference:hover{background:var(--dsw-alias-state-business-tertiary)}.q44v1G_openable{cursor:pointer}.q44v1G_textRef{max-width:100%;display:inline-block}";
+		const css$7 = ".q44v1G_reference{border-radius:var(--dsw-radius-sm);line-height:inherit;vertical-align:baseline;color:var(--dsw-alias-state-business-primary);-webkit-box-decoration-break:clone;box-decoration-break:clone;background:0 0;padding:0 4px}.q44v1G_reference:hover{background:var(--dsw-alias-state-business-tertiary)}.q44v1G_openable{cursor:pointer}[data-composer-command][data-selected]>.q44v1G_reference{background:var(--dsw-alias-state-business-tertiary)}.q44v1G_textRef{max-width:100%;display:inline-block}";
 		const tagId$7 = "@deepseek-ai/dsh-client-ui-conversation/composer-editor.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$7) + "]") === null) {
 			const tag = document.createElement("style");
@@ -14001,27 +13995,18 @@ window.__ModuleLoader__.load({
 			}
 		};
 		/**
-		* Register the plain-text reference entity transform. The claim decoration
-		* has precedence on the leading-token seat: while a command claim holds, the
-		* claimed token must stay a plain TextNode (transforms register per concrete
-		* node class, so a TextRefNode would never receive the TextNode claim
-		* transform and the warn color would be lost).
+		* Register the plain-text reference entity transform.
 		* @param editor - the shell-owned editor.
 		* @param lexiconOf - live per-trigger name-roll accessor (the controller's aggregated store).
-		* @param activeToken - live claim token accessor; null while unclaimed.
 		* @returns the unregister disposer.
 		*/
-		function registerTextRefDecoration(editor, lexiconOf, activeToken) {
+		function registerTextRefDecoration(editor, lexiconOf) {
 			const getMatch = (text) => {
-				const claim = activeToken();
-				for (const range of scanTextRefs(text, lexiconOf())) {
-					if (claim !== null && range.start === 0 && text.slice(range.start, range.end) === claim.trimEnd()) continue;
-					return {
-						start: range.start,
-						end: range.end
-					};
-				}
-				return null;
+				const range = scanTextRefs(text, lexiconOf())[0];
+				return range === void 0 ? null : {
+					start: range.start,
+					end: range.end
+				};
 			};
 			return Eu(...x(editor, getMatch, TextRefNode, (node) => new TextRefNode(node.getTextContent())));
 		}
@@ -14063,54 +14048,230 @@ window.__ModuleLoader__.load({
 			}, 1);
 		}
 		//#endregion
-		//#region lib/types/client/input/editor/claim-decor.js
-		/** Inline style carried by the claim-token node. */
-		const TOKEN_STYLE = "color: var(--dsw-alias-state-business-primary)";
-		/** The document's first text leaf, or null (empty document / leading chip). */
-		function firstTextLeaf() {
-			const block = nl().getFirstChild();
-			if (!Pi(block)) return null;
-			const leaf = block.getFirstChild();
-			return Xo(leaf) ? leaf : null;
-		}
+		//#region lib/types/client/input/editor/CommandChip.js
 		/**
-		* Register the claim-token styling transform.
-		* @param editor - the shell-owned editor.
-		* @param activeToken - live claim token accessor; null while unclaimed.
-		* @returns the unregister disposer.
+		* Visual body of the claimed command chip: the CommandChipNode's React face.
+		* Pure display with the reference chip's treatment; the claim and its
+		* lifecycle live on the node and the shell.
 		*/
-		function registerClaimDecoration(editor, activeToken) {
-			return editor.registerNodeTransform(Wo, (node) => {
-				const first = firstTextLeaf();
-				if (first === null || node.getKey() !== first.getKey()) {
-					if (node.getStyle() === TOKEN_STYLE) node.setStyle("");
-					return;
-				}
-				const text = node.getTextContent();
-				const active = activeToken();
-				const token = text === active?.trimEnd() ? text : active;
-				if (token === null || !text.startsWith(token)) {
-					if (node.getStyle() === TOKEN_STYLE) node.setStyle("");
-					return;
-				}
-				if (text.length > token.length) {
-					const [tokenNode, overflow] = node.splitText(token.length);
-					if (tokenNode !== void 0 && tokenNode.getStyle() !== TOKEN_STYLE) tokenNode.setStyle(TOKEN_STYLE);
-					overflow?.setStyle("");
-					return;
-				}
-				if (node.getStyle() !== TOKEN_STYLE) node.setStyle(TOKEN_STYLE);
+		/**
+		* Render the claimed command chip.
+		* @param props - the token to display.
+		* @returns the chip body.
+		*/
+		function CommandChip({ token }) {
+			return (0, react_jsx_runtime.jsx)("span", {
+				className: clsx(composer_editor_module_css_default.reference, ReferenceChip_module_css_default.chip),
+				children: (0, react_jsx_runtime.jsx)("span", {
+					className: ReferenceChip_module_css_default.label,
+					children: token
+				})
 			});
 		}
+		//#endregion
+		//#region lib/types/client/input/editor/command-chip-node.js
+		/** One claimed command as an atomic decorator node. */
+		var CommandChipNode = class CommandChipNode extends Li {
+			/** The claim this chip anchors; its submit closure has no JSON form. */
+			__claim;
+			/** Lexical node registry type tag. */
+			static getType() {
+				return "command-chip";
+			}
+			/**
+			* Clone with identity (Lexical writable-copy contract).
+			* @param node - node to clone.
+			* @returns a copy carrying the same NodeKey and claim.
+			*/
+			static clone(node) {
+				return new CommandChipNode(node.__claim, node.__key);
+			}
+			/**
+			* Rebuild one chip from its JSON form. JSON cannot carry the claim's
+			* submit closure, so an imported command is its literal token text.
+			* @param json - serialized chip.
+			* @returns a plain text node holding the token.
+			*/
+			static importJSON(json) {
+				return Go(json.text);
+			}
+			/**
+			* @param claim - the command claim the chip anchors.
+			* @param key - Lexical clone-path key; absent for fresh nodes.
+			*/
+			constructor(claim, key) {
+				super(key);
+				this.__claim = claim;
+			}
+			/** Serialize to the JSON node form (the token text alone). */
+			exportJSON() {
+				return {
+					...super.exportJSON(),
+					type: "command-chip",
+					version: 1,
+					text: this.getTextContent()
+				};
+			}
+			/**
+			* Mount the chip's host element; the decorator portal renders into it.
+			* @returns an inline, non-editable span carrying the test/e2e anchor.
+			*/
+			createDOM() {
+				const el = document.createElement("span");
+				el.setAttribute("data-composer-command", this.__claim.name);
+				el.setAttribute("contenteditable", "false");
+				return el;
+			}
+			/** Host element never changes shape. */
+			updateDOM() {
+				return false;
+			}
+			/** The chip sits in the text line. */
+			isInline() {
+				return true;
+			}
+			/**
+			* Arrows step across the chip and the default character deletion removes
+			* it whole, for the reason documented on ReferenceChipNode.isKeyboardSelectable;
+			* registerCommandChipSelection inserts the selecting step before that deletion.
+			*/
+			isKeyboardSelectable() {
+				return false;
+			}
+			/** Clipboard / persistence projection: the token without its separator. */
+			getTextContent() {
+				return this.__claim.token.trimEnd();
+			}
+			/** The claim this chip anchors. */
+			getClaim() {
+				return this.getLatest().__claim;
+			}
+			/** React face rendered into the host element by the decorator portal. */
+			decorate() {
+				return (0, react_jsx_runtime.jsx)(CommandChip, { token: this.getTextContent() });
+			}
+		};
 		/**
-		* Nudge the token seat dirty so the transform restyles after a claim flip
-		* (claims change phase without a text edit; transforms only run on dirty
-		* nodes).
-		* @param editor - the shell-owned editor.
+		* Mint one chip node for a claim.
+		* @param claim - the command claim.
+		* @returns the fresh node.
 		*/
-		function refreshClaimDecoration(editor) {
-			editor.update(() => {
-				firstTextLeaf()?.markDirty();
+		function $createCommandChipNode(claim) {
+			return new CommandChipNode(claim);
+		}
+		/**
+		* Command chip type guard.
+		* @param node - any node or nullish.
+		* @returns whether the node is a CommandChipNode.
+		*/
+		function $isCommandChipNode(node) {
+			return node instanceof CommandChipNode;
+		}
+		/** Replace a displaced chip with its literal token. */
+		function $releaseChip(chip) {
+			chip.replace(Go(chip.getTextContent()));
+		}
+		/**
+		* Keep command chips on the leading seat. A chip anywhere but the first
+		* child of the first block (text, a line break, or a block inserted before
+		* it) becomes its literal token, which releases the claim. Inserting a
+		* sibling before the chip or moving it to another block marks the chip dirty;
+		* a block inserted before the chip's block marks only that block dirty.
+		* @param editor - the shell-owned editor.
+		* @returns the unregister disposer.
+		*/
+		function registerCommandChipSeat(editor) {
+			return Eu(editor.registerNodeTransform(CommandChipNode, (chip) => {
+				if (chip.getPreviousSibling() !== null || chip.getParentOrThrow().getPreviousSibling() !== null) $releaseChip(chip);
+			}), editor.registerNodeTransform(Zi, (block) => {
+				const first = block.getFirstChild();
+				if ($isCommandChipNode(first) && block.getPreviousSibling() !== null) $releaseChip(first);
+			}));
+		}
+		//#endregion
+		//#region lib/types/client/input/editor/command-chip-selection.js
+		/**
+		* Keys that never clear a selected chip by themselves: bare modifiers, and
+		* IME or virtual-keyboard keys whose deletion arrives later as an input event.
+		*/
+		const PASSIVE_KEYS = new Set([
+			"Shift",
+			"Control",
+			"Alt",
+			"Meta",
+			"Unidentified",
+			"Process"
+		]);
+		/** The chip a collapsed caret deletes next in one direction, or null. */
+		function $commandChipBesideCaret(isBackward) {
+			const selection = Kr();
+			if (!ur(selection) || !selection.isCollapsed()) return null;
+			const node = kl(selection.focus, isBackward);
+			return $isCommandChipNode(node) ? node : null;
+		}
+		/** Deletion direction of an input event type; null for other input. */
+		function deletionDirection(inputType) {
+			if (inputType === "deleteContentBackward") return true;
+			if (inputType === "deleteContentForward") return false;
+			return null;
+		}
+		/**
+		* Register two-step deletion for the command chip.
+		* @param editor - the shell-owned editor.
+		* @returns the unregister disposer, which also clears a selected chip.
+		*/
+		function registerCommandChipSelection(editor) {
+			let selected = null;
+			/** A keydown with a selected chip whose dispatch has produced no character deletion yet. */
+			let keyWithoutDeletion = false;
+			const paint = (next) => {
+				if (selected !== null && selected.key !== next?.key) editor.getElementByKey(selected.key)?.removeAttribute("data-selected");
+				selected = next;
+				if (next !== null) editor.getElementByKey(next.key)?.setAttribute("data-selected", "");
+				editor.getRootElement()?.toggleAttribute("data-composer-chip-selected", next !== null);
+			};
+			const clear = () => {
+				if (selected !== null) paint(null);
+				return false;
+			};
+			/**
+			* Decide one character deletion.
+			* @param isBackward - deletion direction.
+			* @param clearOnPass - whether letting the deletion run clears the selection here;
+			* an input event leaves it for the deletion that follows.
+			* @returns true when the deletion only selected the chip and must be consumed.
+			*/
+			const $decide = (isBackward, clearOnPass) => {
+				keyWithoutDeletion = false;
+				const chip = $commandChipBesideCaret(isBackward);
+				if (chip === null) return clear();
+				if (selected?.key === chip.getKey() && selected.isBackward === isBackward) return clearOnPass ? clear() : false;
+				paint({
+					key: chip.getKey(),
+					isBackward
+				});
+				return true;
+			};
+			return Eu(editor.registerCommand(ze$2, (event) => {
+				const isBackward = deletionDirection(event.inputType);
+				if (isBackward === null || !$decide(isBackward, false)) return false;
+				event.preventDefault();
+				return true;
+			}, 3), editor.registerCommand($e$2, (isBackward) => $decide(isBackward, true), 3), editor.registerCommand(tn$2, (event) => {
+				if (selected === null || PASSIVE_KEYS.has(event.key)) return false;
+				keyWithoutDeletion = true;
+				queueMicrotask(() => {
+					if (!keyWithoutDeletion) return;
+					keyWithoutDeletion = false;
+					clear();
+				});
+				return false;
+			}, 4), editor.registerCommand(Ke$2, clear, 4), editor.registerCommand(Mn$1, clear, 4), editor.registerUpdateListener(({ editorState }) => {
+				const current = selected;
+				if (current === null) return;
+				paint(editorState.read(() => $commandChipBesideCaret(current.isBackward)?.getKey() === current.key) ? current : null);
+			}), () => {
+				paint(null);
 			});
 		}
 		/**
@@ -14144,7 +14305,7 @@ window.__ModuleLoader__.load({
 				const start = detect.length;
 				const kids = element.getChildren();
 				children.set(element.getKey(), kids.map((kid) => kid.getKey()));
-				for (const kid of kids) if ($isReferenceChipNode(kid)) pushLeaf("chip", kid, "￼", kid.getTextContent());
+				for (const kid of kids) if ($isReferenceChipNode(kid) || $isCommandChipNode(kid)) pushLeaf("chip", kid, "￼", kid.getTextContent());
 				else if (Xo(kid)) {
 					const text = kid.getTextContent();
 					pushLeaf("text", kid, text, text);
@@ -14260,6 +14421,7 @@ window.__ModuleLoader__.load({
 					...chip.isInvalid() ? { invalid: true } : {}
 				});
 			}
+			const lead = layout.segments[0]?.node;
 			const selection = Kr();
 			let range = null;
 			if (ur(selection)) {
@@ -14275,7 +14437,8 @@ window.__ModuleLoader__.load({
 				clipboardText: layout.clipboardText,
 				occurrences,
 				selection: range,
-				caret: range !== null && range.start === range.end ? range.start : null
+				caret: range !== null && range.start === range.end ? range.start : null,
+				command: $isCommandChipNode(lead) ? lead.getClaim() : void 0
 			};
 		}
 		//#endregion
@@ -14397,7 +14560,8 @@ window.__ModuleLoader__.load({
 				clipboardText: "",
 				occurrences: [],
 				selection: null,
-				caret: null
+				caret: null,
+				command: void 0
 			};
 			/** Stable occurrence ids per chip NodeKey (undo restores keys, so ids survive it too). */
 			occurrenceIds = /* @__PURE__ */ new Map();
@@ -14410,7 +14574,11 @@ window.__ModuleLoader__.load({
 				this.deps = deps;
 				this.editor = ys({
 					namespace: "dsh-composer",
-					nodes: [ReferenceChipNode, TextRefNode],
+					nodes: [
+						ReferenceChipNode,
+						CommandChipNode,
+						TextRefNode
+					],
 					onError: (error) => {
 						throw error;
 					}
@@ -14431,7 +14599,7 @@ window.__ModuleLoader__.load({
 					return false;
 				}, 4), this.editor.registerCommand(Ie$2, preserveExternalSelection, 4), this.editor.registerNodeTransform(zi, preserveExternalSelection), registerReferenceActivation(this.editor, (source, reference) => this.deps.openReference(source, reference)), O(this.editor, z(), HISTORY_MERGE_DELAY_MS), this.editor.registerUpdateListener(() => {
 					this.deps.onUpdate();
-				}), registerClaimDecoration(this.editor, () => this.deps.activeClaimToken()), registerTextRefDecoration(this.editor, () => this.deps.lexicon(), () => this.deps.activeClaimToken()), () => {
+				}), registerCommandChipSeat(this.editor), registerCommandChipSelection(this.editor), registerTextRefDecoration(this.editor, () => this.deps.lexicon()), () => {
 					this.lexiconOff?.();
 					this.lexiconOff = void 0;
 					this.lexiconSource = void 0;
@@ -14595,6 +14763,24 @@ window.__ModuleLoader__.load({
 				return applied;
 			}
 			/**
+			* Replace a span with a command chip followed by the claim token's
+			* argument separator, unless the separator already follows.
+			* @param span - detect-coordinate range.
+			* @param claim - the command claim the chip anchors.
+			* @param tail - the character following the range before editing.
+			* @param mergeHistory - merge into the previous history entry (a restored
+			* draft's chip is part of its seed, not an undoable step).
+			* @returns whether the range mapped and the edit applied.
+			*/
+			insertCommand(span, claim, tail, mergeHistory = false) {
+				const separator = claim.token.slice(claim.token.trimEnd().length);
+				let applied = false;
+				this.applyEdit(() => {
+					applied = $replaceDetectSpanWithNodes(span, separator === "" || tail === separator.charAt(0) ? [$createCommandChipNode(claim)] : [$createCommandChipNode(claim), Go(separator)]);
+				}, mergeHistory ? xo : void 0);
+				return applied;
+			}
+			/**
 			* Insert an ordered file-reference batch after the live selection without deleting it.
 			* @param references - validated references in source order.
 			* @returns whether the live insertion position accepted the batch.
@@ -14614,10 +14800,6 @@ window.__ModuleLoader__.load({
 					}, nodes);
 				}, Co);
 				return applied;
-			}
-			/** Refresh claim-token decoration after the model's claim changes. */
-			refreshClaimDecoration() {
-				refreshClaimDecoration(this.editor);
 			}
 			/**
 			* Clear committed content using the model's suffix decision inside the editor update.
@@ -14701,6 +14883,7 @@ window.__ModuleLoader__.load({
 		/** Whether two projections differ in content (selection and caret excluded). */
 		function projectionContentChanged(prev, next) {
 			if (prev.clipboardText !== next.clipboardText || prev.detectText !== next.detectText) return true;
+			if (prev.command !== next.command) return true;
 			if (prev.occurrences.length !== next.occurrences.length) return true;
 			return next.occurrences.some((occ, i) => {
 				const old = prev.occurrences[i];
@@ -14767,6 +14950,10 @@ window.__ModuleLoader__.load({
 			disposed = false;
 			/** Conversation store writer for the current semantic document. */
 			persistDraft;
+			/** A restored draft's command token waiting for the trigger pipeline, with the revision its restore produced. */
+			pendingCommand;
+			/** The in-flight claim resolution for a restored command chip. */
+			commandRestore;
 			/** The mounted composer's file-picker opener (scoped pick-files event target). */
 			filePicker;
 			/** Default sends retained until admission settles or scope disposal releases their attachments. */
@@ -14787,7 +14974,6 @@ window.__ModuleLoader__.load({
 						this.onEditorUpdate();
 					},
 					openReference: (source, reference) => this.deps.inputTriggers?.()?.openReference(source, reference) ?? false,
-					activeClaimToken: () => this.activeClaimToken(),
 					lexicon: () => this.lexicon.getSnapshot(),
 					resolveLexicon: () => this.deps.inputTriggers?.()?.lexicon
 				});
@@ -14797,7 +14983,7 @@ window.__ModuleLoader__.load({
 					this.publish();
 				});
 			}
-			/** Re-project, run the claim watch, publish, and feed trigger tracking after every editor commit. */
+			/** Re-project, sync the claim with the leading command chip, publish, and feed trigger tracking after every editor commit. */
 			onEditorUpdate() {
 				if (projectionContentChanged(this.draftEditor.refreshProjection(), this.projection)) {
 					this.rev += 1;
@@ -14807,7 +14993,7 @@ window.__ModuleLoader__.load({
 					}
 					this.dispatchRun({
 						type: "draft-changed",
-						draft: this.projection.clipboardText
+						command: this.projection.command
 					});
 				}
 				const caret = this.projection.caret;
@@ -14821,17 +15007,61 @@ window.__ModuleLoader__.load({
 			*/
 			setDraft(text) {
 				const draft = resolveDraftInput(text);
+				this.cancelCommandRestore();
 				if (draft.references.length === 0) this.draftEditor.setDraft(draft.text);
 				else this.draftEditor.restoreDraft(draft.text, draft.references);
+				if (draft.command === void 0) return;
+				this.pendingCommand = {
+					token: draft.command.token,
+					rev: this.rev
+				};
+				this.restoreCommand();
 			}
-			/** Reconnect optional catalog notifications without waiting for another edit. */
+			/**
+			* Reconnect optional catalog notifications and resume a pending command
+			* chip restore without waiting for another edit.
+			*/
 			refreshLexiconSubscription() {
-				if (!this.disposed) this.draftEditor.refreshLexiconSubscription();
+				if (this.disposed) return;
+				this.draftEditor.refreshLexiconSubscription();
+				this.restoreCommand();
+			}
+			/**
+			* Rebuild the command chip a restored draft carried once the trigger
+			* pipeline can resolve its claim. The rebuild applies only at the revision
+			* the restore produced: an edit made while the claim resolves keeps the
+			* literal token, which Enter still adjudicates as the command.
+			*/
+			restoreCommand() {
+				const pending = this.pendingCommand;
+				const inputTriggers = this.deps.inputTriggers?.();
+				if (pending === void 0 || inputTriggers === void 0 || this.disposed) return;
+				this.pendingCommand = void 0;
+				const restore = new AbortController();
+				this.commandRestore = restore;
+				const spelling = pending.token.trimEnd();
+				inputTriggers.resolveClaim(spelling, restore.signal).then((claim) => {
+					if (restore.signal.aborted) return;
+					this.commandRestore = void 0;
+					if (claim !== void 0) this.applyClaim(claim, {
+						start: 0,
+						end: spelling.length,
+						draftRev: pending.rev
+					}, true);
+				}, (_error) => {
+					if (this.commandRestore === restore) this.commandRestore = void 0;
+				});
+			}
+			/** Drop a pending or in-flight command chip restore. */
+			cancelCommandRestore() {
+				this.pendingCommand = void 0;
+				this.commandRestore?.abort();
+				this.commandRestore = void 0;
 			}
 			/** Current semantic document, stable until its content revision changes. */
 			get draftSnapshot() {
 				if (this.draftSnapshotCache?.revision === this.rev) return this.draftSnapshotCache.value;
-				const value = snapshotDraft(this.projection.clipboardText, this.projection.occurrences);
+				const value = snapshotDraft(this.projection.clipboardText, this.projection.occurrences, this.projection.command?.token);
 				this.draftSnapshotCache = {
 					revision: this.rev,
 					value
@@ -15038,21 +15268,30 @@ window.__ModuleLoader__.load({
 			};
 			/**
 			* Apply one command claim (scoped begin-command event listener body): the
-			* editor replaces [0, span.end) with the claim token, then the machine
-			* enters claimed.
+			* editor replaces [0, span.end) with the command chip and its separator,
+			* then the machine enters claimed.
 			* @param claim - the command claim from the pick path.
 			* @param span - pick-time span snapshot (detect coordinates).
 			* @returns whether the edit applied (phase, span CAS, and leading guard passed).
 			*/
 			beginCommand(claim, span) {
+				return this.applyClaim(claim, span, false);
+			}
+			/**
+			* Replace [0, span.end) with the command chip and enter claimed.
+			* @param mergeHistory - merge the edit into the previous history entry.
+			* @returns whether the edit applied.
+			*/
+			applyClaim(claim, span, mergeHistory) {
 				const phase = this.core.state.phase;
 				if (phase !== "plain" && phase !== "claimed") return false;
 				if (span.draftRev !== this.rev) return false;
 				if (this.projection.detectText.slice(0, span.start).trim() !== "") return false;
-				if (!this.draftEditor.replaceText({
+				const tail = this.projection.detectText.slice(span.end, span.end + 1);
+				if (!this.draftEditor.insertCommand({
 					start: 0,
 					end: span.end
-				}, claim.token)) return false;
+				}, claim, tail, mergeHistory)) return false;
 				this.dispatchRun({
 					type: "claim",
 					claim
@@ -15143,6 +15382,7 @@ window.__ModuleLoader__.load({
 					flight.controller.abort();
 				}
 				this.disposed = true;
+				this.cancelCommandRestore();
 				this.dispatchRun({ type: "release" });
 				this.unsubscribeInbox?.();
 				this.unregister();
@@ -15193,17 +15433,9 @@ window.__ModuleLoader__.load({
 				this.filePicker.open();
 				return true;
 			}
-			/** The claim token the decoration transform styles; null while unclaimed. */
-			activeClaimToken() {
-				const core = this.core.state;
-				return (core.phase === "claimed" || core.phase === "submitting") && core.claim !== void 0 ? core.claim.token : null;
-			}
-			/** Dispatch + execute, refreshing the claim decoration when the styled token flips. */
+			/** Dispatch one machine event and execute its effects. */
 			dispatchRun(ev) {
-				const beforeToken = this.activeClaimToken();
-				const effects = this.core.dispatch(ev);
-				this.run(effects);
-				if (this.activeClaimToken() !== beforeToken) this.draftEditor.refreshClaimDecoration();
+				this.run(this.core.dispatch(ev));
 			}
 			run(effects) {
 				for (const fx of effects) this.execute(fx);
@@ -15421,7 +15653,7 @@ window.__ModuleLoader__.load({
 						type: "submit-settled",
 						attempt,
 						ok: outcome.kind === "success",
-						draft: this.projection.clipboardText,
+						command: this.projection.command,
 						outcome,
 						...outcome.kind === "error" && outcome.text === void 0 ? { message: "command failed" } : {}
 					});
@@ -15432,7 +15664,7 @@ window.__ModuleLoader__.load({
 						type: "submit-settled",
 						attempt,
 						ok: false,
-						draft: this.projection.clipboardText,
+						command: this.projection.command,
 						message
 					});
 				});
@@ -18472,7 +18704,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-conversation/src/client/skeleton/InputBar.module.css.mjs
-		const css$1 = ".uV2eYG_root{padding:0 var(--dsh-composer-side-clearance) 4px;flex-direction:column;align-items:center;display:flex}.uV2eYG_dock{justify-content:center;align-items:center;gap:12px;max-width:100%;padding-top:4px;display:flex}.uV2eYG_hero .uV2eYG_dock:empty{display:none}.uV2eYG_hero{padding:0 var(--dsh-composer-side-clearance)}.uV2eYG_notice{width:100%;max-width:var(--dsh-composer-card-max-width);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.uV2eYG_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);--dsw-elevation-stroke-color:var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-panel);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-elevation-soft);font-size:var(--dsh-content-font-size,14px);line-height:calc(24px + var(--dsh-content-font-delta,0px));--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border:0;flex-direction:column;gap:12px;padding-top:8px;display:flex;position:relative}.uV2eYG_cardWorkspaceTrigger{--dsw-elevation-stroke-color:transparent;cursor:pointer}.uV2eYG_cardWorkspaceTrigger:after{content:\"\";box-sizing:border-box;border-radius:var(--dsw-radius-panel);color:var(--dsw-alias-border-l4);pointer-events:none;border:1px dashed;transition:color .1s;position:absolute;inset:0}.uV2eYG_cardWorkspaceTrigger :disabled{pointer-events:none}.uV2eYG_cardWorkspaceTrigger:hover:after{color:var(--dsw-alias-state-business-primary)}.uV2eYG_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.uV2eYG_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.uV2eYG_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.uV2eYG_scroll::-webkit-scrollbar-track{margin-top:8px}.uV2eYG_grow{position:relative}.uV2eYG_pending{corner-shape:round;background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate uV2eYG_input-pending}@keyframes uV2eYG_input-pending{0%{opacity:.35}to{opacity:1}}.uV2eYG_input{box-sizing:border-box;min-height:36px;font-family:var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);caret-color:var(--dsw-alias-state-business-primary);outline:none;padding:4px 8px 0 14px}.uV2eYG_input p{margin:0}.uV2eYG_input p:last-child:after{content:var(--dsh-composer-hint);color:var(--dsw-alias-label-caption)}.uV2eYG_input[data-composer-composing] p:last-child:after{content:none}.uV2eYG_input[data-composer-composing]+.uV2eYG_placeholder{visibility:hidden}.uV2eYG_placeholder{color:var(--dsw-alias-label-caption);white-space:nowrap;text-overflow:ellipsis;pointer-events:none;user-select:none;position:absolute;inset:4px 8px auto 14px;overflow:hidden}.uV2eYG_inputDisabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.uV2eYG_input[aria-haspopup=menu]{cursor:pointer}.uV2eYG_hero .uV2eYG_input{min-height:52px}.uV2eYG_hero .uV2eYG_placeholder{white-space:normal;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;display:-webkit-box}.uV2eYG_row{flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.uV2eYG_row[data-model-compact]{--dsh-composer-model-text-display:none;--dsh-composer-model-icon-display:block}.uV2eYG_tools,.uV2eYG_modes,.uV2eYG_trailing{align-items:center;min-width:0;display:flex}.uV2eYG_tools,.uV2eYG_modes{gap:12px}.uV2eYG_trailing{flex:none;gap:12px;margin-left:auto}@container (width<=560px){.uV2eYG_tools,.uV2eYG_modes,.uV2eYG_trailing{gap:8px}}.uV2eYG_add{corner-shape:round;background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.uV2eYG_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.uV2eYG_add:disabled{opacity:.5;cursor:default}.uV2eYG_select{border-radius:var(--dsw-radius-sm);max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.uV2eYG_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.uV2eYG_select:disabled{opacity:.5;cursor:default}.uV2eYG_primary{corner-shape:round;background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.uV2eYG_primary[data-composer-send]{width:auto;min-width:68px;padding:0 12px;white-space:nowrap;font:inherit;font-size:13px}.uV2eYG_primary[data-composer-send]>span{display:flex;align-items:center;gap:6px}.uV2eYG_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.uV2eYG_primary:disabled{opacity:.4;cursor:default}.uV2eYG_retry{border-radius:var(--dsw-radius-sm);color:inherit;cursor:pointer;background:0 0;border:1px solid;margin-left:8px;padding:1px 8px;font-size:12px}.uV2eYG_standardControls{align-items:center;gap:12px;min-width:0;display:flex}.uV2eYG_tools[hidden],.uV2eYG_standardControls[hidden]{display:none}.uV2eYG_trailingActive{flex:1;margin-left:0}.uV2eYG_activity{flex:none;align-items:center;display:flex}.uV2eYG_activity:empty{display:none}.uV2eYG_activityExpanded{flex:1;min-width:0}";
+		const css$1 = ".uV2eYG_root{padding:0 var(--dsh-composer-side-clearance) 4px;flex-direction:column;align-items:center;display:flex}.uV2eYG_dock{justify-content:center;align-items:center;gap:12px;max-width:100%;padding-top:4px;display:flex}.uV2eYG_hero .uV2eYG_dock:empty{display:none}.uV2eYG_hero{padding:0 var(--dsh-composer-side-clearance)}.uV2eYG_notice{width:100%;max-width:var(--dsh-composer-card-max-width);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);margin-bottom:6px;padding:4px 8px;font-size:12px;line-height:18px}.uV2eYG_card{box-sizing:border-box;width:100%;max-width:var(--dsh-composer-card-max-width);--dsw-elevation-stroke-color:var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-panel);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-elevation-soft);font-size:var(--dsh-content-font-size,14px);line-height:calc(24px + var(--dsh-content-font-delta,0px));--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border:0;flex-direction:column;gap:12px;padding-top:8px;display:flex;position:relative}.uV2eYG_cardWorkspaceTrigger{--dsw-elevation-stroke-color:transparent;cursor:pointer}.uV2eYG_cardWorkspaceTrigger:after{content:\"\";box-sizing:border-box;border-radius:var(--dsw-radius-panel);color:var(--dsw-alias-border-l4);pointer-events:none;border:1px dashed;transition:color .1s;position:absolute;inset:0}.uV2eYG_cardWorkspaceTrigger :disabled{pointer-events:none}.uV2eYG_cardWorkspaceTrigger:hover:after{color:var(--dsw-alias-state-business-primary)}.uV2eYG_accessory{align-items:center;gap:8px;padding:10px 12px 0;display:flex}.uV2eYG_overlayAnchor{height:0;position:absolute;inset:0 0 auto}.uV2eYG_scroll{max-height:var(--dsh-composer-text-max-height);margin-right:4px;overflow-y:auto}.uV2eYG_scroll::-webkit-scrollbar-track{margin-top:8px}.uV2eYG_grow{position:relative}.uV2eYG_pending{corner-shape:round;background:var(--dsw-alias-state-business-primary);border-radius:50%;width:8px;height:8px;animation:1s ease-in-out infinite alternate uV2eYG_input-pending}@keyframes uV2eYG_input-pending{0%{opacity:.35}to{opacity:1}}.uV2eYG_input{box-sizing:border-box;min-height:36px;font-family:var(--dsw-font-family);font-size:inherit;line-height:inherit;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);caret-color:var(--dsw-alias-state-business-primary);outline:none;padding:4px 8px 0 14px}.uV2eYG_input p{margin:0}.uV2eYG_input p:last-child:after{content:var(--dsh-composer-hint);color:var(--dsw-alias-label-caption)}.uV2eYG_input[data-composer-composing] p:last-child:after{content:none}.uV2eYG_input[data-composer-chip-selected]{caret-color:#0000}.uV2eYG_input[data-composer-composing]+.uV2eYG_placeholder{visibility:hidden}.uV2eYG_placeholder{color:var(--dsw-alias-label-caption);white-space:nowrap;text-overflow:ellipsis;pointer-events:none;user-select:none;position:absolute;inset:4px 8px auto 14px;overflow:hidden}.uV2eYG_inputDisabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}.uV2eYG_input[aria-haspopup=menu]{cursor:pointer}.uV2eYG_hero .uV2eYG_input{min-height:52px}.uV2eYG_hero .uV2eYG_placeholder{white-space:normal;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;display:-webkit-box}.uV2eYG_row{flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;min-width:0;padding:2px 8px 6px;display:flex;container-type:inline-size}.uV2eYG_row[data-model-compact]{--dsh-composer-model-text-display:none;--dsh-composer-model-icon-display:block}.uV2eYG_tools,.uV2eYG_modes,.uV2eYG_trailing{align-items:center;min-width:0;display:flex}.uV2eYG_tools,.uV2eYG_modes{gap:12px}.uV2eYG_trailing{flex:none;gap:12px;margin-left:auto}@container (width<=560px){.uV2eYG_tools,.uV2eYG_modes,.uV2eYG_trailing{gap:8px}}.uV2eYG_add{corner-shape:round;background:var(--dsw-specific-selector);width:28px;height:28px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;display:grid}.uV2eYG_add:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}.uV2eYG_add:disabled{opacity:.5;cursor:default}.uV2eYG_select{border-radius:var(--dsw-radius-sm);max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);white-space:nowrap;cursor:pointer;appearance:none;background-color:#0000;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\");background-position:right 4px center;background-repeat:no-repeat;background-size:12px 12px;border:none;outline:none;padding:0 20px 0 8px;font-size:13px;font-weight:500;line-height:20px}.uV2eYG_select:hover:not(:disabled){background-color:var(--dsw-alias-interactive-bg-hover)}.uV2eYG_select:disabled{opacity:.5;cursor:default}.uV2eYG_primary{corner-shape:round;background:var(--dsw-alias-button-info-fill);color:#fff;cursor:pointer;border:none;border-radius:999px;flex:none;place-items:center;width:34px;height:34px;transition:background-color .1s;display:grid;transform:translateY(-2px)}.uV2eYG_primary[data-composer-send]{width:auto;min-width:68px;padding:0 12px;white-space:nowrap;font:inherit;font-size:13px}.uV2eYG_primary[data-composer-send]>span{display:flex;align-items:center;gap:6px}.uV2eYG_primary:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}.uV2eYG_primary:disabled{opacity:.4;cursor:default}.uV2eYG_retry{border-radius:var(--dsw-radius-sm);color:inherit;cursor:pointer;background:0 0;border:1px solid;margin-left:8px;padding:1px 8px;font-size:12px}.uV2eYG_standardControls{align-items:center;gap:12px;min-width:0;display:flex}.uV2eYG_tools[hidden],.uV2eYG_standardControls[hidden]{display:none}.uV2eYG_trailingActive{flex:1;margin-left:0}.uV2eYG_activity{flex:none;align-items:center;display:flex}.uV2eYG_activity:empty{display:none}.uV2eYG_activityExpanded{flex:1;min-width:0}";
 		const tagId$1 = "@deepseek-ai/dsh-client-ui-conversation/InputBar.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
