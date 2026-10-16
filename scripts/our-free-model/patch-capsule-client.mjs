@@ -37,13 +37,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** 本脚本所在目录（`_ofm/`）—— 固化素材放在它下面，避免依赖会被清理的 /tmp。 */
+const HERE = path.dirname(new URL(import.meta.url).pathname);
 const HOME = process.env.DSH_HOME || '/data/data/com.dshphone/files/dsh-home';
 const LOCAL = '/storage/emulated/0/Download/dsh/ai/_ofm/dsh-our-free-model';
 const INSTALLED = path.join(HOME, 'profiles/phone/node_modules/dsh-our-free-model');
 const PLUGIN_DIRS = [LOCAL, INSTALLED];
 
-/** 胶囊仓库里的组件源码（ESM）。 */
-const PILL_SRC = '/data/data/com.dshphone/files/tmp/capsule-repo/files/vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js';
+/**
+ * 胶囊仓库里的组件源码（ESM）。
+ *
+ * ⚠️ 候选路径列表，**按序取第一个存在的**（2026-10-16 修）：原先只认
+ * `/tmp/capsule-repo/...`，而那是**会被系统清理的临时目录** —— 一旦被清，
+ * 本补丁就再也跑不起来（而它是补丁 E 的唯一来源）。
+ * 现在优先取**工作区里固化的那份**（`_ofm/capsule-src/`，与 /tmp 原件逐字节相同，
+ * sha256 已核对），/tmp 退为兜底。
+ */
+const PILL_SRC = [
+  path.join(HERE, 'capsule-src/client/active-model-pill.js'),
+  '/data/data/com.dshphone/files/tmp/capsule-repo/files/vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js',
+].find((p) => fs.existsSync(p));
 
 const E_MARK_INJECT = 'patch E: inject';
 const E_MARK_PILL = 'patch E: pill';

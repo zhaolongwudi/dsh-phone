@@ -34,10 +34,28 @@ if (local && local.commit === head.sha && !args.includes('--force')) {
   process.exit(0);
 }
 
-console.log('\n[1/3] 拉取上游发布文件…');
+console.log('\n[1/7] 拉取上游发布文件…');
 run('fetch-release.mjs');
-console.log('\n[2/3] 重放手机版移植补丁（禁用重复的渠道包 + 锁 managed 自升级）…');
+console.log('\n[2/7] 重放手机版移植补丁（禁用重复的渠道包 + 锁 managed 自升级）…');
 run('patch-phone-port.mjs', ['--apply']);
-console.log('\n[3/3] 安装进 phone profile…');
+// ⚠️ 顺序是**有约束的**：F 的锚点 `function apply(ctx) {` 由 phone-port 的 C 改写；
+//    G 也依赖同一锚点，故必须排在 F 之后；H 改的是 F/G 都不碰的聚合面板纯函数，
+//    但它在 F 的 IIFE 里（`isRejected` 那一层），所以同样排在 F 之后。
+console.log('\n[3/7] 重放「用量徽标」补丁 F …');
+run('patch-badge-port.mjs', ['--apply']);
+// ⚠️ J 改的正是 F 注入的那段徽标读数（`readActiveProvider`）⇒ 必须排在 F 之后。
+console.log('\n[3.5/7] 重放「徽标读数双端点回退」补丁 J …');
+run('patch-badge-fallback.mjs', ['--apply']);
+console.log('\n[4/7] 重放「老 Jet Hub 设置页」补丁 G …');
+run('patch-jet-hub-ui.mjs', ['--apply']);
+console.log('\n[5/7] 重放「聚合候选三态」补丁 H …');
+run('patch-aggregate-toggle.mjs', ['--apply']);
+// ⚠️ I **必须排在 H 之后**：I 把 H 改的那两块（纯函数 + AggregatePanel）整块换成
+//    gitee 排序版，而 gitee 版**已包含** H 的全部三态语义（含 `expiryWired === false`
+//    分支）。⇒ 打完 I 后 H 的标记消失是**正常**的：H 的自检会把这种状态识别为
+//    「已被补丁 I 取代」并跳过，不再报锚点错。
+console.log('\n[6/7] 重放「聚合排序/拖动」补丁 I …');
+run('patch-aggregate-ordering.mjs', ['--apply']);
+console.log('\n[7/7] 安装进 phone profile…');
 run('install-to-phone.mjs', ['--install']);
 console.log('\n完成。重启 DSH 应用后生效。');
