@@ -91,29 +91,13 @@ node update-channelpack.mjs --dry-run # 只构建不安装
 | **B** | `index.js` | `distributionOf()` 一律返回 `managed`，停用应用内自升级——否则它会用上游原样文件覆盖 C/D。 |
 | **C** | `client.js` | 渠道页 RPC 端点 `'channel-pack'` → `'jet-hub'`，让本插件界面驱动自带渠道包（它源自 gitee 上游，端点名就是 `jet-hub`）。 |
 | **D** | `client.js` | 渠道清单与积分能力表对齐渠道包的 `provider-registry.ts`。本页两张表都是写死的静态数组，渠道包新增渠道后：少了卡片就**无法登录/刷新/看积分**，少了 credits 条目卡片就**不加载也不显示余额与签到**。每次运行都读 registry 补齐（只增不改）。 |
-| **F** | `client.js` | 「用量徽标」——模型选择器左侧那枚「渠道 • 余额」胶囊（`patch-badge-port.mjs`）。 |
-| **G** | `client.js` | **老 Jet Hub 的完整设置页**（`patch-jet-hub-ui.mjs`）—— 复用 `dsh-providers-hub/lib/client/jet-hub.js` 恢复 26 项丢失功能（19 个渠道面板 / 聚合 / 备份 / Token 用量 …）。⚠️ 唯一手术：摘掉它自带的徽标注册，避免与 F 并排显示两枚胶囊。 |
 
 **补丁 A 已删除**：它原本用于阻止 OFM 挂载自带渠道包（避免与 Jet Hub 抢 8326 端口、
 争 `.credentials.yaml` 里的凭据）。Jet Hub 退场后这个冲突不存在了，故移除——
 现在**默认挂载**，无需任何环境变量。
 
-补丁都**幂等**且带锚点校验：上游结构一变就**明确报错并停止**，不会静默写坏。
-原文件备份为 `.pre-patch`（各补丁有自己的后缀），`node patch-phone-port.mjs --revert`
-可整体还原。
-
-### 客户端改动的三层验证（本机唯一可行的方式）
-
-这台设备**跑不了** `pnpm test`（见第八节），故本轮建了三个验证器，**每个都先对
-已知可用的基线跑一遍**才算数：
-
-| 脚本 | 桩/真 | 守什么 |
-|---|---|---|
-| `headless-client-check.mjs` | 桩 React | **加载期/注册期**失败（语法、缺符号、槽位重复） |
-| `render-check.mjs` | **真** `react-dom/server` | **渲染期**失败（白屏） |
-| `probe-served-bundle.mjs` | — | 「改盘上文件后服务端发的是不是新内容」⇒ 判断要不要重启 |
-
-> `probe` 的结论：服务端 combo 与盘上内容**同步** ⇒ **客户端改动刷新页面即生效**。
+三个补丁都**幂等**且带锚点校验：上游结构一变就**明确报错并停止**，不会静默写坏。
+原文件备份为 `.pre-patch`，`node patch-phone-port.mjs --revert` 可整体还原。
 
 ---
 

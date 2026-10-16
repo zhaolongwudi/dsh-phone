@@ -226,3 +226,19 @@ spec** 覆盖的（zero-output-guard/catalog-broadcast/catalog-prewarm/backup-co
 > semver 取自仓库自带 pnpm ⇒ CI 无需 install）+ `ui-tests/plugin-peers.test.mjs`
 > （判别力反证 20/0，防「静默变恒真」），接入 `apply.sh` §5.97。
 > 详见 [第十轮报告 §12](../reports/移植第十轮-官方引擎alpha2升级-20261014.md)。
+
+> 🆕 **2026-10-16 02:20 追加（第十三轮）—— Gitee 41 提交增量已移植完**：
+> ⚠️ **本文件 §1 的基线锚点已过期**：Gitee master 现为 **`29452038d7`**（2026-10-15 15:22），
+> 已移植基线是 **`0dd27ca0e4`**（第九轮终点）。中间 41 个提交本轮逐条判定并处理：
+> **26 个此前各轮已移植**（含全部 merge 与其分支提交），**15 个未移植**，其中
+> **13 个已移植**（loomy IKL80H / officeace IKM3A0 / IKLMIY 撤回 / PR101 聚合名单 /
+> PR98·IKLUME 注册 id 闸门 / PR99 opencode V2 三提交），**1 个判定为「已满足」不移植**
+> （`58ae086aad` 撤 web_fetch 接管 —— 手机版 `web-native.ts` 本就只管 `web_search`），
+> **1 个是纯上游开发者文档**。**Gitee 线现在没有遗留未移植的功能代码。**
+> **验证**：干净树 `apply.sh` **exit 0**（336 条门禁）＋ tsc 两份配置 **0 错误**（与改前**逐字节相同**）。
+> ⚠️ **本机跑不了 vitest**（下载来的 esbuild 二进制在应用私有目录被 Android W^X 拒绝执行，
+> 只有 APK 自带 `lib/*.so` 能 exec）⇒ 行为用例只能在 CI 跑；本轮**未**登记新 spec（见报告 §5）。
+> **产物**：胶囊 36 改 + 8 新增 / 0 删除（`dsh-phone-gh/.github/capsule/`）；**尚未推送**。
+> 详见 [第十三轮报告](../reports/移植第十三轮-Gitee41提交增量-20261016.md)。
+> 抓取方法变更：**Gitee API 本轮持续 403（限流）**，改用本机 isomorphic-git 浅克隆
+> （`tools/gitjs/_gitee_clone.mjs`，8.5s 拿到 tip 起 105 提交全对象）——下次可直接复用。

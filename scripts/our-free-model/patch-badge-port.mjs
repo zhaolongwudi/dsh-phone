@@ -230,20 +230,7 @@ ${SLOT_ANCHOR}`;
 }
 
 const mode = process.argv[2] || '--check';
-
-/**
- * 目标 client.js 列表。
- *
- * ⚠️ `OFM_BADGE_TARGETS`（冒号分隔）可覆盖为任意路径 —— **先在副本上演练整条
- * 补丁链**，再动线上文件。本脚本原先是**硬编码**两个安装位置，于是 2026-10-16
- * 我在副本上演练时，`--revert` 顺手把**线上**的 F 补丁也还原了
- *（`client.js` 1350964 → 454747 字节）。加这个开关就是为了让演练能真的只碰副本。
- */
-const targets = () => {
-  const override = process.env.OFM_BADGE_TARGETS;
-  if (override !== undefined && override.length > 0) return override.split(':').filter((s) => s.length > 0);
-  return PLUGIN_DIRS.map((d) => path.join(d, 'client.js'));
-};
+const targets = () => PLUGIN_DIRS.map((d) => path.join(d, 'client.js'));
 
 if (mode === '--fetch') {
   fs.mkdirSync(CLIENT_DIR, { recursive: true });
