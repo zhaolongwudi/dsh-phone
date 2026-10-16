@@ -282,11 +282,14 @@ CAPSULE_RENAME_PATCH
 #
 #        · 源 = `.github/capsule/files/vendor/dsh-our-free-model/`（由 `_ofm` 工作区导出，
 #          已是**打过补丁 B/C/D/E/F/G/H/I/J** 的版本 —— 原样入库即可直接用）
-#        · 只带**运行时必需**文件（15 个 / 5.4 MB），刻意**不带**：
-#            - `src/`（OFM 自身源码 0.9 MB）与 `vendor/channel-pack/src/`（渠道包 197 个 .ts，4.5 MB）
-#              ⇒ 都是**维护期**素材（`patch-channelpack-port.mjs` 用），运行时只用 `pack.js`
+#        · 只带**运行时必需**文件，刻意**不带**：
+#            - `vendor/channel-pack/src/`（渠道包 197 个 .ts，4.5 MB）⇒ pack.js 的**打包前源码**，
+#              维护期素材（patch-channelpack-port.mjs 用），运行时只用 `pack.js`
 #            - `*.pre-patch*`（本地补丁备份，7.3 MB）⇒ 本地产物，**绝不该入库**
-#          不剔除的话是 18 MB，剔除后 5.4 MB。
+#            - ⚠️ **顶层 `src/` 必须带**（0.9 MB）：`index.js` 顶层 import 它 27 处
+#              （2026-10-17 事故：漏了 src ⇒ 设备上 index.js 加载抛错 ⇒ 插件整个静默
+#              挂载失败 ⇒ 渠道页/胶囊/聚合全消失，而构建与 CI 全绿）—— 见 ④ 的注释
+#          发行现在的体积 = 6.4 MB（含顶层 src，不含 channel-pack/src）。
 #        · 为什么放 `files/`（而非 `overrides/`）：它是**全新增路径**，由 §1.5 门禁保证
 #          不会静默覆盖上游文件。
 #
@@ -356,9 +359,15 @@ for (const [file, needle, label] of [
 }
 
 // ④ 发行文件齐备性 + 禁止本地产物入库
+// ⚠️ **顶层 src/ 是运行时必需的**（index.js 顶层 import 它 27 处 —— 2026-10-17 的事故：
+//    发行导出漏了 src/，设备上 index.js 一加载就抛 Cannot find module，整个插件静默挂载
+//    失败 ⇒ 渠道页/胶囊/聚合全消失，且构建、CI 全绿，只有真机装包才暴露）。NEED 必须含它。
+//    ⚠️ 与此相对，`vendor/channel-pack/src/`（渠道包源码 4.5 MB）**确实不需要**：那是
+//    pack.js 的**打包前源码**（维护期素材，patch-channelpack-port.mjs 用），运行时只用
+//    pack.js。两者不可混为一谈。
 const NEED = [
   'package.json', 'client.js', 'index.js', 'adapter', 'locale', 'icon.svg',
-  'cordis.patch.yml', 'LICENSE',
+  'cordis.patch.yml', 'LICENSE', 'src',
   'vendor/channel-pack/pack.js', 'vendor/channel-pack/qoder-auth-wasm.wasm',
   'vendor/channel-pack/locale', 'vendor/channel-pack/package.json',
 ];
