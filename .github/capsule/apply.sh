@@ -367,6 +367,70 @@ grep -q "DSH_PHONE_SHELL" runtime/overlays/@deepseek-ai/dsh-bash-local/lib/index
   || { echo "::error::bash-local overlay 丢了 Android shell 适配"; exit 1; }
 grep -q "materializeAndroid" runtime/overlays/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js \
   || { echo "::error::session-persistence overlay 丢了 Android 原子发布适配"; exit 1; }
+
+# 5.98) **overlay 功能回归断言**（2026-10-17 内核 alpha.5 升级引入）。
+#
+#      为什么需要：overlays 是本层唯一的 Android 适配载体，而它的失效形态是**静默**的 ——
+#      某个 overlay 文件丢了、或上游改版后我们那处改动被覆盖掉，构建照样全绿，
+#      设备上却表现为「某个功能在 Android 上坏掉」。§5.9 只钉了两条，覆盖面不够。
+#
+#      判据：对**每一个有本地改动的** overlay 文件，断言其**特征串**在场。
+#      特征串全部取自**本仓库自己写下的注释/常量标识**（多数带 Issue 编号），
+#      不依赖上游文本 —— 上游改写这些位置时本段会硬失败，那正是要人工复核的信号。
+#      ⚠️ 不要为了让它变绿而放宽：每一条背后都是一次真机踩过的坑。
+OVL=runtime/overlays/@deepseek-ai
+# 40 = @deepseek-ai/ 下的适配文件数（另有 overlays/README.md，不计入）
+OVL_EXPECT_FILES=40
+_ovl_n=$(find "$OVL" -type f | wc -l | tr -d ' ')
+[ "$_ovl_n" = "$OVL_EXPECT_FILES" ] \
+  || { echo "::error::overlay 文件数 $_ovl_n ≠ $OVL_EXPECT_FILES（有 overlay 静默丢失，Android 适配会缺失）"; exit 1; }
+_ovl_checks=0
+_ovl_check() {
+  _ovl_checks=$((_ovl_checks + 1))
+  [ -f "$OVL/$1" ] || { echo "::error::overlay 文件缺失：$1（$3）"; exit 1; }
+  # ⚠️ 必须 -F（固定字符串）：特征串里有 `[`/`{`，走正则会被当字符类而**假红**
+  #    （实测：'[data-composer-send]{width:auto' 在正则下匹配不到任何东西）。
+  grep -qF -- "$2" "$OVL/$1" \
+    || { echo "::error::overlay 丢失本地适配：$3 —— $1 不含「$2」"; exit 1; }
+}
+# 引擎 app-boot 的 Android 原生模块访问（Issue F-34：node-addon-require-builtin 在 Android 无原生绑定，加载即抛）
+# ⚠️ 别用 'unmetRequirements' 当特征串：那是**上游 alpha.5 新增**的（官方包里也有 ⇒ 判别力为零）。
+_ovl_check dsh-app-boot/lib/index.js 'Issue F-34' 'Android 原生模块访问适配（F-34）'
+# Android 原生运行时适配
+_ovl_check dsh-bash-local/lib/index.js 'DSH_PHONE_SHELL' 'Android shell 选择'
+_ovl_check dsh-bash-sandbox/lib/index.js 'libbash.so' 'Android bash 沙箱可执行路径'
+_ovl_check dsh-tool-fs-search/lib/index.js 'libdshrg.so' 'Android ripgrep 可执行路径'
+# ⚠️ 别用 'Landlock'：官方包里也有（a3=2/a5=2 ⇒ 判别力为零）；用本层写下的中文文案。
+_ovl_check dsh-sandbox/lib/index.js 'Android 命令沙箱不可用' 'Android 命令沙箱不可用时的诚实报错'
+_ovl_check dsh-sandbox-local/lib/index.js 'Issue F-14' 'Android Landlock 不可用的事实登记'
+# Android 存储/文件语义（禁硬链接、私有目录边界、目录选择器）
+_ovl_check dsh-fs-local/lib/index.js 'publishNewFileAndroid' 'Android 禁硬链接 ⇒ 原子发布改走 flock'
+_ovl_check dsh-session-persistence-jsonl/lib/index.js 'materializeAndroid' 'Android 会话原子发布'
+_ovl_check dsh-attachment-local/lib/index.js 'app-private files directory' 'Android 附件目录边界'
+_ovl_check dsh-host-directory-picker-browse/lib/android-storage.js 'phoneStorageShortcut' 'Android 存储快捷入口（本地新增文件）'
+_ovl_check dsh-host-directory-picker-browse/lib/index.js 'android-storage.js' '目录选择器接入 Android 存储'
+# Android 前台/后台与请求体上限（Issue F-36 / F-37）
+_ovl_check dsh-client-connection/lib/client.browser.js 'Issue F-36' 'Android 页面冻结/恢复不重置退避'
+_ovl_check dsh-client-connection/lib/index.js 'Issue F-37' '请求体上限一路传到 channel RPC'
+# 会话永久删除的账本上限（Issue F-63）与删除链路
+_ovl_check dsh-api-session-controller/lib/index.js 'MAX_TRACKED_DELETED_IDS' '永久删除标记有界（F-63）'
+_ovl_check dsh-session-projection-cache/lib/index.js 'MAX_TRACKED_DELETED_IDS' '同一口径（F-63）'
+_ovl_check dsh-session-query/lib/index.js 'forgetPermanently' '永久删除在查询层生效'
+_ovl_check dsh-session-query-sqlite/lib/index.js 'forgetPermanently' '永久删除在 sqlite 层生效'
+_ovl_check dsh-workspace/lib/index.js 'forgetPermanently' '永久删除时工作区解挂'
+# 本层接线（技能根、手机 bash 提示、noema 记忆路由）
+_ovl_check dsh-skill-filesystem/lib/index.js 'replacement record' '手机包替换记录的容错'
+# ⚠️ 别用 'exit code: N'：官方包里也有（a3=1/a5=1 ⇒ 判别力为零）；用本层追加的 Android 说明。
+_ovl_check dsh-tool-bash/lib/index.js 'APK-provided Bash' '手机 bash 的 Android 说明'
+_ovl_check dsh-settings/lib/index.js 'noema-memory' 'noema 记忆路由'
+# 本层唯一的 UI 改动（发送按钮样式；alpha.5 升级时它曾因超长单行合并冲突被判给上游而丢弃，人工救回）
+# ⚠️ 特征串必须含样式体本身：只写 'data-composer-send' 时，抹掉样式后标记仍在 ⇒ 假绿（已实测）。
+_ovl_check dsh-client-ui-conversation/lib/client.js '[data-composer-send]{width:auto' '发送按钮样式（本地 UI 适配）'
+_ovl_check dsh-client-ui-conversation/lib/client.js '发送按钮沿用内部' '发送按钮手势注释（本地 UI 改动）'
+# 上游 alpha.5 的新内容在场（证明不是旧引擎换了版本号）
+_ovl_check dsh-web-app/presets/standard.patch.yml 'tool-plugin-market' '上游 alpha.5 的 plugin-market 预设'
+echo "  ✓ overlay 功能回归断言：$_ovl_n 个文件 / $_ovl_checks 条本地适配全部在场"
+
 # 5.95) vendor 插件 peer 版本自检（2026-10-14 alpha.1→alpha.2 事故引入）。
 #      失效形态：引擎升到 alpha.2，而 vendor/dsh-codearts-auth 的 peerDependencies
 #      仍钉 alpha.1 ⇒ 引擎的精确版本门禁判「不兼容」，**静默跳过整个 profile bundle**
