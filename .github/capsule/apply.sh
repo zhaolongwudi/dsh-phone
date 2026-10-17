@@ -400,6 +400,87 @@ if (bad > 0) { console.error('::error::OFM 出厂内置未完成（' + bad + ' �
 console.log('  ✓ OFM 出厂内置（' + patched + ' 处替换 + ' + checked + ' 处清单校验 + ' + NEED.length + ' 项发行文件齐备）');
 CAPSULE_EMBED_OFM
 
+# 2.11) 退役插件残留的**启动告警**（2026-10-17）
+#
+# 背景：老 Jet Hub（`dsh-providers-hub`，更早的名字 `dsh-codearts-auth`）已退役，
+#       能力并入 dsh-our-free-model。§2.8 已经堵掉「升级迁移把它塞回来」这条路径，
+#       但**还有一条**：恢复退役前的快照（RecoveryManager 的 `dsh-home/profiles`
+#       是整目录替换）或手工编辑 profile，都会把这两个包名重新写回
+#       `bundles` / `dependencies` ⇒ 它与 OFM 在三个槽位重复注册：设置页多一个
+#       Jet Hub 入口、输入区并排两枚余额胶囊、多一枚活动模型胶囊
+#      （用户 2026-10-16 报障的正是这个形态）。
+#
+# ⚠️ 为什么**只告警、不剥除**：README 第五节记录了「回滚到 Jet Hub」是**受支持的**
+#    操作（拷 switch-backup 的 package.json 即可）。若在启动时无条件剥除，就会
+#    **打断那条回滚路径** —— 修一处、坏一处。故这里只把事实摆到台面上（Logcat 一条
+#    W 级告警），由用户决定：忽略（有意回滚）或删掉那两个键。
+#
+# ⚠️ 锚点 `fun start(...) { ensureExtracted(ctx)` 在**上游待同步的新版**上同样恰好
+#    命中 1 次（2026-10-17 对 jwoo@7f55f00c 实测），同步后不需要重推本段。
+node - <<'CAPSULE_RETIRED_WARN'
+const fs = require('fs');
+let bad = 0, patched = 0;
+const patch = (file, from, to, label) => {
+  if (!fs.existsSync(file)) { console.error('::error::退役告警：找不到 ' + file); bad++; return; }
+  const s = fs.readFileSync(file, 'utf8');
+  const hits = s.split(from).length - 1;
+  if (hits !== 1) {
+    console.error('::error::退役告警：' + label + ' 的锚点命中 ' + hits + ' 次（应为 1）。');
+    console.error('::error::上游挪动了 start() 的开头 —— 请对照新版上游重写 apply.sh §2.11。');
+    bad++;
+    return;
+  }
+  fs.writeFileSync(file, s.replace(from, to));
+  patched++;
+  console.log('  ✓ ' + label);
+};
+
+const FROM = `    fun start(ctx: Context): Process {
+        ensureExtracted(ctx)`;
+const TO = `    /**
+     * 已退役插件的**残留告警**（2026-10-17；只读不改写）。
+     *
+     * 老 Jet Hub（\`dsh-providers-hub\`，更早叫 \`dsh-codearts-auth\`）已退役、能力并入
+     * dsh-our-free-model。§2.8 堵住了「升级迁移塞回来」，但**恢复退役前的快照**
+     * （RecoveryManager 整目录替换 profiles）或手工编辑仍会把它写回 profile。
+     *
+     * ⚠️ 刻意**只告警**：README 第五节记录了「回滚到 Jet Hub」是受支持操作，
+     * 启动时无条件剥除会打断那条路径（修一处坏一处）。这里只把事实说清楚。
+     */
+    private fun warnRetiredBundles(ctx: Context) {
+        val manifest = File(homeDir(ctx), "profiles/phone/package.json")
+        if (!manifest.isFile) return
+        val text = runCatching { manifest.readText() }.getOrNull() ?: return
+        val hit = RETIRED_BUNDLES.filter { text.contains("\\"\$it\\"") }
+        if (hit.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "profile 仍引用已退役插件 " + hit.joinToString("、") +
+                    " —— 常见来源是恢复退役前的快照或手工编辑。它会与 OFM 重复注册" +
+                    "（设置页多一个 Jet Hub 入口、输入区并排两枚余额胶囊）。" +
+                    "若你**有意**回滚到 Jet Hub 请忽略本条；否则请删掉 profile package.json 里的这两个键。"
+            )
+        }
+    }
+
+    /** 已退役插件的包名（新旧两种写法都要看：老快照里都可能出现）。 */
+    private val RETIRED_BUNDLES = listOf("dsh-providers-hub", "dsh-codearts-auth")
+
+    fun start(ctx: Context): Process {
+        ensureExtracted(ctx)
+        warnRetiredBundles(ctx)`;
+
+patch('app/src/main/java/com/dshphone/NodeRunner.kt', FROM, TO, 'NodeRunner：启动时告警退役插件残留（§2.11）');
+
+// 正向断言：只把函数插进去不算数，**调用点**也必须在（防「写了但走不到」）。
+if (!fs.readFileSync('app/src/main/java/com/dshphone/NodeRunner.kt', 'utf8').includes('warnRetiredBundles(ctx)')) {
+  console.error('::error::§2.11 退役告警的调用点缺失（函数存在但没被调用）。');
+  bad++;
+}
+if (bad > 0) { console.error('::error::退役告警未完成（' + bad + ' 处）'); process.exit(1); }
+console.log('  ✓ 退役插件残留告警（' + patched + ' 处替换）');
+CAPSULE_RETIRED_WARN
+
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
 #    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
 
