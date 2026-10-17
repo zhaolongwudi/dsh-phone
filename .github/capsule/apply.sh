@@ -499,7 +499,7 @@ if (bad > 0) { console.error('::error::OFM 出厂内置未完成（' + bad + ' �
 console.log('  ✓ OFM 出厂内置（' + patched + ' 处替换 + ' + checked + ' 处清单校验 + ' + NEED.length + ' 项发行文件齐备）');
 CAPSULE_EMBED_OFM
 
-# 2.11) 退役插件残留的**启动告警**（2026-10-17）
+# 2.11) 退役插件残留的**幂等清理 + 告警**（H2，2026-10-17）
 #
 # 背景：老 Jet Hub（`dsh-providers-hub`，更早的名字 `dsh-codearts-auth`）已退役，
 #       能力并入 dsh-our-free-model。§2.8 已经堵掉「升级迁移把它塞回来」这条路径，
@@ -509,10 +509,11 @@ CAPSULE_EMBED_OFM
 #       Jet Hub 入口、输入区并排两枚余额胶囊、多一枚活动模型胶囊
 #      （用户 2026-10-16 报障的正是这个形态）。
 #
-# ⚠️ 为什么**只告警、不剥除**：README 第五节记录了「回滚到 Jet Hub」是**受支持的**
-#    操作（拷 switch-backup 的 package.json 即可）。若在启动时无条件剥除，就会
-#    **打断那条回滚路径** —— 修一处、坏一处。故这里只把事实摆到台面上（Logcat 一条
-#    W 级告警），由用户决定：忽略（有意回滚）或删掉那两个键。
+# ⚠️ 曾经**只告警、不剥除**（H1）：理由是 README 第五节记录「回滚到 Jet Hub」是
+#    **受支持**操作，启动时无条件剥除会打断它 —— 修一处、坏一处。H2 用**豁免标记**
+#    把两边同时满足：存在 `dsh-home/KEEP-RETIRED-BUNDLES` 时只告警不剥除
+#    （保留「回到过去」的意图）；没有该标记才每次启动幂等剥除，且**无变化时不写盘**。
+#    §2.8 的清理只在 ASSET_VERSION 变化时跑，兜不住快照恢复/手工编辑，故必须每次启动跑。
 #
 # ⚠️ 锚点 `fun start(...) { ensureExtracted(ctx)` 在**上游待同步的新版**上同样恰好
 #    命中 1 次（2026-10-17 对 jwoo@7f55f00c 实测），同步后不需要重推本段。
@@ -537,29 +538,55 @@ const patch = (file, from, to, label) => {
 const FROM = `    fun start(ctx: Context): Process {
         ensureExtracted(ctx)`;
 const TO = `    /**
-     * 已退役插件的**残留告警**（2026-10-17；只读不改写）。
+     * 已退役插件的**残留清理**（H2，2026-10-17）：幂等剥除 + 豁免标记 + 告警。
      *
      * 老 Jet Hub（\`dsh-providers-hub\`，更早叫 \`dsh-codearts-auth\`）已退役、能力并入
      * dsh-our-free-model。§2.8 堵住了「升级迁移塞回来」，但**恢复退役前的快照**
-     * （RecoveryManager 整目录替换 profiles）或手工编辑仍会把它写回 profile。
+     * （RecoveryManager 对 profiles 是整目录替换）或手工编辑仍会把它写回 profile ⇒
+     * 它与 OFM 在三个槽位重复注册（设置页多一个 Jet Hub 入口、输入区并排两枚余额
+     * 胶囊、多一枚活动模型胶囊）。§2.8 的清理只在 ASSET_VERSION 变化时跑，兜不住
+     * 上面这两条路径，故这里做**每次启动**的幂等清理。
      *
-     * ⚠️ 刻意**只告警**：README 第五节记录了「回滚到 Jet Hub」是受支持操作，
-     * 启动时无条件剥除会打断那条路径（修一处坏一处）。这里只把事实说清楚。
+     * ⚠️ 豁免标记：README 第五节记录「回滚到 Jet Hub」是**受支持**操作。故存在
+     *     \`dsh-home/KEEP-RETIRED-BUNDLES\`（**放在 profiles 之外**）时**只告警、不剥除**，把「回到过去」
+     *     的意图留给用户；没有该标记才自动剥除，并在日志里说明如何回滚。
+     *     **无变化时不写盘**（幂等：避免每次启动都改文件/改 mtime）。
+     *
+     * ⚠️ 标记路径为什么是 \`dsh-home/KEEP-RETIRED-BUNDLES\` 而**不是** profiles 之下：
+     *     RecoveryManager 的 scopes 含 \`dsh-home/profiles\`，restore 对每个 scope 做
+     *     **整目录 move 替换**（见 RecoveryManager.kt 的 restore）⇒ 标记若放在
+     *     \`profiles/phone/\` 里，会被"先建标记、再恢复快照"的流程**自己删掉**，
+     *     豁免形同虚设。故必须放在 profiles 之外。
      */
-    private fun warnRetiredBundles(ctx: Context) {
+    private fun pruneRetiredBundles(ctx: Context) {
         val manifest = File(homeDir(ctx), "profiles/phone/package.json")
         if (!manifest.isFile) return
-        val text = runCatching { manifest.readText() }.getOrNull() ?: return
-        val hit = RETIRED_BUNDLES.filter { text.contains("\\"\$it\\"") }
-        if (hit.isNotEmpty()) {
-            Log.w(
-                TAG,
-                "profile 仍引用已退役插件 " + hit.joinToString("、") +
-                    " —— 常见来源是恢复退役前的快照或手工编辑。它会与 OFM 重复注册" +
-                    "（设置页多一个 Jet Hub 入口、输入区并排两枚余额胶囊）。" +
-                    "若你**有意**回滚到 Jet Hub 请忽略本条；否则请删掉 profile package.json 里的这两个键。"
-            )
+        val raw = runCatching { manifest.readText() }.getOrNull() ?: return
+        val hit = RETIRED_BUNDLES.filter { raw.contains("\\"\$it\\"") }
+        if (hit.isEmpty()) return
+        val names = hit.joinToString("、")
+        if (File(homeDir(ctx), "KEEP-RETIRED-BUNDLES").isFile) {
+            Log.w(TAG, "profile 仍引用已退役插件 \$names —— 检测到 dsh-home/KEEP-RETIRED-BUNDLES 豁免标记，按你的回滚意图保留（不剥除）。")
+            return
         }
+        val root = runCatching { JSONObject(raw) }.getOrNull()
+            ?: run { Log.w(TAG, "profile package.json 解析失败，跳过退役清理"); return }
+        val profile = root.optJSONObject("dsh")?.optJSONObject("profile")
+        val bundles = profile?.optJSONArray("bundles")
+        if (profile != null && bundles != null) {
+            /* ⚠️ 重建数组，**不用** JSONArray.remove(int)：本机无 gradle、无法验证该重载，
+               与 §2.8 同一理由；length / optString / put / remove(String) 均已编译通过。 */
+            val kept = JSONArray()
+            for (i in 0 until bundles.length()) {
+                val name = bundles.optString(i)
+                if (!RETIRED_BUNDLES.contains(name)) kept.put(name)
+            }
+            profile.put("bundles", kept)
+        }
+        root.optJSONObject("dependencies")?.let { deps -> for (name in RETIRED_BUNDLES) deps.remove(name) }
+        runCatching { manifest.writeText(root.toString(2)) }
+            .onFailure { Log.w(TAG, "退役清理写盘失败：" + it.message) }
+        Log.w(TAG, "已自动剥除已退役插件残留：\$names。如需**有意**回滚到 Jet Hub，请先创建 dsh-home/KEEP-RETIRED-BUNDLES（放在 profiles 之外，否则会被快照恢复覆盖）再恢复旧快照。")
     }
 
     /** 已退役插件的包名（新旧两种写法都要看：老快照里都可能出现）。 */
@@ -567,17 +594,28 @@ const TO = `    /**
 
     fun start(ctx: Context): Process {
         ensureExtracted(ctx)
-        warnRetiredBundles(ctx)`;
+        pruneRetiredBundles(ctx)`;
 
-patch('app/src/main/java/com/dshphone/NodeRunner.kt', FROM, TO, 'NodeRunner：启动时告警退役插件残留（§2.11）');
+// ⚠️ 幂等守卫（2026-10-17 实测补）：本段原先**不是幂等的** —— 对已打补丁的文件重跑，
+//    FROM 仍命中（调用点在）、TO 会**再插一份函数** ⇒ 函数与调用点各堆一份（实测 1→2→3），
+//    重复 apply 后 Kotlin 里出现多份同名函数，CI 必编译失败。故先查特征函数，已在就跳过。
+const KT_PATH = 'app/src/main/java/com/dshphone/NodeRunner.kt';
+if (fs.existsSync(KT_PATH) && fs.readFileSync(KT_PATH, 'utf8').includes('private fun pruneRetiredBundles')) {
+  console.log('  · NodeRunner 已含退役清理（幂等跳过，不重复插入）');
+} else {
+  patch(KT_PATH, FROM, TO, 'NodeRunner：启动时幂等清理退役插件残留（§2.11 / H2）');
+}
 
 // 正向断言：只把函数插进去不算数，**调用点**也必须在（防「写了但走不到」）。
-if (!fs.readFileSync('app/src/main/java/com/dshphone/NodeRunner.kt', 'utf8').includes('warnRetiredBundles(ctx)')) {
-  console.error('::error::§2.11 退役告警的调用点缺失（函数存在但没被调用）。');
+const KT = fs.readFileSync('app/src/main/java/com/dshphone/NodeRunner.kt', 'utf8');
+// ⚠️ 判据必须区分「函数定义」与「调用点」：函数签名里同样含 "pruneRetiredBundles(ctx)"，
+//    只查这个名字是**假绿**（2026-10-17 实测：删掉调用点后断言照样通过）。故钉住 start() 里三行连贯文本。
+if (!KT.includes('fun start(ctx: Context): Process {\n        ensureExtracted(ctx)\n        pruneRetiredBundles(ctx)')) {
+  console.error('::error::§2.11 退役清理的调用点缺失（函数存在但没被 start() 调用）。');
   bad++;
 }
-if (bad > 0) { console.error('::error::退役告警未完成（' + bad + ' 处）'); process.exit(1); }
-console.log('  ✓ 退役插件残留告警（' + patched + ' 处替换）');
+if (bad > 0) { console.error('::error::退役清理未完成（' + bad + ' 处）'); process.exit(1); }
+console.log('  ✓ 退役插件残留幂等清理 + 豁免标记（' + patched + ' 处替换）');
 CAPSULE_RETIRED_WARN
 
 # 2.12) 上游新增的「模型选择器 overlay」步骤：**缺树时跳过而非中断**（2026-10-17）
