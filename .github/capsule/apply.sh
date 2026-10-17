@@ -669,57 +669,80 @@ CAPSULE_MODEL_PICKER
 
 # 2.13) 子代理调度器的**原生入口适配**（2026-10-18，内核升级到 rc.2 后暴露）
 #
-# 症状（装 rc.2 后启动日志仍剩一条，本次会话唯一的残余错误）：
+# 症状（装 rc.2 后启动日志仍剩一条）：
 #   dsh: warning: 1 entry did not activate
 #   dsh-subagent-scheduler (dsh-peer/subagent-scheduler):
 #     Error: 当前SDK缺少原生子代理入口：start
 #
 # 根因：上游 peer 插件的 `subagent-scheduler/native.mjs` 头部自述
 #   「Narrow adapter for the pinned **0.2.1-alpha.1** service」—— 它按 alpha.1 的
-#   `subagents` 服务形态写的：要求 `start` / `startContinuable` 两个方法。
-#   而 alpha.5 与 rc.2 的门面**只有** `startLocal(spec)` / `startExternal(spec)`
-#   （实测两版 dsh-subagent **逐字节相同** ⇒ 内核升级修不了它，见 §20.8）。
+#   `subagents` 服务形态写：要求 `start` / `startContinuable` 两个方法。
+#   而 alpha.1 之后该服务**重构**过（两版 dsh-subagent 在 alpha.5/rc.2 逐字节相同
+#   ⇒ 内核升级修不了它，见 §20.8/§20.9）。
 #
-# 为什么只改方法名就够（已实测核对 rc.2 的实现）：
-#   · `startLocal(spec)`  → 内部 `const request = spec.request`
-#   · `startExternal(spec)` → 内部 `spec.request.parent`
-#   两者都把请求放在 **`spec.request`**，恰好与 native.mjs 里
-#   `const request = method==='start' ? args[1] : args[0]?.request` 的**另一分支**一致
-#   ⇒ 方法名换成新形态后，取值自动走 `args[0]?.request`，**无需另改**。
-#   `request.parent.session` / `request.agentOptions` 字段在 rc.2 亦未变。
+# ⚠️ 定位真实入口的过程（记下来，免得下次又猜错）：
+#   第一版适配把方法名换成 `startLocal`/`startExternal` —— **错**。那两个是
+#   `SubagentRuntime` 的**内部实现**（私有路径），不是服务门面 API。设备重启后报错
+#   只从「缺 start」变成「缺 startLocal」，问题原样存在。
+#   权威依据应当是**官方消费者的实际调用**（本项目纪律：一份判据，一处实现）：
+#     · dsh-tool-subagent  → `runtimeCtx.subagents.startActivation({provider,label,request,signal,delivery})`
+#     · dsh-tool-subagent-control → `.sendMessage` / `.interrupt`
+#     · dsh-tool-ralph / dsh-subagent-*-in-process → `.getProvider` / `.registerProvider`
+#   ⇒ rc.2 服务门面的**启动入口是 `startActivation(spec)`**，且 spec **含 `spec.request`**
+#     （与 native.mjs 里 `args[0]?.request` 那一分支一致）。
+#   ⇒ 旧的两个入口（`start` / `startContinuable`）在 rc.2 已**合并为单入口**
+#     `startActivation`（用 spec 里的 `delivery` 区分形态）。
+#
+# 故适配 = 方法名清单换成 `['startActivation','sendMessage']`（单入口）。
+#   request 取值那行**不用改**：原式 `method==='start' ? args[1] : args[0]?.request`
+#   在新名字下自动走 `args[0]?.request` ✓
 #
 # ⚠️ 用**就地精确替换**而非往 overrides/ 丢整份文件：该文件属上游 peer、仍在演进，
 #    整份覆盖会静默遮蔽上游后续修复（与 §2.8/§5.94 同一纪律；第二十六轮刚因
 #    `overrides/peer/package.json` 整份覆盖踩过同类坑）。
-# ⚠️ 条件式（双兼容）：若上游**自己**已改成新形态，则**跳过**而不报错；
-#    若锚点 0 次且**既不是**新形态，则响亮报错（结构变了、要人来看）。
+# ⚠️ 条件式（双兼容 + 可自纠）：三种输入都要能处理 ——
+#    ① 已含 startActivation（上游自己跟进了）⇒ 跳过
+#    ② 旧形态 start/startContinuable ⇒ 替换
+#    ③ 第一版的错误映射 startLocal/startExternal ⇒ **也替换**（修正历史错误）
+#    其它情况 ⇒ 响亮报错
 node - <<'CAPSULE_SUBAGENT_NATIVE'
 const fs = require('fs');
 let bad = 0, patched = 0;
 const F = 'peer/subagent-scheduler/native.mjs';
-const OLD = "for(const method of ['start','startContinuable','sendMessage']){";
-const NEW = "for(const method of ['startLocal','startExternal','sendMessage']){";
+const NEW = "for(const method of ['startActivation','sendMessage']){";
+// 需要被纠正的历史形态（含第一版的错误映射）
+const PREV = [
+  "for(const method of ['start','startContinuable','sendMessage']){",
+  "for(const method of ['startLocal','startExternal','sendMessage']){",
+];
 
 if (!fs.existsSync(F)) {
   console.error('::error::§2.13 找不到 ' + F + '（上游 peer 结构变了？）');
   bad++;
 } else {
-  const s = fs.readFileSync(F, 'utf8');
-  if (s.includes(NEW)) {
-    console.log('  · 子代理原生入口已是 rc.2 形态（幂等跳过 / 或上游自己已跟进）');
-  } else if (s.split(OLD).length - 1 === 1) {
-    fs.writeFileSync(F, s.replace(OLD, NEW));
-    patched++;
-    console.log('  ✓ 子代理调度器：原生入口 start/startContinuable → startLocal/startExternal');
+  const before = fs.readFileSync(F, 'utf8');
+  if (before.includes(NEW)) {
+    console.log('  · 子代理原生入口已是 rc.2 单入口形态（幂等跳过 / 或上游自己已跟进）');
   } else {
-    const n = s.split(OLD).length - 1;
-    console.error('::error::§2.13 锚点命中 ' + n + ' 次（应为 1），且非新形态。');
-    console.error('::error::上游改了 native.mjs 的方法名清单 —— 请对照新版重写本段。');
+    const hit = PREV.find((p) => before.split(p).length - 1 === 1);
+    if (hit) {
+      fs.writeFileSync(F, before.replace(hit, NEW));
+      patched++;
+      console.log('  ✓ 子代理调度器：原生入口 → startActivation（rc.2 单入口）');
+    } else {
+      console.error('::error::§2.13 方法名清单既非已知旧形态、也非 rc.2 形态。');
+      console.error('::error::上游改了 native.mjs 的入口清单 —— 请对照新版重写本段。');
+      bad++;
+    }
+  }
+  // 正向断言：产物必须是新形态（防「改了但没落地」）
+  if (!fs.readFileSync(F, 'utf8').includes(NEW)) {
+    console.error('::error::§2.13 未落地（产物里没有 rc.2 单入口形态）');
     bad++;
   }
-  // 正向断言：产物必须是**新形态**（防「改了但没落地」）
-  if (!fs.readFileSync(F, 'utf8').includes(NEW)) {
-    console.error('::error::§2.13 未落地（产物里没有 rc.2 形态的方法名清单）');
+  // ⚠️ 反向断言：**绝不能**残留第一版的错误映射（它会让插件继续不激活）
+  if (fs.readFileSync(F, 'utf8').includes("'startLocal','startExternal'")) {
+    console.error('::error::§2.13 产物里残留了已知错误的入口映射 startLocal/startExternal');
     bad++;
   }
 }
