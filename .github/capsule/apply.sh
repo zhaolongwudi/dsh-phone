@@ -667,6 +667,66 @@ if (patched > 0 && !fs.readFileSync(F, 'utf8').includes('跳过 build-model-pick
 if (bad > 0) { console.error('::error::§2.12 未完成（' + bad + ' 处）'); process.exit(1); }
 CAPSULE_MODEL_PICKER
 
+# 2.13) 子代理调度器的**原生入口适配**（2026-10-18，内核升级到 rc.2 后暴露）
+#
+# 症状（装 rc.2 后启动日志仍剩一条，本次会话唯一的残余错误）：
+#   dsh: warning: 1 entry did not activate
+#   dsh-subagent-scheduler (dsh-peer/subagent-scheduler):
+#     Error: 当前SDK缺少原生子代理入口：start
+#
+# 根因：上游 peer 插件的 `subagent-scheduler/native.mjs` 头部自述
+#   「Narrow adapter for the pinned **0.2.1-alpha.1** service」—— 它按 alpha.1 的
+#   `subagents` 服务形态写的：要求 `start` / `startContinuable` 两个方法。
+#   而 alpha.5 与 rc.2 的门面**只有** `startLocal(spec)` / `startExternal(spec)`
+#   （实测两版 dsh-subagent **逐字节相同** ⇒ 内核升级修不了它，见 §20.8）。
+#
+# 为什么只改方法名就够（已实测核对 rc.2 的实现）：
+#   · `startLocal(spec)`  → 内部 `const request = spec.request`
+#   · `startExternal(spec)` → 内部 `spec.request.parent`
+#   两者都把请求放在 **`spec.request`**，恰好与 native.mjs 里
+#   `const request = method==='start' ? args[1] : args[0]?.request` 的**另一分支**一致
+#   ⇒ 方法名换成新形态后，取值自动走 `args[0]?.request`，**无需另改**。
+#   `request.parent.session` / `request.agentOptions` 字段在 rc.2 亦未变。
+#
+# ⚠️ 用**就地精确替换**而非往 overrides/ 丢整份文件：该文件属上游 peer、仍在演进，
+#    整份覆盖会静默遮蔽上游后续修复（与 §2.8/§5.94 同一纪律；第二十六轮刚因
+#    `overrides/peer/package.json` 整份覆盖踩过同类坑）。
+# ⚠️ 条件式（双兼容）：若上游**自己**已改成新形态，则**跳过**而不报错；
+#    若锚点 0 次且**既不是**新形态，则响亮报错（结构变了、要人来看）。
+node - <<'CAPSULE_SUBAGENT_NATIVE'
+const fs = require('fs');
+let bad = 0, patched = 0;
+const F = 'peer/subagent-scheduler/native.mjs';
+const OLD = "for(const method of ['start','startContinuable','sendMessage']){";
+const NEW = "for(const method of ['startLocal','startExternal','sendMessage']){";
+
+if (!fs.existsSync(F)) {
+  console.error('::error::§2.13 找不到 ' + F + '（上游 peer 结构变了？）');
+  bad++;
+} else {
+  const s = fs.readFileSync(F, 'utf8');
+  if (s.includes(NEW)) {
+    console.log('  · 子代理原生入口已是 rc.2 形态（幂等跳过 / 或上游自己已跟进）');
+  } else if (s.split(OLD).length - 1 === 1) {
+    fs.writeFileSync(F, s.replace(OLD, NEW));
+    patched++;
+    console.log('  ✓ 子代理调度器：原生入口 start/startContinuable → startLocal/startExternal');
+  } else {
+    const n = s.split(OLD).length - 1;
+    console.error('::error::§2.13 锚点命中 ' + n + ' 次（应为 1），且非新形态。');
+    console.error('::error::上游改了 native.mjs 的方法名清单 —— 请对照新版重写本段。');
+    bad++;
+  }
+  // 正向断言：产物必须是**新形态**（防「改了但没落地」）
+  if (!fs.readFileSync(F, 'utf8').includes(NEW)) {
+    console.error('::error::§2.13 未落地（产物里没有 rc.2 形态的方法名清单）');
+    bad++;
+  }
+}
+if (bad > 0) { console.error('::error::§2.13 子代理原生入口适配未完成（' + bad + ' 处）'); process.exit(1); }
+console.log('  ✓ 子代理原生入口适配（' + patched + ' 处替换）');
+CAPSULE_SUBAGENT_NATIVE
+
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
 #    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
 
