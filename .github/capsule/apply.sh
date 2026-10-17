@@ -493,6 +493,20 @@ if (fs.existsSync(src)) {
     console.error('::error::OFM 目录混入了渠道包源码 src/（4.5 MB，运行时不需要，见 §2.9 说明）');
     bad++;
   }
+  // ⚠️ 2026-10-18 收敛（§19.7 记过的「小偏差」）：渠道包自带的 `scripts/`（构建期脚本，
+  //    如 copy-assets.mjs）与 `tsconfig.json`（TS 编译配置）同样是**维护期素材** ——
+  //    运行时只用 `pack.js`，两者一次也不会被加载。既然本段的判据是「只带运行时必需」，
+  //    就把它们一并收敛掉。⚠️ 这里是**就地清除 + 断言**，不是「只断言」——
+  //    因为仓库里现在**确实还有**这两项，而 `push-capsule.mjs` 是「绝不删除远端文件」
+  //    的设计（新树以远端树为 base_tree），删不掉它们 ⇒ 只断言会让 CI 必红。
+  for (const rel of ['vendor/channel-pack/scripts', 'vendor/channel-pack/tsconfig.json']) {
+    const p = src + '/' + rel;
+    if (fs.existsSync(p)) {
+      fs.rmSync(p, { recursive: true, force: true });
+      console.log('  · 清除非运行时文件：' + rel + '（渠道包构建期素材，运行时不需要）');
+    }
+    if (fs.existsSync(p)) { console.error('::error::OFM 非运行时文件清除失败：' + rel); bad++; }
+  }
 }
 
 if (bad > 0) { console.error('::error::OFM 出厂内置未完成（' + bad + ' 处）'); process.exit(1); }

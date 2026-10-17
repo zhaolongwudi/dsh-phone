@@ -177,7 +177,10 @@
       let menu = document.querySelector('.dsh-phone-menu');
       if (!menu) {
         menu = document.createElement('button'); menu.className = 'dsh-phone-menu'; menu.type = 'button';
-        menu.textContent = '☰ 菜单'; menu.setAttribute('aria-label', '展开菜单'); menu.setAttribute('aria-expanded', 'false');
+        // 2026-10-18 用户报障「与邻居尺寸·字体·圆角不搭」：可见文字只留符号（原 '☰ 菜单'），
+        // 按钮退成方形图标（规格见 dsh-phone.css 的 .dsh-phone-menu）。可访问名不靠可见
+        // 文字 —— 仍由 aria-label 提供，故去掉文字不影响读屏与既有测试判据。
+        menu.textContent = '☰'; menu.setAttribute('aria-label', '展开菜单'); menu.setAttribute('aria-expanded', 'false');
         rail.id ||= 'dsh-phone-sidebar'; menu.setAttribute('aria-controls', rail.id);
         const mask = document.createElement('button'); mask.className = 'dsh-phone-sidebar-mask'; mask.type = 'button';
         // 若槽位组件已接管，本地遮罩直接保持隐藏（不参与交互）。

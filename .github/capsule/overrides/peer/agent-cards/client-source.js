@@ -104,8 +104,9 @@ function DrawerToggle() {
       'aria-expanded': 'false',
       // ⚠️ 必须带**可见子元素**：组件初版漏了 children ⇒ 按钮内容为空 ⇒ 宽度只由
       //    padding 撑成 **22px**（触控层实测），既看不出是开关，可点区又低于可访问性
-      //    底线（24px）。符号与旧自绘按钮一致（'☰ 菜单'），避免接管前后视觉漂移。
-      children: '☰ 菜单',
+      //    底线（24px）。2026-10-18：符号与旧自绘按钮**同步**改为只留 '☰'（原 '☰ 菜单'），
+      //    与 dsh-phone.css 的方形规格同批 —— 两处必须一起变，否则接管前后视觉漂移。
+      children: '☰',
       // 只写共享事实；形态层（dsh-phone.js）会据它同步 rail.inert / aria-hidden /
       // aria-expanded —— 保持「状态只有一个写入者」的既有契约（见 issue：双状态源）。
       onClick: () => {
