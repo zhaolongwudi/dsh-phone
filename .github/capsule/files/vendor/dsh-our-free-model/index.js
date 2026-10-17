@@ -27,10 +27,10 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { externalUrl, openExternal } from './src/open-external.js'
 import { ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/adapter.js'
-import { DATA_DIR_NAME, decodeWindow, resolveDshHome } from './src/store.js'
+import { DATA_DIR_NAME, decodeWindow, resolveDshHome, publicModelVisibility, validateModelVisibility, isModelHidden } from './src/store.js'
 import { isEacEntry, isKiloEntry } from './src/catalog.js'
 import { STATE } from './src/probe.js'
 import { generateKey, rankLanAddresses, startForwardServer, startLanRelay } from './src/forward.js'
@@ -81,27 +81,6 @@ function readPackageVersion() {
 // Bind the version to this module generation. Re-registering cached old exports
 // after a failed reload must not pick up the new package.json still on disk.
 export const version = readPackageVersion()
-
-/**
- * Open a URL in the system browser, best effort. The settings page shows the
- * same URL with a copy button, so a headless host or a refused spawn costs a
- * paste, never the flow. The URL is always one this plugin built from the
- * sealed gateway endpoint — never user input.
- */
-function openExternal(url) {
-  if (!/^https?:\/\//i.test(url)) return false
-  try {
-    const [command, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
-      : process.platform === 'darwin' ? ['open', [url]]
-        : ['xdg-open', [url]]
-    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
-    child.on('error', () => {})
-    child.unref()
-    return true
-  } catch {
-    return false
-  }
-}
 
 /**
  * `llm` is what the plugin exists for, so it is the only hard requirement of the
@@ -333,7 +312,7 @@ export function apply(ctx, config) {
       const url = `${eacAuthRootOf(credential)}/auth/github/start?link=${link}`
       const prepared = await eacLoginPoller.prepare(link)
       if (prepared.error !== undefined) return prepared
-      return { url, link, opened: openExternal(url) }
+      return { url, link, opened: await openExternal(url) }
     },
     /** Collect the token the browser flow just produced. */
     poll: link => eacLoginPoller.poll(link),
@@ -529,7 +508,7 @@ export function apply(ctx, config) {
     // resetting whatever request was in flight on the old socket.
     if (forward !== null && wanted
       && forward.host === (desired.host || '127.0.0.1')
-      && forward.port === (Number.isFinite(Number(desired.port)) ? Number(desired.port) : 0)) return
+      && forward.requestedPort === (Number.isFinite(Number(desired.port)) ? Math.trunc(Number(desired.port)) : 0)) return
     if (forward === null && !wanted) return
     if (forward !== null) {
       const closing = forward
@@ -565,21 +544,11 @@ export function apply(ctx, config) {
         onTrace: event => logger.info?.(`our-free-model request: ${JSON.stringify(event)}`),
       })
       forwardError = ''
-      // The requested port is somebody else's for good — a `netsh interface
-      // portproxy` rule outlives this plugin, and on Windows it surfaces as
-      // EACCES on a loopback bind. `startForwardServer` walks to a free port
-      // rather than leaving the feature down; the port it settled on is what
-      // gets persisted below, and this notice is what says so.
+      // Keep the requested configuration; the bound port belongs to runtime state.
       forwardNotice = forward.fellBack === true && forward.bindError !== null
         ? `port ${forward.requestedPort} is not available on this machine (${forward.bindError.code}); the listener is on port ${forward.port} instead`
         : ''
       if (forwardNotice !== '') logger.warn?.(`our-free-model forward: ${forwardNotice}`)
-      // Persist the port that actually answers, but out of the CURRENT
-      // settings - not the desired snapshot from before the await. An
-      // overlapped save would otherwise be rolled back to entry-time values.
-      const settledForward = settings.get().forward ?? {}
-      settings.update({ forward: { ...settledForward, port: forward.port, host: forward.host || desired.host || '127.0.0.1' } })
-      settings.flush()
     } catch (error) {
       forwardError = String(error?.message ?? error)
       logger.warn?.(`our-free-model: forward listener could not start (${forwardError})`)
@@ -1081,6 +1050,7 @@ export function apply(ctx, config) {
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => modelRuntime.catalog, state,
     refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
+    onVisibilityChanged: emitTopology,
     pool: fetchPoolSnapshot,
     eacAuth,
     picks,
@@ -1167,9 +1137,21 @@ export function apply(ctx, config) {
         // Every id a chain may reference, with the display name the picker uses —
         // the editor offers a searchable list instead of a free-text field, so a
         // typo cannot become a chain link that silently never resolves.
-        models: state().catalog.map(entry => ({ id: entry.id, name: entry.name, channel: entry.channel ?? 'free', vision: entry.vision === true })),
+        models: state().catalog.map(entry => ({
+          id: entry.id, name: entry.name, channel: entry.channel ?? 'free', vision: entry.vision === true,
+          contextWindow: entry.contextWindow, maxOutput: entry.maxOutput,
+        })),
+        usable: state().catalog.filter(isComboEntry).map(publicCombo),
         strategies: ['fallback', 'round-robin'],
       }),
+      preview: patch => {
+        if (patch === null || typeof patch !== 'object' || !Array.isArray(patch.models)
+          || patch.models.length > 1000 || patch.models.some(id => typeof id !== 'string' || id.length > 300)) {
+          throw httpError(400, 'models must be an array of model ids')
+        }
+        const entries = buildComboCatalog(normalizeCombos([{ name: 'preview', models: patch.models }]), state().catalog)
+        return { capacity: entries.length ? publicCombo(entries[0]) : null }
+      },
       save: async patch => {
         if (patch === null || typeof patch !== 'object') throw httpError(400, 'the request body must be a JSON object')
         const rows = normalizeCombos(patch.combos)
@@ -1179,7 +1161,7 @@ export function apply(ctx, config) {
         settings.update({ combos: rows })
         settings.flush()
         const catalog = syncAggregateCatalog()
-        return { combos: rows, usable: catalog.filter(isComboEntry).map(entry => ({ id: entry.id, name: entry.name, models: entry.combo })) }
+        return { combos: rows, usable: catalog.filter(isComboEntry).map(publicCombo) }
       },
     },
     // ── token savers ────────────────────────────────────────────────────────
@@ -1711,7 +1693,7 @@ function imageResolver(ctx, logger) {
 /** The fixed failure classes the pool proxy may surface to the client. */
 const POOL_REASONS = new Set(['no-lane', 'gateway-status', 'malformed', 'unreachable'])
 
-function createApiRoutes(deps) {
+export function createApiRoutes(deps) {
   return async function handler(req, res) {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const routePath = url.pathname.replace(/^\/api\/our-free-model/, '').replace(/\/+$/, '') || '/'
@@ -1769,6 +1751,9 @@ function createApiRoutes(deps) {
         const body = await readJson(req)
         return send(200, { ok: true, ...await deps.combos.save(body) })
       }
+      if (method === 'POST' && routePath === '/combos/preview') {
+        return send(200, deps.combos.preview(await readJson(req)))
+      }
       // ── token savers ───────────────────────────────────────────────────────
       if (method === 'GET' && routePath === '/token-saver') {
         return send(200, deps.tokenSaver.get())
@@ -1810,6 +1795,13 @@ function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/eac/logout') {
         return send(200, await deps.eacAuth.logout())
+      }
+      if (method === 'POST' && routePath === '/open-external') {
+        const target = externalUrl((await readJson(req))?.url)
+        if (target === null) return send(400, { error: 'bad-url' })
+        let opened = false
+        try { opened = await (deps.openExternal ?? openExternal)(target) === true } catch { /* manual link remains available */ }
+        return send(200, { ok: true, opened })
       }
       if (method === 'GET' && routePath === '/pool') {
         try { return send(200, await deps.pool()) } catch (error) {
@@ -1889,8 +1881,9 @@ function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/settings') {
         const patch = await readJson(req)
+        const visibility = validateModelVisibility(patch)
         const current = deps.settings.get()
-        const next = sanitizeSettings({ ...current, ...pick(patch, ['enabled', 'exposeRegionModels', 'probeIntervalMinutes', 'defaultMaxTokens', 'announcementAck', 'feedUrl', 'feedPollMinutes', 'notifyOs', 'updateCheckHours', 'autoReloadWatch']) }, current)
+        const next = sanitizeSettings({ ...current, ...pick(patch, ['enabled', 'exposeRegionModels', 'probeIntervalMinutes', 'defaultMaxTokens', 'announcementAck', 'feedUrl', 'feedPollMinutes', 'notifyOs', 'updateCheckHours', 'autoReloadWatch']), ...visibility }, current)
         if (patch.forward !== undefined) {
           const forward = { ...(current.forward ?? {}), ...pick(patch.forward, ['enabled', 'host', 'port']) }
           // The listener spends this machine's lane, and a routable bind address
@@ -1901,7 +1894,7 @@ function createApiRoutes(deps) {
           }
           if (forward.port !== undefined) {
             const port = Number(forward.port)
-            forward.port = Number.isFinite(port) && port >= 1 && port <= 65535 ? Math.trunc(port) : (current.forward?.port ?? 0)
+            forward.port = Number.isFinite(port) && port >= 0 && port <= 65535 ? Math.trunc(port) : (current.forward?.port ?? 0)
           }
           // The LAN relay is a second door on the same feature, so it travels in
           // the same `forward` patch — but it does *not* inherit the loopback
@@ -1939,6 +1932,11 @@ function createApiRoutes(deps) {
         }
         deps.settings.update(next)
         deps.settings.flush()
+        if (deps.settings.writeFailed) {
+          deps.settings.value = current
+          return send(500, { error: 'could not persist settings' })
+        }
+        if (Object.keys(visibility).length > 0) deps.onVisibilityChanged?.()
         await deps.syncForward()
         await deps.syncRelay()
         await deps.syncEgress()
@@ -2245,8 +2243,16 @@ function clientSnippets({ forward, key, lanKey, models }) {
   }
 }
 
+function publicCombo(entry) {
+  return {
+    id: entry.id, name: entry.name, models: entry.combo,
+    contextWindow: entry.contextWindow, maxOutput: entry.maxOutput, vision: entry.vision === true,
+  }
+}
+
 function publicSettings(settings, forwardInfo, egressInfo) {
   return {
+    ...publicModelVisibility(settings),
     enabled: settings.enabled !== false,
     exposeRegionModels: settings.exposeRegionModels !== false,
     probeIntervalMinutes: settings.probeIntervalMinutes ?? 15,
@@ -2323,6 +2329,8 @@ function buildSummary(deps) {
   return {
     catalog: state.catalog.map(entry => ({
       ...entry,
+      hiddenByUser: isModelHidden(entry, state.settings),
+      hiddenByGroup: isModelHidden(entry, { ...state.settings, hiddenModelIds: [] }),
       availability: unprobed(entry) ? STATE.available : (snapshot.results?.[entry.id]?.state ?? STATE.unknown),
       detail: unprobed(entry) ? '' : (snapshot.results?.[entry.id]?.detail ?? ''),
       probedAt: unprobed(entry) ? 0 : (snapshot.results?.[entry.id]?.at ?? 0),

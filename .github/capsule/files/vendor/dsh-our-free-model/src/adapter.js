@@ -422,6 +422,19 @@ export class FreeModelAdapter {
       }, timeoutMs) : undefined
       timer?.unref?.()
       const channel = createChannel()
+      let progressTimer
+      let progressExpired = false
+      const renewProgress = () => {
+        if (!sealed || progressExpired) return
+        clearTimeout(progressTimer)
+        progressTimer = setTimeout(() => {
+          progressExpired = true
+          channel.push(new UpstreamError('EAC returned no text, reasoning or tool progress within the waiting limit; the request was stopped and will not be retried automatically', 'NO_PROGRESS'))
+          controller.abort()
+        }, policy.progressTimeoutMs)
+        progressTimer.unref?.()
+      }
+      renewProgress()
       const request = (sealed
         ? postSealedTurn(this.deps, payload, controller.signal, value => channel.push(value))
         : kilo
@@ -498,12 +511,13 @@ export class FreeModelAdapter {
       const advanceVerdict = (code, message, status) => {
         if (plan.allowAdvance !== true || options.signal?.aborted === true || sawAnswer) return { advance: false, verdict: null }
         const verdict = classifyFailure({ status, code, message })
-        return { advance: shouldAdvance(verdict), verdict }
+        return { advance: shouldAdvance(verdict) || code === CODE.client || code === CODE.region, verdict }
       }
       try {
         const reader = readStream(channel.read(), wire, renameMap, () => Date.now(), {
           startIndex: nextIndex, checkpointLimit: policy.checkpointLimit,
           onState: value => { partialOutcome = value },
+          onProgress: renewProgress,
         })
         let outcome
         try {
@@ -512,6 +526,8 @@ export class FreeModelAdapter {
             if (row.done) { outcome = row.value; break }
             if (options.signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
             const chunk = row.value
+            if (((chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') && typeof chunk.text === 'string' && chunk.text.trim() !== '')
+              || (chunk.type === 'tool-call-delta' && ((typeof chunk.argumentsDelta === 'string' && chunk.argumentsDelta.trim() !== '') || (typeof chunk.name === 'string' && chunk.name.trim() !== '')))) renewProgress()
             if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.trim() !== '') sawAnswer = true
             // 续写禁用工具；网关不遵守时也不把工具块交给宿主执行。
             if (recovering && (chunk.blockType === 'tool-call' || chunk.type === 'tool-call-delta' || chunk.block?.type === 'tool-call')) {
@@ -608,11 +624,19 @@ export class FreeModelAdapter {
         if (error?.code === CODE.region) this.deps.onRegionBlocked?.(entry.id)
         const aborted = options.signal?.aborted === true
         let failure = toFailure(error)
+        if (sealed && failure.code === CODE.server) failure = { ...failure, code: 'EAC_UPSTREAM_FAILED' }
+        if ((delivered || partialOutcome?.sawToolCall === true) && this.providerRetryPolicy().retryableCodes.includes(failure.code)) {
+          failure = { ...failure, code: 'STREAM_CUT' }
+        }
         if (!aborted && (recovering || expired)) {
           failure = { ...failure, code: recovering || delivered || partialOutcome?.sawToolCall === true ? 'STREAM_CUT' : CODE.timeout,
             message: expired
               ? `our free model reached its ${Math.round(timeoutMs / 1000)}s time limit before its finish token${recovering ? ', during the continuation from its checkpoint' : ''}`
               : `our free model continuation failed: ${failure.message}` }
+        }
+        if (!aborted && progressExpired) failure = {
+          code: 'NO_PROGRESS',
+          message: `EAC returned no text, reasoning or tool progress for ${policy.progressTimeoutMs / 1000}s; the request was stopped and will not be retried automatically`,
         }
         if (!usageAdded) totalUsage = addUsage(totalUsage, partialOutcome?.usage, partialOutcome?.sawUsage)
         record(false, partialOutcome, { ...(recovering || expired) ? { truncated: true } : {}, ...aborted ? { aborted: true } : {} })
@@ -622,12 +646,13 @@ export class FreeModelAdapter {
         yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure } }
         return {
           ok: false,
-          ...aborted
+          ...(aborted || progressExpired)
             ? { advance: false, verdict: null }
             : advanceVerdict(failure.code, failure.message, failure.status),
         }
       } finally {
         clearTimeout(timer)
+        clearTimeout(progressTimer)
         options.signal?.removeEventListener('abort', onAbort)
         controller.abort()
         await request

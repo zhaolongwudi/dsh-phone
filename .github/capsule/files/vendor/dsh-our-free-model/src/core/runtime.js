@@ -4,7 +4,7 @@ import { FreeModelAdapter, ROUTE_MAIN, ROUTE_REGION } from '../adapter.js'
 import { buildCatalog, buildEacCatalog, buildKiloCatalog, isEacEntry, isKiloEntry, parseListing, reviveKiloCatalog } from '../catalog.js'
 import { buildAggregateCatalog, isAggregateEntry } from '../aggregate.js'
 import { buildComboCatalog, isComboEntry, normalizeCombos, pruneRotation } from '../combos.js'
-import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, migrateStats, pruneDays, recordTurn, recordUsage } from '../store.js'
+import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, migrateStats, pruneDays, recordTurn, recordUsage, isModelHidden } from '../store.js'
 import { STATE, detectEgress, probeCatalog } from '../probe.js'
 import { CODE, getJson } from '../http.js'
 import { fetchSealedListing } from '../eac.js'
@@ -27,7 +27,16 @@ export function createRuntimeStores({ dataDir, logger = console }) {
   const open = (file, initial) => new JsonStore(path.join(dataDir, file), structuredClone(initial), {
     log: message => logger.warn?.(message),
   })
-  const settings = open('settings.json', SETTINGS_INITIAL)
+  // Seed the recommended combo only for a genuinely fresh install. Existing
+  // settings files that predate combos must not gain a new advertised model
+  // merely because a new default was added to SETTINGS_INITIAL; user edits to
+  // an existing `combos` field still win through JsonStore's normal merge.
+  const settingsInitial = structuredClone(SETTINGS_INITIAL)
+  const settingsPath = path.join(dataDir, 'settings.json')
+  if (fs.existsSync(settingsPath)) settingsInitial.combos = []
+  const settings = new JsonStore(settingsPath, settingsInitial, {
+    log: message => logger.warn?.(message),
+  })
   const stats = open('stats.json', STATS_INITIAL)
   const availability = open('availability.json', { version: 1, at: 0, egress: null, results: {} })
   const catalogStore = open('catalog.json', { version: 1, at: 0, entries: FALLBACK_CATALOG.map(entry => entry.id) })
@@ -321,7 +330,16 @@ export function createModelRuntime({
 
   return {
     state, adapter, refreshCatalog, refreshSealedLane, refreshAvailability, watchEgress, fetchListing,
-    complete: createForwardCompletion({ adapter, state, signal: lifetime.signal }),
+    complete: createForwardCompletion({
+      adapter, signal: lifetime.signal,
+      state: () => {
+        const snapshot = state()
+        // Hiding advertisements must not invalidate requests using a saved id.
+        return { ...snapshot, membership: computeMembership(snapshot.catalog, availability.get(), {
+          ...snapshot.settings, hiddenModelIds: [], hideFreeModels: false, hideEacModels: false,
+        }) }
+      },
+    }),
     publicModelRows: () => publicModelRows(state()),
     // A settings write that changes the aggregate lane or the chains (a key
     // saved, a provider switched off, a combo edited) rebuilds the merged view
@@ -361,6 +379,7 @@ export function computeMembership(catalog, availabilitySnapshot, settings) {
   const main = []
   const region = []
   for (const entry of usable) {
+    if (isModelHidden(entry, settings)) continue
     const verdict = verdictOf(entry)
     if (verdict !== STATE.regionBlocked) main.push(entry.id)
     else if (expose) region.push(entry.id)

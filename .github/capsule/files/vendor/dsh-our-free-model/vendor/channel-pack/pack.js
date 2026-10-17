@@ -229,14 +229,14 @@ async function prepareKey(entry, key, usage) {
   const { alg, secret } = entry, privateKey = usage === "decrypt" || usage === "sign";
   if (secret && key instanceof Uint8Array)
     return key;
-  let normalized, keyObject;
+  let normalized2, keyObject;
   if (isObject(key)) {
-    if (normalized = normalizeJwk(key), typeof normalized.kty != "string")
+    if (normalized2 = normalizeJwk(key), typeof normalized2.kty != "string")
       throw invalidKeyType(alg, key, secret);
-    if (!(secret ? normalized.kty === "oct" && typeof normalized.k == "string" : normalized.kty !== "oct" && (privateKey ? normalized.kty === "AKP" && typeof normalized.priv == "string" || typeof normalized.d == "string" : normalized.d === void 0 && normalized.priv === void 0)))
+    if (!(secret ? normalized2.kty === "oct" && typeof normalized2.k == "string" : normalized2.kty !== "oct" && (privateKey ? normalized2.kty === "AKP" && typeof normalized2.priv == "string" || typeof normalized2.d == "string" : normalized2.d === void 0 && normalized2.priv === void 0)))
       throw new TypeError(secret ? 'JSON Web Key for symmetric algorithms must have JWK "kty" (Key Type) equal to "oct" and the JWK "k" (Key Value) present' : `JSON Web Key for this operation must be a ${privateKey ? "private" : "public"} JWK`);
-    if (jwkMatchesOp(entry, normalized, usage), normalized.kty === "oct")
-      return decode(normalized.k);
+    if (jwkMatchesOp(entry, normalized2, usage), normalized2.kty === "oct")
+      return decode(normalized2.k);
     if (!Object.isFrozen(key)) {
       const { key_ops } = key;
       Array.isArray(key_ops) && Object.freeze(key_ops), Object.freeze(key);
@@ -261,7 +261,7 @@ async function prepareKey(entry, key, usage) {
     const isPublic = keyObject.type === "public", crv = nist[keyObject.asymmetricKeyDetails?.namedCurve], params = entry.resolve?.({ crv, asymmetricKeyType: keyObject.asymmetricKeyType }) ?? entry.subtle;
     return cached2[alg] = keyObject.toCryptoKey(params, isPublic, entry.usages[isPublic ? 0 : 1]);
   }
-  return normalized ??= keyObject.export({ format: "jwk" }), normalized.alg = alg, cached2[alg] = await jwkToKey(entry, normalized);
+  return normalized2 ??= keyObject.export({ format: "jwk" }), normalized2.alg = alg, cached2[alg] = await jwkToKey(entry, normalized2);
 }
 function message(msg, actual, ...types) {
   if (types.length > 2) {
@@ -299,16 +299,16 @@ function snapshotJwk(jwk) {
   return { __proto__: null, ...jwk };
 }
 function normalizeJwk(jwk) {
-  const normalized = snapshotJwk(jwk);
-  if (normalized.ext !== void 0 && typeof normalized.ext != "boolean")
+  const normalized2 = snapshotJwk(jwk);
+  if (normalized2.ext !== void 0 && typeof normalized2.ext != "boolean")
     throw new TypeError('"ext" (Extractable) Parameter must be a boolean');
-  if (normalized.key_ops !== void 0) {
-    const value = normalized.key_ops, keyOps = Array.isArray(value) ? [...value] : void 0;
+  if (normalized2.key_ops !== void 0) {
+    const value = normalized2.key_ops, keyOps = Array.isArray(value) ? [...value] : void 0;
     if (!keyOps || keyOps.some((operation) => typeof operation != "string") || new Set(keyOps).size !== keyOps.length)
       throw new TypeError('"key_ops" (Key Operations) Parameter must be an array of unique strings');
-    normalized.key_ops = keyOps;
+    normalized2.key_ops = keyOps;
   }
-  return normalized;
+  return normalized2;
 }
 function validateExtractableOption(extractable) {
   if (extractable !== void 0 && typeof extractable != "boolean")
@@ -655,8 +655,8 @@ var init_jwt_claims_set = __esm({
 async function createSignature(input, key, rejectUnencoded) {
   let [payload, protectedHeader, unprotectedHeader, crit] = input, protectedHeaderString = "";
   if (protectedHeader !== void 0) {
-    const normalized = serializeJoseHeader(JWSInvalid, protectedHeader);
-    protectedHeader = normalized[0], protectedHeaderString = encode2(normalized[1]);
+    const normalized2 = serializeJoseHeader(JWSInvalid, protectedHeader);
+    protectedHeader = normalized2[0], protectedHeaderString = encode2(normalized2[1]);
   }
   if (unprotectedHeader !== void 0 && (unprotectedHeader = serializeJoseHeader(JWSInvalid, unprotectedHeader)[0]), !protectedHeader && !unprotectedHeader)
     throw new JWSInvalid("either setProtectedHeader or setUnprotectedHeader must be called before #sign()");
@@ -772,25 +772,25 @@ var init_export = __esm({
 async function importJWK(jwk, alg, options) {
   if (!isObject(jwk))
     throw new TypeError("JWK must be an object");
-  const normalized = normalizeJwk(jwk), extractable = validateExtractableOption(options?.extractable), { alg: jwkAlg } = normalized;
-  if (alg ??= jwkAlg, normalized.kty !== "oct" && !alg)
+  const normalized2 = normalizeJwk(jwk), extractable = validateExtractableOption(options?.extractable), { alg: jwkAlg } = normalized2;
+  if (alg ??= jwkAlg, normalized2.kty !== "oct" && !alg)
     throw new TypeError('"alg" argument is required when "jwk.alg" is not present');
-  switch (normalized.kty) {
+  switch (normalized2.kty) {
     case "oct":
-      if (typeof normalized.k != "string")
+      if (typeof normalized2.k != "string")
         throw new TypeError('missing "k" (Key Value) Parameter value');
-      return decode(normalized.k);
+      return decode(normalized2.k);
     case "AKP": {
       if (typeof jwkAlg != "string" || !jwkAlg)
         throw new TypeError('missing "alg" (Algorithm) Parameter value');
       if (alg !== jwkAlg)
         throw new TypeError("JWK alg and alg option value mismatch");
-      return jwkToKey(keyAlgorithm(alg), normalized, extractable);
+      return jwkToKey(keyAlgorithm(alg), normalized2, extractable);
     }
     case "RSA":
     case "EC":
     case "OKP":
-      return jwkToKey(keyAlgorithm(alg), normalized, extractable);
+      return jwkToKey(keyAlgorithm(alg), normalized2, extractable);
     default:
       throw new JOSENotSupported('Unsupported "kty" (Key Type) Parameter value');
   }
@@ -998,7 +998,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync as existsSync5, mkdirSync as mkdirSync5, readdirSync, rmSync, statSync } from "node:fs";
 import { getRandomValues, randomUUID as randomUUID3, randomBytes as randomBytes6 } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 function generateRandomSecret() {
   const bytes = getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -1149,11 +1149,11 @@ function defaultBrowserExecutable() {
 }
 function prepareIncognitoProfileDir(nowMs = Date.now()) {
   const prefix = INCOGNITO_PROFILE_PREFIX;
-  const dir = join4(tmpdir(), `${prefix}${randomBytes6(8).toString("hex")}`);
+  const dir = join5(tmpdir(), `${prefix}${randomBytes6(8).toString("hex")}`);
   try {
     for (const entry of readdirSync(tmpdir())) {
       if (!entry.startsWith(prefix)) continue;
-      const stale = join4(tmpdir(), entry);
+      const stale = join5(tmpdir(), entry);
       if (stale === dir) continue;
       try {
         const age = nowMs - statSync(stale).mtimeMs;
@@ -1595,9 +1595,9 @@ var require_timers = __commonJS({
        * before the specified function or code is executed.
        * @param {*} arg
        */
-      constructor(callback, delay2, arg) {
+      constructor(callback, delay3, arg) {
         this._onTimeout = callback;
-        this._idleTimeout = delay2;
+        this._idleTimeout = delay3;
         this._timerArg = arg;
         this.refresh();
       }
@@ -1642,8 +1642,8 @@ var require_timers = __commonJS({
        * when the timer expires.
        * @returns {NodeJS.Timeout|FastTimer}
        */
-      setTimeout(callback, delay2, arg) {
-        return delay2 <= RESOLUTION_MS ? setTimeout(callback, delay2, arg) : new FastTimer(callback, delay2, arg);
+      setTimeout(callback, delay3, arg) {
+        return delay3 <= RESOLUTION_MS ? setTimeout(callback, delay3, arg) : new FastTimer(callback, delay3, arg);
       },
       /**
        * The clearTimeout method cancels an instantiated Timer previously created
@@ -1669,8 +1669,8 @@ var require_timers = __commonJS({
        * when the timer expires.
        * @returns {FastTimer}
        */
-      setFastTimeout(callback, delay2, arg) {
-        return new FastTimer(callback, delay2, arg);
+      setFastTimeout(callback, delay3, arg) {
+        return new FastTimer(callback, delay3, arg);
       },
       /**
        * The clearTimeout method cancels an instantiated FastTimer previously
@@ -1696,8 +1696,8 @@ var require_timers = __commonJS({
        * @deprecated
        * @param {number} [delay=0] The delay in milliseconds to add to the now value.
        */
-      tick(delay2 = 0) {
-        fastNow += delay2 - RESOLUTION_MS + 1;
+      tick(delay3 = 0) {
+        fastNow += delay3 - RESOLUTION_MS + 1;
         onTick();
         onTick();
       },
@@ -2519,14 +2519,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path3 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path4 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path3 && path3[0] !== "/") {
-          path3 = `/${path3}`;
+        if (path4 && path4[0] !== "/") {
+          path4 = `/${path4}`;
         }
-        return new URL(`${origin}${path3}`);
+        return new URL(`${origin}${path4}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -3365,9 +3365,9 @@ var require_diagnostics = __commonJS({
         "undici:client:sendHeaders",
         (evt) => {
           const {
-            request: { method, path: path3, origin }
+            request: { method, path: path4, origin }
           } = evt;
-          debugLog("sending request to %s %s%s", method, origin, path3);
+          debugLog("sending request to %s %s%s", method, origin, path4);
         }
       );
     }
@@ -3385,14 +3385,14 @@ var require_diagnostics = __commonJS({
         "undici:request:headers",
         (evt) => {
           const {
-            request: { method, path: path3, origin },
+            request: { method, path: path4, origin },
             response: { statusCode }
           } = evt;
           debugLog(
             "received response to %s %s%s - HTTP %d",
             method,
             origin,
-            path3,
+            path4,
             statusCode
           );
         }
@@ -3401,23 +3401,23 @@ var require_diagnostics = __commonJS({
         "undici:request:trailers",
         (evt) => {
           const {
-            request: { method, path: path3, origin }
+            request: { method, path: path4, origin }
           } = evt;
-          debugLog("trailers received from %s %s%s", method, origin, path3);
+          debugLog("trailers received from %s %s%s", method, origin, path4);
         }
       );
       diagnosticsChannel.subscribe(
         "undici:request:error",
         (evt) => {
           const {
-            request: { method, path: path3, origin },
+            request: { method, path: path4, origin },
             error
           } = evt;
           debugLog(
             "request to %s %s%s errored - %s",
             method,
             origin,
-            path3,
+            path4,
             error.message
           );
         }
@@ -3572,7 +3572,7 @@ var require_request = __commonJS({
     };
     var Request2 = class {
       constructor(origin, {
-        path: path3,
+        path: path4,
         method,
         body,
         headers,
@@ -3589,11 +3589,11 @@ var require_request = __commonJS({
         maxRedirections,
         typeOfService
       }, handler) {
-        if (typeof path3 !== "string") {
+        if (typeof path4 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path3[0] !== "/" && !(path3.startsWith("http://") || path3.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path4[0] !== "/" && !(path4.startsWith("http://") || path4.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path3)) {
+        } else if (invalidPathRegex.test(path4)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -3668,7 +3668,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? serializePathWithQuery(path3, query) : path3;
+        this.path = query ? serializePathWithQuery(path4, query) : path4;
         this.origin = origin;
         this.protocol = getProtocolFromUrlString(origin);
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" || method === "QUERY" : idempotent;
@@ -8112,21 +8112,21 @@ var require_client_h1 = __commonJS({
         this.connectionKeepAlive = false;
         this.maxResponseSize = client[kMaxResponseSize];
       }
-      setTimeout(delay2, type) {
-        if (delay2 !== this.timeoutValue || type & USE_FAST_TIMER ^ this.timeoutType & USE_FAST_TIMER) {
+      setTimeout(delay3, type) {
+        if (delay3 !== this.timeoutValue || type & USE_FAST_TIMER ^ this.timeoutType & USE_FAST_TIMER) {
           if (this.timeout) {
             timers.clearTimeout(this.timeout);
             this.timeout = null;
           }
-          if (delay2) {
+          if (delay3) {
             if (type & USE_FAST_TIMER) {
-              this.timeout = timers.setFastTimeout(onParserTimeout, delay2, this.timeoutWeakRef);
+              this.timeout = timers.setFastTimeout(onParserTimeout, delay3, this.timeoutWeakRef);
             } else {
-              this.timeout = setTimeout(onParserTimeout, delay2, this.timeoutWeakRef);
+              this.timeout = setTimeout(onParserTimeout, delay3, this.timeoutWeakRef);
               this.timeout?.unref();
             }
           }
-          this.timeoutValue = delay2;
+          this.timeoutValue = delay3;
         } else if (this.timeout) {
           if (this.timeout.refresh) {
             this.timeout.refresh();
@@ -8789,7 +8789,7 @@ var require_client_h1 = __commonJS({
       }
     }
     function writeH1(client, request3) {
-      const { method, path: path3, host, upgrade, blocking, reset } = request3;
+      const { method, path: path4, host, upgrade, blocking, reset } = request3;
       let { body, headers, contentLength } = request3;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -8865,7 +8865,7 @@ var require_client_h1 = __commonJS({
         socket[kBlocking] = true;
       }
       setTypeOfService(socket, request3);
-      let header = `${method} ${path3} HTTP/1.1\r
+      let header = `${method} ${path4} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -9960,7 +9960,7 @@ var require_client_h2 = __commonJS({
       const headersTimeout = request3.headersTimeout ?? client[kHeadersTimeout];
       const bodyTimeout = request3.bodyTimeout ?? client[kBodyTimeout];
       const session = client[kHTTP2Session];
-      const { method, path: path3, host, upgrade, expectContinue, signal, protocol, headers: reqHeaders } = request3;
+      const { method, path: path4, host, upgrade, expectContinue, signal, protocol, headers: reqHeaders } = request3;
       if (upgrade != null && upgrade !== "websocket") {
         util.errorRequest(client, request3, new InvalidArgumentError(`Custom upgrade "${upgrade}" not supported over HTTP/2`));
         return false;
@@ -10026,7 +10026,7 @@ var require_client_h2 = __commonJS({
           }
           headers[HTTP2_HEADER_METHOD] = "CONNECT";
           headers[HTTP2_HEADER_PROTOCOL] = "websocket";
-          headers[HTTP2_HEADER_PATH] = path3;
+          headers[HTTP2_HEADER_PATH] = path4;
           if (protocol === "ws:" || protocol === "wss:") {
             headers[HTTP2_HEADER_SCHEME] = protocol === "ws:" ? "http" : "https";
           } else {
@@ -10048,7 +10048,7 @@ var require_client_h2 = __commonJS({
         setupUpgradeStream(stream, state);
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path3;
+      headers[HTTP2_HEADER_PATH] = path4;
       headers[HTTP2_HEADER_SCHEME] = protocol === "http:" ? "http" : "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       let body = state.body;
@@ -10509,7 +10509,7 @@ var require_client = __commonJS({
     "use strict";
     var assert = __require("node:assert");
     var net2 = __require("node:net");
-    var http = __require("node:http");
+    var http2 = __require("node:http");
     var util = require_util();
     var { ClientStats } = require_stats();
     var { channels } = require_diagnostics();
@@ -10566,7 +10566,7 @@ var require_client = __commonJS({
     var connectH1 = require_client_h1();
     var connectH2 = require_client_h2();
     var kClosedResolve = /* @__PURE__ */ Symbol("kClosedResolve");
-    var getDefaultNodeMaxHeaderSize = http && http.maxHeaderSize && Number.isInteger(http.maxHeaderSize) && http.maxHeaderSize > 0 ? () => http.maxHeaderSize : () => {
+    var getDefaultNodeMaxHeaderSize = http2 && http2.maxHeaderSize && Number.isInteger(http2.maxHeaderSize) && http2.maxHeaderSize > 0 ? () => http2.maxHeaderSize : () => {
       throw new InvalidArgumentError("http module not available or http.maxHeaderSize invalid");
     };
     var noop = () => {
@@ -12931,10 +12931,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path3 = "/",
+          path: path4 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path3;
+        opts.path = origin + path4;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL(origin);
           headers.host = host;
@@ -15350,20 +15350,20 @@ var require_mock_utils = __commonJS({
       }
       return normalizedQp;
     }
-    function safeUrl(path3) {
-      if (typeof path3 !== "string") {
-        return path3;
+    function safeUrl(path4) {
+      if (typeof path4 !== "string") {
+        return path4;
       }
-      const pathSegments = path3.split("?", 3);
+      const pathSegments = path4.split("?", 3);
       if (pathSegments.length !== 2) {
-        return path3;
+        return path4;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path3, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path3);
+    function matchKey(mockDispatch2, { path: path4, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path4);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -15390,8 +15390,8 @@ var require_mock_utils = __commonJS({
       const basePath = key.query ? serializePathWithQuery(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
       const resolvedPathWithoutTrailingSlash = removeTrailingSlash(resolvedPath);
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path3, ignoreTrailingSlash }) => {
-        return ignoreTrailingSlash ? matchValue(removeTrailingSlash(safeUrl(path3)), resolvedPathWithoutTrailingSlash) : matchValue(safeUrl(path3), resolvedPath);
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path4, ignoreTrailingSlash }) => {
+        return ignoreTrailingSlash ? matchValue(removeTrailingSlash(safeUrl(path4)), resolvedPathWithoutTrailingSlash) : matchValue(safeUrl(path4), resolvedPath);
       });
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
@@ -15430,22 +15430,22 @@ var require_mock_utils = __commonJS({
         mockDispatches.splice(index, 1);
       }
     }
-    function removeTrailingSlash(path3) {
-      if (typeof path3 !== "string") {
-        return path3;
+    function removeTrailingSlash(path4) {
+      if (typeof path4 !== "string") {
+        return path4;
       }
-      while (path3.endsWith("/")) {
-        path3 = path3.slice(0, -1);
+      while (path4.endsWith("/")) {
+        path4 = path4.slice(0, -1);
       }
-      if (path3.length === 0) {
-        path3 = "/";
+      if (path4.length === 0) {
+        path4 = "/";
       }
-      return path3;
+      return path4;
     }
     function buildKey(opts) {
-      const { path: path3, method, body, headers, query } = opts;
+      const { path: path4, method, body, headers, query } = opts;
       return {
-        path: path3,
+        path: path4,
         method,
         body,
         headers,
@@ -15514,7 +15514,7 @@ var require_mock_utils = __commonJS({
       return dispatchMockReply(mockDispatches, mockDispatch2, key, opts, handler);
     }
     function dispatchMockReply(mockDispatches, mockDispatch2, key, opts, handler, resolvedResponse) {
-      const { data: responseData2, delay: delay2 } = mockDispatch2;
+      const { data: responseData2, delay: delay3 } = mockDispatch2;
       const response = resolvedResponse ?? responseData2;
       if (response.error !== null) {
         deleteMockDispatch(mockDispatches, key);
@@ -15603,11 +15603,11 @@ var require_mock_utils = __commonJS({
           handleReply(dispatches, { ...responseDefaults, ...callbackResult });
           return;
         }
-        if (typeof delay2 === "number" && delay2 > 0) {
+        if (typeof delay3 === "number" && delay3 > 0) {
           timer = setTimeout(() => {
             timer = null;
             handleReply(dispatches);
-          }, delay2);
+          }, delay3);
         } else {
           handleReply(dispatches);
         }
@@ -16314,10 +16314,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path3, data: { statusCode }, persist: persist2, times, timesInvoked, origin }) => ({
+          ({ method, path: path4, data: { statusCode }, persist: persist2, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path3,
+            Path: path4,
             "Status code": statusCode,
             Persistent: persist2 ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -16407,9 +16407,9 @@ var require_mock_agent = __commonJS({
           }
         }
         if (acceptNonStandardSearchParameters && dispatchOpts.path) {
-          const [path3, searchParams] = dispatchOpts.path.split("?");
+          const [path4, searchParams] = dispatchOpts.path.split("?");
           const normalizedSearchParams = normalizeSearchParams(searchParams, acceptNonStandardSearchParameters);
-          dispatchOpts.path = `${path3}?${normalizedSearchParams}`;
+          dispatchOpts.path = `${path4}?${normalizedSearchParams}`;
         }
         return this[kAgent].dispatch(dispatchOpts, handler);
       }
@@ -16537,8 +16537,8 @@ var require_snapshot_utils = __commonJS({
         match: new Set(matchHeaders.map((header) => caseSensitive ? header : header.toLowerCase()))
       };
     }
-    var crypto2 = runtimeFeatures.has("crypto") ? __require("node:crypto") : null;
-    var hashId = crypto2?.hash ? (value) => crypto2.hash("sha256", value, "base64url") : (value) => Buffer.from(value).toString("base64url");
+    var crypto4 = runtimeFeatures.has("crypto") ? __require("node:crypto") : null;
+    var hashId = crypto4?.hash ? (value) => crypto4.hash("sha256", value, "base64url") : (value) => Buffer.from(value).toString("base64url");
     function isUndiciHeaders(headers) {
       return Array.isArray(headers) && (headers.length & 1) === 0;
     }
@@ -16621,8 +16621,8 @@ var require_snapshot_recorder = __commonJS({
     function normalizeUrlForMatching(url, matchQuery, normalizeQuery) {
       if (matchQuery === false) return `${url.origin}${url.pathname}`;
       if (normalizeQuery) {
-        const normalized = String(normalizeQuery(url.searchParams) ?? "");
-        return normalized ? `${url.origin}${url.pathname}?${normalized}` : `${url.origin}${url.pathname}`;
+        const normalized2 = String(normalizeQuery(url.searchParams) ?? "");
+        return normalized2 ? `${url.origin}${url.pathname}?${normalized2}` : `${url.origin}${url.pathname}`;
       }
       return url.toString();
     }
@@ -16633,14 +16633,14 @@ var require_snapshot_recorder = __commonJS({
     }
     function formatRequestKey(opts, headerFilters, matchOptions = {}) {
       const url = new URL(opts.path, opts.origin);
-      const normalized = opts._normalizedHeaders || normalizeHeaders(opts.headers);
+      const normalized2 = opts._normalizedHeaders || normalizeHeaders(opts.headers);
       if (!opts._normalizedHeaders) {
-        opts._normalizedHeaders = normalized;
+        opts._normalizedHeaders = normalized2;
       }
       return {
         method: opts.method || "GET",
         url: normalizeUrlForMatching(url, matchOptions.matchQuery, matchOptions.normalizeQuery),
-        headers: filterHeadersForMatching(normalized, headerFilters, matchOptions),
+        headers: filterHeadersForMatching(normalized2, headerFilters, matchOptions),
         body: normalizeBodyForMatching(opts.body, matchOptions.matchBody, matchOptions.normalizeBody)
       };
     }
@@ -16825,12 +16825,12 @@ var require_snapshot_recorder = __commonJS({
        * @return {Promise<void>} - Resolves when snapshots are loaded
        */
       async loadSnapshots(filePath) {
-        const path3 = filePath || this.#snapshotPath;
-        if (!path3) {
+        const path4 = filePath || this.#snapshotPath;
+        if (!path4) {
           throw new InvalidArgumentError("Snapshot path is required");
         }
         try {
-          const data = await readFile2(resolve2(path3), "utf8");
+          const data = await readFile2(resolve2(path4), "utf8");
           const parsed = JSON.parse(data);
           if (Array.isArray(parsed)) {
             this.#snapshots.clear();
@@ -16844,7 +16844,7 @@ var require_snapshot_recorder = __commonJS({
           if (error.code === "ENOENT") {
             this.#snapshots.clear();
           } else {
-            throw new UndiciError(`Failed to load snapshots from ${path3}`, { cause: error });
+            throw new UndiciError(`Failed to load snapshots from ${path4}`, { cause: error });
           }
         }
       }
@@ -16855,11 +16855,11 @@ var require_snapshot_recorder = __commonJS({
        * @returns {Promise<void>} - Resolves when snapshots are saved
        */
       async saveSnapshots(filePath) {
-        const path3 = filePath || this.#snapshotPath;
-        if (!path3) {
+        const path4 = filePath || this.#snapshotPath;
+        if (!path4) {
           throw new InvalidArgumentError("Snapshot path is required");
         }
-        const resolvedPath = resolve2(path3);
+        const resolvedPath = resolve2(path4);
         await mkdir2(dirname3(resolvedPath), { recursive: true });
         const data = Array.from(this.#snapshots.entries()).map(([hash, snapshot]) => ({
           hash,
@@ -17513,15 +17513,15 @@ var require_redirect_handler = __commonJS({
         }
         const baseUrl = requestOrigin ? new URL(this.opts.path, requestOrigin) : void 0;
         const { origin, pathname, search } = util.parseURL(new URL(this.location, baseUrl));
-        const path3 = search ? `${pathname}${search}` : pathname;
-        const redirectUrlString = `${origin}${path3}`;
+        const path4 = search ? `${pathname}${search}` : pathname;
+        const redirectUrlString = `${origin}${path4}`;
         for (const historyUrl of this.history) {
           if (historyUrl.toString() === redirectUrlString) {
             throw new InvalidArgumentError(`Redirect loop detected. Cannot redirect to ${origin}. This typically happens when using a Client or Pool with cross-origin redirects. Use an Agent for cross-origin redirects.`);
           }
         }
         this.opts.headers = cleanRequestHeaders(this.opts.headers, removeContentHeaders, requestOrigin !== origin, this.stripHeadersOnRedirect, this.stripHeadersOnCrossOriginRedirect);
-        this.opts.path = path3;
+        this.opts.path = path4;
         this.opts.origin = origin;
         this.opts[kRequestOrigin] = origin;
         this.opts.query = null;
@@ -17566,14 +17566,14 @@ var require_redirect_handler = __commonJS({
       if (!Array.isArray(headers)) {
         throw new InvalidArgumentError(`${optionName} must be an array`);
       }
-      const normalized = /* @__PURE__ */ new Set();
+      const normalized2 = /* @__PURE__ */ new Set();
       for (const header of headers) {
         if (typeof header !== "string") {
           throw new InvalidArgumentError(`${optionName} must contain header names`);
         }
-        normalized.add(util.headerNameToString(header));
+        normalized2.add(util.headerNameToString(header));
       }
-      return normalized;
+      return normalized2;
     }
     function cleanRequestHeaders(headers, removeContent, unknownOrigin, stripHeaders, stripHeadersOnCrossOrigin) {
       const ret = [];
@@ -17830,26 +17830,26 @@ var require_dns = __commonJS({
         if (headers.length === 0 || !Array.isArray(headers[0])) {
           return headers;
         }
-        const normalized = [];
+        const normalized2 = [];
         for (const header of headers) {
           if (Array.isArray(header) && header.length === 2) {
-            normalized.push(header[0], header[1]);
+            normalized2.push(header[0], header[1]);
           } else {
-            normalized.push(header);
+            normalized2.push(header);
           }
         }
-        return normalized;
+        return normalized2;
       }
       if (typeof headers === "object" && hasSafeIterator(headers)) {
-        const normalized = [];
+        const normalized2 = [];
         for (const header of headers) {
           if (Array.isArray(header) && header.length === 2) {
-            normalized.push(header[0], header[1]);
+            normalized2.push(header[0], header[1]);
           } else {
-            normalized.push(header);
+            normalized2.push(header);
           }
         }
-        return normalized;
+        return normalized2;
       }
       return headers;
     }
@@ -19372,10 +19372,10 @@ var require_cache_handler = __commonJS({
       }
       return locationUrl.pathname + locationUrl.search;
     }
-    function deleteCachedUri(store2, cacheKey, path3) {
+    function deleteCachedUri(store2, cacheKey, path4) {
       deleteCachedValue(store2, {
         ...cacheKey,
-        path: path3
+        path: path4
       });
       for (let i = 0; i < util.safeHTTPMethods.length; i++) {
         const method = util.safeHTTPMethods[i];
@@ -19383,7 +19383,7 @@ var require_cache_handler = __commonJS({
           deleteCachedValue(store2, {
             ...cacheKey,
             method,
-            path: path3
+            path: path4
           });
         }
       }
@@ -19394,9 +19394,9 @@ var require_cache_handler = __commonJS({
       }
       const values = Array.isArray(headerValue) ? headerValue : [headerValue];
       for (let i = 0; i < values.length; i++) {
-        const path3 = getSameOriginPath(cacheKey, values[i]);
-        if (path3 !== void 0) {
-          deleteCachedUri(store2, cacheKey, path3);
+        const path4 = getSameOriginPath(cacheKey, values[i]);
+        if (path4 !== void 0) {
+          deleteCachedUri(store2, cacheKey, path4);
         }
       }
     }
@@ -23516,10 +23516,10 @@ var require_subresource_integrity = __commonJS({
     var assert = __require("node:assert");
     var { runtimeFeatures } = require_runtime_features();
     var validSRIHashAlgorithmTokenSet = /* @__PURE__ */ new Map([["sha256", 0], ["sha384", 1], ["sha512", 2]]);
-    var crypto2;
+    var crypto4;
     if (runtimeFeatures.has("crypto")) {
-      crypto2 = __require("node:crypto");
-      const cryptoHashes = crypto2.getHashes();
+      crypto4 = __require("node:crypto");
+      const cryptoHashes = crypto4.getHashes();
       if (cryptoHashes.length === 0) {
         validSRIHashAlgorithmTokenSet.clear();
       }
@@ -23609,7 +23609,7 @@ var require_subresource_integrity = __commonJS({
       return result;
     }
     var applyAlgorithmToBytes = (algorithm, bytes) => {
-      return crypto2.hash(algorithm, bytes, "base64");
+      return crypto4.hash(algorithm, bytes, "base64");
     };
     function caseSensitiveMatch(actualValue, expectedValue) {
       let actualValueLength = actualValue.length;
@@ -24648,13 +24648,13 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request3);
         const agent = fetchParams.controller.dispatcher;
-        const path3 = url.pathname + url.search;
+        const path4 = url.pathname + url.search;
         const hasTrailingQuestionMark = url.search.length === 0 && url.href[url.href.length - url.hash.length - 1] === "?";
         return dispatchWithProtocolPreference(body);
         function dispatchWithProtocolPreference(body2, allowH2) {
           return new Promise((resolve2, reject) => agent.dispatch(
             {
-              path: hasTrailingQuestionMark ? `${path3}?` : path3,
+              path: hasTrailingQuestionMark ? `${path4}?` : path4,
               origin: url.origin,
               method: request3.method,
               body: agent.isMockActive ? request3.body && (request3.body.source || request3.body.stream) : body2,
@@ -25584,9 +25584,9 @@ var require_util4 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path3) {
-      for (let i = 0; i < path3.length; ++i) {
-        const code = path3.charCodeAt(i);
+    function validateCookiePath(path4) {
+      for (let i = 0; i < path4.length; ++i) {
+        const code = path4.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code > 126 || // exclude non-ascii and DEL
         code === 59) {
@@ -26643,7 +26643,7 @@ var require_connection = __commonJS({
     var { WebsocketFrameSend } = require_frame();
     var assert = __require("node:assert");
     var { runtimeFeatures } = require_runtime_features();
-    var crypto2 = runtimeFeatures.has("crypto") ? __require("node:crypto") : null;
+    var crypto4 = runtimeFeatures.has("crypto") ? __require("node:crypto") : null;
     var warningEmitted = false;
     function establishWebSocketConnection(url, protocols, client, handler, options) {
       const requestURL = url;
@@ -26663,7 +26663,7 @@ var require_connection = __commonJS({
         const headersList = getHeadersList(new Headers2(options.headers));
         request3.headersList = headersList;
       }
-      const keyValue = crypto2.randomBytes(16).toString("base64");
+      const keyValue = crypto4.randomBytes(16).toString("base64");
       request3.headersList.append("sec-websocket-key", keyValue, true);
       request3.headersList.append("sec-websocket-version", "13", true);
       for (const protocol of protocols) {
@@ -26704,7 +26704,7 @@ var require_connection = __commonJS({
           }
           if (response.socket.session == null) {
             const secWSAccept = response.headersList.get("Sec-WebSocket-Accept");
-            const digest = crypto2.hash("sha1", keyValue + uid, "base64");
+            const digest = crypto4.hash("sha1", keyValue + uid, "base64");
             if (secWSAccept !== digest) {
               failHandshake(handler, response, 1002, "Incorrect hash received in Sec-WebSocket-Accept header.");
               return;
@@ -29052,11 +29052,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path3 = opts.path;
+          let path4 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path3 = `/${path3}`;
+            path4 = `/${path4}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path3);
+          url = new URL(util.parseOrigin(url).origin + path4);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -29166,8 +29166,8 @@ ${captureLines}` : capture.stack;
 });
 
 // vendor/channel-pack/src/index.ts
-import { credentialRef as credentialRef19 } from "@deepseek-ai/dsh-credentials";
-import { LlmError as LlmError26 } from "@deepseek-ai/dsh-llm";
+import { credentialRef as credentialRef20 } from "@deepseek-ai/dsh-credentials";
+import { LlmError as LlmError27 } from "@deepseek-ai/dsh-llm";
 import Schema2 from "@deepseek-ai/schemastery";
 
 // vendor/channel-pack/src/llm-adapter.ts
@@ -29224,13 +29224,51 @@ var jetHubSchema = Schema.object({
   loomyPermanentLocked: Schema.boolean().default(false),
   gatewayEnabled: Schema.boolean().default(true),
   nativeWebSearchEnabled: Schema.boolean().default(true),
-  providerOrder: Schema.array(Schema.string()).default([])
+  providerOrder: Schema.array(Schema.string()).default([]),
+  // ⚠️ 用 `Schema.string()` 而不是自定义 IP 校验：schema 只负责类型，
+  // 取值合法性由 `sanitizeMinimaxXff` 在**读写两侧**统一判（老契约后端不经过
+  // schema，只靠那个函数；两处用同一份判据才不会漂移）。
+  // 缺键 = 不附 XFF（行为与修复前逐字节一致）。
+  minimaxXff: Schema.string().default("")
 });
 function sanitizeGatewayEnabled(raw) {
   return raw !== false;
 }
 function sanitizeNativeWebSearchEnabled(raw) {
   return raw !== false;
+}
+function sanitizeMinimaxXff(raw) {
+  if (typeof raw !== "string") return void 0;
+  if (/[\r\n]/.test(raw)) return void 0;
+  const value = raw.trim();
+  if (value.length === 0 || value.length > 128) return void 0;
+  const hasZone = value.includes("%");
+  const allowed = hasZone ? /^[0-9A-Za-z.:%-]+$/ : /^[0-9A-Fa-f.:]+$/;
+  if (!allowed.test(value)) return void 0;
+  const isIpv4 = (() => {
+    const parts = value.split(".");
+    if (parts.length !== 4) return false;
+    return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
+  })();
+  if (isIpv4) return value;
+  if (value.includes(":")) {
+    if (/:::/.test(value)) return void 0;
+    if (value.startsWith(":") && !value.startsWith("::")) return void 0;
+    if (value.endsWith(":") && !value.endsWith("::")) return void 0;
+    const addressPart = value.split("%")[0] ?? "";
+    if (addressPart.length === 0) return void 0;
+    const hasCompression = addressPart.includes("::");
+    if (hasCompression && addressPart.split("::").length > 2) return void 0;
+    const groups = addressPart.split(":").filter((g) => g.length > 0);
+    if (!groups.every((g) => /^[0-9A-Fa-f]{1,4}$/.test(g))) return void 0;
+    if (hasCompression) {
+      if (groups.length >= 8) return void 0;
+    } else if (groups.length !== 8) {
+      return void 0;
+    }
+    return value;
+  }
+  return void 0;
 }
 function sanitizeProviderOrder(raw) {
   if (!Array.isArray(raw)) return [];
@@ -29417,7 +29455,9 @@ var SettingsStore = class {
       // 老文档没这个键 → 启用（原生搜索本就是新功能，默认开启才符合「装上就能用」）。
       nativeWebSearchEnabled: sanitizeNativeWebSearchEnabled(value.nativeWebSearchEnabled),
       // 老文档没这个键 → 空数组（未自定义），展示侧按声明顺序渲染。
-      providerOrder: sanitizeProviderOrder(value.providerOrder)
+      providerOrder: sanitizeProviderOrder(value.providerOrder),
+      // 老文档没这个键 ⇒ `undefined` ⇒ 不附 XFF（与修复前行为逐字节一致）。
+      minimaxXff: sanitizeMinimaxXff(value.minimaxXff)
     };
   }
   async save(state) {
@@ -29457,7 +29497,12 @@ var SettingsStore = class {
       //    replace 载荷里根本没有本键，新实例读回 `true`。
       nativeWebSearchEnabled: state.nativeWebSearchEnabled !== false,
       // 顺序丢失只会回到声明顺序（可逆，重拖一次即恢复），同理接受丢失。
-      providerOrder: state.providerOrder ?? []
+      providerOrder: state.providerOrder ?? [],
+      // ⚠️ **必须带上本键**：`replace` 是整体替换语义 ⇒ 漏键会让用户设置的
+      //    XFF 在**任何**一次账号/黑名单/网关/顺序写入时被抹掉，
+      //    进而「国际站明明能用却突然又开始 307」—— 症状极难对应到本键。
+      //    缺键/空串一律写 `''`（= 不附头），不会写出 `undefined` 空洞。
+      minimaxXff: sanitizeMinimaxXff(state.minimaxXff) ?? ""
     });
   }
 };
@@ -29519,7 +29564,8 @@ var REF_PREFIX_TO_PROVIDER = [
   //（⚠️ 与 officeace **同一次合并**并入，两者各算一次复发）。
   // 漏加 = `ACCIO_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
   //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
-  ["ACCIO", "accio"]
+  ["ACCIO", "accio"],
+  ["AUTOCLAW", "autoclaw"]
 ];
 var ACCOUNT_REF_RE = new RegExp(
   // ⚠️ 按前缀长度**降序**排列：`QODERCN` 必须排在 `QODER` 之前。虽然正则的
@@ -29571,9 +29617,9 @@ function accountFromCredentialRef(ref) {
   };
 }
 var FileStore = class {
-  constructor(home, path3, logger2) {
+  constructor(home, path4, logger2) {
     this.home = home;
-    this.path = path3;
+    this.path = path4;
     this.logger = logger2;
   }
   home;
@@ -29602,7 +29648,9 @@ var FileStore = class {
         // 老文档没这个键 → 启用，与升级前行为一致。
         nativeWebSearchEnabled: sanitizeNativeWebSearchEnabled(value.nativeWebSearchEnabled),
         // 老文档没这个键 → 空数组（未自定义），展示侧按声明顺序渲染。
-        providerOrder: sanitizeProviderOrder(value.providerOrder)
+        providerOrder: sanitizeProviderOrder(value.providerOrder),
+        // 老文档没这个键 ⇒ `undefined` ⇒ 不附 XFF（与修复前行为逐字节一致）。
+        minimaxXff: sanitizeMinimaxXff(value.minimaxXff)
       };
     } catch (error) {
       this.logger?.warn(`[jet-hub] \u8BFB\u53D6 ${this.path} \u5931\u8D25\uFF0C\u672C\u6B21\u4EE5\u7A7A\u5217\u8868\u542F\u52A8: ${String(error)}`);
@@ -29653,7 +29701,9 @@ var FileStore = class {
         // 同上：恢复出的文档不含原生搜索开关信息 → 启用（与全新安装一致）。
         nativeWebSearchEnabled: true,
         // 凭据文件里也没有顺序信息 → 空数组（未自定义，与全新安装一致）。
-        providerOrder: []
+        providerOrder: [],
+        // 凭据文件里没有 XFF 设置 → 不附头（与全新安装一致）。
+        minimaxXff: void 0
       };
       try {
         this.write(state);
@@ -29714,8 +29764,8 @@ var MemoryLockStore = class {
   }
 };
 var FileLockStore = class {
-  constructor(path3, logger2) {
-    this.path = path3;
+  constructor(path4, logger2) {
+    this.path = path4;
     this.logger = logger2;
   }
   path;
@@ -29806,17 +29856,22 @@ var OPENCODE = {
 };
 var OPENCODE_MODELS_DEV_URL = OPENCODE.modelsDevUrl;
 var OPENCODE_MODELS_DEV_TTL_MS = OPENCODE.modelsDevTtlMs;
+var OPENCODE_CHAT_PROTOCOL_API = "https://opencode.ai/inference/openai/v1";
 var OPENCODE_FALLBACK_MODELS = [
   // ── 匿名可用（chat 端点，无需 key）──
   { id: "big-pickle", name: "Big Pickle", isFree: true, contextWindow: 262144 },
   { id: "space-bunny-free", name: "Space Bunny Free", isFree: true, contextWindow: 262144 },
   { id: "longcat-2.5-preview-free", name: "LongCat 2.5 Preview Free", isFree: true, contextWindow: 262144 },
   { id: "mimo-v2.6-flash-free", name: "MiMo-V2.6-Flash Free", isFree: true, contextWindow: 262144 },
-  { id: "mimo-v2.5-free", name: "MiMo-V2.5 Free", isFree: true, contextWindow: 262144 },
   // ⚠️ 这两个官方 docs 标注走 `/v1/models/{id}`（Gemini 风格），但**实测
   // chat 端点也通** ⇒ 按 chat 处理。**以实测为准，不以 docs 为准。**
   { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra Free", isFree: true, contextWindow: 262144 },
   { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning Free", isFree: true, contextWindow: 262144 },
+  // ── 2026-10-17 实测新增（Issue IKM9LR：远端已下发但被硬编码表挡掉）──
+  // ⚠️ 「已实测可用」= 用本插件自己的请求形状打过至少一次 200 并拿到正文。
+  { id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash Free", isFree: true, contextWindow: 2e5 },
+  { id: "glm-5.3-flash-free", name: "GLM-5.3-Flash Free", isFree: true, contextWindow: 2e5 },
+  { id: "nemotron-3.5-super-vl-free", name: "Nemotron 3.5 Super VL Free", isFree: true, contextWindow: 1048576 },
   // ── 需付费 key（chat 端点；实测匿名为 401）──
   { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", isFree: false, contextWindow: 262144 },
   { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", isFree: false, contextWindow: 262144 },
@@ -29828,11 +29883,33 @@ var OPENCODE_FALLBACK_MODELS = [
 ];
 var FREE_IDS = new Set(OPENCODE_FALLBACK_MODELS.filter((m) => m.isFree).map((m) => m.id));
 var REACHABLE_IDS = new Set(OPENCODE_FALLBACK_MODELS.map((m) => m.id));
+var remoteReachability;
+var OPENCODE_CAPABILITY_HOOK;
+function setOpencodeCapabilityHook(hook) {
+  OPENCODE_CAPABILITY_HOOK = hook;
+}
+function ensureRemoteTables() {
+  if (remoteReachability !== void 0 && remoteFreeOverride !== void 0) return;
+  OPENCODE_CAPABILITY_HOOK?.();
+}
+function setRemoteOpencodeReachability(table2) {
+  remoteReachability = table2;
+}
 function isFreeOpencodeModel(id) {
+  ensureRemoteTables();
+  const remote = remoteFreeOverride?.get(id);
+  if (remote !== void 0) return remote;
   return FREE_IDS.has(id);
 }
 function isReachableOpencodeModel(id) {
+  ensureRemoteTables();
+  const remote = remoteReachability?.get(id);
+  if (remote !== void 0) return remote;
   return REACHABLE_IDS.has(id);
+}
+var remoteFreeOverride;
+function setRemoteOpencodeFreeFlags(table2) {
+  remoteFreeOverride = table2;
 }
 function readableDetail(body) {
   const text = body.trim();
@@ -29947,8 +30024,8 @@ function normalizeProxy(input) {
   const hostOnly = auth.length > 0 ? rawHostPort.slice(rawHostPort.lastIndexOf("@") + 1) : rawHostPort;
   const portMatch = /:(\d+)$/.exec(hostOnly);
   const port = portMatch?.[1] ?? parsed.port;
-  const normalized = `${scheme}://${auth}${parsed.hostname}:${port}`;
-  return { ok: true, proxy: { kind, url: normalized, label: maskLabel(normalized) } };
+  const normalized2 = `${scheme}://${auth}${parsed.hostname}:${port}`;
+  return { ok: true, proxy: { kind, url: normalized2, label: maskLabel(normalized2) } };
 }
 
 // vendor/channel-pack/src/opencode-auth.ts
@@ -29963,13 +30040,13 @@ function listIdentitySlots(entries, userAgent) {
   const slots = [];
   for (const entry of entries) {
     if (!entry.enabled) continue;
-    const normalized = entry.proxy === void 0 || entry.proxy.trim().length === 0 ? void 0 : normalizeProxy(entry.proxy);
+    const normalized2 = entry.proxy === void 0 || entry.proxy.trim().length === 0 ? void 0 : normalizeProxy(entry.proxy);
     const anonymous = isAnonymousCredential(entry.apiKey);
     slots.push({
       id: entry.id,
       kind: anonymous ? "anonymous" : "account",
       apiKey: entry.apiKey,
-      proxy: normalized !== void 0 && normalized.ok ? normalized.proxy : void 0,
+      proxy: normalized2 !== void 0 && normalized2.ok ? normalized2.proxy : void 0,
       // ⚠️ 缺指纹时走 **`poolEntrySnapshot`（唯一实现）**，不要在这里写第二份
       //    `identity = anonymous ? entry.id : entry.apiKey` + `deriveProjectId`：
       //    那个规则的唯一权威在 `poolEntrySnapshot`，两处各写一份会分叉，
@@ -30253,6 +30330,20 @@ var AccountPool = class {
    */
   providerOrderCache = [];
   /**
+   * MiniMax **国际站**绕过分流用的 `X-Forwarded-For` 值（进程内副本）。
+   *
+   * 语义与校验见 `jet-hub-store.ts` 的 `JetHubState.minimaxXff` 与
+   * `sanitizeMinimaxXff`（**同一份判据**，本文件不另写一份）。
+   *
+   * ⚠️ `undefined` / 空串 = **不附头**（行为与修复前逐字节一致）。这是刻意的
+   * 缺省：附 `X-Forwarded-For` 等于声明一个并非本机的来源 IP，不能是默认行为。
+   *
+   * ⚠️ 与 {@link providerOrderCache} 同级、**可以**住在这里：丢失本键的唯一后果
+   * 是国际站用户重新遇到 307（可逆，重填一次即可）。但它**必须**被带进
+   * `queueStoreSave` 的整体写入（否则「任何一次改账号都会静默清掉它」）。
+   */
+  minimaxXffCache;
+  /**
    * ★ **由折算观测写下的** `modelRateLimits` 标记集合（键 = `accountId\u0000modelId`）。
    *
    * ## ⚠️⚠️ 为什么必须有它（真实缺陷，两个独立审计共同命中 2026-10-12）
@@ -30326,6 +30417,7 @@ var AccountPool = class {
       this.gatewayEnabledCache = state.gatewayEnabled !== false;
       this.nativeWebSearchCache = state.nativeWebSearchEnabled !== false;
       this.providerOrderCache = state.providerOrder ?? [];
+      this.minimaxXffCache = sanitizeMinimaxXff(state.minimaxXff);
     }
     this.loadLocks(state);
   }
@@ -30413,7 +30505,12 @@ var AccountPool = class {
         // 分两次快照会让同一份文档里的字段互相矛盾。
         gatewayEnabled: this.gatewayEnabledCache,
         nativeWebSearchEnabled: this.nativeWebSearchCache,
-        providerOrder: this.providerOrderCache
+        providerOrder: this.providerOrderCache,
+        // ⚠️ **必须带上本键**（同 `nativeWebSearchEnabled` 的坑）：
+        //    `write` 是整体替换语义 ⇒ 漏键会让用户设的 XFF 在**任何**一次
+        //    改账号 / 改黑名单 / 改网关 / 拖顺序时被静默清掉，
+        //    症状是「国际站明明设好了 XFF，过一阵又开始 307」。
+        minimaxXff: this.minimaxXffCache
       });
     });
     this.storeChain = next.catch(() => {
@@ -30769,6 +30866,39 @@ var AccountPool = class {
     this.loaded = true;
     if (this.store.kind === "memory") {
       this.ctx.logger?.warn?.("[jet-hub] \u65E0\u6301\u4E45\u5316\u540E\u7AEF\uFF0C\u4F9B\u5E94\u5546\u987A\u5E8F\u4EC5\u672C\u6B21\u4F1A\u8BDD\u6709\u6548");
+      return;
+    }
+    await this.queueStoreSave();
+  }
+  /**
+   * 当前设置的 MiniMax 国际站 `X-Forwarded-For` 值；`undefined` = 不附头。
+   *
+   * ⚠️ 请求侧（`minimax.ts` 的 `minimaxHeadersFor`）**必须每次现读**，不能缓存：
+   * 用户随时可能在面板里改这个设置。
+   */
+  minimaxXff() {
+    this.ensureLoaded();
+    return this.minimaxXffCache;
+  }
+  /**
+   * 设置（或清除）MiniMax 国际站的 `X-Forwarded-For` 并落盘。
+   *
+   * 传空串 / `undefined` = **清除**（不附头）。校验由 `sanitizeMinimaxXff` 统一做：
+   * 非法值（主机名、XFF 链、含换行等）**不会**被写进缓存 —— 于是「填了个坏值」
+   * 与「没填」等价，不会让请求带上一个可能触发头注入的串。
+   *
+   * ⚠️ 非法值**静默归一为 `undefined`** 而不是抛错：本设置是可选逃生口，
+   * 用户输错一个字符就报错阻断保存只会更糟。但 RPC 层会把**归一后的实际值**
+   * 回给客户端，UI 照它渲染，用户能立刻看出「没生效」。
+   */
+  async setMinimaxXff(value) {
+    this.ensureLoaded();
+    const next = sanitizeMinimaxXff(value);
+    if (this.minimaxXffCache === next) return;
+    this.minimaxXffCache = next;
+    this.loaded = true;
+    if (this.store.kind === "memory") {
+      this.ctx.logger?.warn?.("[jet-hub] \u65E0\u6301\u4E45\u5316\u540E\u7AEF\uFF0CMiniMax XFF \u8BBE\u7F6E\u4EC5\u672C\u6B21\u4F1A\u8BDD\u6709\u6548");
       return;
     }
     await this.queueStoreSave();
@@ -32249,10 +32379,10 @@ function parseModelInfo(m, seen) {
   seen.add(id);
   return { id, name: name2 };
 }
-function extractJsonArray(text, path3) {
+function extractJsonArray(text, path4) {
   try {
     let value = JSON.parse(text);
-    for (const key of path3) {
+    for (const key of path4) {
       if (typeof value !== "object" || value === null) return void 0;
       value = value[key];
     }
@@ -32347,14 +32477,14 @@ function benefitCachePath() {
   return dir === void 0 ? void 0 : `${dir}/${CODEARTS_BENEFIT_CACHE_FILENAME}`;
 }
 function saveModelsCache(models) {
-  const path3 = modelsCachePath();
-  if (!path3) return;
-  const dir = path3.slice(0, path3.lastIndexOf("/"));
+  const path4 = modelsCachePath();
+  if (!path4) return;
+  const dir = path4.slice(0, path4.lastIndexOf("/"));
   try {
     mkdirSync3(dir, { recursive: true });
-    const tmp = path3 + ".tmp";
+    const tmp = path4 + ".tmp";
     writeFileSync3(tmp, JSON.stringify(models), "utf-8");
-    renameSync3(tmp, path3);
+    renameSync3(tmp, path4);
   } catch {
   }
 }
@@ -32362,23 +32492,23 @@ function setMemoryCache(models) {
   memoryCache = models;
 }
 function saveBenefitCache(ids) {
-  const path3 = benefitCachePath();
-  if (!path3) return;
-  const dir = path3.slice(0, path3.lastIndexOf("/"));
+  const path4 = benefitCachePath();
+  if (!path4) return;
+  const dir = path4.slice(0, path4.lastIndexOf("/"));
   try {
     mkdirSync3(dir, { recursive: true });
-    const tmp = path3 + ".tmp";
+    const tmp = path4 + ".tmp";
     writeFileSync3(tmp, JSON.stringify(ids), "utf-8");
-    renameSync3(tmp, path3);
+    renameSync3(tmp, path4);
   } catch {
   }
 }
 function loadBenefitCache() {
-  const path3 = benefitCachePath();
-  if (!path3) return void 0;
+  const path4 = benefitCachePath();
+  if (!path4) return void 0;
   try {
-    if (!existsSync3(path3)) return void 0;
-    const text = readFileSync3(path3, "utf-8");
+    if (!existsSync3(path4)) return void 0;
+    const text = readFileSync3(path4, "utf-8");
     const ids = JSON.parse(text);
     if (!Array.isArray(ids) || ids.length === 0) return void 0;
     return ids.filter((id) => typeof id === "string");
@@ -32417,11 +32547,11 @@ function normalizeHarnessMessages(messages) {
   if (shape !== "tool-role" && !hasDeveloper) {
     return messages;
   }
-  const normalized = [];
+  const normalized2 = [];
   for (const message2 of messages) {
     if (message2.role === "developer") continue;
     if (!isToolRoleMessage(message2)) {
-      normalized.push(message2);
+      normalized2.push(message2);
       continue;
     }
     const source = message2["source"];
@@ -32433,9 +32563,9 @@ function normalizeHarnessMessages(messages) {
       content: message2.content
     };
     if (message2.isError !== void 0) block.isError = message2.isError;
-    normalized.push({ role: "user", content: [block] });
+    normalized2.push({ role: "user", content: [block] });
   }
-  return normalized;
+  return normalized2;
 }
 
 // vendor/channel-pack/src/openai-compat.ts
@@ -32502,9 +32632,9 @@ function createBlankReasoningSuppressor() {
   };
 }
 function resolveToolPairing(messages) {
-  const normalized = normalizeHarnessMessages(messages);
+  const normalized2 = normalizeHarnessMessages(messages);
   const allResultIds = /* @__PURE__ */ new Set();
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     const content = Array.isArray(message2.content) ? message2.content : [];
     for (const block of content) {
       if (typeof block === "object" && block !== null && block.type === "tool-result") {
@@ -32513,7 +32643,7 @@ function resolveToolPairing(messages) {
     }
   }
   const keepCallIds = /* @__PURE__ */ new Set();
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role !== "assistant") continue;
     const content = Array.isArray(message2.content) ? message2.content : [];
     const calls = content.filter((block) => typeof block === "object" && block !== null && block.type === "tool-call");
@@ -32880,8 +33010,8 @@ function parseDsmlInvoke(block) {
   return { name: name2, arguments: JSON.stringify(params) };
 }
 function parseDsmlToolCalls(block) {
-  const normalized = normalizeDsmlText(block);
-  let inner = normalized;
+  const normalized2 = normalizeDsmlText(block);
+  let inner = normalized2;
   if (inner.startsWith(DSML_TOOL_CALLS_OPEN)) inner = inner.slice(DSML_TOOL_CALLS_OPEN.length);
   if (inner.endsWith(DSML_TOOL_CALLS_CLOSE)) inner = inner.slice(0, inner.length - DSML_TOOL_CALLS_CLOSE.length);
   const calls = [];
@@ -33084,9 +33214,9 @@ function collectImages(content, refs) {
   }
 }
 function serializeMessages(messages, imageUrls) {
-  const normalized = normalizeHarnessMessages(messages);
+  const normalized2 = normalizeHarnessMessages(messages);
   const wire = [];
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
   let pendingToolImages = [];
   let pendingOwnParts;
   const flushToolImages = (own) => {
@@ -33097,7 +33227,7 @@ function serializeMessages(messages, imageUrls) {
     wire.push({ role: "user", content: [...pendingToolImages, ...ownImages, ...ownText] });
     pendingToolImages = [];
   };
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role === "assistant") {
       const content2 = stripCourseLeakFromHistoryContent(
         message2.role,
@@ -33829,8 +33959,8 @@ var MemoryDeadModelStore = class {
   }
 };
 var FileDeadModelStore = class {
-  constructor(path3, logger2) {
-    this.path = path3;
+  constructor(path4, logger2) {
+    this.path = path4;
     this.logger = logger2;
   }
   path;
@@ -34669,10 +34799,10 @@ function contentToText2(content) {
   return content.filter((block) => typeof block === "object" && block !== null && block.type === "text").map((block) => String(block.text)).join("");
 }
 function serializeMessages2(messages) {
-  const normalized = normalizeHarnessMessages(messages);
+  const normalized2 = normalizeHarnessMessages(messages);
   const wire = [];
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
-  for (const message2 of normalized) {
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
+  for (const message2 of normalized2) {
     if (message2.role === "assistant") {
       const content2 = stripCourseLeakFromHistoryContent(
         message2.role,
@@ -36710,6 +36840,46 @@ var CONTENT_FINGERPRINTS = [
     find: "You are Claude Code, Anthropic's official CLI for Claude",
     replace: "You are Claude Code, Anthropic's CLI for Claude",
     note: "Gitee IKLS2L\uFF1B\u672C\u673A 2026-10-14 \u5BF9 workbuddy / CodeBuddy \u53CC\u7AEF\u70B9\u5B9E\u6D4B\uFF1Asystem \u4E0E assistant \u6B63\u6587\u4F4D\u7F6E\u5747 400/11128\uFF0C\u6539\u5199\u540E\u4E24\u7AEF\u70B9\u5747 200\uFF08\u542B SDK \u53D8\u4F53\uFF09"
+  },
+  {
+    // Claude Code system prompt 的「帮助 / 反馈」段默认句（Gitee issue IKLYCT）：
+    // `To give feedback, users should report the issue at
+    //  https://github.com/anthropics/claude-code/issues`
+    //
+    // ## 与上一条（身份句）不同：这一条**每轮必带**，不是概率性泄漏
+    //
+    // 身份句只有 cc-switch 的 `mrt()` 探测路径漏传 `skipSystemPromptPrefix` 时才注入
+    // （实测约 34%）；本句属于 Claude Code system prompt 的**固定段落**，
+    // 只要客户端把默认 system 整份发过来就必然带上 ⇒ **漏登记 = 必然命中**。
+    // 用户侧实测：单日 buddy/workbuddy 因它白撞 647 次。
+    //
+    // ## ⚠️ 匹配语义：**位置无关**（与身份句的「行首锚定」相反）
+    //
+    // 2026-10-18 本机对 `www.workbuddy.ai` + `copilot.tencent.com` 双端点逐格实测：
+    //   | 形态 | 结果 |
+    //   |---|---|
+    //   | 裸串 / 前接 `Note: ` / 前接行首 `  - ` | ❌ 400/11128 ⇒ 位置无关 |
+    //   | 后接换行 + 其他文本 | ❌ 400/11128 |
+    //   | 全大写 | ❌ 400/11128 ⇒ 与另两条同型（大小写不敏感） |
+    //   | 换 org/repo、换域名、改一个词、只留 URL | ✅ 200 ⇒ **逐字符** |
+    //   | **砍掉前半 / 砍掉后半** | ✅ 200 ⇒ **`find` 必须写整句** |
+    //
+    // ⚠️ 最后那一格是本条的**要害**：子串本身不触发，写短了等于空跑 ——
+    // 而空跑的症状是「登记了却仍每轮 400」，极难归因。
+    //
+    // ⚠️ 本条的 `find`（整句 99 字符）已经**贴着**上游屏蔽名单的粒度，
+    // 不要再按 ZCode 那条的思路去「缩短 find 覆盖更多变体」：实测换域名即放行。
+    // ⚠️⚠️ **「缩短/删字」这类变异只有实发能验，单测锁不住**：
+    //   单测能证明「砍掉半句时我们**不**改写」（那是真事实），但证明不了
+    //   「砍掉半句后上游**仍会拦**」—— 那只有 e2e 能验（见上面那两格）。
+    //   ⇒ 改本行时**必须**跑一遍 `DSH_BUDDY_FINGERPRINT_E2E=1` 那节。
+    //
+    // ⚠️ 与身份句同理**不做行首锚定**：改写宁可略宽（漏改 = 整轮 400，
+    // 多改 = 语义等价的措辞变化）。
+    find: "To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+    // 实测两端点均 200（buddy / workbuddy，2026-10-18）。措辞与原文等义。
+    replace: "To give feedback, users should report the issue at the project issue tracker",
+    note: "Gitee IKLYCT\uFF1B\u672C\u673A 2026-10-18 \u5BF9 workbuddy / CodeBuddy \u53CC\u7AEF\u70B9\u5B9E\u6D4B\uFF1Asystem\uFF08\u542B\u975E\u9996\u4F4D\uFF09\u4E0E assistant \u6B63\u6587\u5747 400/11128\uFF0Cuser / reasoning_content / tool \u7ED3\u679C\u653E\u884C\uFF0C\u6539\u5199\u540E\u4E24\u7AEF\u70B9\u5747 200"
   }
 ];
 function escapeRegExp(literal) {
@@ -36884,9 +37054,9 @@ function serializeMessages3(messages, imageUrls, provider) {
     wire.push({ role: "user", content: [...pendingToolImages, ...ownImages, ...ownText] });
     pendingToolImages = [];
   };
-  const normalized = normalizeHarnessMessages(messages);
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
-  for (const message2 of normalized) {
+  const normalized2 = normalizeHarnessMessages(messages);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
+  for (const message2 of normalized2) {
     if (message2.role === "assistant") {
       const content2 = stripCourseLeakFromHistoryContent(
         message2.role,
@@ -36974,15 +37144,25 @@ function asRecord(value) {
 }
 function isContentRejection(body) {
   if (body.length === 0) return false;
-  if (isChannelVerificationIllegalBody(body)) return false;
+  if (isChannelVerificationBody(body)) return false;
+  if (isContentBlockedIllegalBody(body)) return false;
   return /"code"\s*:\s*11140/.test(body) || /request illegal/i.test(body) || /安全审核|safety review/i.test(body);
 }
 var CHANNEL_VERIFICATION_MSG_FIELD = /"m(?:sg|essage)"\s*:\s*"[^"]*conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing/iu;
 var CHANNEL_VERIFICATION_BARE = /conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing/iu;
 var ILLEGAL_CODE = /"code"\s*:\s*"?11128(?![\d.])/iu;
 var ILLEGAL_MSG = /"m(?:sg|essage)"\s*:\s*"[^"]{0,200}?request(?:[\s:_\-\p{Cf}]|\\[nrt])+illegal/iu;
+var CONTENT_BLOCKED_CODE = /"code"\s*:\s*"?11128(?![\d.])/iu;
+var CONTENT_BLOCKED_MSG = /"m(?:sg|essage)"\s*:\s*"[^"]{0,200}?illegal\s+api\s+invocation/iu;
+function isContentBlockedIllegalBody(body) {
+  return CONTENT_BLOCKED_CODE.test(body) && CONTENT_BLOCKED_MSG.test(body);
+}
 function isChannelVerificationIllegalBody(body) {
   return ILLEGAL_CODE.test(body) && ILLEGAL_MSG.test(body);
+}
+var CHANNEL_VERIFICATION_PHRASE = /"m(?:sg|essage)"\s*:\s*"[^"]*?(?:conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing|request(?:[\s:_\-\p{Cf}]|\\[nrt])+illegal)/iu;
+function isChannelVerificationBody(body) {
+  return ILLEGAL_CODE.test(body) && CHANNEL_VERIFICATION_PHRASE.test(body);
 }
 function isChannelVerificationRejection(body, status) {
   if (body.length === 0) return false;
@@ -38111,7 +38291,6 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             );
             continue;
           }
-          if (response.status === 401 || response.status === 403) continue;
           if (isChannelVerificationRejection(errorText, response.status)) {
             sawChannelVerification = true;
             channelVerificationStatus = response.status;
@@ -38121,6 +38300,7 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             );
             continue;
           }
+          if (response.status === 401 || response.status === 403) continue;
           if (!isRateLimited(errorText, response.status)) {
             throw new LlmError4(`${this.product.id}: ${errorDetail2(errorText)}`, httpErrorCode3(response.status, errorText), { status: response.status });
           }
@@ -39118,8 +39298,8 @@ function collectImages3(content, refs) {
 }
 function serializeMessages4(messages, imageUrls) {
   const wire = [];
-  const normalized = normalizeHarnessMessages(messages);
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
+  const normalized2 = normalizeHarnessMessages(messages);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
   let pendingToolImages = [];
   let pendingOwnParts;
   const flushToolImages = (own) => {
@@ -39130,7 +39310,7 @@ function serializeMessages4(messages, imageUrls) {
     wire.push({ role: "user", content: [...pendingToolImages, ...ownImages, ...ownText] });
     pendingToolImages = [];
   };
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role === "assistant") {
       const content2 = stripCourseLeakFromHistoryContent(
         message2.role,
@@ -40594,7 +40774,7 @@ var QoderEncryptedInfer = class _QoderEncryptedInfer {
    * @returns `{ url, headers, body }` —— headers 含 `Authorization: Bearer COSY.<载荷>.<签名>`。
    * @throws {Error} 实例已 `dispose`，或 wasm 侧返回错误时。
    */
-  prepareRequest(endpoint, path3, method, mode, body, headers) {
+  prepareRequest(endpoint, path4, method, mode, body, headers) {
     const g = this.g;
     if (this.disposed) {
       throw new Error("qoder: QoderEncryptedInfer \u5DF2 dispose\uFF0C\u4E0D\u80FD\u518D\u6B21 prepareRequest");
@@ -40602,7 +40782,7 @@ var QoderEncryptedInfer = class _QoderEncryptedInfer {
     const result = g.callPointer((stack) => {
       const ep = g.writeString(endpoint);
       const epLen = g.lastLength();
-      const pt = g.writeString(path3);
+      const pt = g.writeString(path4);
       const ptLen = g.lastLength();
       const md = g.writeString(method);
       const mdLen = g.lastLength();
@@ -42905,8 +43085,8 @@ function collectImages4(content, refs) {
 }
 function serializeTraeMessages(messages, imageUrls) {
   const wire = [];
-  const normalized = normalizeHarnessMessages(messages);
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
+  const normalized2 = normalizeHarnessMessages(messages);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
   let pendingToolImages = [];
   const flushToolImages = () => {
     if (pendingToolImages.length === 0) return;
@@ -42916,7 +43096,7 @@ function serializeTraeMessages(messages, imageUrls) {
     });
     pendingToolImages = [];
   };
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role === "assistant") {
       const content2 = stripCourseLeakFromHistoryContent(
         message2.role,
@@ -44354,112 +44534,231 @@ function hasClineRemoteModels(remote) {
   return remote.freeIds.length + remote.remoteIds.length + remote.entries.length > 0;
 }
 
-// vendor/channel-pack/src/ttl-cache.ts
-var TtlCache = class {
-  entry;
-  inflight;
-  ttlMs;
-  ttlFor;
-  load;
-  now;
-  constructor(options) {
-    this.ttlMs = options.ttlMs;
-    this.ttlFor = options.ttlFor;
-    this.load = options.load;
-    this.now = options.now ?? (() => Date.now());
-  }
-  /**
-   * 取缓存值；过期则重新加载。
-   *
-   * @param options.force - 强制绕过缓存重新加载（用于「服务端拒绝后刷新配置」）。
-   */
-  async get(options = {}) {
-    if (options.force !== true) {
-      const hit = this.peek();
-      if (hit !== void 0) return hit.value;
+// vendor/channel-pack/src/models-dev-cache.ts
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { readFileSync as readFileSync6 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join4 } from "node:path";
+var MODELS_DEV_URL = "https://models.dev/api.json";
+var MODELS_DEV_TIMEOUT_MS = 9e4;
+var MODELS_DEV_MAX_ATTEMPTS = 3;
+var RETRY_BASE_DELAY_MS = 2e3;
+var MODELS_DEV_DEADLOCK_MS = 48e4;
+var MODELS_DEV_WORST_CASE_MS = MODELS_DEV_MAX_ATTEMPTS * MODELS_DEV_TIMEOUT_MS + RETRY_BASE_DELAY_MS * (MODELS_DEV_MAX_ATTEMPTS - 1);
+var MODELS_DEV_TTL_MS = 6 * 60 * 60 * 1e3;
+var CACHE_VERSION = 1;
+var MODELS_DEV_CACHED_PROVIDERS = ["opencode", "cline-pass"];
+var isRecord = (v) => typeof v === "object" && v !== null;
+function modelsDevCacheFile() {
+  const home = process.env.DSH_HOME?.trim() || join4(homedir2(), ".dsh");
+  return join4(home, "cache", "models-dev.json");
+}
+function projectEntry(raw) {
+  if (!isRecord(raw)) return void 0;
+  const out = {};
+  if (typeof raw.name === "string") out.name = raw.name;
+  if (isRecord(raw.cost)) {
+    const cost = {};
+    for (const key of ["input", "output", "cache_read", "cache_write"]) {
+      const v = raw.cost[key];
+      if (typeof v === "number" && Number.isFinite(v)) cost[key] = v;
     }
-    if (this.inflight !== void 0) return await this.inflight;
-    const task = (async () => {
-      const value = await this.load();
-      this.write(value);
-      return value;
-    })();
-    this.inflight = task;
+    if (Object.keys(cost).length > 0) out.cost = cost;
+  }
+  if (isRecord(raw.limit)) {
+    const limit = {};
+    for (const key of ["context", "input", "output"]) {
+      const v = raw.limit[key];
+      if (typeof v === "number" && Number.isFinite(v)) limit[key] = v;
+    }
+    if (Object.keys(limit).length > 0) out.limit = limit;
+  }
+  if (isRecord(raw.modalities)) {
+    const modalities = {};
+    for (const side of ["input", "output"]) {
+      const v = raw.modalities[side];
+      if (Array.isArray(v)) modalities[side] = v.filter((m) => typeof m === "string");
+    }
+    if (Object.keys(modalities).length > 0) out.modalities = modalities;
+  }
+  if (typeof raw.reasoning === "boolean") out.reasoning = raw.reasoning;
+  if (raw.reasoning_options !== void 0) out.reasoning_options = raw.reasoning_options;
+  if (typeof raw.tool_call === "boolean") out.tool_call = raw.tool_call;
+  if (isRecord(raw.provider) && typeof raw.provider.api === "string") out.provider = { api: raw.provider.api };
+  return out;
+}
+function parseModelsDev(raw) {
+  if (!isRecord(raw)) return {};
+  const providers = isRecord(raw.providers) ? raw.providers : {};
+  const out = {};
+  const wanted = new Set(MODELS_DEV_CACHED_PROVIDERS);
+  const put = (name2, block) => {
+    if (!wanted.has(name2)) return;
+    if (!isRecord(block) || !isRecord(block.models)) return;
+    const models = {};
+    for (const [id, entry] of Object.entries(block.models)) {
+      if (id.length === 0) continue;
+      const projected = projectEntry(entry);
+      if (projected !== void 0) models[id] = projected;
+    }
+    if (Object.keys(models).length > 0) out[name2] = models;
+  };
+  for (const [name2, block] of Object.entries(providers)) put(name2, block);
+  for (const [name2, block] of Object.entries(raw)) {
+    if (name2 === "providers") continue;
+    put(name2, block);
+  }
+  return out;
+}
+var memory = {};
+var cacheFileAt = 0;
+var diskTried = false;
+var refreshing;
+var refreshingToken;
+var refreshingStartedAt = 0;
+function loadDiskCacheSync() {
+  if (diskTried) return;
+  diskTried = true;
+  try {
+    const parsed = JSON.parse(readFileSync6(modelsDevCacheFile(), "utf8"));
+    if (parsed?.version === CACHE_VERSION && isRecord(parsed.providers)) {
+      const count2 = Object.values(parsed.providers).reduce((n, m) => n + Object.keys(m).length, 0);
+      if (count2 > 0) {
+        memory = parsed.providers;
+        cacheFileAt = typeof parsed.at === "number" ? parsed.at : 0;
+      }
+    }
+  } catch {
+  }
+}
+function readModelsDevSync() {
+  loadDiskCacheSync();
+  return memory;
+}
+function readProviderModelsSync(provider) {
+  return readModelsDevSync()[provider] ?? {};
+}
+async function fetchOnce(fetcher = fetch) {
+  const response = await fetcher(MODELS_DEV_URL, {
+    headers: {
+      Accept: "application/json",
+      // ⚠️ **必须显式声明**：服务端支持 Brotli，而 Node 原生 `fetch` 默认
+      // 不带 `Accept-Encoding` ⇒ 每次都下**解压后 5 MB** 的明文，极易撞上
+      // 超时上限（成功那次只用 1.9 秒，失败的都是整段卡死）。见 IKKZUG。
+      "Accept-Encoding": "br, gzip"
+    },
+    signal: AbortSignal.timeout(MODELS_DEV_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`models.dev HTTP ${response.status}`);
+  const parsed = parseModelsDev(await response.json());
+  const count2 = Object.values(parsed).reduce((n, m) => n + Object.keys(m).length, 0);
+  if (count2 === 0) throw new Error("models.dev \u89E3\u6790\u7ED3\u679C\u4E3A\u7A7A\uFF08\u4E0D\u8986\u76D6\u65E2\u6709\u7F13\u5B58\uFF09");
+  memory = parsed;
+  cacheFileAt = Date.now();
+  diskTried = true;
+  if (fetcher !== fetch) return true;
+  const path4 = modelsDevCacheFile();
+  await mkdir(join4(path4, ".."), { recursive: true });
+  const payload = { version: CACHE_VERSION, at: cacheFileAt, providers: parsed };
+  const tmp = `${path4}.tmp`;
+  await writeFile(tmp, JSON.stringify(payload), "utf8");
+  await rename(tmp, path4);
+  return true;
+}
+async function fetchWithRetry(fetcher, options) {
+  let lastError;
+  for (let attempt = 1; attempt <= MODELS_DEV_MAX_ATTEMPTS; attempt++) {
     try {
-      return await task;
+      return await fetchOnce(fetcher);
+    } catch (error) {
+      lastError = error;
+      if (isCallerAbort(error)) throw error;
+      const timedOut = error instanceof Error && error.name === "TimeoutError";
+      if (attempt === MODELS_DEV_MAX_ATTEMPTS) break;
+      const wait = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      if (timedOut) {
+        options.warn?.(`[jet-hub] models.dev \u5237\u65B0\u8D85\u65F6\uFF08\u7B2C ${attempt}/${MODELS_DEV_MAX_ATTEMPTS} \u6B21\uFF09\uFF0C${wait}ms \u540E\u91CD\u8BD5`);
+      } else {
+        options.warn?.(`[jet-hub] models.dev \u5237\u65B0\u5931\u8D25\uFF08\u7B2C ${attempt}/${MODELS_DEV_MAX_ATTEMPTS} \u6B21\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`);
+      }
+      await delay2(wait, options.sleep);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`models.dev \u5237\u65B0\u5931\u8D25\uFF1A${String(lastError)}`);
+}
+function isCallerAbort(error) {
+  if (!(error instanceof Error)) return false;
+  if (error.name !== "AbortError") return false;
+  const code = error.code;
+  return code === "ABORT_ERR" || code === 20;
+}
+function delay2(ms, sleep5) {
+  if (sleep5 !== void 0) return sleep5(ms);
+  return new Promise((resolve2) => {
+    const timer = setTimeout(resolve2, ms);
+    timer.unref?.();
+  });
+}
+function refreshModelsDev(onUpdated, options = {}) {
+  void runRefresh(options, onUpdated);
+}
+function refreshModelsDevAsync(options = {}) {
+  return runRefresh(options);
+}
+var refreshSubscribers = [];
+function runRefresh(options, onUpdated) {
+  const now = options.now ?? (() => Date.now());
+  if (refreshing !== void 0 && now() - refreshingStartedAt > MODELS_DEV_DEADLOCK_MS) {
+    refreshing = void 0;
+    refreshingToken = void 0;
+  }
+  if (refreshing !== void 0) {
+    if (onUpdated !== void 0) refreshSubscribers.push(onUpdated);
+    if (options.onUpdated !== void 0) refreshSubscribers.push(options.onUpdated);
+    return refreshing;
+  }
+  const fresh = cacheFileAt > 0 && now() - cacheFileAt < MODELS_DEV_TTL_MS;
+  if (!options.force && fresh) return Promise.resolve(true);
+  refreshingStartedAt = now();
+  if (onUpdated !== void 0) refreshSubscribers.push(onUpdated);
+  if (options.onUpdated !== void 0) refreshSubscribers.push(options.onUpdated);
+  const mine = {};
+  const task = (async () => {
+    try {
+      const ok2 = await fetchWithRetry(options.fetcher ?? fetch, options);
+      if (ok2) {
+        const subscribers = refreshSubscribers;
+        refreshSubscribers = [];
+        for (const notify of subscribers) {
+          try {
+            notify();
+          } catch (error) {
+            options.warn?.(`[jet-hub] models.dev \u5237\u65B0\u6210\u529F\u4F46\u67D0\u4E2A\u8BA2\u9605\u56DE\u8C03\u629B\u9519\uFF1A${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        return true;
+      }
+      return false;
+    } catch (error) {
+      options.warn?.(`[jet-hub] models.dev \u7F13\u5B58\u5237\u65B0\u5931\u8D25\uFF08\u5DF2\u91CD\u8BD5 ${MODELS_DEV_MAX_ATTEMPTS} \u6B21\uFF0C\u6CBF\u7528\u4E0A\u4E00\u6B21\u8BFB\u6570\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`);
+      return false;
     } finally {
-      this.inflight = void 0;
+      if (refreshingToken === mine) {
+        refreshingToken = void 0;
+        refreshing = void 0;
+      }
     }
-  }
-  /**
-   * 只看缓存（**不触发加载**）。过期返回 `undefined` 并顺手丢弃。
-   *
-   * 诊断与单测用；`get()` 内部也走它，避免两处 TTL 判据漂移。
-   */
-  peek() {
-    const entry = this.entry;
-    if (entry === void 0) return void 0;
-    if (this.now() - entry.atMs >= entry.ttlMs) {
-      this.entry = void 0;
-      return void 0;
-    }
-    return entry;
-  }
-  /**
-   * ★ 看**过期后**的条目（陈旧兼顶），**不触发加载**。
-   *
-   * ## 为什么要有它（用户 2026-10-16 的要求）
-   *
-   * 「用底层缓存；加载如果得不到新数据，应该读出旧数据，不能直接返回错误
-   *（除非旧数据也没有）」—— {@link peek} 在条目过期那一刻就把 `this.entry`
-   * 丢弃了，于是「上次成功读到的值」在取数失败时**已经取不回来**。
-   *
-   * ## ⚠️ 为什么是**独立方法**而不是给 `peek` 加参数
-   *
-   * `peek()` 是**严格 TTL** 判据，被 `get()` 与多处调用方共用；给它加开关会
-   * 让「这个缓存到底严不严格」变成运行期才确定的事 —— 那正是本仓库红线
-   * 「同一语义两套判据」的形态。⇒ 两条语义各占一个方法名，调用点**写死**。
-   *
-   * ## 语义
-   *
-   * - 有条目（无论新鲜或过期）⇒ 返回它，并附 `stale: true` 标记；
-   * - 一次都没写进过 ⇒ 返回 `undefined`（**没有旧数据可兼顶**，调用方只能报错）；
-   * - ⚠️ **不丢弃**过期条目：兼顶之后取数成功会覆盖它、失败会继续用它，
-   *   两者都不需要「先扔掉再重取」—— 丢弃发生在 `write()` 里。
-   *
-   * ⚠️ **返回值带 `stale` 标记是刻意的**：调用方据此告诉用户「这是 HH:MM 的
-   * 值」，否则用户会把几分钟前的数字当成现状（`balance-cache.ts` 依赖它）。
-   */
-  peekStale() {
-    const entry = this.entry;
-    if (entry === void 0) return void 0;
-    const stale = this.now() - entry.atMs >= entry.ttlMs;
-    return stale ? { ...entry, stale: true } : { ...entry, stale: false };
-  }
-  /** 写入一个已知值（例如从别处拿到的新配置，避免下一次白加载）。 */
-  set(value) {
-    this.write(value);
-  }
-  /** 写入缓存项：有效期在**这一刻**定下（见 `TtlCacheOptions.ttlFor`）。 */
-  write(value) {
-    this.entry = { value, atMs: this.now(), ttlMs: this.effectiveTtl(value) };
-  }
-  /** 这一条该缓存多久；`ttlFor` 缺省或返回非法值时用构造参数。 */
-  effectiveTtl(value) {
-    if (this.ttlFor === void 0) return this.ttlMs;
-    const ttl = this.ttlFor(value);
-    return Number.isFinite(ttl) && ttl >= 0 ? ttl : this.ttlMs;
-  }
-  /** 清空（关停时调用）。 */
-  clear() {
-    this.entry = void 0;
-    this.inflight = void 0;
-  }
-};
+  })();
+  refreshingToken = mine;
+  refreshing = task;
+  return task;
+}
+function primeModelsDev() {
+  loadDiskCacheSync();
+  refreshModelsDev();
+}
 
 // vendor/channel-pack/src/cline-models-dev.ts
-var CLINE_MODELS_DEV_URL = "https://models.dev/api.json";
-var CLINE_MODELS_DEV_TIMEOUT_MS = 6e4;
 var CLINE_MODELS_DEV_TTL_MS = 6 * 60 * 60 * 1e3;
 function parseClineModelsDev(value) {
   const out = /* @__PURE__ */ new Map();
@@ -44557,46 +44856,30 @@ function applyModelsDevCatalog(models, dev) {
   return out;
 }
 function makeClineModelsDevLoader(options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  let lastEtag;
-  let lastResult;
-  const cache5 = new TtlCache({
-    ttlMs: options.ttlMs ?? CLINE_MODELS_DEV_TTL_MS,
-    ...options.now === void 0 ? {} : { now: options.now },
-    load: async () => {
-      const response = await fetcher(CLINE_MODELS_DEV_URL, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          // ⚠️ **必须显式声明**（issue IKKZUG）：服务端支持 Brotli，而
-          // Node 原生 `fetch` **默认不带** `Accept-Encoding` ⇒ 每次都在下
-          // **解压后 5.39 MB** 的明文。代价不只是慢，而是**极易撞上超时上限**
-          // （成功那次只用 1.9 秒，失败的都是整段卡死）。
-          "Accept-Encoding": "br, gzip",
-          // 条件请求：带上次的 ETag，命中就只回一个 304 而不重下 5.39MB。
-          ...lastEtag === void 0 ? {} : { "If-None-Match": lastEtag }
-        },
-        signal: AbortSignal.timeout(CLINE_MODELS_DEV_TIMEOUT_MS)
-      });
-      if (response.status === 304) {
-        if (lastResult !== void 0) return lastResult;
-        throw new Error("models.dev \u8FD4\u56DE 304 \u4F46\u672C\u5730\u6CA1\u6709\u53EF\u56DE\u843D\u7684\u7ED3\u679C");
-      }
-      if (!response.ok) throw new Error(`models.dev HTTP ${response.status}`);
-      const parsed = parseClineModelsDev(await response.json());
-      lastResult = parsed;
-      const etag = response.headers.get("etag");
-      lastEtag = etag ?? void 0;
-      return parsed;
+  return async () => {
+    const cached2 = readProviderModelsSync("cline-pass");
+    if (Object.keys(cached2).length > 0) return parseClineModelsDev(envelopeOf(cached2));
+    const ok2 = await refreshModelsDevAsync({
+      ...options.fetcher === void 0 ? {} : { fetcher: options.fetcher },
+      // ⚠️ **必须透传退避 sleep**：否则失败路径真等 2s+4s，本模块的失败用例
+      //   会直接撞上 vitest 的 5s 超时（实测踩过：5022ms 超时失败）。
+      ...options.sleep === void 0 ? {} : { sleep: options.sleep }
+    });
+    const after = readProviderModelsSync("cline-pass");
+    if (Object.keys(after).length === 0) {
+      throw new Error(ok2 ? "models.dev \u672A\u63D0\u4F9B cline-pass \u5757" : "models.dev \u7F13\u5B58\u4E0D\u53EF\u7528");
     }
-  });
-  return async () => await cache5.get();
+    return parseClineModelsDev(envelopeOf(after));
+  };
+}
+function envelopeOf(models) {
+  return { "cline-pass": { models } };
 }
 
 // vendor/channel-pack/src/cline-routing.ts
-function dig(value, path3) {
+function dig(value, path4) {
   let current = value;
-  for (const key of path3) {
+  for (const key of path4) {
     if (typeof current !== "object" || current === null) return void 0;
     current = current[key];
   }
@@ -45520,10 +45803,10 @@ function splitLoomyRate(rawName) {
     if (name2.length > 0) return { name: name2, rate };
     return { name: original, rate: "" };
   }
-  const normalized = original.match(/^(.*?)\s*·\s*(x\s*[\d.]+)\s*$/i);
-  if (normalized !== null) {
-    const name2 = String(normalized[1] ?? "").trim();
-    const rate = String(normalized[2] ?? "").replace(/\s+/g, "").toLowerCase();
+  const normalized2 = original.match(/^(.*?)\s*·\s*(x\s*[\d.]+)\s*$/i);
+  if (normalized2 !== null) {
+    const name2 = String(normalized2[1] ?? "").trim();
+    const rate = String(normalized2[2] ?? "").replace(/\s+/g, "").toLowerCase();
     if (name2.length > 0) return { name: name2, rate };
   }
   return { name: original, rate: "" };
@@ -46732,8 +47015,8 @@ function computeFirstRefreshDelayMs(expiresAtMs, nowMs = Date.now()) {
   if (leadTrigger >= expiresAtMs) return 0;
   const trigger = new Date(leadTrigger);
   trigger.setSeconds(Math.floor(60 * Math.random()));
-  const delay2 = trigger.getTime() - nowMs;
-  return delay2 > 0 ? delay2 : 0;
+  const delay3 = trigger.getTime() - nowMs;
+  return delay3 > 0 ? delay3 : 0;
 }
 var RefreshScheduler = class {
   constructor(refresh, onError = () => {
@@ -46754,10 +47037,10 @@ var RefreshScheduler = class {
       clearTimeout(this.timer);
       this.timer = void 0;
     }
-    const delay2 = computeFirstRefreshDelayMs(expiresAtMs, nowMs);
+    const delay3 = computeFirstRefreshDelayMs(expiresAtMs, nowMs);
     this.timer = setTimeout(() => {
       void this.run();
-    }, delay2);
+    }, delay3);
     this.timer.unref?.();
   }
   /** 取消任何待处理的刷新（并让在途 run() 失败后不再重试）。 */
@@ -50717,19 +51000,19 @@ function buildLoomyAccountBody(product, param) {
     param
   };
 }
-async function postLoomyAccount(path3, body, product, fetcher) {
+async function postLoomyAccount(path4, body, product, fetcher) {
   const serialized = JSON.stringify(body);
   const headers = loomyAuthHeaders({
     accessKeyId: product.accessKeyId,
     accessKeySecret: product.accessKeySecret,
     method: "POST",
-    path: path3,
+    path: path4,
     body: serialized,
     contentType: "application/json"
   });
   let response;
   try {
-    response = await fetcher(`${product.accountBase}${path3}`, {
+    response = await fetcher(`${product.accountBase}${path4}`, {
       method: "POST",
       headers,
       body: serialized,
@@ -50737,18 +51020,18 @@ async function postLoomyAccount(path3, body, product, fetcher) {
     });
   } catch (error) {
     throw new Error(
-      `\u8BAF\u98DE\u8D26\u53F7\u8BF7\u6C42\u5931\u8D25\uFF08${path3}\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+      `\u8BAF\u98DE\u8D26\u53F7\u8BF7\u6C42\u5931\u8D25\uFF08${path4}\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
     );
   }
   let parsed;
   try {
     parsed = await response.json();
   } catch {
-    throw new Error(`\u8BAF\u98DE\u8D26\u53F7\u54CD\u5E94\u4E0D\u662F JSON\uFF08${path3}\uFF0CHTTP ${response.status}\uFF09`);
+    throw new Error(`\u8BAF\u98DE\u8D26\u53F7\u54CD\u5E94\u4E0D\u662F JSON\uFF08${path4}\uFF0CHTTP ${response.status}\uFF09`);
   }
   const envelope = parseLoomyEnvelope(parsed);
   if (!envelope.ok) {
-    throw new Error(envelope.message.length > 0 ? envelope.message : `\u8BAF\u98DE\u8D26\u53F7\u8BF7\u6C42\u5931\u8D25\uFF08${path3}\uFF09`);
+    throw new Error(envelope.message.length > 0 ? envelope.message : `\u8BAF\u98DE\u8D26\u53F7\u8BF7\u6C42\u5931\u8D25\uFF08${path4}\uFF09`);
   }
   return envelope.data;
 }
@@ -51306,7 +51589,7 @@ function renderQrPage(qrDataUrl) {
 }
 
 // vendor/channel-pack/src/loomy-credits.ts
-async function tryRequestLoomy(credential, product, path3, init, fetcher) {
+async function tryRequestLoomy(credential, product, path4, init, fetcher) {
   const headers = { Accept: "application/json", token: credential.access_token };
   let payload;
   if (init.body !== void 0) {
@@ -51315,7 +51598,7 @@ async function tryRequestLoomy(credential, product, path3, init, fetcher) {
   }
   let response;
   try {
-    response = await fetcher(`${product.apiBase}${path3}`, {
+    response = await fetcher(`${product.apiBase}${path4}`, {
       method: init.method,
       headers,
       ...payload === void 0 ? {} : { body: payload },
@@ -51444,13 +51727,13 @@ function computeLoomyEarned(tasks) {
 }
 function normalizeTasks(raw) {
   const source = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
-  const normalized = {};
+  const normalized2 = {};
   for (const key of Object.keys(LOOMY_TASK_POINTS)) {
-    normalized[key] = source[key] === true;
+    normalized2[key] = source[key] === true;
   }
-  return normalized;
+  return normalized2;
 }
-async function requestLoomy(credential, product, path3, init, fetcher) {
+async function requestLoomy(credential, product, path4, init, fetcher) {
   const headers = { Accept: "application/json", token: credential.access_token };
   let payload;
   if (init.body !== void 0) {
@@ -51459,20 +51742,20 @@ async function requestLoomy(credential, product, path3, init, fetcher) {
   }
   let response;
   try {
-    response = await fetcher(`${product.apiBase}${path3}`, {
+    response = await fetcher(`${product.apiBase}${path4}`, {
       method: init.method,
       headers,
       ...payload === void 0 ? {} : { body: payload },
       signal: AbortSignal.timeout(LOOMY_REQUEST_TIMEOUT_MS)
     });
   } catch (error) {
-    throw new Error(`loomy: \u8BF7\u6C42\u5931\u8D25\uFF08${path3}\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`loomy: \u8BF7\u6C42\u5931\u8D25\uFF08${path4}\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`);
   }
   let parsed;
   try {
     parsed = await response.json();
   } catch {
-    throw new Error(`loomy: \u54CD\u5E94\u4E0D\u662F JSON\uFF08${path3}\uFF0CHTTP ${response.status}\uFF09`);
+    throw new Error(`loomy: \u54CD\u5E94\u4E0D\u662F JSON\uFF08${path4}\uFF0CHTTP ${response.status}\uFF09`);
   }
   const envelope = parseLoomyEnvelope(parsed);
   if (!envelope.ok) {
@@ -53689,14 +53972,14 @@ var ZCODE = {
 };
 
 // vendor/channel-pack/src/zcode-captcha.ts
-import { homedir as homedir3 } from "node:os";
+import { homedir as homedir4 } from "node:os";
 
 // vendor/channel-pack/src/chromium-session.ts
 import { spawn as spawn2, spawnSync } from "node:child_process";
 import { existsSync as existsSync6, mkdtempSync, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { createServer as createServer6 } from "node:net";
-import { homedir as homedir2, tmpdir as tmpdir2 } from "node:os";
-import { basename, isAbsolute, join as join5, posix } from "node:path";
+import { homedir as homedir3, tmpdir as tmpdir2 } from "node:os";
+import { basename, isAbsolute, join as join6, posix } from "node:path";
 var MAC_BROWSER_BUNDLES = [
   ["Google Chrome.app", "Google Chrome"],
   ["Chromium.app", "Chromium"],
@@ -53715,21 +53998,21 @@ function windowsBrowserCandidates(env, home) {
      * 用户设了它们就说明默认路径不对。若排在 `~/scoop` 之后，会出现
      * 「旧默认路径恰好存在 → 用它，而用户实际在用的那个被忽略」。
      */
-    ...env.SCOOP !== void 0 && env.SCOOP.trim().length > 0 ? [join5(env.SCOOP.trim(), "apps", "chromium", "current", "chrome.exe")] : [],
-    ...env.SCOOP_GLOBAL !== void 0 && env.SCOOP_GLOBAL.trim().length > 0 ? [join5(env.SCOOP_GLOBAL.trim(), "apps", "chromium", "current", "chrome.exe")] : [],
+    ...env.SCOOP !== void 0 && env.SCOOP.trim().length > 0 ? [join6(env.SCOOP.trim(), "apps", "chromium", "current", "chrome.exe")] : [],
+    ...env.SCOOP_GLOBAL !== void 0 && env.SCOOP_GLOBAL.trim().length > 0 ? [join6(env.SCOOP_GLOBAL.trim(), "apps", "chromium", "current", "chrome.exe")] : [],
     // ② scoop 默认根目录（`~/scoop`）。实测可用。
-    join5(home, "scoop", "apps", "chromium", "current", "chrome.exe"),
+    join6(home, "scoop", "apps", "chromium", "current", "chrome.exe"),
     // ③ 系统 Chrome。
-    join5(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
-    join5(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
-    join5(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+    join6(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+    join6(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+    join6(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
     // ④ Chromium。
-    join5(localAppData, "Chromium", "Application", "chrome.exe"),
-    join5(programFiles, "Chromium", "Application", "chrome.exe"),
+    join6(localAppData, "Chromium", "Application", "chrome.exe"),
+    join6(programFiles, "Chromium", "Application", "chrome.exe"),
     // ⑤ Edge（Chromium 内核，系统普遍自带）。
-    join5(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
-    join5(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
-    join5(localAppData, "Microsoft", "Edge", "Application", "msedge.exe")
+    join6(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+    join6(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+    join6(localAppData, "Microsoft", "Edge", "Application", "msedge.exe")
   ];
 }
 function macBrowserCandidates(home) {
@@ -53763,7 +54046,7 @@ function linuxBrowserCandidates(home) {
 function browserCandidates(input = {}) {
   const platform = input.platform ?? process.platform;
   const env = input.env ?? process.env;
-  const home = input.home ?? homedir2();
+  const home = input.home ?? homedir3();
   let candidates;
   if (platform === "darwin") {
     candidates = macBrowserCandidates(home);
@@ -53860,8 +54143,8 @@ foreach ($h in $all) {
 }
 Write-Output "hidden=$n"
 `;
-    const dir = mkdtempSync(join5(tmpdir2(), "zcode-hide-"));
-    const file = join5(dir, "hide.ps1");
+    const dir = mkdtempSync(join6(tmpdir2(), "zcode-hide-"));
+    const file = join6(dir, "hide.ps1");
     dirCreated = dir;
     writeFileSync5(file, script, "ascii");
     const child = spawn2("powershell.exe", [
@@ -54118,7 +54401,7 @@ var ChromiumSession = class {
       );
     }
     this.spawnFailure = void 0;
-    this.profileDir = mkdtempSync(join5(tmpdir2(), this.options.profilePrefix ?? "chromium-session-"));
+    this.profileDir = mkdtempSync(join6(tmpdir2(), this.options.profilePrefix ?? "chromium-session-"));
     this.port = this.options.debugPort ?? await pickFreePort();
     const hide = this.options.hideWindow !== false;
     this.child = spawn2(executable, [
@@ -54309,7 +54592,7 @@ var ChromiumSession = class {
     const attempts = [0, 100, 500, 1500];
     const tryRemove = (index) => {
       if (index >= attempts.length) return;
-      const delay2 = attempts[index];
+      const delay3 = attempts[index];
       const run = () => {
         try {
           rmSync2(dir, { recursive: true, force: true });
@@ -54317,8 +54600,8 @@ var ChromiumSession = class {
           tryRemove(index + 1);
         }
       };
-      if (delay2 === 0) run();
-      else setTimeout(run, delay2).unref?.();
+      if (delay3 === 0) run();
+      else setTimeout(run, delay3).unref?.();
     };
     tryRemove(0);
   }
@@ -54930,7 +55213,7 @@ var ZcodeCaptchaBrowser = class {
     this.session.dispose();
   }
 };
-var ZCODE_HOME = homedir3();
+var ZCODE_HOME = homedir4();
 
 // vendor/channel-pack/src/captcha-pool.ts
 var CaptchaPool = class {
@@ -55490,8 +55773,8 @@ var CarrierPageServer = class {
    * 旧路由）在这个服务上必须 404，否则两处语义会悄悄合并成一条。
    */
   handle(request3, response) {
-    const path3 = (request3.url ?? "").split("?")[0];
-    if (path3 !== CARRIER_PAGE_ROUTE) {
+    const path4 = (request3.url ?? "").split("?")[0];
+    if (path4 !== CARRIER_PAGE_ROUTE) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("not found");
       return;
@@ -55564,6 +55847,109 @@ function buildCarrierPageHtml(config) {
     "</script></body></html>"
   ].join("\n");
 }
+
+// vendor/channel-pack/src/ttl-cache.ts
+var TtlCache = class {
+  entry;
+  inflight;
+  ttlMs;
+  ttlFor;
+  load;
+  now;
+  constructor(options) {
+    this.ttlMs = options.ttlMs;
+    this.ttlFor = options.ttlFor;
+    this.load = options.load;
+    this.now = options.now ?? (() => Date.now());
+  }
+  /**
+   * 取缓存值；过期则重新加载。
+   *
+   * @param options.force - 强制绕过缓存重新加载（用于「服务端拒绝后刷新配置」）。
+   */
+  async get(options = {}) {
+    if (options.force !== true) {
+      const hit = this.peek();
+      if (hit !== void 0) return hit.value;
+    }
+    if (this.inflight !== void 0) return await this.inflight;
+    const task = (async () => {
+      const value = await this.load();
+      this.write(value);
+      return value;
+    })();
+    this.inflight = task;
+    try {
+      return await task;
+    } finally {
+      this.inflight = void 0;
+    }
+  }
+  /**
+   * 只看缓存（**不触发加载**）。过期返回 `undefined` 并顺手丢弃。
+   *
+   * 诊断与单测用；`get()` 内部也走它，避免两处 TTL 判据漂移。
+   */
+  peek() {
+    const entry = this.entry;
+    if (entry === void 0) return void 0;
+    if (this.now() - entry.atMs >= entry.ttlMs) {
+      this.entry = void 0;
+      return void 0;
+    }
+    return entry;
+  }
+  /**
+   * ★ 看**过期后**的条目（陈旧兼顶），**不触发加载**。
+   *
+   * ## 为什么要有它（用户 2026-10-16 的要求）
+   *
+   * 「用底层缓存；加载如果得不到新数据，应该读出旧数据，不能直接返回错误
+   *（除非旧数据也没有）」—— {@link peek} 在条目过期那一刻就把 `this.entry`
+   * 丢弃了，于是「上次成功读到的值」在取数失败时**已经取不回来**。
+   *
+   * ## ⚠️ 为什么是**独立方法**而不是给 `peek` 加参数
+   *
+   * `peek()` 是**严格 TTL** 判据，被 `get()` 与多处调用方共用；给它加开关会
+   * 让「这个缓存到底严不严格」变成运行期才确定的事 —— 那正是本仓库红线
+   * 「同一语义两套判据」的形态。⇒ 两条语义各占一个方法名，调用点**写死**。
+   *
+   * ## 语义
+   *
+   * - 有条目（无论新鲜或过期）⇒ 返回它，并附 `stale: true` 标记；
+   * - 一次都没写进过 ⇒ 返回 `undefined`（**没有旧数据可兼顶**，调用方只能报错）；
+   * - ⚠️ **不丢弃**过期条目：兼顶之后取数成功会覆盖它、失败会继续用它，
+   *   两者都不需要「先扔掉再重取」—— 丢弃发生在 `write()` 里。
+   *
+   * ⚠️ **返回值带 `stale` 标记是刻意的**：调用方据此告诉用户「这是 HH:MM 的
+   * 值」，否则用户会把几分钟前的数字当成现状（`balance-cache.ts` 依赖它）。
+   */
+  peekStale() {
+    const entry = this.entry;
+    if (entry === void 0) return void 0;
+    const stale = this.now() - entry.atMs >= entry.ttlMs;
+    return stale ? { ...entry, stale: true } : { ...entry, stale: false };
+  }
+  /** 写入一个已知值（例如从别处拿到的新配置，避免下一次白加载）。 */
+  set(value) {
+    this.write(value);
+  }
+  /** 写入缓存项：有效期在**这一刻**定下（见 `TtlCacheOptions.ttlFor`）。 */
+  write(value) {
+    this.entry = { value, atMs: this.now(), ttlMs: this.effectiveTtl(value) };
+  }
+  /** 这一条该缓存多久；`ttlFor` 缺省或返回非法值时用构造参数。 */
+  effectiveTtl(value) {
+    if (this.ttlFor === void 0) return this.ttlMs;
+    const ttl = this.ttlFor(value);
+    return Number.isFinite(ttl) && ttl >= 0 ? ttl : this.ttlMs;
+  }
+  /** 清空（关停时调用）。 */
+  clear() {
+    this.entry = void 0;
+    this.inflight = void 0;
+  }
+};
 
 // vendor/channel-pack/src/zcode-login.ts
 import { randomBytes as randomBytes8, randomUUID as randomUUID8 } from "node:crypto";
@@ -58315,9 +58701,9 @@ async function* consumeAnthropicSse(body, options) {
         block.text += tail;
         yield { type: "text-delta", index: block.index, text: tail };
       }
-      const normalized = fixDsmlMarkers(block.text);
-      if (normalized === "") continue;
-      yield { type: "block-end", index: block.index, block: { type: "text", text: normalized } };
+      const normalized2 = fixDsmlMarkers(block.text);
+      if (normalized2 === "") continue;
+      yield { type: "block-end", index: block.index, block: { type: "text", text: normalized2 } };
       continue;
     }
     if (block.kind === "reasoning") {
@@ -59584,9 +59970,9 @@ function readStringArray(source, key) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 var UNPARSABLE_RESPONSE_MESSAGE = "\u8BF7\u6C42\u5931\u8D25\u6216\u54CD\u5E94\u65E0\u6CD5\u89E3\u6790";
-async function postJson2(path3, credential, product, fetcher) {
+async function postJson2(path4, credential, product, fetcher) {
   try {
-    const response = await fetcher(`${product.endpoint}${path3}`, {
+    const response = await fetcher(`${product.endpoint}${path4}`, {
       method: "POST",
       headers: checkinHeaders(credential, product),
       body: "{}",
@@ -60340,13 +60726,13 @@ function readClaimCode(body) {
   if (typeof raw === "string" && /^-?\d+$/.test(raw.trim())) return Number(raw.trim());
   return raw === void 0 ? 0 : -1;
 }
-async function postJson3(path3, credential, body, fetcher, userId) {
+async function postJson3(path4, credential, body, fetcher, userId) {
   const uid = userId ?? credential.uid;
   if (uid.length === 0) {
     return { ok: false, message: "\u7F3A\u5C11 user_id\uFF0C\u65E0\u6CD5\u6784\u9020\u8BBE\u5907\u8EAB\u4EFD", httpStatus: 0 };
   }
   try {
-    const response = await fetcher(`https://api.trae.cn${path3}`, {
+    const response = await fetcher(`https://api.trae.cn${path4}`, {
       method: "POST",
       headers: traeCheckinHeaders(credential, {}, uid),
       body,
@@ -60754,6 +61140,661 @@ async function fetchModelscopeBalanceDetailed(credential, product = MODELSCOPE) 
   };
 }
 
+// vendor/channel-pack/src/autoclaw-credits.ts
+import { randomUUID as randomUUID10 } from "node:crypto";
+
+// vendor/channel-pack/src/autoclaw-product.ts
+var AUTOCLAW_THINKING_LEVELS = Object.freeze([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+]);
+var AUTOCLAW_FALLBACK_MODELS = [
+  {
+    // ⚠️ 远端目录里**没有**这一条，但实测**直接调用仍可用**（见上方说明）。
+    //   它是唯一的 `isFree: true` 模型 ⇒ 删掉会让「免费额度」分栏变空。
+    id: "zai_glm-5.3-flash",
+    // ⚠️ 远端目录里没有这一条（故无权威 `name`），但 IDE 内置列表里显示为
+    //   `GLM-5.3-Flash` ⇒ 这里跟 IDE 对齐成 `GLM-5.3 Flash`（空格版，
+    //   与本表其余条目风格一致），仅加 `(AutoClaw)` 品牌后缀。
+    name: "GLM-5.3 Flash (AutoClaw)",
+    contextWindow: 1048576,
+    maxOutputTokens: 131072,
+    // ⚠️⚠️ **`true`，实测确认**（2026-10-17 用户反馈后重测，见
+    //   `docs/autoclaw-login-and-effort.md` 的「图片能力」一节）。
+    //   原值 `false` 是**错的**，错因值得记住：
+    //   我用「远端 `autoclaw-model-config` 目录里没有这个模型」推断它不支持，
+    //   那是**能力推断而非证据**。而第一版视觉探针又用了 64×64、笔画极细的
+    //   测试图（base64 仅 236 字符）⇒ 模型读不出 ⇒ 我误判成「不支持」。
+    //   ⇒ 换成 256×256、笔画粗、双判据（数字 7 + 红色横线）后，
+    //     **四个 `zai_*` 模型全部答对**。
+    supportsImage: true,
+    isFree: true
+  },
+  {
+    id: "zaicoding_glm-5.3",
+    // ⚠️⚠️ **远端 `name` 逐字就是 `"GLM-5.3"`**（2026-10-17 实测）。
+    //   ⇒ 它**就是** IDE 内置列表里那个 `GLM-5.3`（消耗等级「高」也对得上）。
+    //   ⚠️ 本表曾写作 `"GLM-5.3 Coding (AutoClaw)"` —— 那是**误导**：
+    //   用户会以为「Coding」是另一个模型。id 里的 `coding` 只是通道标识。
+    //   ⇒ 名字一律**以远端 `name` 为准**，只加 `(AutoClaw)` 品牌后缀。
+    name: "GLM-5.3 (AutoClaw)",
+    contextWindow: 1048576,
+    maxOutputTokens: 307200,
+    // ⚠️ **`true`，实测确认**（同上）。原值 `false` 同为误判。
+    supportsImage: true,
+    isFree: false
+  },
+  {
+    id: "zai_auto",
+    // ⚠️ 远端 `name` 是 `"Auto"`（不含品牌）⇒ 加后缀以跨渠道区分。
+    name: "Auto (AutoClaw)",
+    contextWindow: 1048576,
+    maxOutputTokens: 393216,
+    // ⚠️ **`true`，实测确认**（同上）。原值 `false` 同为误判。
+    //   注：远端 `autoclaw-model-config` 对 `zai_auto` 声明的是
+    //   `input: ["text"]` —— 但**实测它能正确读图** ⇒ 远端声明**不完整**，
+    //   这正是本仓库记过的「远端漏报 input_modalities」形态（loomy 同款）。
+    supportsImage: true,
+    isFree: false
+  },
+  {
+    id: "zai_auto-fast",
+    // ⚠️ 远端 `name` 是 `"Auto-Fast"`（连字符，与 id 的 `auto-fast` 同形）。
+    name: "Auto-Fast (AutoClaw)",
+    contextWindow: 1048576,
+    maxOutputTokens: 131072,
+    // ⚠️ 远端唯一**明确声明** `input: ["text","image"]` 的模型（与实测一致）。
+    supportsImage: true,
+    isFree: false
+  }
+];
+var AUTOCLAW_DECLARED_EFFORTS = Object.freeze(["low", "high", "max"]);
+var AUTOCLAW_DEFAULT_EFFORT = "high";
+var AUTOCLAW_EFFORT_LABELS = Object.freeze({
+  low: "\u5FEB\u901F\u601D\u8003 (Low)",
+  high: "\u6DF1\u5EA6\u601D\u8003 (High)",
+  max: "\u6781\u9650\u63A8\u7406 (Max)"
+});
+function inputModalitiesOf(entry) {
+  return entry?.supportsImage === true ? ["text", "image"] : ["text"];
+}
+var AUTOCLAW_API_BASE = "https://autoglm-acceleration-api.zhipuai.cn";
+var AUTOCLAW_APP_ID = "100003";
+var AUTOCLAW_APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
+var AUTOCLAW_SOURCE_ID = "autoclaw";
+var AUTOCLAW_PRODUCT_NAME = "autoclaw";
+var AUTOCLAW_DEFAULT_CREDENTIAL_REF = "AUTOCLAW_ACCOUNT_DEFAULT";
+var AUTOCLAW = {
+  id: "autoclaw",
+  displayName: "AutoClaw (\u667A\u8C31)",
+  apiBase: AUTOCLAW_API_BASE,
+  appId: AUTOCLAW_APP_ID,
+  appKey: AUTOCLAW_APP_KEY,
+  product: AUTOCLAW_PRODUCT_NAME,
+  defaultCredentialRef: AUTOCLAW_DEFAULT_CREDENTIAL_REF,
+  fallbackModels: AUTOCLAW_FALLBACK_MODELS
+};
+
+// vendor/channel-pack/src/autoclaw.ts
+import crypto2 from "node:crypto";
+var AUTOCLAW_CHAT_PATH = "/autoclaw-proxy/proxy/autoclaw/chat/completions";
+var AUTOCLAW_REFRESH_PATH = "/userapi/v1/refresh";
+var AUTOCLAW_REFRESH_FALLBACK_PATH = "/userapi/v1/agent-refresh";
+var AUTOCLAW_MODEL_CONFIG_PATH = "/autoclaw-proxy/proxy/autoclaw-model-config";
+var AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX = "You are AutoClaw. Answer the user directly and concisely";
+var AUTOCLAW_REQUEST_TIMEOUT_MS = 6e4;
+function calculateAutoclawSign(appId, timestamp, appKey) {
+  const payload = `${appId}&${timestamp}&${appKey}`;
+  return crypto2.createHash("md5").update(payload).digest("hex");
+}
+function cleanBearerToken(rawToken) {
+  if (!rawToken || typeof rawToken !== "string") return "";
+  return rawToken.trim().replace(/^Bearer\s+/i, "").trim();
+}
+function autoclawExpiresAtMs(expiresVal, nowMs = Date.now()) {
+  if (expiresVal === void 0 || Number.isNaN(expiresVal) || expiresVal <= 0) {
+    return void 0;
+  }
+  if (expiresVal > 1e12) {
+    return Math.floor(expiresVal);
+  }
+  if (expiresVal > 1e9) {
+    return Math.floor(expiresVal * 1e3);
+  }
+  return Math.floor(nowMs + expiresVal * 1e3);
+}
+function parseAutoclawCredential(raw) {
+  if (!raw) return void 0;
+  let obj = raw;
+  if (typeof raw === "string") {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return void 0;
+    }
+  }
+  if (typeof obj !== "object" || obj === null) return void 0;
+  const cast = obj;
+  const rawAccess = typeof cast.access_token === "string" ? cast.access_token : typeof cast.accessToken === "string" ? cast.accessToken : void 0;
+  const rawRefresh = typeof cast.refresh_token === "string" ? cast.refresh_token : typeof cast.refreshToken === "string" ? cast.refreshToken : void 0;
+  if (!rawAccess || cleanBearerToken(rawAccess).length === 0) return void 0;
+  const access = cleanBearerToken(rawAccess);
+  const refresh = rawRefresh === void 0 ? "" : cleanBearerToken(rawRefresh);
+  let expiresAt;
+  if (typeof cast.expires_at === "number") {
+    expiresAt = autoclawExpiresAtMs(cast.expires_at);
+  } else if (typeof cast.expiresAt === "number") {
+    expiresAt = autoclawExpiresAtMs(cast.expiresAt);
+  } else if (typeof cast.expires_in === "number") {
+    expiresAt = autoclawExpiresAtMs(cast.expires_in);
+  }
+  const userId = typeof cast.user_id === "string" || typeof cast.user_id === "number" ? cast.user_id : typeof cast.userId === "string" || typeof cast.userId === "number" ? cast.userId : void 0;
+  const deviceId = typeof cast.device_id === "string" ? cast.device_id : void 0;
+  const userName = typeof cast.user_name === "string" ? cast.user_name : typeof cast.userName === "string" ? cast.userName : void 0;
+  const userPhone = typeof cast.user_phone === "string" ? cast.user_phone : typeof cast.userPhone === "string" ? cast.userPhone : void 0;
+  return {
+    access_token: access,
+    refresh_token: refresh,
+    expires_at: expiresAt,
+    user_id: userId,
+    device_id: deviceId,
+    user_name: userName,
+    user_phone: userPhone
+  };
+}
+function autoclawDisplayNickname(credential, fallbackId) {
+  if (!credential) return fallbackId ?? "AutoClaw";
+  const phone = credential.user_phone;
+  if (phone && phone.trim().length > 0) {
+    const trimmed = phone.trim();
+    if (/^1[3-9]\d{9}$/.test(trimmed)) {
+      return `${trimmed.slice(0, 3)}****${trimmed.slice(7)}`;
+    }
+    return trimmed;
+  }
+  if (credential.user_name && credential.user_name.trim().length > 0) {
+    return credential.user_name.trim();
+  }
+  if (credential.user_id !== void 0 && String(credential.user_id).trim().length > 0) {
+    return `\u7528\u6237${credential.user_id}`;
+  }
+  return fallbackId ?? "AutoClaw";
+}
+function isAutoclawRefreshable(credential) {
+  return typeof credential.refresh_token === "string" && credential.refresh_token.trim().length > 0;
+}
+function isAutoclawTokenExpired(credential, marginMs = 6e4) {
+  if (!credential.expires_at) return false;
+  return Date.now() + marginMs >= credential.expires_at;
+}
+function normalizeAutoclawModel(modelId) {
+  if (!modelId) return "zai_glm-5.3-flash";
+  const trimmed = modelId.trim();
+  if (!trimmed) return "zai_glm-5.3-flash";
+  if (trimmed.startsWith("zai_") || trimmed.startsWith("zaicoding_")) {
+    return trimmed;
+  }
+  if (trimmed === "glm-5.3-flash") {
+    return "zai_glm-5.3-flash";
+  }
+  if (trimmed === "glm-5.3" || trimmed === "glm-5.3-coding") {
+    return "zaicoding_glm-5.3";
+  }
+  if (trimmed === "auto") {
+    return "zai_auto";
+  }
+  return `zai_${trimmed}`;
+}
+function autoclawMaxTokens(requested, declared) {
+  if (requested === void 0) return void 0;
+  if (!Number.isFinite(requested) || requested <= 0) return void 0;
+  const floored = Math.max(1e4, Math.floor(requested));
+  return declared !== void 0 && Number.isSafeInteger(declared) && declared > 0 ? Math.min(floored, declared) : floored;
+}
+function isAutoclawQuotaError(bodyText) {
+  const text = bodyText.toLowerCase();
+  return text.includes("insufficient") || text.includes("quota") || text.includes("\u4F59\u989D\u4E0D\u8DB3") || text.includes("\u989D\u5EA6\u4E0D\u8DB3") || text.includes("\u79EF\u5206\u4E0D\u8DB3") || text.includes("\u79EF\u5206\u5DF2\u7528\u5C3D") || text.includes("\u989D\u5EA6\u5DF2\u7528\u5C3D") || text.includes("\u4F59\u989D\u5DF2\u7528\u5C3D");
+}
+function isAutoclawAuthError(bodyText) {
+  const text = bodyText.toLowerCase();
+  return text.includes("invalid token") || text.includes("token expired") || text.includes("unauthorized") || text.includes("\u672A\u767B\u5F55") || text.includes("\u767B\u5F55\u5DF2\u5931\u6548");
+}
+function autoclawHttpErrorCode(status, body) {
+  if (isAutoclawQuotaError(body)) return "QUOTA_EXCEEDED";
+  if (isAutoclawAuthError(body)) return "AUTH";
+  if (status === 429) return "RATE_LIMIT";
+  if (status === 400 || status === 406) return "INVALID_REQUEST";
+  if (status === 401 || status === 403) return "AUTH";
+  if (status >= 500) return "SERVER";
+  return `HTTP_${status}`;
+}
+function parseAutoclawRemoteModels(payload) {
+  const out = /* @__PURE__ */ new Map();
+  const readFirst = (raw, keys) => {
+    for (const key of keys) {
+      const value = raw[key];
+      if (value !== void 0 && value !== null) return value;
+    }
+    return void 0;
+  };
+  const posInt = (value) => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : void 0;
+  const lists = [];
+  if (Array.isArray(payload)) lists.push(payload);
+  else if (payload !== null && typeof payload === "object") {
+    const root = payload;
+    for (const key of ["data", "models", "model_list", "modelList", "list", "result"]) {
+      const value = root[key];
+      if (Array.isArray(value)) {
+        lists.push(value);
+        break;
+      }
+      if (value !== null && typeof value === "object") {
+        const inner = value;
+        for (const innerKey of ["models", "model_list", "list"]) {
+          const nested = inner[innerKey];
+          if (Array.isArray(nested)) {
+            lists.push(nested);
+            break;
+          }
+        }
+        if (lists.length > 0) break;
+      }
+    }
+  }
+  for (const list of lists) {
+    for (const item of list) {
+      if (item === null || typeof item !== "object") continue;
+      const raw = item;
+      const idValue = readFirst(raw, ["id", "model_id", "modelId", "model", "name", "code"]);
+      const id = typeof idValue === "string" ? idValue.trim() : "";
+      if (id === "") continue;
+      const patch = {};
+      const ctxRaw = readFirst(raw, [
+        "contextWindow",
+        "context_window",
+        "maxContext",
+        "max_context",
+        "context_length",
+        "max_input_tokens",
+        "maxInputTokens"
+      ]);
+      const ctx = posInt(ctxRaw);
+      if (ctx !== void 0 && ctx <= 1e7 && ctx >= 1e3) patch.contextWindow = ctx;
+      const maxRaw = readFirst(raw, [
+        "maxTokens",
+        "max_tokens",
+        "maxOutputTokens",
+        "max_output_tokens",
+        "max_output"
+      ]);
+      const maxOut = posInt(maxRaw);
+      if (maxOut !== void 0 && maxOut <= 1e6) {
+        const effectiveCtx = patch.contextWindow;
+        if (effectiveCtx === void 0 || maxOut < effectiveCtx) patch.maxOutputTokens = maxOut;
+      }
+      const modalities = readFirst(raw, ["input", "input_modalities", "inputModalities", "modalities"]);
+      if (Array.isArray(modalities)) {
+        patch.supportsImage = modalities.some((m) => typeof m === "string" && m.toLowerCase() === "image");
+      } else {
+        const flag = readFirst(raw, ["supports_image", "supportsImage", "support_image"]);
+        if (typeof flag === "boolean") patch.supportsImage = flag;
+      }
+      out.set(id, patch);
+    }
+  }
+  return out;
+}
+function prepareAutoclawMessages(messages) {
+  if (!messages || messages.length === 0) {
+    return [
+      {
+        role: "system",
+        content: AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX
+      }
+    ];
+  }
+  const rawList = [...messages];
+  const first = rawList[0];
+  if (first.role === "system" && first.content === AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX) {
+    return rawList;
+  }
+  if (first.role === "system") {
+    let rawText = "";
+    if (typeof first.content === "string") {
+      rawText = first.content.trim();
+    } else if (Array.isArray(first.content)) {
+      rawText = first.content.map((p) => typeof p === "string" ? p : p?.text ?? "").join("\n").trim();
+    } else if (first.content !== void 0 && first.content !== null) {
+      rawText = String(first.content).trim();
+    }
+    if (rawText.startsWith(AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX)) {
+      rawText = rawText.slice(AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX.length).trim();
+      if (rawText.startsWith(".")) rawText = rawText.slice(1).trim();
+    }
+    const rest = rawList.slice(1);
+    const result = [
+      { role: "system", content: AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX }
+    ];
+    if (rawText.length > 0) {
+      result.push({ ...first, content: rawText });
+    }
+    result.push(...rest);
+    return result;
+  }
+  return [
+    { role: "system", content: AUTOCLAW_REQUIRED_SYSTEM_PROMPT_PREFIX },
+    ...rawList
+  ];
+}
+function buildAutoclawHeaders(options) {
+  const ts = (options.timestamp ?? Math.floor(Date.now() / 1e3)).toString();
+  const sign = calculateAutoclawSign(options.product.appId, ts, options.product.appKey);
+  const cleanToken2 = cleanBearerToken(options.accessToken);
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Auth-Appid": options.product.appId,
+    "X-Auth-TimeStamp": ts,
+    "X-Auth-Sign": sign,
+    "X-Authorization": `Bearer ${cleanToken2}`,
+    "X-Request-Model": options.modelId,
+    "X-Product": options.product.product
+  };
+  if (options.stream) {
+    headers["Accept"] = "text/event-stream";
+  }
+  return headers;
+}
+
+// vendor/channel-pack/src/autoclaw-credits.ts
+var AUTOCLAW_WALLETS_PATH = "/agent-assetmgr/api/v2/wallets";
+var AUTOCLAW_LEDGERS_PATH = "/agent-assetmgr/api/v1/ledgers_std";
+var AUTOCLAW_DAILY_CLAIM_PATH = "/userapi/v1/user-info";
+var AUTOCLAW_CREDITS_TIMEOUT_MS = 15e3;
+var AUTOCLAW_CREDIT_UNIT = "\u79EF\u5206";
+var AUTOCLAW_LEDGER_MAX_PAGES = 5;
+var AUTOCLAW_WALLET_TYPE_LABELS = {
+  reward: "\u5956\u52B1\u79EF\u5206",
+  daily: "\u6BCF\u65E5\u79EF\u5206",
+  subscription: "\u7B7E\u7EA6\u79EF\u5206",
+  fuel_pack: "\u52A0\u6CB9\u5305\u79EF\u5206",
+  other: "\u5176\u4ED6\u79EF\u5206"
+};
+function cleanToken(token) {
+  if (!token) return "";
+  return token.replace(/^Bearer\s+/i, "").trim();
+}
+function buildAutoclawCreditsHeaders(product, accessToken) {
+  const ts = Math.floor(Date.now() / 1e3).toString();
+  const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
+  const clean = cleanToken(accessToken);
+  const authVal = clean ? `Bearer ${clean}` : "";
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Auth-Appid": product.appId,
+    "X-Auth-TimeStamp": ts,
+    "X-Auth-Sign": sign,
+    "X-Lang": "zh-CN",
+    "X-Channel": "official",
+    "User-Agent": "AutoClaw/2.1.0 (win)"
+  };
+  if (authVal) {
+    headers["X-Authorization"] = authVal;
+    headers.Authorization = authVal;
+  }
+  return headers;
+}
+function makePackage3(name2, remaining, active = true) {
+  return {
+    name: name2,
+    unit: AUTOCLAW_CREDIT_UNIT,
+    remaining,
+    total: remaining,
+    used: 0,
+    active,
+    cycleStartTime: "",
+    cycleEndTime: "",
+    expiredTime: ""
+  };
+}
+function parseAutoclawWallets(walletsRaw) {
+  if (!Array.isArray(walletsRaw)) return [];
+  const items = [];
+  for (const raw of walletsRaw) {
+    if (!raw || typeof raw !== "object") continue;
+    const cast = raw;
+    items.push({
+      public_wallet_type: typeof cast.public_wallet_type === "string" ? cast.public_wallet_type : void 0,
+      display_name: typeof cast.display_name === "string" ? cast.display_name : void 0,
+      balance: typeof cast.balance === "number" && Number.isFinite(cast.balance) ? cast.balance : 0,
+      balance_view: typeof cast.balance_view === "string" ? cast.balance_view : void 0,
+      // ⚠️⚠️ **缺字段必须判为「不可见」**，不是回退成可见（P2 修正）。
+      //   官方桌面端是 `wallet.display === true` 的**严格**判断；
+      //   原写法 `typeof cast.display === 'boolean' ? cast.display : true`
+      //   在字段缺失时 fail-open ⇒ 「每日积分」池原样回归 ⇒ **原报障症状
+      //   （红色「每日 0」）逐字复现**。过滤器的契约是「显式 `false` 才丢」，
+      //   与官方判据必须逐格一致，否则同一份响应在两端得到不同的池集合。
+      display: cast.display === true,
+      priority: typeof cast.priority === "number" && Number.isFinite(cast.priority) ? cast.priority : 100
+    });
+  }
+  const visible = items.filter((item) => item.display !== false);
+  visible.sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100));
+  return visible.map((item) => {
+    const type = item.public_wallet_type ?? "other";
+    const defaultLabel = AUTOCLAW_WALLET_TYPE_LABELS[type] ?? (type ? `${type}\u79EF\u5206` : "\u5176\u4ED6\u79EF\u5206");
+    const name2 = item.display_name && item.display_name.trim() || defaultLabel;
+    const remaining = item.balance ?? 0;
+    return makePackage3(name2, remaining, true);
+  });
+}
+function parseAutoclawLedgerBatches(entriesRaw, nowMs = Date.now()) {
+  if (!Array.isArray(entriesRaw)) return [];
+  const nowSec = nowMs / 1e3;
+  const byExpiry = /* @__PURE__ */ new Map();
+  const permanentByLabel = /* @__PURE__ */ new Map();
+  for (const raw of entriesRaw) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw;
+    if (entry.mutation_type !== "credit") continue;
+    const amount = typeof entry.amount === "number" && Number.isFinite(entry.amount) ? entry.amount : 0;
+    if (amount <= 0) continue;
+    const metaDesc = typeof entry.metadata === "object" && entry.metadata !== null ? entry.metadata.description : void 0;
+    const candidates = [metaDesc, entry.description, entry.source];
+    const label = candidates.find((v) => typeof v === "string" && v.trim().length > 0);
+    const name2 = typeof label === "string" ? label.trim() : "\u79EF\u5206\u53D1\u653E";
+    const exp = typeof entry.wallet_expires_at === "number" && Number.isFinite(entry.wallet_expires_at) ? entry.wallet_expires_at : void 0;
+    if (exp === void 0 || exp <= 0) {
+      permanentByLabel.set(name2, (permanentByLabel.get(name2) ?? 0) + amount);
+      continue;
+    }
+    if (exp <= nowSec) continue;
+    const bucket = byExpiry.get(exp) ?? { amount: 0, label: name2 };
+    bucket.amount += amount;
+    byExpiry.set(exp, bucket);
+  }
+  const packages = [...byExpiry.entries()].sort((a, b) => a[0] - b[0]).map(([expSec, batch]) => ({
+    ...makePackage3(disambiguateBatchName(batch.label), batch.amount, true),
+    deductionEndTime: expSec * 1e3
+  }));
+  for (const [label, amount] of permanentByLabel) {
+    packages.push(makePackage3(disambiguateBatchName(label), amount, true));
+  }
+  return packages;
+}
+var DAILY_POOL_NAMES_HOST_COPY = ["\u6BCF\u65E5\u8D60\u9001", "\u6BCF\u65E5\u79EF\u5206"];
+function disambiguateBatchName(label) {
+  return DAILY_POOL_NAMES_HOST_COPY.includes(label) ? `${label}\uFF08\u6279\u6B21\uFF09` : label;
+}
+async function fetchAutoclawBalanceDetailed(credential, options) {
+  const token = cleanToken(credential.access_token);
+  if (!token) {
+    return { balance: null, error: "\u672A\u767B\u5F55\u6216\u51ED\u636E\u7F3A\u5931\uFF0C\u8BF7\u5148\u767B\u5F55 AutoClaw" };
+  }
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetcher ?? fetch;
+  const url = `${product.apiBase}${AUTOCLAW_WALLETS_PATH}?biz_app_id=${AUTOCLAW_SOURCE_ID}`;
+  try {
+    const headers = buildAutoclawCreditsHeaders(product, token);
+    const resp = await fetcher(url, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(AUTOCLAW_CREDITS_TIMEOUT_MS)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return {
+        balance: null,
+        error: `AutoClaw \u94B1\u5305\u67E5\u8BE2\u5931\u8D25\uFF08HTTP ${resp.status}${text ? `: ${text.slice(0, 100)}` : ""}\uFF09`
+      };
+    }
+    const json = await resp.json();
+    if (json.code !== 0) {
+      if (json.code === 41e4) {
+        return {
+          balance: null,
+          error: `AutoClaw \u767B\u5F55\u51ED\u636E\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\uFF08${json.msg ?? "\u7528\u6237\u672A\u767B\u5F55"}\uFF09`
+        };
+      }
+      return {
+        balance: null,
+        error: `AutoClaw \u94B1\u5305\u67E5\u8BE2\u5931\u8D25\uFF08code: ${json.code}\uFF0Cmsg: ${json.msg ?? "\u672A\u77E5\u9519\u8BEF"}\uFF09`
+      };
+    }
+    const data = json.data;
+    const total = typeof data?.total_balance === "number" && Number.isFinite(data.total_balance) ? data.total_balance : 0;
+    const walletPackages = parseAutoclawWallets(data?.wallets);
+    let packages = walletPackages;
+    if (total > 0) {
+      try {
+        const entries = await fetchAutoclawLedgerEntries(credential, options);
+        const batches = parseAutoclawLedgerBatches(entries);
+        const batchSum = batches.reduce((sum, pkg) => sum + pkg.remaining, 0);
+        if (batches.length > 0 && batchSum === total) {
+          packages = batches;
+        }
+      } catch {
+      }
+    }
+    if (packages.length === 0) {
+      if (total > 0) packages = [makePackage3("\u5956\u52B1\u79EF\u5206", total, true)];
+    }
+    const balance = {
+      total,
+      packages,
+      expiredTotal: 0
+    };
+    return { balance };
+  } catch (error) {
+    return {
+      balance: null,
+      error: `AutoClaw \u94B1\u5305\u7F51\u7EDC\u8BF7\u6C42\u5F02\u5E38\uFF1A${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+async function fetchAutoclawLedgerEntries(credential, options) {
+  const token = cleanToken(credential.access_token);
+  if (!token) return [];
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetcher ?? fetch;
+  const all = [];
+  let cursor;
+  const deadline = AbortSignal.timeout(AUTOCLAW_CREDITS_TIMEOUT_MS);
+  for (let page = 0; page < AUTOCLAW_LEDGER_MAX_PAGES; page++) {
+    const query = new URLSearchParams({
+      asset_type: "point",
+      wallet_type: "all",
+      page_size: "100",
+      flow_direction: "income"
+    });
+    if (cursor !== void 0) query.set("cursor", cursor);
+    let resp;
+    try {
+      resp = await fetcher(`${product.apiBase}${AUTOCLAW_LEDGERS_PATH}?${query.toString()}`, {
+        method: "GET",
+        headers: buildAutoclawCreditsHeaders(product, token),
+        signal: deadline
+      });
+    } catch {
+      return all;
+    }
+    if (!resp.ok) return all;
+    const json = await resp.json();
+    if (json.code !== 0 || !Array.isArray(json.data?.entries)) return all;
+    all.push(...json.data.entries);
+    const next = json.data.next_cursor ?? json.data.nextCursor;
+    cursor = typeof next === "string" && next.length > 0 ? next : void 0;
+    if (cursor === void 0) break;
+  }
+  return all;
+}
+async function claimAutoclawDailyQuota(credential, options) {
+  const token = cleanToken(credential.access_token);
+  if (!token) {
+    return { kind: "failed", code: -1, message: "\u672A\u767B\u5F55\u6216\u51ED\u636E\u7F3A\u5931\uFF0C\u8BF7\u5148\u767B\u5F55 AutoClaw" };
+  }
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetcher ?? fetch;
+  const deviceId = options?.deviceId ?? credential.device_id ?? randomUUID10();
+  const url = `${product.apiBase}${AUTOCLAW_DAILY_CLAIM_PATH}`;
+  const body = {
+    source_id: AUTOCLAW_SOURCE_ID,
+    device_id: deviceId
+  };
+  try {
+    const headers = buildAutoclawCreditsHeaders(product, token);
+    const resp = await fetcher(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(AUTOCLAW_CREDITS_TIMEOUT_MS)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return {
+        kind: "failed",
+        code: resp.status,
+        message: `AutoClaw \u7B7E\u5230\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${resp.status}${text ? `: ${text.slice(0, 100)}` : ""}\uFF09`
+      };
+    }
+    const json = await resp.json();
+    if (json.code !== 0) {
+      return {
+        kind: "failed",
+        code: json.code ?? -1,
+        message: json.msg ?? "AutoClaw \u7B7E\u5230\u5931\u8D25"
+      };
+    }
+    const completedOnRequest = json.data?.daily_check_in_completed_on_request === true;
+    if (completedOnRequest) {
+      return {
+        kind: "claimed",
+        credit: 0,
+        // ⚠️ 用契约里**专为此存在**的 `delayedMessage`（不是 `message` ——
+        //   `claimed` 分支的 `message` 字段并不存在，写了会编译期报错，
+        //   这正是类型系统的价值：它挡住了「随便加个字段」）。
+        delayedMessage: "\u7B7E\u5230\u6210\u529F\uFF08\u4E0A\u6E38\u4E0D\u8FD4\u56DE\u79EF\u5206\u6570\u91CF\uFF0C\u8BF7\u67E5\u770B\u5237\u65B0\u540E\u7684\u4F59\u989D\uFF09",
+        streakDays: 0,
+        isStreakDay: false
+      };
+    }
+    return {
+      kind: "already-claimed",
+      message: "\u4ECA\u65E5\u5DF2\u5B8C\u6210\u7B7E\u5230"
+    };
+  } catch (error) {
+    return {
+      kind: "failed",
+      code: -1,
+      message: `AutoClaw \u7B7E\u5230\u7F51\u7EDC\u8BF7\u6C42\u5F02\u5E38\uFF1A${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
 // vendor/channel-pack/src/accio-product.ts
 var ACCIO_TOKEN_EXCHANGE_PATH = "/api/oauth/token";
 var ACCIO_REFRESH_PATH = "/api/auth/refresh_token";
@@ -61120,6 +62161,9 @@ function storeFileFor(ref) {
   const safe = ref.replace(/[^A-Za-z0-9._-]/g, "_");
   return path.join(officeaceHome(), `session-${safe}.json`);
 }
+function credentialUsable(credential) {
+  return credential !== void 0 && typeof credential.access === "string" && credential.access.length > 0 && typeof credential.securityToken === "string" && credential.securityToken.length > 0;
+}
 function readStoredCredential(ref) {
   try {
     const raw = fs.readFileSync(storeFileFor(ref), "utf8").replace(/^\uFEFF/, "");
@@ -61294,7 +62338,7 @@ async function fetchModelTokenRates() {
   const out = /* @__PURE__ */ new Map();
   try {
     const credential = readStoredCredential();
-    if (credential === void 0 || credential.access.length === 0 || credential.securityToken.length === 0) {
+    if (!credentialUsable(credential)) {
       return out;
     }
     const raw = await signAndGet(
@@ -61614,7 +62658,7 @@ async function fetchSubscriptionSummary(staleHours = 48, ref, credential, creden
   void staleHours;
   return { ...cached2, stale: true };
 }
-async function signAndRequest(url, credential, method, body) {
+async function signAndRequest(url, credential, method, body, statusOut, errorBodyOut) {
   const region = "cn-southwest-2";
   const service = "apic";
   const pad = (n) => n >= 10 ? String(n) : `0${n}`;
@@ -61666,6 +62710,10 @@ async function signAndRequest(url, credential, method, body) {
     ...body === void 0 ? {} : { body },
     signal: AbortSignal.timeout(3e4)
   });
+  if (statusOut !== void 0) statusOut.status = r.status;
+  if (errorBodyOut !== void 0 && !r.ok) {
+    errorBodyOut.text = await r.text().catch(() => "");
+  }
   return r.ok ? await r.text() : "";
 }
 async function signAndGet(url, credential) {
@@ -61678,7 +62726,7 @@ async function fetchCloudSubscription(ref) {
   return fetchCloudSubscriptionFor(credential);
 }
 async function fetchCloudSubscriptionFor(credential) {
-  if (credential === void 0 || credential.access.length === 0 || credential.securityToken.length === 0) {
+  if (!credentialUsable(credential)) {
     return void 0;
   }
   const body = await signAndGet(
@@ -61733,24 +62781,42 @@ async function fetchCloudSubscriptionFor(credential) {
   };
 }
 async function claimDailyBonus(credential) {
-  if (credential === void 0 || credential.access.length === 0 || credential.securityToken.length === 0) {
-    return [];
+  if (!credentialUsable(credential)) {
+    return { ok: false, reason: "\u51ED\u636E\u7F3A\u5931\uFF08access \u6216 securityToken \u7F3A\u5931\u6216\u4E3A\u7A7A\uFF09\uFF0C\u672A\u53D1\u8D77\u7B7E\u5230\u8BF7\u6C42" };
   }
   try {
+    const statusOut = { status: 0 };
+    const errorBodyOut = { text: "" };
     const body = await signAndRequest(
       `${OFFICEACE.defaultBaseUrl.replace(/\/+$/, "")}/v1/subscription/bonus/claim`,
       credential,
-      "POST"
+      "POST",
+      void 0,
+      statusOut,
+      errorBodyOut
     );
-    if (body.length === 0) return [];
+    if (!Number.isFinite(statusOut.status) || statusOut.status < 200 || statusOut.status >= 300) {
+      const detail = errorBodyOut.text.trim().slice(0, 200);
+      return {
+        ok: false,
+        reason: `HTTP ${statusOut.status === 0 ? "\uFF08\u672A\u53D1\u51FA/\u65E0\u54CD\u5E94\uFF09" : statusOut.status}${detail === "" ? "" : `\uFF1A${detail}`}`
+      };
+    }
+    if (body.length === 0) return { ok: true, skus: [] };
     const j = JSON.parse(body);
-    return (j.bonus_skus ?? []).map((s) => ({
-      activityId: String(s.activity_id ?? ""),
-      activityName: typeof s.activity_name === "string" ? s.activity_name : "\u6D3B\u52A8\u5956\u52B1",
-      points: Number(s.points) || 0
-    }));
-  } catch {
-    return [];
+    return {
+      ok: true,
+      skus: (j.bonus_skus ?? []).map((s) => ({
+        activityId: String(s.activity_id ?? ""),
+        activityName: typeof s.activity_name === "string" ? s.activity_name : "\u6D3B\u52A8\u5956\u52B1",
+        points: Number(s.points) || 0
+      }))
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error)
+    };
   }
 }
 var lastClaimAt = /* @__PURE__ */ new Map();
@@ -61759,7 +62825,21 @@ function maybeClaimBonus(credential, ref) {
   const hourKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}`;
   if (lastClaimAt.get(ref) === hourKey) return Promise.resolve([]);
   lastClaimAt.set(ref, hourKey);
-  return claimDailyBonus(credential).catch(() => []);
+  const releaseSlot = () => {
+    if (lastClaimAt.get(ref) === hourKey) lastClaimAt.delete(ref);
+  };
+  return claimDailyBonus(credential).then((result) => {
+    if (result.ok) return result.skus;
+    releaseSlot();
+    console.warn(`[officeace] \u6BCF\u65E5\u7B7E\u5230\u5931\u8D25\uFF08ref=${ref}\uFF09\uFF1A${result.reason}`);
+    return [];
+  }).catch((error) => {
+    releaseSlot();
+    console.warn(
+      `[officeace] \u6BCF\u65E5\u7B7E\u5230\u5F02\u5E38\uFF08ref=${ref}\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+    );
+    return [];
+  });
 }
 function basicAuthorization(credential) {
   return "Basic " + Buffer.from(`${credential.modelAppKey}:${credential.modelAppSecret}`).toString("base64");
@@ -62049,7 +63129,20 @@ var WIRED_EXPIRY_PROVIDERS = Object.freeze([
   //    承诺的重置时刻（本仓库红线「绝不编造数字」）。
   //    ⚠️ 与 accio / officeace 同款陷阱：**决定候选表可见性的是这张表、
   //    不是 `AGGREGATE_CHANNELS`** —— 只加后者等于没接。
-  "modelscope"
+  "modelscope",
+  // ⚠️ **AutoClaw**（智谱，2026-10-17 审计 P0 修复）：折算原语见 `autoclawExpiry`，
+  //    属「**有余额但不下发到期时间**」那一类（钱包报文里没有任何时间字段）
+  //    ⇒ 有余额即 `NEVER`、烧光即 `UNUSABLE`。
+  //    ⚠️⚠️ **这是该陷阱的第 4 次复发**（cline → accio → officeace → autoclaw），
+  //    症状恒定**静默**：PR 只加了 `aggregate-adapter.ts` 的 `AGGREGATE_CHANNELS`
+  //    （模型层归并会发生、看起来接好了），而**决定候选表可见性的是本表**
+  //    —— 漏加它 ⇒ 折算恒 `UNUSABLE`（`aggregate-expiry.ts` 的 `createExpiryProbe`
+  //    与 `aggregate-adapter.ts` 的 4 处过滤都按本表），用户在聚合轮换列表里
+  //    **永远看不到 autoclaw**，且**无报错、无日志**。
+  //    ⚠️ 三处必须同改：本表 + `provider-expiry.ts` 的 `createProviderExpiry()`
+  //    + 折算原语（后两者的一致性由 `expiry-runtime-parity.spec.ts` 真跑
+  //    `apply()` 锁一致）。
+  "autoclaw"
 ]);
 var EXPIRY_CACHE_TTL_MS = 6e4;
 function createExpiryProbe(pool, firstModelIdOf, options = {}) {
@@ -62234,6 +63327,15 @@ async function modelscopeExpiry(credential, product, cached2) {
     cached2,
     async () => {
       const result = await fetchModelscopeBalanceDetailed(credential, product);
+      return result.balance;
+    }
+  ));
+}
+async function autoclawExpiry(credential, product, cached2) {
+  return sharedPackageExpiry(() => fetchBalanceWithCache(
+    cached2,
+    async () => {
+      const result = await fetchAutoclawBalanceDetailed(credential, { product });
       return result.balance;
     }
   ));
@@ -63675,11 +64777,11 @@ function minimaxRetrySleep(ms) {
     setTimeout(resolve2, ms);
   });
 }
-async function minimaxFetchWithRetry(fetchOnce, signal, retries = MINIMAX_TRANSPORT_RETRIES) {
+async function minimaxFetchWithRetry(fetchOnce2, signal, retries = MINIMAX_TRANSPORT_RETRIES) {
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      return await fetchOnce();
+      return await fetchOnce2();
     } catch (error) {
       lastError = error;
       if (signal?.aborted === true) throw error;
@@ -63690,11 +64792,87 @@ async function minimaxFetchWithRetry(fetchOnce, signal, retries = MINIMAX_TRANSP
   }
   throw lastError;
 }
+var MINIMAX_REDIRECT_MAX_HOPS = 3;
+var MINIMAX_TRUSTED_HOST_SUFFIXES = [
+  "minimax.io",
+  "minimax.cn",
+  "minimaxi.com",
+  "xaminim.com"
+];
+function hasHostSuffix(hostname, suffix) {
+  const host = hostname.trim().toLowerCase();
+  const bare = suffix.trim().toLowerCase();
+  if (host.length === 0 || bare.length === 0) return false;
+  return host === bare || host.endsWith(`.${bare}`);
+}
+function isMinimaxTrustedHost(hostname) {
+  return MINIMAX_TRUSTED_HOST_SUFFIXES.some((suffix) => hasHostSuffix(hostname, suffix));
+}
+function isFollowableRedirect(status) {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+async function minimaxFetchFollowRedirects(url, buildInit, fetcher = fetch, signal, maxHops = MINIMAX_REDIRECT_MAX_HOPS, onGeoRoute) {
+  let currentUrl = url;
+  for (let hop = 0; hop <= maxHops; hop += 1) {
+    const init = buildInit(currentUrl);
+    const response = await fetcher(currentUrl, { ...init, redirect: "manual" });
+    if (!isFollowableRedirect(response.status)) return response;
+    if (signal?.aborted === true) return response;
+    const location = response.headers.get("location");
+    if (location === null || location.length === 0) return response;
+    try {
+      if (isMinimaxGeoRoute(new URL(currentUrl).hostname, response.status, location)) {
+        onGeoRoute?.();
+      }
+    } catch {
+    }
+    let nextUrl;
+    try {
+      nextUrl = new URL(location, currentUrl);
+    } catch {
+      return response;
+    }
+    if (nextUrl.protocol !== "https:" || !isMinimaxTrustedHost(nextUrl.hostname)) return response;
+    if (hop === maxHops) return response;
+    await response.body?.cancel().catch(() => void 0);
+    currentUrl = nextUrl.toString();
+  }
+  throw new Error("minimax: redirect follow exhausted");
+}
+async function minimaxFetch(url, buildInit, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  return minimaxFetchWithRetry(
+    () => minimaxFetchFollowRedirects(
+      url,
+      buildInit,
+      fetcher,
+      options.signal,
+      options.maxHops,
+      options.onGeoRoute
+    ),
+    options.signal,
+    options.retries
+  );
+}
+var MINIMAX_XFF_HEADER = "X-Forwarded-For";
+function withMinimaxXff(headers, xff) {
+  if (typeof xff !== "string") return headers;
+  if (/[\r\n]/.test(xff)) return headers;
+  const value = xff.trim();
+  if (value.length === 0) return headers;
+  headers.set(MINIMAX_XFF_HEADER, value);
+  return headers;
+}
 function minimaxHeaders(credential) {
   const headers = new Headers();
   headers.set("Authorization", `Bearer ${credential.access_token}`);
   headers.set("Accept", "application/json");
   return headers;
+}
+function minimaxHeadersFor(credential, xff, productId) {
+  const headers = minimaxHeaders(credential);
+  if (productId !== "minimaxintl") return headers;
+  return withMinimaxXff(headers, xff);
 }
 function minimaxInferHeaders(credential) {
   const headers = new Headers();
@@ -63702,6 +64880,30 @@ function minimaxInferHeaders(credential) {
   headers.set("Content-Type", "application/json");
   headers.set("Accept", "text/event-stream");
   return headers;
+}
+function minimaxInferHeadersFor(credential, xff, productId) {
+  const headers = minimaxInferHeaders(credential);
+  if (productId !== "minimaxintl") return headers;
+  return withMinimaxXff(headers, xff);
+}
+function isMinimaxGeoRoute(fromHost, status, location) {
+  if (status !== 307 && status !== 308) return false;
+  if (location === null || location.length === 0) return false;
+  const from = fromHost.trim().toLowerCase();
+  if (!from.startsWith("agent.") || !from.endsWith("minimax.io")) return false;
+  try {
+    const target = new URL(location);
+    return hasHostSuffix(target.hostname, "minimaxi.com");
+  } catch {
+    return false;
+  }
+}
+function describeMinimaxGeoRoute(detail) {
+  const base = "MiniMax \u56FD\u9645\u7AD9\u6309**\u51FA\u53E3 IP \u6240\u5728\u533A\u57DF**\u5206\u6D41\uFF1A\u5F53\u524D\u51FA\u53E3 IP \u88AB\u5224\u6210\u4E2D\u56FD\u533A\uFF08\u5185\u7F51\u6216\u65E0\u6CD5\u89E3\u6790\u7684\u5730\u5740\u4E5F\u4F1A\u88AB\u5224\u6210\u4E2D\u56FD\u533A\uFF09\uFF0C\u8BF7\u6C42\u5DF2\u88AB\u91CD\u5B9A\u5411\u5230\u4E2D\u56FD\u7AD9 \u2014\u2014 \u8FD9\u4E0D\u662F\u51ED\u636E\u95EE\u9898\u3002\u5EFA\u8BAE\u5148\u786E\u8BA4\u672C\u673A\u51FA\u53E3 IP\uFF08\u4F8B\u5982\u6D4F\u89C8\u5668\u6253\u5F00 ifconfig.me\uFF09\uFF0C\u7136\u540E\u4E8C\u9009\u4E00\uFF1A\u2460 \u5728 Jet Hub \u7684\u300CMiniMax Code (\u56FD\u9645\u7248)\u300D\u9762\u677F\u91CC\u586B\u5199\u4E00\u4E2A\u6D77\u5916 IP\uFF08X-Forwarded-For\uFF09\uFF1B\u2461 \u7528\u4EE3\u7406\u628A\u51FA\u53E3 IP \u6539\u5230\u6D77\u5916\u3002";
+  const trimmed = typeof detail === "string" ? detail.trim() : "";
+  if (trimmed.length === 0) return base;
+  const clipped = trimmed.length > 200 ? `${trimmed.slice(0, 200)}\u2026` : trimmed;
+  return `\u4E0A\u6E38\u8FD8\u8FD4\u56DE\u4E86\uFF1A${clipped}\u3002\u53E6\u5916\uFF1A${base}`;
 }
 function positiveInt(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : void 0;
@@ -64044,7 +65246,7 @@ import { Service as Service10 } from "@deepseek-ai/cordis";
 import { credentialRef as credentialRef11 } from "@deepseek-ai/dsh-credentials";
 
 // vendor/channel-pack/src/accio.ts
-import { createHash as createHash9, randomBytes as randomBytes11, randomUUID as randomUUID10 } from "node:crypto";
+import { createHash as createHash9, randomBytes as randomBytes11, randomUUID as randomUUID11 } from "node:crypto";
 function accioExpiresAtMs(raw) {
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n) || n <= 0) return void 0;
@@ -64062,7 +65264,7 @@ function isAccioRefreshable(credential) {
   return typeof credential?.refresh_token === "string" && credential.refresh_token !== "";
 }
 function accioRequestId() {
-  return `req-${Date.now()}-${randomUUID10().slice(0, 8)}`;
+  return `req-${Date.now()}-${randomUUID11().slice(0, 8)}`;
 }
 function accioSgK(requestId) {
   return createHash9("md5").update(requestId, "utf8").digest("hex");
@@ -64179,40 +65381,40 @@ function openBrowser2(url) {
   } catch {
   }
 }
-function unwrapTokenEnvelope(path3, status, text) {
+function unwrapTokenEnvelope(path4, status, text) {
   let body;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(`accio: ${path3} \u8FD4\u56DE\u975E JSON\uFF08HTTP ${status}\uFF09\uFF1A${text.slice(0, 200)}`);
+    throw new Error(`accio: ${path4} \u8FD4\u56DE\u975E JSON\uFF08HTTP ${status}\uFF09\uFF1A${text.slice(0, 200)}`);
   }
   const env = body;
   if (env?.success !== true) {
     const code = env?.code ?? status;
     const message2 = env?.message ?? "";
-    throw new Error(`accio: ${path3} \u5931\u8D25\uFF08${String(code)} ${String(message2)}\uFF09`.trim());
+    throw new Error(`accio: ${path4} \u5931\u8D25\uFF08${String(code)} ${String(message2)}\uFF09`.trim());
   }
   const data = env?.data;
   if (data === null || typeof data !== "object") {
-    throw new Error(`accio: ${path3} \u54CD\u5E94\u7F3A data \u5BF9\u8C61`);
+    throw new Error(`accio: ${path4} \u54CD\u5E94\u7F3A data \u5BF9\u8C61`);
   }
   return data;
 }
-function toTokenResult(path3, data) {
+function toTokenResult(path4, data) {
   const access = data.accessToken;
   const refresh = data.refreshToken;
   const expiresAt = accioExpiresAtMs(data.expiresAt);
-  if (typeof access !== "string" || access === "") throw new Error(`accio: ${path3} \u54CD\u5E94\u7F3A accessToken`);
-  if (typeof refresh !== "string" || refresh === "") throw new Error(`accio: ${path3} \u54CD\u5E94\u7F3A refreshToken`);
-  if (expiresAt === void 0) throw new Error(`accio: ${path3} \u54CD\u5E94\u7F3A expiresAt\uFF08\u6216\u975E\u6B63\u6570\uFF09`);
+  if (typeof access !== "string" || access === "") throw new Error(`accio: ${path4} \u54CD\u5E94\u7F3A accessToken`);
+  if (typeof refresh !== "string" || refresh === "") throw new Error(`accio: ${path4} \u54CD\u5E94\u7F3A refreshToken`);
+  if (expiresAt === void 0) throw new Error(`accio: ${path4} \u54CD\u5E94\u7F3A expiresAt\uFF08\u6216\u975E\u6B63\u6570\uFF09`);
   const out = { access_token: access, refresh_token: refresh, expires_at: expiresAt };
   if (typeof data.sgcookie === "string" && data.sgcookie !== "") out.sgcookie = data.sgcookie;
   return out;
 }
 async function exchangeAccioCode(options) {
   const fetcher = options.fetcher ?? fetch;
-  const path3 = ACCIO_TOKEN_EXCHANGE_PATH;
-  const res = await fetcher(`${ACCIO.gatewayBaseUrl}${path3}`, {
+  const path4 = ACCIO_TOKEN_EXCHANGE_PATH;
+  const res = await fetcher(`${ACCIO.gatewayBaseUrl}${path4}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -64224,12 +65426,12 @@ async function exchangeAccioCode(options) {
     signal: AbortSignal.timeout(ACCIO_REQUEST_TIMEOUT_MS)
   });
   const text = await res.text();
-  return toTokenResult(path3, unwrapTokenEnvelope(path3, res.status, text));
+  return toTokenResult(path4, unwrapTokenEnvelope(path4, res.status, text));
 }
 async function refreshAccioCredential(options) {
   const fetcher = options.fetcher ?? fetch;
-  const path3 = ACCIO_REFRESH_PATH;
-  const res = await fetcher(`${ACCIO.gatewayBaseUrl}${path3}`, {
+  const path4 = ACCIO_REFRESH_PATH;
+  const res = await fetcher(`${ACCIO.gatewayBaseUrl}${path4}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -64239,7 +65441,7 @@ async function refreshAccioCredential(options) {
     signal: AbortSignal.timeout(ACCIO_REQUEST_TIMEOUT_MS)
   });
   const text = await res.text();
-  return toTokenResult(path3, unwrapTokenEnvelope(path3, res.status, text));
+  return toTokenResult(path4, unwrapTokenEnvelope(path4, res.status, text));
 }
 
 // vendor/channel-pack/src/accio-auth.ts
@@ -65175,6 +66377,45 @@ var PROVIDER_REGISTRY = Object.freeze([
     channel: true
   },
   {
+    id: "autoclaw",
+    label: "AutoClaw (\u667A\u8C31)",
+    displayName: "AutoClaw (\u667A\u8C31)",
+    logoClass: "autoclaw",
+    credits: { balance: true, dailyCheckin: true },
+    // ⚠️⚠️ **2026-10-17 审计修正：本渠道「按批次分档」是尽力而为，不是保证**。
+    //
+    // 事实链（三条缺一，结论就反了）：
+    // ① `autoclaw-credits.ts` 用**流水批次包**替换钱包包，逐包带 `deductionEndTime`
+    //    （毫秒，与 officeace / buddy 同单位）—— 钱包接口本身没有任何到期字段；
+    // ② ⚠️ **流水的 `amount` 是「历史发放额」，不是「该批次当前剩余额」** ——
+    //    上游**没有**「该批次已消耗多少」这一腿（对照 `trae-credits.ts` 的
+    //    `remaining = creditsLimit - used`：两腿都在才算得出剩余；本渠道只有发放那一腿）。
+    //    ⇒ 用户**消耗过积分后**，未过期批次之和 ≠ `total_balance`；
+    // ③ 因此下游以「批次和 == `total_balance`」为**守恒安全网**，不守恒即回退钱包包
+    //    （总额与长期数仍正确，只是**没有**临期档）⇒ 临期档只在恰好守恒的那次轮询出现。
+    //
+    // ⇒ 本行是「把 `windowDays` 回传给客户端，使分档行在有批次包时能渲染」的
+    //    **能力开关**，不是数据保证。
+    // ⚠️ 与 `src/aggregate-expiry.ts` 的 `autoclawExpiry` 注释口径一致：
+    //    聚合折算恒为 `NEVER`（钱包包无 `deductionEndTime`），两处不冲突。
+    creditPackages: true,
+    // ⚠️ 与 buddy / officeace 同口径（按到期时间分桶，窗口复用
+    //    `DSH_BUDDY_EXPIRING_WINDOW_DAYS`）。**必须登记**：查表分派只认这个
+    //    标记回传 `windowDays`，漏登记的症状是「胶囊只有合计、没有三档带色行」
+    //    —— 与 officeace 当初（`officeace 必须回传 windowDays`）同一根因。
+    // ⚠️ 「每日红 + 刷新倒计时」**不适用于本渠道**：那套语义
+    //    （`DAILY_POOL_NAMES = ['每日赠送','每日积分']`，**精确相等**匹配，见
+    //    `plugin-src/client/credit-expiry.js`）是 Loomy / Raccoon 那种
+    //    **当日重置池**（未用完随重置作废）；AutoClaw 的每日签到积分是发放进余额、
+    //    按批次各自到期 —— 隐藏池（服务端 `display:false`）已在解析器滤掉，
+    //    流水批次的包名取服务端描述（实测「每日签到」**不等于**「每日积分」）
+    //    ⇒ 两条路径都不再命中那份名单，「每日 0」红字消失。
+    usesExpiryWindow: true,
+    rateLimit: false,
+    settingsNamespace: "llm-autoclaw",
+    channel: true
+  },
+  {
     id: "modelscope",
     label: "ModelScope (\u9B54\u642D)",
     displayName: "ModelScope (\u9B54\u642D)",
@@ -65644,18 +66885,25 @@ function unwrapEnvelopeData(payload) {
   const nested = payload.data;
   return typeof nested === "object" && nested !== null && !Array.isArray(nested) ? nested : payload;
 }
-async function requestEnvelope(url, credential, init, fetcher) {
+async function requestEnvelope(url, credential, init, fetcher, product, xff) {
   try {
-    const headers = minimaxHeaders(credential);
-    if (init.body !== void 0) headers.set("Content-Type", "application/json");
-    const response = await minimaxFetchWithRetry(
-      () => fetcher(url, {
+    const buildInit = () => {
+      const headers = minimaxHeadersFor(credential, xff, product.id);
+      if (init.body !== void 0) headers.set("Content-Type", "application/json");
+      return {
         method: init.method,
         headers,
         ...init.body === void 0 ? {} : { body: init.body },
         signal: AbortSignal.timeout(MINIMAX_REQUEST_TIMEOUT_MS)
-      })
-    );
+      };
+    };
+    let geoRouted = false;
+    const response = await minimaxFetch(url, buildInit, {
+      fetcher,
+      onGeoRoute: () => {
+        geoRouted = true;
+      }
+    });
     const text = await response.text();
     let payload;
     try {
@@ -65671,6 +66919,29 @@ async function requestEnvelope(url, credential, init, fetcher) {
       return { ok: false, code: -1, message: "\u54CD\u5E94\u65E0\u6CD5\u89E3\u6790" };
     }
     const record3 = payload;
+    if (geoRouted && !response.ok) {
+      return {
+        ok: false,
+        code: response.status,
+        message: describeMinimaxGeoRoute(describeMinimaxApiError(record3))
+      };
+    }
+    const apiError = describeMinimaxApiError(record3);
+    if (!response.ok) {
+      const suffix = apiError === void 0 ? "" : `\uFF1A${apiError}`;
+      if (response.status === 401 || response.status === 403) {
+        return {
+          ok: false,
+          code: response.status,
+          message: `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${response.status}\uFF09${suffix || "\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7"}`
+        };
+      }
+      return {
+        ok: false,
+        code: response.status,
+        message: `\u670D\u52A1\u7AEF\u8FD4\u56DE HTTP ${response.status}${suffix}`
+      };
+    }
     const baseResp = typeof record3.base_resp === "object" && record3.base_resp !== null ? record3.base_resp : {};
     const statusCode = finiteNumber(baseResp.status_code);
     const statusMsg = typeof baseResp.status_msg === "string" ? baseResp.status_msg : "";
@@ -65686,29 +66957,53 @@ async function requestEnvelope(url, credential, init, fetcher) {
     };
   }
 }
-function withTimezone(base, path3, timezoneId) {
-  const url = new URL(`${base}${path3}`);
+function describeMinimaxApiError(record3) {
+  const candidates = [
+    record3.error_description,
+    record3.error,
+    record3.message,
+    record3.msg,
+    // 嵌套形态：`{ error: { message } }`
+    typeof record3.error === "object" && record3.error !== null ? record3.error.message : void 0
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      const text = candidate.trim();
+      return text.length > 200 ? `${text.slice(0, 200)}\u2026` : text;
+    }
+  }
+  return void 0;
+}
+function withTimezone(base, path4, timezoneId) {
+  const url = new URL(`${base}${path4}`);
   url.searchParams.set("timezone_id", timezoneId);
   return url.toString();
 }
-async function fetchMinimaxSigninStatus(credential, fetcher = fetch, product = MINIMAX) {
+async function fetchMinimaxSigninStatus(credential, fetcher = fetch, product = MINIMAX, xff) {
+  const detailed = await fetchMinimaxSigninStatusDetailed(credential, fetcher, product, xff);
+  return detailed.status;
+}
+async function fetchMinimaxSigninStatusDetailed(credential, fetcher = fetch, product = MINIMAX, xff) {
   const url = withTimezone(
     product.apiHost,
     MINIMAX_SIGNIN_STATUS_PATH,
     resolveMinimaxTimezoneId()
   );
-  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher);
-  if (!result.ok) return null;
+  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher, product, xff);
+  if (!result.ok) return { status: null, error: result.message };
   const panel = parseMinimaxSigninPanel(unwrapEnvelopeData(result.payload));
-  return panel === void 0 ? null : minimaxPanelToCheckinStatus(panel);
+  if (panel === void 0) {
+    return { status: null, error: "\u7B7E\u5230\u9762\u677F\u54CD\u5E94\u5F62\u72B6\u4E0D\u7B26\u5408\u9884\u671F\uFF08\u670D\u52A1\u7AEF\u53EF\u80FD\u6539\u7248\uFF09" };
+  }
+  return { status: minimaxPanelToCheckinStatus(panel) };
 }
-async function claimMinimaxDailyCheckin(credential, fetcher = fetch, product = MINIMAX) {
+async function claimMinimaxDailyCheckin(credential, fetcher = fetch, product = MINIMAX, xff) {
   const url = withTimezone(
     product.apiHost,
     MINIMAX_SIGNIN_CLAIM_PATH,
     resolveMinimaxTimezoneId()
   );
-  const result = await requestEnvelope(url, credential, { method: "POST", body: "{}" }, fetcher);
+  const result = await requestEnvelope(url, credential, { method: "POST", body: "{}" }, fetcher, product, xff);
   if (!result.ok) {
     return { kind: "failed", code: result.code, message: result.message };
   }
@@ -65730,20 +67025,22 @@ async function claimMinimaxDailyCheckin(credential, fetcher = fetch, product = M
     isStreakDay: status?.isStreakDay ?? false
   };
 }
-async function fetchMinimaxCreditBalance(credential, fetcher = fetch, product = MINIMAX) {
+async function fetchMinimaxCreditBalanceDetailed(credential, fetcher = fetch, product = MINIMAX, xff) {
   const url = `${product.apiHost}${MINIMAX_CREDIT_DETAILS_PATH}`;
-  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher);
-  if (!result.ok) return null;
+  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher, product, xff);
+  if (!result.ok) return { balance: null, error: result.message };
   const data = unwrapEnvelopeData(result.payload);
   const details = Array.isArray(data.details) ? data.details : void 0;
-  if (details === void 0 && finiteNumber(data.total_count) === void 0) return null;
+  if (details === void 0 && finiteNumber(data.total_count) === void 0) {
+    return { balance: null, error: "\u4F59\u989D\u54CD\u5E94\u5F62\u72B6\u4E0D\u7B26\u5408\u9884\u671F\uFF08\u670D\u52A1\u7AEF\u53EF\u80FD\u6539\u7248\uFF09" };
+  }
   let total = 0;
   for (const entry of details ?? []) {
     if (typeof entry !== "object" || entry === null) continue;
     const remaining = looseAmount(entry.remaining_amount);
     if (remaining !== void 0) total += remaining;
   }
-  return { total: roundCredits(total), packages: [], expiredTotal: 0 };
+  return { balance: { total: roundCredits(total), packages: [], expiredTotal: 0 } };
 }
 
 // vendor/channel-pack/src/buddy-growth.ts
@@ -65898,9 +67195,9 @@ function growthHeaders(credential, product) {
   headers.set("User-Agent", product.userAgent);
   return headers;
 }
-async function growthJson(method, path3, credential, product, body, fetcher) {
+async function growthJson(method, path4, credential, product, body, fetcher) {
   try {
-    const response = await fetcher(`${product.endpoint}${path3}`, {
+    const response = await fetcher(`${product.endpoint}${path4}`, {
       method,
       headers: growthHeaders(credential, product),
       body: method === "POST" && body !== void 0 ? JSON.stringify(body) : void 0,
@@ -65926,11 +67223,11 @@ async function growthJson(method, path3, credential, product, body, fetcher) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
 }
-function getGrowthJson(path3, credential, product, fetcher) {
-  return growthJson("GET", path3, credential, product, void 0, fetcher);
+function getGrowthJson(path4, credential, product, fetcher) {
+  return growthJson("GET", path4, credential, product, void 0, fetcher);
 }
-function postGrowthJson(path3, credential, product, body, fetcher) {
-  return growthJson("POST", path3, credential, product, body, fetcher);
+function postGrowthJson(path4, credential, product, body, fetcher) {
+  return growthJson("POST", path4, credential, product, body, fetcher);
 }
 function describeNonJsonResponse3(status, text) {
   if (status === 401 || status === 403) {
@@ -65982,8 +67279,8 @@ async function fetchGrowthTaskCodes(credential, product, fetcher = fetch, option
   let total = 0;
   let anyOk = false;
   let failureMessage2 = "";
-  for (const path3 of GROWTH_TASKS_PATHS) {
-    const result = await getGrowthJson(path3, credential, product, fetcher);
+  for (const path4 of GROWTH_TASKS_PATHS) {
+    const result = await getGrowthJson(path4, credential, product, fetcher);
     if (!result.ok || result.body.code !== 0) {
       if (failureMessage2.length === 0) {
         failureMessage2 = result.ok ? `\u4EFB\u52A1\u5217\u8868\u8FD4\u56DE code ${String(result.body.code)}` : result.message;
@@ -66758,8 +68055,8 @@ async function fetchMarketExpertList(credential, product, fetcher = fetch, exper
 }
 async function listAllGrowthTaskCodes(credential, product, fetcher) {
   const codes = /* @__PURE__ */ new Set();
-  for (const path3 of GROWTH_TASKS_PATHS) {
-    const result = await getGrowthJson(path3, credential, product, fetcher);
+  for (const path4 of GROWTH_TASKS_PATHS) {
+    const result = await getGrowthJson(path4, credential, product, fetcher);
     if (!result.ok || result.body.code !== 0) {
       continue;
     }
@@ -67757,6 +69054,11 @@ function createProviderCredits(deps = {}) {
      *    客户端按能力矩阵（`dailyCheckin: false`）根本不会渲染「一键领取积分」，
      *    与 raccoon 同形。给它一句文案反而会让面板多出一个永远点不动的入口。
      */
+    autoclaw: {
+      fetchBalanceDetailed: async (credential) => await fetchAutoclawBalanceDetailed(credential),
+      claim: async (credential) => await claimAutoclawDailyQuota(credential),
+      precheckStatus: false
+    },
     accio: {
       fetchBalanceDetailed: async (credential) => await fetchAccioBalanceDetailed(credential)
     },
@@ -67788,7 +69090,23 @@ function createProviderCredits(deps = {}) {
      * 同一个默认参数 ⇒ 与「不传」逐字节等价，只把**站点**显式钉住。
      */
     minimax: {
-      fetchBalance: (credential) => fetchMinimaxCreditBalance(credential, void 0, MINIMAX),
+      /**
+       * ⚠️⚠️ **必须走 `fetchBalanceDetailed`**（真实缺陷，2026-10-17 审计打穿）。
+       *
+       * `fetchBalance` 的 `null` 会被共享骨架统一补一句写死的「余额查询失败」，
+       * 于是 `requestEnvelope` 辛苦构造的地理路由两条出路 / `invalid signature` /
+       * `凭据已失效` **一行都到不了 UI** —— 用户报障的那句话修复后逐字未变。
+       * ⇒ 本家正式加入 `fetchBalanceDetailed` 那一批（codearts / gemini / cline…），
+       * 原因由实现自己给。
+       */
+      fetchBalanceDetailed: async (credential) => {
+        const { balance, error } = await fetchMinimaxCreditBalanceDetailed(
+          credential,
+          void 0,
+          MINIMAX
+        );
+        return { balance, ...error === void 0 ? {} : { error } };
+      },
       // ⚠️ **有**独立的签到状态端点，与「如实返回 null」的那几家不同。
       // 判据是 `is_today && status===3`（见 `minimaxPanelToCheckinStatus`），
       // 不是「没有 Claimable」。`active` 恒 true（拿到响应即 true）。
@@ -67796,6 +69114,8 @@ function createProviderCredits(deps = {}) {
       // ⚠️ 它同时是**领取预检**的数据源（`precheckStatus` 缺省 true，见下）——
       //    预检与面板读数是同一个端点，故**只声明一次**（不再写 `claimStatus`：
       //    两处声明同一实现会漂移）。
+      //
+      // ⚠️ 预检只需要「能不能判」，不需要原因 ⇒ 用无原因的简单变体即可。
       fetchStatus: (credential) => fetchMinimaxSigninStatus(credential, void 0, MINIMAX),
       /**
        * ⚠️ **必须开启状态预检**（`precheckStatus` 缺省 true，不要传 false）。
@@ -67823,12 +69143,40 @@ function createProviderCredits(deps = {}) {
      * （2026-10-15，真实国际站账号返回 200；见 `src/minimax-product.ts` 文件头与
      * `tests/e2e/minimaxintl-probe.e2e.spec.ts`）。**未验证的只有兜底模型表**
      * （与国内站共用同一份，仅远端失败时兜底）。
+     *
+     * ⚠️ **`X-Forwarded-For` 必须传**（issue IKMEVG，2026-10-17 真机实测）：
+     * `agent.minimax.io` 按**出口 IP 国别**把中国大陆来源 307 到中国站，而
+     * 跟到中国站后国际站 token 只会得到 `401 invalid access token`
+     *（与「凭据失效」逐字同形）。用户可在面板里填一个海外 IP 绕开这个分流；
+     * 不填则行为与修复前完全一致（不附该头）。
+     *
+     * ⚠️ 每次调用**现读** `deps.minimaxXff()`（用户随时可能改设置）。
      */
     minimaxintl: {
-      fetchBalance: (credential) => fetchMinimaxCreditBalance(credential, void 0, MINIMAX_INTL),
-      fetchStatus: (credential) => fetchMinimaxSigninStatus(credential, void 0, MINIMAX_INTL),
+      // ⚠️ 走 Detailed（理由同中国版）：否则「地理分流 / 凭据失效 / 网关签名」
+      //    这些**唯一能指路**的原因会被压成一句「余额查询失败」。
+      fetchBalanceDetailed: async (credential) => {
+        const { balance, error } = await fetchMinimaxCreditBalanceDetailed(
+          credential,
+          void 0,
+          MINIMAX_INTL,
+          deps.minimaxXff?.()
+        );
+        return { balance, ...error === void 0 ? {} : { error } };
+      },
+      fetchStatus: (credential) => fetchMinimaxSigninStatus(
+        credential,
+        void 0,
+        MINIMAX_INTL,
+        deps.minimaxXff?.()
+      ),
       // 预检与幂等理由同中国版（见上）。
-      claim: (credential) => claimMinimaxDailyCheckin(credential, void 0, MINIMAX_INTL)
+      claim: (credential) => claimMinimaxDailyCheckin(
+        credential,
+        void 0,
+        MINIMAX_INTL,
+        deps.minimaxXff?.()
+      )
     },
     /**
      * Gemini：余额 = **配额窗口**（不是充值积分），两个桶的剩余比例。
@@ -68008,9 +69356,9 @@ function onboardingOf(table2, provider) {
 
 // vendor/channel-pack/src/qoder-machine.ts
 import { execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
-import { existsSync as existsSync7, readFileSync as readFileSync7, readdirSync as readdirSync2 } from "node:fs";
-import { homedir as homedir5 } from "node:os";
-import { join as join7 } from "node:path";
+import { existsSync as existsSync7, readFileSync as readFileSync8, readdirSync as readdirSync2 } from "node:fs";
+import { homedir as homedir6 } from "node:os";
+import { join as join8 } from "node:path";
 var RUNTIME_INFO_TIMEOUT_MS = 2e4;
 var cached;
 function candidatePaths() {
@@ -68020,20 +69368,20 @@ function candidatePaths() {
   const appData = process.env.APPDATA;
   if (appData !== void 0 && appData.length > 0) {
     for (const dir of ["Qoder", "Qoder CN"]) {
-      paths.push(join7(appData, dir, "SharedClientCache", "cache", "machine_token.json"));
+      paths.push(join8(appData, dir, "SharedClientCache", "cache", "machine_token.json"));
     }
   }
-  const home = homedir5();
+  const home = homedir6();
   for (const dir of ["Qoder", "Qoder CN"]) {
-    paths.push(join7(home, "Library", "Application Support", dir, "SharedClientCache", "cache", "machine_token.json"));
-    paths.push(join7(home, ".config", dir, "SharedClientCache", "cache", "machine_token.json"));
+    paths.push(join8(home, "Library", "Application Support", dir, "SharedClientCache", "cache", "machine_token.json"));
+    paths.push(join8(home, ".config", dir, "SharedClientCache", "cache", "machine_token.json"));
   }
   return paths;
 }
-function parseFile(path3) {
+function parseFile(path4) {
   let raw;
   try {
-    raw = readFileSync7(path3, "utf8");
+    raw = readFileSync8(path4, "utf8");
   } catch {
     return void 0;
   }
@@ -68058,8 +69406,8 @@ async function resolveQoderMachineIdentityAsync(forceExecutable) {
     cached = live;
     return live;
   }
-  for (const path3 of candidatePaths()) {
-    const identity = parseFile(path3);
+  for (const path4 of candidatePaths()) {
+    const identity = parseFile(path4);
     if (identity !== void 0) {
       cached = identity;
       return identity;
@@ -68072,7 +69420,7 @@ var QODER_DATA_DIR_NAMES = [".qoder", ".qoder-cn"];
 function findRuntimeInfoExecutable(home, dataDirNames = QODER_DATA_DIR_NAMES) {
   const exeName = process.platform === "win32" ? "runtime-info.exe" : "runtime-info";
   for (const dirName of dataDirNames) {
-    const binDir = join7(home, dirName, ".bin");
+    const binDir = join8(home, dirName, ".bin");
     let entries;
     try {
       entries = readdirSync2(binDir);
@@ -68081,7 +69429,7 @@ function findRuntimeInfoExecutable(home, dataDirNames = QODER_DATA_DIR_NAMES) {
     }
     const dir = entries.find((name2) => name2.startsWith("umid-"));
     if (dir === void 0) continue;
-    const exe = join7(binDir, dir, exeName);
+    const exe = join8(binDir, dir, exeName);
     if (existsSync7(exe)) return exe;
   }
   return void 0;
@@ -68092,7 +69440,7 @@ function locateRuntimeInfo(override) {
   if (candidate !== void 0) {
     return existsSync7(candidate) ? candidate : void 0;
   }
-  return findRuntimeInfoExecutable(homedir5());
+  return findRuntimeInfoExecutable(homedir6());
 }
 var RUNTIME_INFO_ENVIRONMENT = "3";
 function runtimeInfoArgs() {
@@ -68588,7 +69936,7 @@ function readStr(source, key) {
   const raw = source[key];
   return typeof raw === "string" && raw.length > 0 ? raw : void 0;
 }
-function parseEnvelope3(text, status) {
+function parseEnvelope3(text, status, options = {}) {
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -68612,9 +69960,19 @@ function parseEnvelope3(text, status) {
   }
   const data = env["data"];
   if (typeof data !== "object" || data === null) {
-    return { ok: false, failure: { kind: "shape", message: "\u54CD\u5E94\u7F3A data \u5BF9\u8C61" } };
+    if (options.requireData === false && code === 0) return { ok: true, data: {} };
+    return { ok: false, failure: { kind: "shape", message: describeMissingData(env, code) } };
   }
   return { ok: true, data };
+}
+function describeMissingData(env, code) {
+  const parts = [`code=${code === void 0 ? "\u7F3A\u5931" : String(code)}`];
+  const msg = readStr(env, "msg") ?? readStr(env, "message");
+  if (msg !== void 0) parts.push(`msg=${msg}`);
+  const requestId = readStr(env, "requestId") ?? readStr(env, "request_id");
+  if (requestId !== void 0) parts.push(`requestId=${requestId}`);
+  parts.push(`\u9876\u5C42\u5B57\u6BB5=[${Object.keys(env).join(",")}]`);
+  return `\u54CD\u5E94\u7F3A data \u5BF9\u8C61\uFF08${parts.join("\uFF0C")}\uFF09`;
 }
 async function fetchCompensationStatus(credential, product, fetcher = fetch) {
   const base = webBaseOf2(product);
@@ -68658,7 +70016,7 @@ async function claimCompensation(credential, product, fetcher = fetch) {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS5)
     });
     const text = await response.text();
-    const env = parseEnvelope3(text, response.status);
+    const env = parseEnvelope3(text, response.status, { requireData: false });
     if (!env.ok) return { ok: false, failure: env.failure };
     return { ok: true };
   } catch (error) {
@@ -69328,20 +70686,20 @@ async function handleOpencodeRpc(ctx, pool, method, payload) {
           await pool.setOpencodeProxy(req.accountId, "");
           return done({ proxy: "", label: "\u76F4\u8FDE\uFF08\u672C\u673A\u51FA\u53E3\uFF09" });
         }
-        const normalized = normalizeProxy(raw);
-        if (!normalized.ok) return fail2(normalized.reason);
-        await pool.setOpencodeProxy(req.accountId, normalized.proxy.url);
-        return done({ proxy: normalized.proxy.url, label: normalized.proxy.label });
+        const normalized2 = normalizeProxy(raw);
+        if (!normalized2.ok) return fail2(normalized2.reason);
+        await pool.setOpencodeProxy(req.accountId, normalized2.proxy.url);
+        return done({ proxy: normalized2.proxy.url, label: normalized2.proxy.label });
       }
       case "opencode.testProxy": {
         const req = call.payload;
-        const normalized = normalizeProxy(typeof req?.proxy === "string" ? req.proxy : "");
-        if (!normalized.ok) return fail2(normalized.reason);
+        const normalized2 = normalizeProxy(typeof req?.proxy === "string" ? req.proxy : "");
+        if (!normalized2.ok) return fail2(normalized2.reason);
         const startedAt = Date.now();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
         try {
-          const response = await proxyFetch(EXIT_IP_URL, { signal: controller.signal }, normalized.proxy);
+          const response = await proxyFetch(EXIT_IP_URL, { signal: controller.signal }, normalized2.proxy);
           if (!response.ok) return fail2(`\u6D4B\u8BD5\u5931\u8D25\uFF1A\u4EE3\u7406\u8FD4\u56DE HTTP ${response.status}`);
           const body = await response.json();
           if (body.status !== "success" || typeof body.query !== "string") {
@@ -69649,8 +71007,8 @@ async function handleModelscopeRpc(ctx, pool, method, payload) {
 }
 
 // vendor/channel-pack/src/badge-preferences.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync7, readFileSync as readFileSync8, renameSync as renameSync6, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join8 } from "node:path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync7, readFileSync as readFileSync9, renameSync as renameSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join9 } from "node:path";
 var BADGE_PREFERENCES_FILE = "ui-preferences.json";
 var BADGE_PREFERENCES = ["auto", "subscription", "credits"];
 var DEFAULT_BADGE_PREFERENCE = "auto";
@@ -69668,8 +71026,8 @@ var MemoryPreferenceStore = class {
   }
 };
 var FilePreferenceStore = class {
-  constructor(path3, logger2) {
-    this.path = path3;
+  constructor(path4, logger2) {
+    this.path = path4;
     this.logger = logger2;
   }
   path;
@@ -69678,7 +71036,7 @@ var FilePreferenceStore = class {
   load() {
     try {
       if (!existsSync8(this.path)) return DEFAULT_BADGE_PREFERENCE;
-      const parsed = JSON.parse(readFileSync8(this.path, "utf-8"));
+      const parsed = JSON.parse(readFileSync9(this.path, "utf-8"));
       return sanitizeBadgePreference(preferenceFieldOf(parsed));
     } catch (error) {
       this.logger?.warn(`[jet-hub] \u8BFB\u53D6 ${this.path} \u5931\u8D25\uFF0C\u7528\u91CF\u5FBD\u6807\u504F\u597D\u6309\u9ED8\u8BA4\u503C\u5904\u7406: ${String(error)}`);
@@ -69686,7 +71044,7 @@ var FilePreferenceStore = class {
     }
   }
   async save(preference) {
-    mkdirSync7(join8(this.path, ".."), { recursive: true });
+    mkdirSync7(join9(this.path, ".."), { recursive: true });
     const tmp = `${this.path}.tmp`;
     writeFileSync7(tmp, JSON.stringify({ schema: SCHEMA3, badgePreference: preference }, null, 2), "utf-8");
     renameSync6(tmp, this.path);
@@ -69704,7 +71062,7 @@ function createBadgePreferenceStore(ctx) {
     ctx.logger?.warn?.("[jet-hub] \u65E0\u6CD5\u5B9A\u4F4D DSH home\uFF0C\u7528\u91CF\u5FBD\u6807\u504F\u597D\u4EC5\u5B58\u5728\u4E8E\u5185\u5B58\u4E2D");
     return new MemoryPreferenceStore();
   }
-  return new FilePreferenceStore(join8(home, "jet-hub", BADGE_PREFERENCES_FILE), ctx.logger);
+  return new FilePreferenceStore(join9(home, "jet-hub", BADGE_PREFERENCES_FILE), ctx.logger);
 }
 
 // vendor/channel-pack/src/badge-subscription.ts
@@ -69886,8 +71244,8 @@ function isAllFailed(snapshot) {
 }
 
 // vendor/channel-pack/src/auto-checkin.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync8, readFileSync as readFileSync9, renameSync as renameSync7, writeFileSync as writeFileSync8 } from "node:fs";
-import { join as join9 } from "node:path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync8, readFileSync as readFileSync10, renameSync as renameSync7, writeFileSync as writeFileSync8 } from "node:fs";
+import { join as join10 } from "node:path";
 var AUTO_CHECKIN_FILE = "auto-checkin.json";
 var SCHEMA4 = "dsh-codearts-auth/auto-checkin/v1";
 var DEFAULT_AUTO_CHECKIN = {
@@ -69952,8 +71310,8 @@ var MemoryAutoCheckinStore = class {
   }
 };
 var FileAutoCheckinStore = class {
-  constructor(path3, logger2) {
-    this.path = path3;
+  constructor(path4, logger2) {
+    this.path = path4;
     this.logger = logger2;
   }
   path;
@@ -69962,14 +71320,14 @@ var FileAutoCheckinStore = class {
   load() {
     try {
       if (!existsSync9(this.path)) return { ...DEFAULT_AUTO_CHECKIN };
-      return sanitizeAutoCheckin(JSON.parse(readFileSync9(this.path, "utf-8")));
+      return sanitizeAutoCheckin(JSON.parse(readFileSync10(this.path, "utf-8")));
     } catch (error) {
       this.logger?.warn(`[jet-hub] \u8BFB\u53D6 ${this.path} \u5931\u8D25\uFF0C\u81EA\u52A8\u7B7E\u5230\u6309\u9ED8\u8BA4\u8BBE\u7F6E\uFF08\u5F00\u542F\uFF09\u5904\u7406: ${String(error)}`);
       return { ...DEFAULT_AUTO_CHECKIN };
     }
   }
   async save(doc) {
-    mkdirSync8(join9(this.path, ".."), { recursive: true });
+    mkdirSync8(join10(this.path, ".."), { recursive: true });
     const tmp = `${this.path}.tmp`;
     writeFileSync8(tmp, JSON.stringify({
       schema: SCHEMA4,
@@ -69989,7 +71347,7 @@ function createAutoCheckinStore(ctx) {
     ctx.logger?.warn?.("[jet-hub] \u65E0\u6CD5\u5B9A\u4F4D DSH home\uFF0C\u81EA\u52A8\u7B7E\u5230\u5F00\u5173\u4EC5\u5B58\u5728\u4E8E\u5185\u5B58\u4E2D");
     return new MemoryAutoCheckinStore();
   }
-  return new FileAutoCheckinStore(join9(home, "jet-hub", AUTO_CHECKIN_FILE), ctx.logger);
+  return new FileAutoCheckinStore(join10(home, "jet-hub", AUTO_CHECKIN_FILE), ctx.logger);
 }
 function emptyTotals2() {
   return { providers: 0, claimed: 0, totalCredit: 0, totalByUnit: { token: 0, credit: 0 }, alreadyClaimed: 0, inactive: 0, failed: 0, coversToday: 0, skipped: 0, errors: 0 };
@@ -70588,7 +71946,8 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     minimaxintl,
     zcode,
     gemini,
-    accio
+    accio,
+    autoclaw
   } = auths;
   const credits = createProviderCredits({
     loomy,
@@ -70599,7 +71958,13 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     //    且要**动态**解析（带 TTL 缓存）—— 漏掉它会让签到退回产品的兜底常量，
     //    而兜底值可能已过期（那正是「集中在此避免三处各自拉取」要防的）。
     //    用惰性调用（不能先 await 成常量：缓存过期后拿到新版本这件事会失效）。
-    lobsteraiClientVersion: () => lobsterai.resolveClientVersion()
+    lobsteraiClientVersion: () => lobsterai.resolveClientVersion(),
+    // ⚠️ **MiniMax 国际站的 XFF 必须在这里接上**（issue IKMEVG）：
+    //    `credits.*` 三个入口（余额 / 签到状态 / 领取）都走这张表，漏掉它
+    //    会让「面板里设了 XFF，但积分行仍然查询失败」—— 而推理/目录路径
+    //    直接读池、照常生效 ⇒ 症状只出现在积分，极难对应。
+    //    惰性读（用户随时可能改设置），不能固化成字符串。
+    minimaxXff: () => pool.minimaxXff()
   });
   const onboarding = createProviderOnboarding({
     loomy,
@@ -70663,7 +72028,8 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     // ⚠️ accio **有** refresh 端点（`accio-auth.ts` 的 `refreshCredential`）且
     // 池内 `expiresAt` 确实会被写 ⇒ 不属 loomy / zcode 那类豁免。
     // 漏登记的后果是「凭据明明能续，面板却报未登录」（2026-10-12 复审发现）。
-    ACCIO.id
+    ACCIO.id,
+    AUTOCLAW.id
     // ⚠️ **本 fork 独有**（modelscope，2026-10-17 改判）**仍刻意不在本表里**：
     //    ⚠️ 原注释写「它是 `balance: false`（魔搭没有额度 API）⇒ 积分端点压根不会
     //    为它走这条链」——**那条已被证伪**：魔搭**有**魔粒余额端点
@@ -71600,6 +72966,55 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             ok: true,
             value: { accountId: id, loginUrl: started.authorizeUrl, incognitoOpened }
           };
+        } else if (provider === AUTOCLAW.id) {
+          const id2 = `autoclaw-${shortId()}`;
+          const refName2 = `AUTOCLAW_ACCOUNT_${shortId().toUpperCase()}`;
+          const autoclawMode = payload?.autoclawMode;
+          if (autoclawMode === "local") {
+            const localCred = await autoclaw.probeLocal();
+            if (!localCred) {
+              return { ok: false, error: "\u672A\u68C0\u6D4B\u5230\u672C\u5730 AutoClaw \u684C\u9762\u7AEF\u6709\u6548\u767B\u5F55\u51ED\u636E\uFF0C\u8BF7\u5148\u5728 AutoClaw \u4E2D\u767B\u5F55" };
+            }
+            try {
+              await autoclaw.importLocalAccount(pool, { accountId: id2, refName: refName2 });
+              return { ok: true, value: { accountId: id2 } };
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err);
+              return { ok: false, error: reason };
+            }
+          }
+          await pool.addAccount({
+            id: id2,
+            provider: AUTOCLAW.id,
+            nickname: "AutoClaw (\u767B\u5F55\u4E2D...)",
+            enabled: true,
+            credentialRef: refName2,
+            refreshable: false,
+            createdAt: Date.now()
+          });
+          let started;
+          try {
+            started = await autoclaw.startLogin({ refName: refName2 });
+          } catch (error) {
+            void pool.removeAccount(id2).catch(() => {
+            });
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new Error(`\u65E0\u6CD5\u542F\u52A8 AutoClaw \u767B\u5F55\u670D\u52A1\uFF1A${reason}`);
+          }
+          started.result.then(async ({ credential }) => {
+            const ref = credentialRef16(refName2);
+            await ctx.credentials.set(ref, JSON.stringify(credential));
+            const nickname = autoclawDisplayNickname(credential, id2);
+            await pool.updateAccount(id2, {
+              nickname,
+              expiresAt: credential.expires_at,
+              refreshable: isAutoclawRefreshable(credential)
+            });
+          }).catch((error) => {
+            ctx.logger.warn(`[jet-hub] background ${AUTOCLAW.id} login failed for ${id2}: ${String(error)}`);
+            void failLogin(id2, error);
+          });
+          return { ok: true, value: { accountId: id2, loginUrl: started.loginUrl } };
         } else if (provider === ACCIO.id) {
           let accioStarted;
           try {
@@ -71737,12 +73152,20 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
        */
       case "login.sendSms": {
         const req = payload;
-        if (req.provider !== LOOMY.id) {
+        if (req.provider !== LOOMY.id && req.provider !== AUTOCLAW.id) {
           return { ok: false, error: { code: "bad-request", message: `unsupported provider: ${req.provider}` } };
         }
         const phone = typeof req.phone === "string" ? req.phone.trim() : "";
         if (!/^1[3-9]\d{9}$/.test(phone)) {
           return { ok: false, error: { code: "bad-request", message: "\u9700\u8981 11 \u4F4D\u6709\u6548\u624B\u673A\u53F7\uFF08phone\uFF09" } };
+        }
+        if (req.provider === AUTOCLAW.id) {
+          const sendRes = await autoclaw.sendVerificationCode(phone);
+          if (!sendRes.ok) {
+            return { ok: false, error: { code: "send-failed", message: sendRes.error ?? "\u9A8C\u8BC1\u7801\u53D1\u9001\u5931\u8D25" } };
+          }
+          pendingSmsMsgid.set(req.accountId, { phone, msgid: "autoclaw-sms" });
+          return { ok: true, value: { msgid: "autoclaw-sms" } };
         }
         const msgid = await loomy.sendSmsCode(phone);
         pendingSmsMsgid.set(req.accountId, { phone, msgid });
@@ -71755,7 +73178,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
        */
       case "login.submitSms": {
         const req = payload;
-        if (req.provider !== LOOMY.id) {
+        if (req.provider !== LOOMY.id && req.provider !== AUTOCLAW.id) {
           return { ok: false, error: { code: "bad-request", message: `unsupported provider: ${req.provider}` } };
         }
         const pending2 = pendingSmsMsgid.get(req.accountId);
@@ -71771,6 +73194,34 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             ok: true,
             value: { done: false, error: "\u8D26\u53F7\u4E0D\u5B58\u5728\uFF08\u53EF\u80FD\u5DF2\u88AB\u5220\u9664\uFF09" }
           };
+        }
+        if (req.provider === AUTOCLAW.id) {
+          try {
+            const loginRes = await autoclaw.loginWithCode(pending2.phone, req.code, account.credentialRef);
+            if (!loginRes.ok || !loginRes.credential) {
+              return {
+                ok: true,
+                value: { done: false, error: loginRes.error ?? "AutoClaw \u9A8C\u8BC1\u7801\u767B\u5F55\u5931\u8D25" }
+              };
+            }
+            const cred = loginRes.credential;
+            const nickname = autoclawDisplayNickname(cred, req.accountId);
+            await pool.updateAccount(req.accountId, {
+              nickname,
+              expiresAt: cred.expires_at,
+              refreshable: isAutoclawRefreshable(cred)
+            });
+            pendingSmsMsgid.delete(req.accountId);
+            return { ok: true, value: { done: true } };
+          } catch (error) {
+            return {
+              ok: true,
+              value: {
+                done: false,
+                error: error instanceof Error ? error.message : String(error)
+              }
+            };
+          }
         }
         try {
           const result = await loomy.loginWithSmsCode(pending2.phone, req.code, pending2.msgid, {
@@ -73312,6 +74763,46 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         const value = { enabled: pool.nativeWebSearchEnabled() };
         return { ok: true, value };
       }
+      /**
+       * ── MiniMax 国际站的 `X-Forwarded-For` 设置（issue IKMEVG，2026-10-17）──
+       *
+       * 背景：`agent.minimax.io` 按**出口 IP 国别**把中国大陆来源 307 到中国站，
+       * 于是国际站账号在大陆网络下**永远**拿不到数据面（与 token 有效性无关）。
+       * 面板上给一个输入框让用户填海外 IP 绕开这个分流。
+       *
+       * ⚠️ **读了就回传归一后的实际值**（`sanitizeMinimaxXff` 的结果），而不是
+       * 用户填的原文：非法值会被归一成 `undefined`（= 不附头），UI 照返回值
+       * 渲染，用户能立刻看出「我填的没生效」—— 静默保存一个坏值最糟。
+       */
+      case "minimax.getXff": {
+        const value = { xff: pool.minimaxXff() ?? "" };
+        return { ok: true, value };
+      }
+      case "minimax.setXff": {
+        const req = payload;
+        if (typeof req.xff !== "string") {
+          return { ok: false, error: { code: "bad-request", message: "\u5B57\u7B26\u4E32 xff \u5FC5\u586B\uFF08\u7A7A\u4E32\u8868\u793A\u6E05\u9664\uFF09" } };
+        }
+        const trimmed = req.xff.trim();
+        const normalized2 = sanitizeMinimaxXff(req.xff);
+        if (trimmed.length > 0 && normalized2 === void 0) {
+          return {
+            ok: false,
+            error: {
+              code: "bad-request",
+              message: "\u53EA\u63A5\u53D7 IPv4 / IPv6 \u5B57\u9762\u91CF\uFF08\u4F8B\u5982 8.8.8.8\uFF09\uFF0C\u4E0D\u63A5\u53D7\u4E3B\u673A\u540D\u6216\u9017\u53F7\u5206\u9694\u7684\u94FE\uFF1B\u539F\u6709\u8BBE\u7F6E\u672A\u6539\u52A8"
+            }
+          };
+        }
+        const before = pool.minimaxXff();
+        await pool.setMinimaxXff(req.xff);
+        const after = pool.minimaxXff();
+        ctx.logger.info(
+          after === void 0 ? "[jet-hub] \u5DF2\u6E05\u9664 MiniMax \u56FD\u9645\u7AD9 X-Forwarded-For\uFF08\u4E0D\u518D\u7ED5\u8FC7\u5206\u6D41\uFF09" : `[jet-hub] \u5DF2\u8BBE\u7F6E MiniMax \u56FD\u9645\u7AD9 X-Forwarded-For\uFF08${before === after ? "\u672A\u53D8" : "\u5DF2\u66F4\u65B0"}\uFF09`
+        );
+        const value = { xff: after ?? "" };
+        return { ok: true, value };
+      }
       // ── 内部 captcha 载体（二期）──
       //
       // 这两条是**客户端驱动**的通道：DSH 的 `connection.fetch` 只有
@@ -73641,50 +75132,50 @@ function reply(rpcId, result) {
 
 // vendor/channel-pack/src/openai-gateway/server.ts
 import { createServer as createServer8 } from "node:http";
-import { randomUUID as randomUUID14 } from "node:crypto";
-import { homedir as homedir6 } from "node:os";
-import { join as join11 } from "node:path";
+import { randomUUID as randomUUID15 } from "node:crypto";
+import { homedir as homedir7 } from "node:os";
+import { join as join12 } from "node:path";
 
 // vendor/channel-pack/src/openai-gateway/auth.ts
-import { mkdirSync as mkdirSync9, readFileSync as readFileSync10, renameSync as renameSync8, writeFileSync as writeFileSync9, existsSync as existsSync10 } from "node:fs";
+import { mkdirSync as mkdirSync9, readFileSync as readFileSync11, renameSync as renameSync8, writeFileSync as writeFileSync9, existsSync as existsSync10 } from "node:fs";
 import { randomBytes as randomBytes14 } from "node:crypto";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 var KEY_FILE = "api-key";
 var KEY_PATTERN3 = /^[A-Za-z0-9_-]{43}$/;
 function loadOrCreateApiKey(home, env = process.env) {
   const configured = env.DSH_OPENAI_GATEWAY_API_KEY?.trim();
   if (configured) return { value: configured, fromEnv: true, path: null };
-  const directory = join10(home, "openai-gateway");
-  const path3 = join10(directory, KEY_FILE);
+  const directory = join11(home, "openai-gateway");
+  const path4 = join11(directory, KEY_FILE);
   let stored;
   try {
-    stored = readFileSync10(path3, "utf8").trim();
+    stored = readFileSync11(path4, "utf8").trim();
   } catch {
   }
   if (stored) {
-    if (KEY_PATTERN3.test(stored)) return { value: stored, fromEnv: false, path: path3 };
+    if (KEY_PATTERN3.test(stored)) return { value: stored, fromEnv: false, path: path4 };
     throw new Error(
-      `\u7F51\u5173\u5BC6\u94A5\u6587\u4EF6\u5185\u5BB9\u5F02\u5E38\uFF08\u4E0D\u662F\u672C\u63D2\u4EF6\u751F\u6210\u7684\u5F62\u6001\uFF09\uFF1A${path3}\u3002\u53EF\u80FD\u662F\u88AB\u624B\u5DE5\u7F16\u8F91\u6216\u88AB\u5176\u5B83\u7A0B\u5E8F\u6539\u5199\uFF1B\u672C\u63D2\u4EF6\u4E0D\u4F1A\u9759\u9ED8\u66F4\u6362\u5B83\uFF0C\u5426\u5219\u5DF2\u914D\u7F6E\u7684\u5BA2\u6237\u7AEF\u4F1A\u5168\u90E8\u5931\u6548\u3002\u5982\u9700\u66F4\u6362\uFF1A\u5220\u9664\u8BE5\u6587\u4EF6\u540E\u91CD\u542F DSH\uFF08\u4F1A\u91CD\u65B0\u751F\u6210\uFF09\uFF0C\u6216\u6539\u7528 DSH_OPENAI_GATEWAY_API_KEY \u73AF\u5883\u53D8\u91CF\u3002`
+      `\u7F51\u5173\u5BC6\u94A5\u6587\u4EF6\u5185\u5BB9\u5F02\u5E38\uFF08\u4E0D\u662F\u672C\u63D2\u4EF6\u751F\u6210\u7684\u5F62\u6001\uFF09\uFF1A${path4}\u3002\u53EF\u80FD\u662F\u88AB\u624B\u5DE5\u7F16\u8F91\u6216\u88AB\u5176\u5B83\u7A0B\u5E8F\u6539\u5199\uFF1B\u672C\u63D2\u4EF6\u4E0D\u4F1A\u9759\u9ED8\u66F4\u6362\u5B83\uFF0C\u5426\u5219\u5DF2\u914D\u7F6E\u7684\u5BA2\u6237\u7AEF\u4F1A\u5168\u90E8\u5931\u6548\u3002\u5982\u9700\u66F4\u6362\uFF1A\u5220\u9664\u8BE5\u6587\u4EF6\u540E\u91CD\u542F DSH\uFF08\u4F1A\u91CD\u65B0\u751F\u6210\uFF09\uFF0C\u6216\u6539\u7528 DSH_OPENAI_GATEWAY_API_KEY \u73AF\u5883\u53D8\u91CF\u3002`
     );
   }
   const key = randomBytes14(32).toString("base64url");
   mkdirSync9(directory, { recursive: true });
-  const temporary = `${path3}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${path4}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync9(temporary, key, { encoding: "utf8", mode: 384 });
   try {
-    renameSync8(temporary, path3);
+    renameSync8(temporary, path4);
   } catch (error) {
-    if (existsSync10(path3)) {
-      const existing = readFileSync10(path3, "utf8").trim();
-      if (KEY_PATTERN3.test(existing)) return { value: existing, fromEnv: false, path: path3 };
+    if (existsSync10(path4)) {
+      const existing = readFileSync11(path4, "utf8").trim();
+      if (KEY_PATTERN3.test(existing)) return { value: existing, fromEnv: false, path: path4 };
     }
     throw error;
   }
-  return { value: key, fromEnv: false, path: path3 };
+  return { value: key, fromEnv: false, path: path4 };
 }
 
 // vendor/channel-pack/src/openai-gateway/messages.ts
-import { randomUUID as randomUUID11 } from "node:crypto";
+import { randomUUID as randomUUID12 } from "node:crypto";
 import { ReasoningEffortId as ReasoningEffortId12 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/openai-gateway/images.ts
@@ -73891,7 +75382,7 @@ function textFromContent(content) {
   }).join("");
 }
 function createGatewayMessage(role, content, source) {
-  return { id: randomUUID11(), role, content, source };
+  return { id: randomUUID12(), role, content, source };
 }
 function isUsableToolCallId(value) {
   return typeof value === "string" && value.length > 0;
@@ -74083,11 +75574,11 @@ function findCaseInsensitiveSuggestion(requested, catalog) {
 }
 
 // vendor/channel-pack/src/openai-gateway/responses.ts
-import { createHash as createHash12, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID14 } from "node:crypto";
 import { ReasoningEffortId as ReasoningEffortId13 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/openai-gateway/stream.ts
-import { randomUUID as randomUUID12 } from "node:crypto";
+import { randomUUID as randomUUID13 } from "node:crypto";
 
 // vendor/channel-pack/src/openai-gateway/usage.ts
 function count(value) {
@@ -74138,19 +75629,19 @@ function finishReason(reason) {
   }
 }
 function usageJson(usage) {
-  const normalized = toOpenAiUsage(usage);
+  const normalized2 = toOpenAiUsage(usage);
   return {
-    prompt_tokens: normalized.inputTokens,
-    completion_tokens: normalized.outputTokens,
-    total_tokens: normalized.totalTokens,
+    prompt_tokens: normalized2.inputTokens,
+    completion_tokens: normalized2.outputTokens,
+    total_tokens: normalized2.totalTokens,
     // 官方明细：`cached_tokens` 是 `prompt_tokens` 的**子集**（见 `usage.ts`）。
-    prompt_tokens_details: { cached_tokens: normalized.cachedTokens },
-    ...normalized.reasoningTokens === void 0 ? {} : {
-      reasoning_tokens: normalized.reasoningTokens,
-      completion_tokens_details: { reasoning_tokens: normalized.reasoningTokens }
+    prompt_tokens_details: { cached_tokens: normalized2.cachedTokens },
+    ...normalized2.reasoningTokens === void 0 ? {} : {
+      reasoning_tokens: normalized2.reasoningTokens,
+      completion_tokens_details: { reasoning_tokens: normalized2.reasoningTokens }
     },
     // 私有兼容字段（见上方注释）：只在真有缓存命中时才发，避免凭空多出 0。
-    ...normalized.cachedTokens > 0 ? { prompt_cache_hit_tokens: normalized.cachedTokens } : {}
+    ...normalized2.cachedTokens > 0 ? { prompt_cache_hit_tokens: normalized2.cachedTokens } : {}
   };
 }
 function line(value) {
@@ -74222,7 +75713,7 @@ function consumeChunk(state, chunk) {
       return void 0;
   }
 }
-async function* toOpenAiSse(chunks, requestId = `chatcmpl-${randomUUID12()}`, model, suggest) {
+async function* toOpenAiSse(chunks, requestId = `chatcmpl-${randomUUID13()}`, model, suggest) {
   const state = { content: "", reasoning: "", tools: /* @__PURE__ */ new Map() };
   try {
     for await (const chunk of chunks) {
@@ -74231,7 +75722,7 @@ async function* toOpenAiSse(chunks, requestId = `chatcmpl-${randomUUID12()}`, mo
       if ("error" in event) {
         const error = event.error;
         const message2 = typeof error.message === "string" ? error.message : "upstream error";
-        const normalized = normalizeUpstreamFailure({
+        const normalized2 = normalizeUpstreamFailure({
           // 上游自带状态码（如 gemini 拒绝未知模型名时的 404）优先，否则才退化成 502。
           // ⚠️ 门禁（400–599）不能省：codearts 会用 `{ status: 200 }` 表示业务失败，
           // 原样透出会让「额度用尽」在客户端眼里读成成功。另两处出口已有同一门禁。
@@ -74247,10 +75738,10 @@ async function* toOpenAiSse(chunks, requestId = `chatcmpl-${randomUUID12()}`, mo
           choices: [],
           error: {
             message: await withSuggestion(message2, suggest),
-            type: normalized.type,
-            code: normalized.code,
+            type: normalized2.type,
+            code: normalized2.code,
             // 流已发出 200，状态码改不了；把该有的 404 放进 status 字段供客户端读。
-            status: normalized.status
+            status: normalized2.status
           }
         });
         yield "data: [DONE]\n\n";
@@ -74277,7 +75768,7 @@ async function* toOpenAiSse(chunks, requestId = `chatcmpl-${randomUUID12()}`, mo
     yield "data: [DONE]\n\n";
   }
 }
-async function collectOpenAiCompletion(chunks, requestId = `chatcmpl-${randomUUID12()}`, model, suggest) {
+async function collectOpenAiCompletion(chunks, requestId = `chatcmpl-${randomUUID13()}`, model, suggest) {
   const state = { content: "", reasoning: "", tools: /* @__PURE__ */ new Map() };
   try {
     for await (const chunk of chunks) {
@@ -74299,13 +75790,13 @@ async function collectOpenAiCompletion(chunks, requestId = `chatcmpl-${randomUUI
   } catch (error) {
     const converted = failureToOpenAiError(error);
     const message3 = String(converted.body.error.message);
-    const normalized = normalizeUpstreamFailure({
+    const normalized2 = normalizeUpstreamFailure({
       status: converted.status,
       type: String(converted.body.error.type),
       code: String(converted.body.error.code ?? "upstream_error"),
       message: message3
     });
-    throw new OpenAiGatewayError(await withSuggestion(message3, suggest), normalized.status, normalized.type, normalized.code);
+    throw new OpenAiGatewayError(await withSuggestion(message3, suggest), normalized2.status, normalized2.type, normalized2.code);
   }
   const toolCalls = [...state.tools.entries()].sort(([a], [b]) => a - b).map(([, tool]) => ({
     id: tool.id,
@@ -74632,7 +76123,7 @@ async function toResponsesGenerateOptions(body, signal, reasoningEffortOverride,
 }
 var UNASSIGNED_OUTPUT_INDEX = -1;
 function hexId() {
-  return randomUUID13().replaceAll("-", "");
+  return randomUUID14().replaceAll("-", "");
 }
 function itemId(kind) {
   if (kind === "reasoning") return `rs_${hexId()}`;
@@ -74730,13 +76221,13 @@ function applyStateChunk(state, chunk) {
   state.finishReason = finishReasonOf(chunk.reason);
 }
 function usageJson2(usage) {
-  const normalized = toOpenAiUsage(usage);
+  const normalized2 = toOpenAiUsage(usage);
   return {
-    input_tokens: normalized.inputTokens,
-    input_tokens_details: { cached_tokens: normalized.cachedTokens },
-    output_tokens: normalized.outputTokens,
-    output_tokens_details: { reasoning_tokens: normalized.reasoningTokens ?? 0 },
-    total_tokens: normalized.totalTokens
+    input_tokens: normalized2.inputTokens,
+    input_tokens_details: { cached_tokens: normalized2.cachedTokens },
+    output_tokens: normalized2.outputTokens,
+    output_tokens_details: { reasoning_tokens: normalized2.reasoningTokens ?? 0 },
+    total_tokens: normalized2.totalTokens
   };
 }
 function restoreToolName(item, nsMap) {
@@ -74818,13 +76309,13 @@ function outputOf(items, nsMap) {
 async function toUpstreamError(error, suggest) {
   const converted = failureToOpenAiError(error);
   const message2 = String(converted.body.error.message);
-  const normalized = normalizeUpstreamFailure({
+  const normalized2 = normalizeUpstreamFailure({
     status: converted.status,
     type: String(converted.body.error.type),
     code: String(converted.body.error.code ?? "upstream_error"),
     message: message2
   });
-  return new OpenAiGatewayError(await withSuggestion(message2, suggest), normalized.status, normalized.type, normalized.code);
+  return new OpenAiGatewayError(await withSuggestion(message2, suggest), normalized2.status, normalized2.type, normalized2.code);
 }
 function responsesError(converted) {
   const code = converted.type === "rate_limit_exceeded" || converted.type === "rate_limit_error" ? "rate_limit_exceeded" : "server_error";
@@ -75197,7 +76688,7 @@ function authorized(request3, key) {
   return typeof value === "string" && value === `Bearer ${key}`;
 }
 function getHome(options) {
-  return options.home ?? options.env?.DSH_HOME ?? process.env.DSH_HOME ?? join11(homedir6(), ".dsh");
+  return options.home ?? options.env?.DSH_HOME ?? process.env.DSH_HOME ?? join12(homedir7(), ".dsh");
 }
 function createOpenAiGateway(options) {
   const env = options.env ?? process.env;
@@ -75376,7 +76867,7 @@ function createOpenAiGateway(options) {
       });
       const stream = options.llm.stream(markGatewayChannel(generate));
       const fullId = `${route.provider}/${route.model}`;
-      const responseId = `resp_${randomUUID14().replaceAll("-", "")}`;
+      const responseId = `resp_${randomUUID15().replaceAll("-", "")}`;
       if (body.stream === true) {
         writeSseHead(response);
         for await (const event of toResponsesSse(stream, responseId, fullId, body, makeSuggestion(fullId))) {
@@ -75404,21 +76895,21 @@ function createOpenAiGateway(options) {
       jsonResponse(response, 401, { error: { message: "Missing or invalid API key", type: "authentication_error", code: "invalid_api_key" } });
       return;
     }
-    const path3 = new URL(request3.url ?? "/", "http://127.0.0.1").pathname;
-    if (path3 === "/v1/models" && request3.method === "GET") {
+    const path4 = new URL(request3.url ?? "/", "http://127.0.0.1").pathname;
+    if (path4 === "/v1/models" && request3.method === "GET") {
       void handleModels(response).catch((error) => jsonResponse(response, 502, { error: { message: String(error), type: "server_error", code: "model_list_failed" } }));
       return;
     }
-    if (path3 === "/v1/reasoning-efforts" && request3.method === "GET") {
+    if (path4 === "/v1/reasoning-efforts" && request3.method === "GET") {
       void handleReasoningEfforts(response).catch((error) => jsonResponse(response, 502, { error: { message: String(error), type: "server_error", code: "model_list_failed" } }));
       return;
     }
-    if ((path3 === "/v1/chat/completions" || path3 === "/v1/responses") && request3.method === "POST") {
+    if ((path4 === "/v1/chat/completions" || path4 === "/v1/responses") && request3.method === "POST") {
       if (!request3.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
         jsonResponse(response, 415, { error: { message: "Content-Type must be application/json", type: "invalid_request_error", code: "invalid_content_type" } });
         return;
       }
-      void (path3 === "/v1/responses" ? handleResponses(request3, response) : handleChat(request3, response));
+      void (path4 === "/v1/responses" ? handleResponses(request3, response) : handleChat(request3, response));
       return;
     }
     jsonResponse(response, 404, { error: { message: "Not found", type: "invalid_request_error", code: "not_found" } });
@@ -75798,9 +77289,9 @@ function asRecord3(value) {
 }
 
 // vendor/channel-pack/src/token-ledger-store.ts
-import { closeSync, existsSync as existsSync11, fsyncSync, mkdirSync as mkdirSync10, openSync, readFileSync as readFileSync11, renameSync as renameSync9, rmSync as rmSync4, statSync as statSync2, writeFileSync as writeFileSync10 } from "node:fs";
-import { randomUUID as randomUUID15 } from "node:crypto";
-import { join as join12 } from "node:path";
+import { closeSync, existsSync as existsSync11, fsyncSync, mkdirSync as mkdirSync10, openSync, readFileSync as readFileSync12, renameSync as renameSync9, rmSync as rmSync4, statSync as statSync2, writeFileSync as writeFileSync10 } from "node:fs";
+import { randomUUID as randomUUID16 } from "node:crypto";
+import { join as join13 } from "node:path";
 var TOKEN_LEDGER_FILE = "token-ledger.json";
 var TOKEN_LEDGER_DAYS = 90;
 var TOKEN_LEDGER_FLUSH_MS = 1e3;
@@ -75850,8 +77341,8 @@ var MemoryLedgerStore = class {
   }
 };
 var FileLedgerStore = class {
-  constructor(path3, logger2) {
-    this.path = path3;
+  constructor(path4, logger2) {
+    this.path = path4;
     this.logger = logger2;
     this.days = this.readFile();
     this.written = cloneDays(this.days);
@@ -75881,7 +77372,7 @@ var FileLedgerStore = class {
     const out = /* @__PURE__ */ new Map();
     try {
       if (!existsSync11(this.path)) return out;
-      const parsed = JSON.parse(readFileSync11(this.path, "utf-8"));
+      const parsed = JSON.parse(readFileSync12(this.path, "utf-8"));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("\u8D26\u672C\u6839\u8282\u70B9\u4E0D\u662F\u5BF9\u8C61");
       }
@@ -75956,19 +77447,19 @@ var FileLedgerStore = class {
   /** 跨进程互斥；竞争时由节流器稍后重试，不阻塞推理请求。 */
   acquireWriteLock() {
     const lockPath = `${this.path}.lock`;
-    const nonce = randomUUID15();
+    const nonce = randomUUID16();
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         mkdirSync10(lockPath);
         try {
-          writeFileSync10(join12(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, nonce, createdAt: Date.now() }), "utf-8");
+          writeFileSync10(join13(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, nonce, createdAt: Date.now() }), "utf-8");
         } catch (error) {
           rmSync4(lockPath, { recursive: true, force: true });
           throw error;
         }
         return () => {
           try {
-            const owner = JSON.parse(readFileSync11(join12(lockPath, "owner.json"), "utf-8"));
+            const owner = JSON.parse(readFileSync12(join13(lockPath, "owner.json"), "utf-8"));
             if (owner.nonce === nonce) rmSync4(lockPath, { recursive: true, force: true });
           } catch {
           }
@@ -75987,7 +77478,7 @@ var FileLedgerStore = class {
       if (Date.now() - stat.mtimeMs < LEDGER_LOCK_STALE_MS) return false;
       let owner = {};
       try {
-        owner = JSON.parse(readFileSync11(join12(lockPath, "owner.json"), "utf-8"));
+        owner = JSON.parse(readFileSync12(join13(lockPath, "owner.json"), "utf-8"));
       } catch {
       }
       const pid = Number(owner.pid);
@@ -76002,12 +77493,12 @@ var FileLedgerStore = class {
       } else if (lockAgeMs < LEDGER_LOCK_ABANDON_MS) {
         return false;
       }
-      const stalePath = `${lockPath}.stale-${randomUUID15()}`;
+      const stalePath = `${lockPath}.stale-${randomUUID16()}`;
       renameSync9(lockPath, stalePath);
       const movedStat = statSync2(stalePath);
       let movedOwner = {};
       try {
-        movedOwner = JSON.parse(readFileSync11(join12(stalePath, "owner.json"), "utf-8"));
+        movedOwner = JSON.parse(readFileSync12(join13(stalePath, "owner.json"), "utf-8"));
       } catch {
       }
       if (Date.now() - movedStat.mtimeMs < LEDGER_LOCK_STALE_MS || movedOwner.nonce !== owner.nonce) {
@@ -76040,7 +77531,7 @@ var FileLedgerStore = class {
    */
   deleteDay(day) {
     if (!this.days.has(day)) return false;
-    mkdirSync10(join12(this.path, ".."), { recursive: true });
+    mkdirSync10(join13(this.path, ".."), { recursive: true });
     const releaseLock = this.acquireWriteLock();
     if (releaseLock === void 0) throw new Error("Token \u5386\u53F2\u6587\u4EF6\u6B63\u88AB\u53E6\u4E00\u4E2A\u8FDB\u7A0B\u66F4\u65B0\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
     try {
@@ -76049,7 +77540,7 @@ var FileLedgerStore = class {
         this.timer = void 0;
       }
       this.dirty = false;
-      mkdirSync10(join12(this.path, ".."), { recursive: true });
+      mkdirSync10(join13(this.path, ".."), { recursive: true });
       const merged = this.readFile();
       for (const [pendingDay, buckets] of this.days) {
         if (pendingDay === day) continue;
@@ -76129,7 +77620,7 @@ var FileLedgerStore = class {
   flush() {
     let releaseLock;
     try {
-      mkdirSync10(join12(this.path, ".."), { recursive: true });
+      mkdirSync10(join13(this.path, ".."), { recursive: true });
       releaseLock = this.acquireWriteLock();
       if (releaseLock === void 0) {
         this.warnLockContention();
@@ -76171,7 +77662,7 @@ var FileLedgerStore = class {
     const days = {};
     const retained = applyRetention ? pruneDays(source) : source;
     for (const [day, buckets] of retained) days[day] = Object.fromEntries(buckets);
-    const tmp = `${this.path}.${process.pid}.${randomUUID15()}.tmp`;
+    const tmp = `${this.path}.${process.pid}.${randomUUID16()}.tmp`;
     const fd = openSync(tmp, "w");
     try {
       writeFileSync10(fd, JSON.stringify({ schema: SCHEMA5, days }, null, 2), "utf-8");
@@ -76249,7 +77740,7 @@ function createTokenLedgerStore(ctx) {
     ctx.logger?.warn?.("[jet-hub] \u65E0\u6CD5\u5B9A\u4F4D DSH home\uFF0CToken \u7528\u91CF\u5386\u53F2\u4EC5\u5B58\u5728\u4E8E\u5185\u5B58\u4E2D");
     return new MemoryLedgerStore();
   }
-  return new FileLedgerStore(join12(home, "jet-hub", TOKEN_LEDGER_FILE), ctx.logger);
+  return new FileLedgerStore(join13(home, "jet-hub", TOKEN_LEDGER_FILE), ctx.logger);
 }
 
 // vendor/channel-pack/src/buddy-balance-selector.ts
@@ -76938,13 +78429,28 @@ var MinimaxAuth = class extends Service12 {
       const url = new URL(`${this.product.apiHost}${MINIMAX_MODELS_PATH}`);
       url.searchParams.set("region", this.product.region);
       url.searchParams.set("buildEnv", this.product.buildEnv);
-      const response = await minimaxFetchWithRetry(
-        () => this.fetchImpl(url.toString(), {
-          headers: minimaxHeaders(credential),
+      const pool = this.ctx.accountPool;
+      const xff = typeof pool?.minimaxXff === "function" ? pool.minimaxXff() : void 0;
+      let geoRouted = false;
+      const response = await minimaxFetch(
+        url.toString(),
+        () => ({
+          headers: minimaxHeadersFor(credential, xff, this.product.id),
           signal: AbortSignal.timeout(MINIMAX_REQUEST_TIMEOUT_MS)
-        })
+        }),
+        {
+          fetcher: this.fetchImpl,
+          onGeoRoute: () => {
+            geoRouted = true;
+          }
+        }
       );
-      if (!response.ok) return void 0;
+      if (!response.ok) {
+        if (geoRouted) {
+          this.ctx.logger?.warn?.(`[${this.product.id}] ${describeMinimaxGeoRoute()}`);
+        }
+        return void 0;
+      }
       const body = await response.json().catch(() => void 0);
       const entries = parseMinimaxModelsPayload(body);
       if (entries.length === 0) {
@@ -77069,10 +78575,10 @@ function blockText(block) {
   return "";
 }
 function serializeMinimaxMessages(messages, images) {
-  const normalized = normalizeHarnessMessages(
+  const normalized2 = normalizeHarnessMessages(
     messages
   );
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
   const out = [];
   let pendingAssistant;
   let pendingToolResults = [];
@@ -77085,7 +78591,7 @@ function serializeMinimaxMessages(messages, images) {
     }
     pendingAssistant = void 0;
   };
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role === "system") continue;
     const content = [];
     let blocks = 0;
@@ -77637,6 +79143,7 @@ var MinimaxAdapter = class extends LlmAdapter11 {
    * ⚠️ **错误必须抛错**，不静默返回空流（Qoder 早期同型缺陷）。
    */
   async *stream(options) {
+    let geoRouted = false;
     let credential = await this.options.resolveCredential(options.model);
     if (credential === void 0 || isMinimaxExpired(credential)) {
       await this.options.refresh();
@@ -77712,14 +79219,23 @@ var MinimaxAdapter = class extends LlmAdapter11 {
       if (current === void 0) {
         throw new LlmError18("minimax: no usable credential; log in first", "MISSING_CREDENTIAL");
       }
-      return minimaxFetchWithRetry(
-        () => fetch(`${this.product.apiHost}${MINIMAX_INFER_PATH}`, {
+      const pool = this.options.accountPool;
+      const xff = typeof pool?.minimaxXff === "function" ? pool.minimaxXff() : void 0;
+      return minimaxFetch(
+        `${this.product.apiHost}${MINIMAX_INFER_PATH}`,
+        () => ({
           method: "POST",
-          headers: minimaxInferHeaders(current),
+          headers: minimaxInferHeadersFor(current, xff, this.product.id),
           body: JSON.stringify(payload),
           signal: options.signal
         }),
-        options.signal
+        {
+          signal: options.signal,
+          // 记下「地理路由」：跟随后 401 与「凭据失效」同形，只能在此刻判。
+          onGeoRoute: () => {
+            geoRouted = true;
+          }
+        }
       );
     };
     const isDefinitelyNotSse = (response2) => {
@@ -77732,7 +79248,21 @@ var MinimaxAdapter = class extends LlmAdapter11 {
         return {
           error: new LlmError18(
             `minimax: \u63A8\u7406\u7AEF\u70B9\u8FD4\u56DE\u4E86\u975E SSE \u54CD\u5E94\uFF08HTTP 200\uFF09${text === "" ? "" : ` \u2014 ${text.slice(0, 500)}`}`,
-            "SERVER"
+            /**
+             * ⚠️⚠️ **不能用 `SERVER`**（2026-10-17 审计发现的真缺陷，本行是既有代码）。
+             *
+             * 本对象会被 `attempt()` 原样当作 `streamError`，**不经过**
+             * `httpErrorCode()` 重新归类（实测最终 `error.code === 'SERVER'`）。
+             * 而 DSH 的 `DEFAULT_RETRYABLE_CODES` 含 `'SERVER'`、
+             * `DEFAULT_MAX_RETRIES = 5` ⇒ 这条**确定性失败**（网关就是没给 SSE，
+             * 同一请求重发大概率还是同样结果）会被 `dsh-llm-retry` 自动重试 5 次，
+             * 每次都重跑整条换号循环。
+             *
+             * 用 `INVALID_REQUEST` 的理由与地理路由处同源：它**不在**默认可重试集合、
+             * 也**不会**被 harness 替换文案（只用 `QUOTA` / `AUTH` 替换）。
+             * 语义也对位 ——「这次响应格式不可用」是请求层面的确定性拒绝。
+             */
+            "INVALID_REQUEST"
           ),
           text
         };
@@ -77801,6 +79331,23 @@ var MinimaxAdapter = class extends LlmAdapter11 {
     };
     const throwCurrent = () => {
       if (streamError !== void 0) throw streamError;
+      if (geoRouted) {
+        const geoDetail = errorText === "" ? void 0 : errorText.slice(0, 200);
+        if (status === 402) {
+          throw new LlmError18(
+            `minimax: ${describeMinimaxGeoRoute(geoDetail)}`,
+            "QUOTA_EXCEEDED",
+            { status }
+          );
+        }
+        const code2 = httpErrorCode(status);
+        const geoOwnsCode = code2 === "SERVER" || code2 === "AUTH";
+        throw new LlmError18(
+          `minimax: ${describeMinimaxGeoRoute(geoDetail)}`,
+          geoOwnsCode ? "INVALID_CREDENTIAL" : code2,
+          status === 0 ? {} : { status }
+        );
+      }
       const code = status === 402 ? "QUOTA_EXCEEDED" : httpErrorCode(status);
       throw new LlmError18(
         `minimax: HTTP ${status}${errorText === "" ? "" : ` \u2014 ${errorText.slice(0, 500)}`}`,
@@ -77898,19 +79445,19 @@ function geminiFirstUserText(contents) {
   return "";
 }
 function translateGeminiRequest(options) {
-  const normalized = normalizeHarnessMessages(
+  const normalized2 = normalizeHarnessMessages(
     options.messages
   );
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
   const toolNames = /* @__PURE__ */ new Map();
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     for (const block of message2.content) {
       if (block.type === "tool-call") toolNames.set(String(block.id), block.name);
     }
   }
   const contents = [];
   const pendingToolImages = [];
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role === "system") continue;
     const role = message2.role === "assistant" ? "model" : "user";
     const parts = [];
@@ -78812,8 +80359,1214 @@ function registerGeminiLlm(ctx, options) {
   return adapter;
 }
 
+// vendor/channel-pack/src/autoclaw-auth.ts
+import { Service as Service13 } from "@deepseek-ai/cordis";
+import { credentialRef as credentialRef18 } from "@deepseek-ai/dsh-credentials";
+
+// vendor/channel-pack/src/autoclaw-oauth.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+import crypto3 from "node:crypto";
+import http from "node:http";
+import { execFileSync as execFileSync4 } from "node:child_process";
+var AUTOCLAW_SEND_CODE_PATH = "/userapi/v1/agent-send-code";
+var AUTOCLAW_LOGIN_PATH = "/userapi/v1/agent-login";
+var PHONE_NUMBER_RE = /^1[3-9]\d{9}$/;
+async function probeAutoclawLocalCredential(options) {
+  try {
+    const appData = options?.customAppData ?? process.env.DSH_AUTOCLAW_APPDATA ?? process.env.APPDATA ?? (process.env.USERPROFILE ? path2.join(process.env.USERPROFILE, "AppData", "Roaming") : void 0);
+    if (!appData) return void 0;
+    const localStatePath = path2.join(appData, "AutoClaw-official", "Local State");
+    if (!fs2.existsSync(localStatePath)) return void 0;
+    const localState = JSON.parse(fs2.readFileSync(localStatePath, "utf8"));
+    const encKeyB64 = localState?.os_crypt?.encrypted_key;
+    if (!encKeyB64) return void 0;
+    const encKeyBuf = Buffer.from(encKeyB64, "base64");
+    if (!encKeyBuf.subarray(0, 5).equals(Buffer.from("DPAPI"))) {
+      return void 0;
+    }
+    const rawEncKey = encKeyBuf.subarray(5);
+    const hex = rawEncKey.toString("hex");
+    const psScript = `
+      Add-Type -AssemblyName System.Security
+      $hex = "${hex}"
+      $bytes = for ($i=0; $i -lt $hex.Length; $i+=2) { [Convert]::ToByte($hex.Substring($i, 2), 16) }
+      $unprotected = [Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+      [Convert]::ToBase64String($unprotected)
+    `;
+    const clearB64 = execFileSync4("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", psScript], {
+      encoding: "utf8",
+      timeout: 1e4
+    }).trim();
+    const masterKey = Buffer.from(clearB64, "base64");
+    const accountsDir = path2.join(appData, "AutoClaw-official", "accounts");
+    if (!fs2.existsSync(accountsDir)) return void 0;
+    const entries = fs2.readdirSync(accountsDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const credFile = path2.join(accountsDir, ent.name, "account-credentials.enc");
+      if (!fs2.existsSync(credFile)) continue;
+      const encData = fs2.readFileSync(credFile);
+      if (encData.length < 31) continue;
+      const nonce = encData.subarray(3, 15);
+      const ciphertextAndTag = encData.subarray(15);
+      const ciphertext = ciphertextAndTag.subarray(0, ciphertextAndTag.length - 16);
+      const tag2 = ciphertextAndTag.subarray(ciphertextAndTag.length - 16);
+      const decipher = crypto3.createDecipheriv("aes-256-gcm", masterKey, nonce);
+      decipher.setAuthTag(tag2);
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      const parsed = JSON.parse(decrypted.toString("utf8"));
+      const rawAccess = parsed.accessToken ?? parsed.access_token;
+      const rawRefresh = parsed.refreshToken ?? parsed.refresh_token;
+      if (rawAccess && rawRefresh) {
+        const cleanAccess = cleanBearerToken(rawAccess);
+        const cleanRefresh = cleanBearerToken(rawRefresh);
+        let jwtPayload;
+        try {
+          const parts = cleanAccess.split(".");
+          if (parts.length >= 2) {
+            const b642 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+            jwtPayload = JSON.parse(Buffer.from(b642, "base64").toString("utf8"));
+          }
+        } catch {
+        }
+        const profilePath = path2.join(accountsDir, ent.name, "account-profile.json");
+        let profilePhone;
+        let profileName;
+        if (fs2.existsSync(profilePath)) {
+          try {
+            const prof = JSON.parse(fs2.readFileSync(profilePath, "utf8"));
+            profilePhone = prof?.profile?.phone;
+            profileName = prof?.profile?.displayName;
+          } catch {
+          }
+        }
+        const jwtPhone = typeof jwtPayload?.jti === "string" && /^1[3-9]\d{9}$/.test(jwtPayload.jti.trim()) ? jwtPayload.jti.trim() : void 0;
+        const resolvedPhone = profilePhone ?? jwtPhone ?? (typeof parsed.userPhone === "string" ? parsed.userPhone : void 0) ?? (typeof parsed.phone === "string" ? parsed.phone : void 0);
+        const resolvedName = profileName ?? (typeof parsed.userName === "string" ? parsed.userName : void 0);
+        const resolvedUserId = (typeof parsed.userId === "string" || typeof parsed.userId === "number" ? parsed.userId : void 0) ?? (typeof jwtPayload?.user_id === "string" || typeof jwtPayload?.user_id === "number" ? jwtPayload.user_id : void 0);
+        const resolvedDeviceId = (typeof parsed.deviceId === "string" ? parsed.deviceId : void 0) ?? (typeof jwtPayload?.device_id === "string" ? jwtPayload.device_id : void 0);
+        const resolvedExpiresAt = (typeof parsed.expiresAt === "number" ? autoclawExpiresAtMs(parsed.expiresAt) : void 0) ?? (typeof jwtPayload?.exp === "number" ? autoclawExpiresAtMs(jwtPayload.exp) : void 0);
+        return {
+          access_token: cleanAccess,
+          refresh_token: cleanRefresh,
+          expires_at: resolvedExpiresAt,
+          user_id: resolvedUserId,
+          user_name: resolvedName,
+          user_phone: resolvedPhone,
+          device_id: resolvedDeviceId
+        };
+      }
+    }
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function refreshAutoclawToken(refreshToken2, options) {
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetchImpl ?? fetch;
+  const cleanRefresh = cleanBearerToken(refreshToken2);
+  const deviceId = options?.deviceId ?? "dsh-autoclaw-device-001";
+  const endpoints = [AUTOCLAW_REFRESH_PATH, AUTOCLAW_REFRESH_FALLBACK_PATH];
+  let lastError;
+  for (const ep of endpoints) {
+    const ts = Math.floor(Date.now() / 1e3).toString();
+    const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
+    const url = `${product.apiBase}${ep}`;
+    try {
+      const resp = await fetcher(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Auth-Appid": product.appId,
+          "X-Auth-TimeStamp": ts,
+          "X-Auth-Sign": sign
+        },
+        body: JSON.stringify({
+          refresh_token: cleanRefresh,
+          source_id: AUTOCLAW_SOURCE_ID,
+          device_id: deviceId
+        }),
+        signal: AbortSignal.timeout(AUTOCLAW_REQUEST_TIMEOUT_MS)
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`AutoClaw token refresh failed with status ${resp.status}: ${text}`);
+      }
+      const json = await resp.json();
+      if (json.code !== 0 || !json.data?.access_token) {
+        throw new Error(`AutoClaw token refresh returned code ${json.code}: ${json.msg ?? "unknown"}`);
+      }
+      const newAccess = cleanBearerToken(json.data.access_token);
+      const newRefresh = json.data.refresh_token ? cleanBearerToken(json.data.refresh_token) : cleanRefresh;
+      const expiresAt = autoclawExpiresAtMs(json.data.expires_at ?? json.data.expires_in);
+      return {
+        access_token: newAccess,
+        refresh_token: newRefresh,
+        expires_at: expiresAt,
+        user_id: json.data.user_id,
+        device_id: deviceId
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
+  }
+  throw lastError ?? new Error("AutoClaw token refresh failed on all endpoints");
+}
+function resolveDeviceId(explicitId) {
+  if (explicitId && explicitId.trim().length > 0) return explicitId.trim();
+  try {
+    const p = path2.join(
+      process.env.DSH_AUTOCLAW_APPDATA ?? process.env.APPDATA ?? path2.join(process.env.USERPROFILE ?? "", "AppData", "Roaming"),
+      "AutoClaw-official",
+      "device",
+      "device-id.json"
+    );
+    if (fs2.existsSync(p)) {
+      const data = JSON.parse(fs2.readFileSync(p, "utf8"));
+      if (typeof data.deviceId === "string" && data.deviceId.trim()) {
+        return data.deviceId.trim();
+      }
+    }
+  } catch {
+  }
+  return crypto3.randomUUID();
+}
+async function sendAutoclawVerificationCode(phone, options) {
+  const trimmedPhone = phone.trim();
+  if (!PHONE_NUMBER_RE.test(trimmedPhone)) {
+    return { ok: false, error: "\u624B\u673A\u53F7\u683C\u5F0F\u4E0D\u6B63\u786E" };
+  }
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetchImpl ?? fetch;
+  const deviceId = resolveDeviceId(options?.deviceId);
+  const ts = Math.floor(Date.now() / 1e3).toString();
+  const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
+  const url = `${product.apiBase}${AUTOCLAW_SEND_CODE_PATH}`;
+  try {
+    const resp = await fetcher(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Auth-Appid": product.appId,
+        "X-Auth-TimeStamp": ts,
+        "X-Auth-Sign": sign,
+        "X-Lang": "zh-CN",
+        "X-Channel": "official"
+      },
+      body: JSON.stringify({
+        phone: trimmedPhone,
+        source_id: AUTOCLAW_SOURCE_ID,
+        device_id: deviceId
+      }),
+      signal: AbortSignal.timeout(AUTOCLAW_REQUEST_TIMEOUT_MS)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: `\u9A8C\u8BC1\u7801\u53D1\u9001\u5931\u8D25(${resp.status}): ${text}` };
+    }
+    const json = await resp.json();
+    if (json.code !== 0) {
+      return { ok: false, error: json.msg || `\u9A8C\u8BC1\u7801\u53D1\u9001\u5931\u8D25(\u9519\u8BEF\u7801: ${json.code})` };
+    }
+    return { ok: true, msgid: "autoclaw-sms" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+}
+async function loginAutoclawWithCode(phone, code, options) {
+  const trimmedPhone = phone.trim();
+  const trimmedCode = code.trim();
+  if (!PHONE_NUMBER_RE.test(trimmedPhone)) {
+    return { ok: false, error: "\u624B\u673A\u53F7\u683C\u5F0F\u4E0D\u6B63\u786E" };
+  }
+  if (!trimmedCode) {
+    return { ok: false, error: "\u9A8C\u8BC1\u7801\u4E0D\u80FD\u4E3A\u7A7A" };
+  }
+  const numCode = Number(trimmedCode);
+  if (!Number.isSafeInteger(numCode)) {
+    return { ok: false, error: "\u9A8C\u8BC1\u7801\u5FC5\u987B\u4E3A\u7EAF\u6570\u5B57" };
+  }
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetchImpl ?? fetch;
+  const deviceId = resolveDeviceId(options?.deviceId);
+  const ts = Math.floor(Date.now() / 1e3).toString();
+  const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
+  const url = `${product.apiBase}${AUTOCLAW_LOGIN_PATH}`;
+  try {
+    const resp = await fetcher(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Auth-Appid": product.appId,
+        "X-Auth-TimeStamp": ts,
+        "X-Auth-Sign": sign,
+        "X-Lang": "zh-CN",
+        "X-Channel": "official"
+      },
+      body: JSON.stringify({
+        phone: trimmedPhone,
+        code: numCode,
+        source_id: AUTOCLAW_SOURCE_ID,
+        device_id: deviceId
+      }),
+      signal: AbortSignal.timeout(AUTOCLAW_REQUEST_TIMEOUT_MS)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: `AutoClaw \u767B\u5F55\u8BF7\u6C42\u5931\u8D25(${resp.status}): ${text}` };
+    }
+    const json = await resp.json();
+    if (json.code !== 0 || !json.data) {
+      return { ok: false, error: json.msg || `AutoClaw \u767B\u5F55\u5931\u8D25(\u9519\u8BEF\u7801: ${json.code})` };
+    }
+    const { data } = json;
+    if (!data.access_token) {
+      return { ok: false, error: "AutoClaw \u54CD\u5E94\u4E2D\u7F3A\u5C11 access_token" };
+    }
+    const cleanAccess = cleanBearerToken(data.access_token);
+    const cleanRefresh = data.refresh_token ? cleanBearerToken(data.refresh_token) : void 0;
+    const expiresAt = typeof data.expires_at === "number" ? autoclawExpiresAtMs(data.expires_at) : typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1e3 : Date.now() + 7 * 864e5;
+    const credential = {
+      access_token: cleanAccess,
+      refresh_token: cleanRefresh ?? "",
+      expires_at: expiresAt,
+      device_id: deviceId,
+      account_id: data.user_id !== void 0 ? String(data.user_id) : void 0,
+      user_id: data.user_id,
+      user_name: data.user_name,
+      user_phone: data.user_phone ?? trimmedPhone
+    };
+    return { ok: true, credential };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+}
+async function startAutoclawSmsLoginFlow(options) {
+  const product = options?.product ?? AUTOCLAW;
+  const timeoutMs = options?.timeoutMs ?? 18e4;
+  let settleOk;
+  let settleErr;
+  const result = new Promise((resolve2, reject) => {
+    settleOk = resolve2;
+    settleErr = reject;
+  });
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? "/", `http://127.0.0.1:${req.socket.localPort ?? 0}`);
+    if (req.method === "GET" && (url.pathname === "/autoclaw/login" || url.pathname === "/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoClaw \u767B\u5F55\u6388\u6743</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px; width: 100%; max-width: 420px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }
+    h2 { margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #38bdf8; }
+    p.desc { color: #94a3b8; font-size: 13px; margin: 0 0 24px 0; }
+    .btn-secondary { width: 100%; background: #334155; color: #f8fafc; border: 1px solid #475569; border-radius: 6px; padding: 10px 16px; font-size: 14px; cursor: pointer; transition: background 0.2s; }
+    .btn-secondary:hover { background: #475569; }
+    .divider { display: flex; align-items: center; text-align: center; margin: 20px 0; color: #64748b; font-size: 12px; }
+    .divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid #334155; }
+    .divider::before { margin-right: .5em; }
+    .divider::after { margin-left: .5em; }
+    .input-group { margin-bottom: 16px; }
+    label { display: block; font-size: 12px; color: #cbd5e1; margin-bottom: 6px; }
+    input { width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 10px 12px; color: #f8fafc; font-size: 14px; outline: none; }
+    input:focus { border-color: #38bdf8; }
+    .row { display: flex; gap: 8px; }
+    .row input { flex: 1; }
+    .btn-code { background: #0284c7; color: white; border: none; border-radius: 6px; padding: 0 16px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    .btn-code:disabled { background: #475569; cursor: not-allowed; }
+    .btn-primary { width: 100%; background: #0284c7; color: white; border: none; border-radius: 6px; padding: 11px 16px; font-size: 15px; font-weight: 500; cursor: pointer; margin-top: 8px; }
+    .btn-primary:hover { background: #0369a1; }
+    .btn-primary:disabled { background: #475569; cursor: not-allowed; }
+    .msg { margin-top: 16px; padding: 10px 12px; border-radius: 6px; font-size: 13px; display: none; }
+    .msg.error { display: block; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; }
+    .msg.success { display: block; background: rgba(34, 197, 94, 0.15); border: 1px solid #22c55e; color: #86efac; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>AutoClaw \u8D26\u53F7\u767B\u5F55</h2>
+    <p class="desc">\u652F\u6301\u4E00\u952E\u8BFB\u53D6\u672C\u673A\u684C\u9762\u7AEF\u51ED\u636E\uFF0C\u6216\u901A\u8FC7\u624B\u673A\u9A8C\u8BC1\u7801\u5FEB\u901F\u767B\u5F55\u3002</p>
+    <button type="button" class="btn-secondary" id="btnLocal">\u26A1 \u4E00\u952E\u8BFB\u53D6\u672C\u673A AutoClaw \u684C\u9762\u7AEF\u51ED\u636E</button>
+    <div class="divider">\u6216\u8005\u4F7F\u7528\u624B\u673A\u9A8C\u8BC1\u7801\u767B\u5F55</div>
+    <div class="input-group">
+      <label for="phone">\u624B\u673A\u53F7</label>
+      <input type="tel" id="phone" placeholder="\u8BF7\u8F93\u5165 11 \u4F4D\u624B\u673A\u53F7" maxlength="11" />
+    </div>
+    <div class="input-group">
+      <label for="code">\u77ED\u4FE1\u9A8C\u8BC1\u7801</label>
+      <div class="row">
+        <input type="text" id="code" placeholder="\u8BF7\u8F93\u5165 6 \u4F4D\u9A8C\u8BC1\u7801" maxlength="6" />
+        <button type="button" class="btn-code" id="btnSend">\u83B7\u53D6\u9A8C\u8BC1\u7801</button>
+      </div>
+    </div>
+    <button type="button" class="btn-primary" id="btnLogin">\u767B\u5F55\u5E76\u7ED1\u5B9A\u8D26\u53F7</button>
+    <div class="msg" id="msgBox"></div>
+  </div>
+  <script>
+    const btnLocal = document.getElementById('btnLocal');
+    const phoneInput = document.getElementById('phone');
+    const codeInput = document.getElementById('code');
+    const btnSend = document.getElementById('btnSend');
+    const btnLogin = document.getElementById('btnLogin');
+    const msgBox = document.getElementById('msgBox');
+    function showMsg(type, text) { msgBox.className = 'msg ' + type; msgBox.textContent = text; msgBox.style.display = 'block'; }
+    btnLocal.addEventListener('click', async () => {
+      btnLocal.disabled = true;
+      btnLocal.textContent = '\u6B63\u5728\u68C0\u6D4B\u672C\u5730\u51ED\u636E...';
+      try {
+        const resp = await fetch('/autoclaw/import-local', { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+          showMsg('success', '\u2705 \u6210\u529F\u8BFB\u53D6\u672C\u673A\u5DF2\u767B\u5F55\u51ED\u636E\uFF08' + (data.phone || 'AutoClaw\u8D26\u53F7') + '\uFF09\uFF01\u5DF2\u81EA\u52A8\u7ED1\u5B9A\uFF0C\u8BF7\u5173\u95ED\u672C\u7A97\u53E3\u8FD4\u56DE IDE\u3002');
+          btnLocal.style.display = 'none';
+        } else {
+          showMsg('error', data.error || '\u672A\u68C0\u6D4B\u5230\u672C\u5730 AutoClaw \u684C\u9762\u7AEF\u6709\u6548\u767B\u5F55\u51ED\u636E\uFF0C\u8BF7\u4F7F\u7528\u4E0B\u65B9\u624B\u673A\u9A8C\u8BC1\u7801\u767B\u5F55\u3002');
+          btnLocal.disabled = false;
+          btnLocal.textContent = '\u26A1 \u4E00\u952E\u8BFB\u53D6\u672C\u673A AutoClaw \u684C\u9762\u7AEF\u51ED\u636E';
+        }
+      } catch (err) {
+        showMsg('error', '\u8BF7\u6C42\u5931\u8D25\uFF1A' + (err.message || String(err)));
+        btnLocal.disabled = false;
+        btnLocal.textContent = '\u26A1 \u4E00\u952E\u8BFB\u53D6\u672C\u673A AutoClaw \u684C\u9762\u7AEF\u51ED\u636E';
+      }
+    });
+    let countdown = 0;
+    btnSend.addEventListener('click', async () => {
+      const phone = phoneInput.value.trim();
+      if (!/^1[3-9]\\d{9}$/.test(phone)) { showMsg('error', '\u8BF7\u8F93\u5165\u6B63\u786E\u7684 11 \u4F4D\u624B\u673A\u53F7\u7801'); return; }
+      btnSend.disabled = true;
+      btnSend.textContent = '\u53D1\u9001\u4E2D...';
+      try {
+        const resp = await fetch('/autoclaw/send-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }) });
+        const data = await resp.json();
+        if (data.ok) {
+          showMsg('success', '\u9A8C\u8BC1\u7801\u5DF2\u53D1\u9001\u81F3\u624B\u673A\uFF0C\u8BF7\u67E5\u6536');
+          countdown = 60;
+          btnSend.textContent = countdown + 's \u540E\u91CD\u65B0\u83B7\u53D6';
+          const timer = setInterval(() => {
+            countdown--;
+            if (countdown <= 0) { clearInterval(timer); btnSend.disabled = false; btnSend.textContent = '\u83B7\u53D6\u9A8C\u8BC1\u7801'; }
+            else { btnSend.textContent = countdown + 's \u540E\u91CD\u65B0\u83B7\u53D6'; }
+          }, 1000);
+        } else {
+          showMsg('error', data.error || '\u53D1\u9001\u9A8C\u8BC1\u7801\u5931\u8D25');
+          btnSend.disabled = false;
+          btnSend.textContent = '\u83B7\u53D6\u9A8C\u8BC1\u7801';
+        }
+      } catch (err) {
+        showMsg('error', '\u53D1\u9001\u9A8C\u8BC1\u7801\u7F51\u7EDC\u5F02\u5E38\uFF1A' + (err.message || String(err)));
+        btnSend.disabled = false;
+        btnSend.textContent = '\u83B7\u53D6\u9A8C\u8BC1\u7801';
+      }
+    });
+    btnLogin.addEventListener('click', async () => {
+      const phone = phoneInput.value.trim();
+      const code = codeInput.value.trim();
+      if (!/^1[3-9]\\d{9}$/.test(phone)) { showMsg('error', '\u8BF7\u8F93\u5165\u6B63\u786E\u7684 11 \u4F4D\u624B\u673A\u53F7\u7801'); return; }
+      if (!code) { showMsg('error', '\u8BF7\u8F93\u5165\u6536\u5230\u7684\u77ED\u4FE1\u9A8C\u8BC1\u7801'); return; }
+      btnLogin.disabled = true;
+      btnLogin.textContent = '\u767B\u5F55\u4E2D...';
+      try {
+        const resp = await fetch('/autoclaw/submit-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, code }) });
+        const data = await resp.json();
+        if (data.ok) {
+          showMsg('success', '\u2705 \u767B\u5F55\u6210\u529F\uFF01\u5DF2\u7ED1\u5B9A\u8D26\u53F7\uFF1A' + (data.phone || phone) + '\uFF0C\u60A8\u53EF\u4EE5\u5173\u95ED\u672C\u7A97\u53E3\u8FD4\u56DE IDE\u3002');
+          btnLogin.style.display = 'none';
+        } else {
+          showMsg('error', data.error || '\u9A8C\u8BC1\u7801\u767B\u5F55\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5');
+          btnLogin.disabled = false;
+          btnLogin.textContent = '\u767B\u5F55\u5E76\u7ED1\u5B9A\u8D26\u53F7';
+        }
+      } catch (err) {
+        showMsg('error', '\u767B\u5F55\u7F51\u7EDC\u5F02\u5E38\uFF1A' + (err.message || String(err)));
+        btnLogin.disabled = false;
+        btnLogin.textContent = '\u767B\u5F55\u5E76\u7ED1\u5B9A\u8D26\u53F7';
+      }
+    });
+  </script>
+</body>
+</html>`);
+      return;
+    }
+    if (req.method === "POST") {
+      let bodyStr = "";
+      req.on("data", (chunk) => {
+        bodyStr += chunk;
+      });
+      req.on("end", async () => {
+        let jsonBody = {};
+        try {
+          if (bodyStr.trim()) jsonBody = JSON.parse(bodyStr);
+        } catch {
+        }
+        if (url.pathname === "/autoclaw/send-code") {
+          const resCode = await sendAutoclawVerificationCode(jsonBody.phone ?? "", {
+            product,
+            fetchImpl: options?.fetchImpl,
+            deviceId: options?.deviceId
+          });
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify(resCode));
+          return;
+        }
+        if (url.pathname === "/autoclaw/submit-code") {
+          const resLogin = await loginAutoclawWithCode(jsonBody.phone ?? "", jsonBody.code ?? "", {
+            product,
+            fetchImpl: options?.fetchImpl,
+            deviceId: options?.deviceId
+          });
+          if (resLogin.ok && resLogin.credential) {
+            settleOk({ credential: resLogin.credential, phone: jsonBody.phone ?? "" });
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: true, phone: jsonBody.phone ?? "" }));
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: false, error: resLogin.error || "\u767B\u5F55\u5931\u8D25" }));
+          }
+          return;
+        }
+        if (url.pathname === "/autoclaw/import-local") {
+          const localCred = await probeAutoclawLocalCredential();
+          if (localCred) {
+            settleOk({ credential: localCred, phone: localCred.user_phone ?? "" });
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: true, phone: localCred.user_phone ?? "" }));
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: false, error: "\u672A\u68C0\u6D4B\u5230\u672C\u5730 AutoClaw \u684C\u9762\u7AEF\u6709\u6548\u767B\u5F55\u51ED\u636E" }));
+          }
+          return;
+        }
+        res.writeHead(404).end("Not Found");
+      });
+      return;
+    }
+    res.writeHead(404).end("Not Found");
+  });
+  await new Promise((resolve2) => {
+    server.listen(0, "127.0.0.1", () => resolve2());
+  });
+  const addr = server.address();
+  const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+  const loginUrl = `http://127.0.0.1:${port}/autoclaw/login`;
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await new Promise((resolve2) => server.close(() => resolve2()));
+  };
+  const timer = setTimeout(() => {
+    settleErr(new Error(`AutoClaw \u767B\u5F55\u8D85\u65F6\uFF08${Math.round(timeoutMs / 1e3)} \u79D2\u5185\u672A\u5B8C\u6210\uFF09`));
+  }, timeoutMs);
+  timer.unref?.();
+  result.catch(() => {
+  }).finally(() => {
+    clearTimeout(timer);
+    void close();
+  });
+  return { loginUrl, result, close };
+}
+
+// vendor/channel-pack/src/autoclaw-auth.ts
+var AUTOCLAW_EXPIRY_ACCESSORS = {
+  expiresAtOf: (credential) => credential.expires_at,
+  refreshableOf: isAutoclawRefreshable,
+  identityOf: (credential) => credential.access_token ?? ""
+};
+var RefreshTokenExpiredError9 = class extends Error {
+  constructor(message2) {
+    super(message2);
+    this.name = "RefreshTokenExpiredError";
+  }
+};
+var AutoclawAuth = class extends Service13 {
+  constructor(ctx, options = {}) {
+    const product = options.product ?? AUTOCLAW;
+    super(ctx, options.serviceName ?? `${product.id}Auth`);
+    this.options = options;
+    this.product = product;
+    this.credentialRefName = this.product.defaultCredentialRef;
+  }
+  options;
+  product;
+  credentialRefName;
+  scheduler = new RefreshScheduler(
+    () => this.refresh(),
+    (error) => {
+      if (error instanceof RefreshTokenExpiredError9) {
+        this.markRefreshTokenInvalid();
+        return;
+      }
+      this.lastRefreshError = error instanceof Error ? error.message : String(error);
+    }
+  );
+  refreshTokenInvalid = false;
+  lastRefreshError;
+  active = true;
+  get fetchImpl() {
+    return this.options.fetcher ?? fetch;
+  }
+  /**
+   * 探测本地是否有有效凭据。
+   */
+  async probeLocal() {
+    return probeAutoclawLocalCredential();
+  }
+  /**
+   * 刷新指定的凭据对象。
+   */
+  async refreshCredential(credential) {
+    if (!isAutoclawRefreshable(credential)) {
+      throw new RefreshTokenExpiredError9("AutoClaw refresh_token \u4E3A\u7A7A\uFF0C\u65E0\u6CD5\u7EED\u671F");
+    }
+    try {
+      const refreshed = await refreshAutoclawToken(credential.refresh_token, {
+        product: this.product,
+        fetchImpl: this.fetchImpl,
+        deviceId: credential.device_id
+      });
+      return refreshed;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Invalid token") || msg.includes("expired") || msg.includes("401")) {
+        throw new RefreshTokenExpiredError9(`AutoClaw refresh_token \u5DF2\u5931\u6548\uFF1A${msg}`);
+      }
+      throw err;
+    }
+  }
+  /**
+   * 按凭据 ref 续期指定账号的凭据。
+   */
+  async refreshAccountCredential(refName, pool, accountId) {
+    const ref = credentialRef18(refName);
+    const resolved = await this.ctx.credentials.resolve(ref);
+    if (!resolved) throw new Error("\u51ED\u636E\u672A\u914D\u7F6E");
+    const credential = parseAutoclawCredential(resolved.value);
+    if (!credential) throw new Error("\u51ED\u636E\u89E3\u6790\u5931\u8D25");
+    if (!isAutoclawRefreshable(credential)) {
+      throw new RefreshTokenExpiredError9("\u65E0 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
+    }
+    const refreshed = await this.refreshCredential(credential);
+    await this.ctx.credentials.set(ref, JSON.stringify(refreshed));
+    await syncAccountExpiry({
+      pool,
+      provider: this.product.id,
+      credential: refreshed,
+      accessors: AUTOCLAW_EXPIRY_ACCESSORS,
+      accountId,
+      tag: "[autoclaw]",
+      warn: (message2) => this.ctx.logger?.warn?.(message2)
+    });
+  }
+  /**
+   * 批量续期本产品的所有账号。
+   */
+  async refreshAll(pool) {
+    const accounts = await pool.listAccounts(this.product.id);
+    for (const entry of accounts) {
+      if (!entry.refreshable) continue;
+      try {
+        const ref = credentialRef18(entry.credentialRef);
+        const resolved = await this.ctx.credentials.resolve(ref);
+        if (!resolved) {
+          await pool.updateAccount(entry.id, { refreshable: false });
+          continue;
+        }
+        const credential = parseAutoclawCredential(resolved.value);
+        if (!credential || !isAutoclawRefreshable(credential)) {
+          await pool.updateAccount(entry.id, { refreshable: false });
+          continue;
+        }
+        await refreshAccountWithReconcile({
+          pool,
+          provider: this.product.id,
+          tag: "[autoclaw]",
+          accountId: entry.id,
+          credential,
+          accessors: AUTOCLAW_EXPIRY_ACCESSORS,
+          current: entry,
+          refresh: (c) => this.refreshCredential(c),
+          save: (c) => this.ctx.credentials.set(ref, JSON.stringify(c)),
+          warn: (message2) => this.ctx.logger?.warn?.(message2)
+        });
+      } catch (error) {
+        if (error instanceof RefreshTokenExpiredError9) {
+          try {
+            await pool.updateAccount(entry.id, { refreshable: false });
+          } catch {
+          }
+          this.ctx.logger?.warn?.(
+            `[autoclaw] \u8D26\u53F7 ${entry.id} \u7684 refresh_token \u5DF2\u5931\u6548\uFF0C\u5DF2\u6807\u8BB0\u4E3A\u4E0D\u53EF\u7EED\u671F\uFF08\u9700\u91CD\u65B0\u767B\u5F55\uFF09`
+          );
+        } else {
+          this.ctx.logger?.warn?.(
+            `[autoclaw] \u8D26\u53F7 ${entry.id} \u7EED\u671F\u5931\u8D25: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
+  }
+  /**
+   * 刷新单凭据路径下的当前凭据。
+   */
+  async refresh() {
+    if (!this.active) return;
+    const ref = credentialRef18(this.credentialRefName);
+    const resolved = await this.ctx.credentials.resolve(ref);
+    if (!resolved) return;
+    const credential = parseAutoclawCredential(resolved.value);
+    if (!credential || !isAutoclawRefreshable(credential)) return;
+    try {
+      const refreshed = await this.refreshCredential(credential);
+      await this.ctx.credentials.set(ref, JSON.stringify(refreshed));
+      this.refreshTokenInvalid = false;
+      this.lastRefreshError = void 0;
+      if (refreshed.expires_at) {
+        this.scheduler.arm(refreshed.expires_at);
+      }
+    } catch (error) {
+      if (error instanceof RefreshTokenExpiredError9) {
+        this.markRefreshTokenInvalid();
+      } else {
+        this.lastRefreshError = error instanceof Error ? error.message : String(error);
+      }
+      throw error;
+    }
+  }
+  markRefreshTokenInvalid() {
+    this.refreshTokenInvalid = true;
+    this.scheduler.stop();
+  }
+  /**
+   * 获取当前单凭据状态。
+   */
+  async status() {
+    const ref = credentialRef18(this.credentialRefName);
+    const resolved = await this.ctx.credentials.resolve(ref);
+    if (!resolved) {
+      return { loggedIn: false, refreshable: false };
+    }
+    const credential = parseAutoclawCredential(resolved.value);
+    if (!credential) {
+      return { loggedIn: false, refreshable: false, lastError: "\u51ED\u636E\u683C\u5F0F\u65E0\u6548" };
+    }
+    const expired = isAutoclawTokenExpired(credential, 0);
+    return {
+      loggedIn: !expired,
+      expiresAt: credential.expires_at,
+      refreshable: isAutoclawRefreshable(credential) && !this.refreshTokenInvalid,
+      lastError: this.lastRefreshError
+    };
+  }
+  /**
+   * 将本地探测到的凭据导入为账号。
+   */
+  async importLocalAccount(pool, options) {
+    const cred = await this.probeLocal();
+    if (!cred) {
+      throw new Error("\u672A\u68C0\u6D4B\u5230\u672C\u5730 AutoClaw \u684C\u9762\u7AEF\u6709\u6548\u767B\u5F55\u51ED\u636E\uFF0C\u8BF7\u5148\u5728 AutoClaw \u4E2D\u767B\u5F55");
+    }
+    const accountId = options?.accountId ?? `autoclaw-${Date.now().toString(36)}`;
+    const refName = options?.refName ?? `AUTOCLAW_ACCOUNT_${Date.now().toString(16).toUpperCase()}`;
+    const ref = credentialRef18(refName);
+    await this.ctx.credentials.set(ref, JSON.stringify(cred));
+    const nickname = autoclawDisplayNickname(cred, accountId);
+    await pool.addAccount({
+      id: accountId,
+      provider: this.product.id,
+      nickname,
+      enabled: true,
+      credentialRef: refName,
+      createdAt: Date.now(),
+      expiresAt: cred.expires_at,
+      refreshable: isAutoclawRefreshable(cred)
+    });
+    return { accountId, refName, credential: cred };
+  }
+  /**
+   * 发送手机验证码（免桌面端快速登录模式）。
+   */
+  async sendVerificationCode(phone) {
+    return sendAutoclawVerificationCode(phone, {
+      product: this.product,
+      fetchImpl: this.fetchImpl
+    });
+  }
+  /**
+   * 使用手机验证码登录并保存凭据（免桌面端快速登录模式）。
+   */
+  async loginWithCode(phone, code, refName) {
+    const res = await loginAutoclawWithCode(phone, code, {
+      product: this.product,
+      fetchImpl: this.fetchImpl
+    });
+    if (res.ok && res.credential && refName) {
+      const ref = credentialRef18(refName);
+      await this.ctx.credentials.set(ref, JSON.stringify(res.credential));
+      try {
+        const outcome = await claimAutoclawDailyQuota(res.credential, {
+          product: this.product,
+          ...this.options.fetcher === void 0 ? {} : { fetcher: this.options.fetcher }
+        });
+        if (outcome.kind === "claimed") {
+          this.ctx.logger?.info?.(
+            `[autoclaw] \u767B\u5F55\u540E\u81EA\u52A8\u9886\u53D6\u6BCF\u65E5\u79EF\u5206\uFF1A${outcome.credit > 0 ? `+${outcome.credit}` : "\u5DF2\u9886\u53D6\uFF08\u6570\u91CF\u4EE5\u4E0A\u6E38\u4E3A\u51C6\uFF09"}`
+          );
+        }
+      } catch (error) {
+        this.ctx.logger?.warn?.(
+          `[autoclaw] \u767B\u5F55\u540E\u81EA\u52A8\u9886\u53D6\u6BCF\u65E5\u79EF\u5206\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u767B\u5F55\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    return res;
+  }
+  /**
+   * 启动 AutoClaw 登录授权流程（本地服务器承载独立登录页，支持短信验证码与一键本地导入）。
+   */
+  async startLogin(_options) {
+    return startAutoclawSmsLoginFlow({
+      product: this.product,
+      fetchImpl: this.fetchImpl
+    });
+  }
+};
+
+// vendor/channel-pack/src/autoclaw-adapter.ts
+import {
+  LlmAdapter as LlmAdapter13,
+  LlmError as LlmError20,
+  ReasoningEffortId as ReasoningEffortId16
+} from "@deepseek-ai/dsh-llm";
+var AutoclawAdapter = class extends LlmAdapter13 {
+  constructor(options = {}) {
+    super();
+    this.options = options;
+    this.product = options.product ?? AUTOCLAW;
+  }
+  options;
+  product;
+  announced = false;
+  /**
+   * 远端模型规格缓存（2026-10-17 审计 P1 修复）。
+   *
+   * ⚠️ **必须有**：修复前远端只在 `listModels` 里被读一次，而
+   *   `resolveModel`（宿主每次请求前都调、也是**能力声明的唯一来源**）
+   *   读的是编译期兜底表 ⇒ 远端值算出来就被丢掉。
+   * ⚠️ 缓存失效判据用 **`undefined` 表示「已知无远端信息」** 而非「未取过」，
+   *   避免远端挂掉时每次请求都重打一次（那会让上游限流）。
+   */
+  remoteMeta;
+  remoteMetaFetched = false;
+  remoteMetaInFlight;
+  async resolveCredential(modelId) {
+    if (this.options.resolveCredential) {
+      return this.options.resolveCredential(modelId);
+    }
+    if (this.options.credentialProvider) {
+      return this.options.credentialProvider();
+    }
+    return void 0;
+  }
+  async probeCredential() {
+    if (this.options.probeCredential) {
+      return this.options.probeCredential();
+    }
+    return this.resolveCredential();
+  }
+  /**
+   * 取远端模型规格（**带进程内缓存 + 在飞去重**）。
+   *
+   * ⚠️ 为什么必须缓存（2026-10-17 审计 P1 修复）：`resolveModel` 是宿主
+   *   **每次请求前**都调的（能力声明的唯一来源），若每次都打远端 ⇒ 每轮会话
+   *   多一个上游往返，且远端一限流就把全部请求拖慢。
+   * ⚠️ 在飞去重是必需的：`resolveModel` 与 `listModels` 会被并发调用
+   *   （宿主预热目录时），没有它就会同时打两个请求。
+   */
+  async loadRemoteMeta() {
+    if (this.remoteMetaFetched) return this.remoteMeta;
+    this.remoteMetaInFlight ??= (async () => {
+      try {
+        const credential = await this.probeCredential();
+        if (!credential) return;
+        this.remoteMeta = await this.fetchRemoteModelMeta(credential);
+      } finally {
+        this.remoteMetaFetched = true;
+        this.remoteMetaInFlight = void 0;
+      }
+    })();
+    await this.remoteMetaInFlight;
+    return this.remoteMeta;
+  }
+  /**
+   * 把远端校正值套到兜底表的一条上（**只覆盖远端确实给了的字段**）。
+   *
+   * ⚠️ 拿不到远端信息时**原样返回兜底条目** —— 绝不编造数值（本仓库红线）。
+   */
+  entryOf(model) {
+    const fallback = this.product.fallbackModels.find((m) => m.id === model);
+    if (!fallback) return void 0;
+    const patch = this.remoteMeta?.get(fallback.id);
+    if (!patch) return fallback;
+    return {
+      ...fallback,
+      ...patch.contextWindow !== void 0 ? { contextWindow: patch.contextWindow } : {},
+      ...patch.maxOutputTokens !== void 0 ? { maxOutputTokens: patch.maxOutputTokens } : {},
+      ...patch.supportsImage !== void 0 ? { supportsImage: patch.supportsImage } : {}
+    };
+  }
+  get provider() {
+    return this.product.id;
+  }
+  async getProviderInfo(id) {
+    return { id, name: this.product.displayName };
+  }
+  listAllModels() {
+    return this.product.fallbackModels.map((m) => ({
+      id: m.id,
+      name: m.name,
+      isFree: m.isFree === true
+    }));
+  }
+  async listModels(_provider) {
+    const disabled = this.options.disabledModels?.() ?? /* @__PURE__ */ new Set();
+    const credential = await this.probeCredential();
+    if (!credential) return [];
+    this.announceLater();
+    await this.loadRemoteMeta();
+    return this.product.fallbackModels.filter((m) => !disabled.has(m.id)).map((m) => ({
+      provider: this.product.id,
+      id: m.id,
+      name: m.name,
+      // ⚠️⚠️ **必须复用 `inputModalitiesOf`，不得在此硬编码**
+      // （2026-10-17 审计 P0 修复）。原写法是全模型一刀切 `['text']`，
+      // 而 `resolveModel` 按 `supportsImage` 给 `['text','image']`
+      // ⇒ **同一个模型在两个入口对宿主说了两套相反的话**：
+      //   • 宿主拿 `resolveModel` 的那份做**请求前门禁**
+      //     （`dsh-llm/lib/index.js:2311`：不声明 image 就把图片投影成文本占位符）
+      //   • `listModels` 的那份进模型选择器与聚合目录
+      // ⇒ 对 `zai_auto-fast`（`supportsImage: true`）而言，用户在选择器看到
+      // 「支持图片」，而门禁那格放行后 `stream()` 必然抛错。
+      // ⚠️ 传入**远端校正后**的条目 ⇒ 远端若改模态，两处仍**同向**。
+      inputModalities: inputModalitiesOf(this.entryOf(m.id)),
+      isFree: m.isFree === true
+    }));
+  }
+  /**
+   * 拉取并解析远端模型规格（**失败/形状不认识一律返回 `undefined`**）。
+   *
+   * ⚠️ **永不抛错**：目录是只读展示面，远端挂掉不该让它整个失败 ——
+   *   回落兜底表即可（与原实现的可用性一致）。
+   */
+  async fetchRemoteModelMeta(credential) {
+    try {
+      const f = this.options.fetchImpl ?? fetch;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8e3);
+      try {
+        const ts = Math.floor(Date.now() / 1e3).toString();
+        const r = await f(`${this.product.apiBase}${AUTOCLAW_MODEL_CONFIG_PATH}`, {
+          headers: {
+            "Content-Type": "application/json",
+            "X-Auth-Appid": this.product.appId,
+            "X-Auth-TimeStamp": ts,
+            "X-Auth-Sign": calculateAutoclawSign(this.product.appId, ts, this.product.appKey),
+            // ⚠️⚠️ **这里必须是标准 `Authorization`，不能用 `X-Authorization`**
+            // （2026-10-17 真机实测：同一个 token 走 `X-Authorization` 一律
+            //   `401 {"error":"Invalid token"}`，走 `Authorization` 立刻 200）。
+            // ⚠️ **两个端点的认证头是相反的**（实测，别想当然统一）：
+            //   • chat/completions（`buildAutoclawHeaders`）只认 `X-Authorization`
+            //   • autoclaw-model-config（本处）只认 `Authorization`
+            // ⇒ 凭据「看起来失效」的第一个症状就是这里 401，而真实原因是**头名不对**
+            //   —— 若照着字面理解为「token 过期」，会导致无谓的重新登录。
+            // ⚠️ 桌面端源码也印证：它的托管网关头构造用 `headers.Authorization`
+            //   （`createZworkManagedHeaderOptions`），而非 `X-Authorization`。
+            Authorization: `Bearer ${cleanBearerToken(credential.access_token)}`,
+            "X-Client-Type": "pc"
+          },
+          signal: ctrl.signal
+        });
+        if (!r.ok) return void 0;
+        const parsed = parseAutoclawRemoteModels(await r.json());
+        return parsed.size > 0 ? parsed : void 0;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return void 0;
+    }
+  }
+  announceLater() {
+    if (this.announced) return;
+    this.announced = true;
+    setTimeout(() => {
+      try {
+        this.options.onCatalogLoaded?.();
+      } catch {
+      }
+    }, 0);
+  }
+  async resolveModel(provider, model, _signal) {
+    const norm = normalizeAutoclawModel(model);
+    await this.loadRemoteMeta();
+    const known = this.entryOf(norm) ?? this.entryOf(model);
+    const baseName = known?.name ?? model;
+    return {
+      provider,
+      id: model,
+      name: baseName,
+      inputModalities: inputModalitiesOf(known),
+      ...known === void 0 ? {} : {
+        context: {
+          contextWindow: known.contextWindow
+        },
+        // ⚠️⚠️ **单次输出上限必须走顶层 `defaultMaxTokens`，不能塞进 `context`**
+        // （2026-10-17 审计 P0 修复）。原写法
+        // `context: { contextWindow, maxOutputTokens }` 有两个致命问题：
+        //   ① 宿主契约 `LlmModelContext` **只有 `contextWindow` 一个字段**
+        //      （`@deepseek-ai/dsh-llm/lib/types/types.d.ts:316-320`）；
+        //   ② 宿主的 `normalizeModelInfo` 做的是**白名单重建**
+        //      （`lib/index.js:2124`：`context: { contextWindow: context.contextWindow }`）
+        //      ⇒ 多写的字段被**主动丢弃**，且**静默无告警**。
+        // ⇒ 后果链：`defaultMaxTokens` 为 `undefined` ⇒ 宿主 `lib/index.js:2170`
+        //   不做兜底 ⇒ `stream()` 收到的 `options.maxTokens` 通常是 `undefined`
+        //   ⇒ `max_tokens` **整个字段不发** ⇒ 退回网关默认值（本仓库
+        //   protocol-wire 笔记记载过这类退回 = 长回答被砍成 `finish_reason:length`）。
+        // ⚠️ `tsc` 拦不住：写在对象展开里时 excess property check 不生效。
+        // ✅ 宿主对该字段有**硬校验**（`lib/index.js:2116`）：非安全正整数直接抛
+        // `INVALID_MODEL_MAX_TOKENS` ⇒ 这里按同一口径先过滤，坏值宁可不发。
+        ...known.maxOutputTokens !== void 0 && Number.isSafeInteger(known.maxOutputTokens) && known.maxOutputTokens > 0 ? { defaultMaxTokens: known.maxOutputTokens } : {},
+        // ⚠️ **只在已知模型上声明档位**（跨家契约，见
+        //    `tests/unit/model-catalog-parity.spec.ts` 的 `DECLARE_UNKNOWN_REASONING`）：
+        //    档位是**该模型**的能力，上游随时可能新增/下线模型，对未知 id 声明
+        //    等于凭空捏造。同文件里的 `context` 本来就是条件给的，两处必须同向 ——
+        //    否则「未知模型」这一格会在 `context` 上诚实、在 `reasoning` 上撒谎。
+        reasoning: {
+          // ⚠️ 三档 id 与默认档全部取自 `autoclaw-product.ts` 的**唯一定义处**
+          //   （`AUTOCLAW_DECLARED_EFFORTS` / `AUTOCLAW_DEFAULT_EFFORT`），
+          //   不在本文件另写一份数组 —— 本仓库记载过「同一文件两份同义数组，
+          //   只改一份导致档位轴反向」的真实缺陷。
+          // ⚠️ **数组顺序 = 强度序（弱→强）**，不是「默认档排第一」——
+          //   宿主把它当展示顺序、官方客户端直接 `map` 不排序
+          //   （AGENTS.md：铺成横向档位轴时，「开启」会贴到最左）。
+          efforts: AUTOCLAW_DECLARED_EFFORTS.map((id) => ({
+            id: ReasoningEffortId16(id),
+            name: AUTOCLAW_EFFORT_LABELS[id]
+          })),
+          // ⚠️ 默认档用**具名常量**表达，不得用 `efforts[0]` 反推
+          //   （AGENTS.md 记载：顺序一改就会静默翻成最弱档）。
+          //   为什么是 `high` 而非 `max`：见 `AUTOCLAW_DECLARED_EFFORTS` 的注释
+          //   （`max` 实测单次可达 170~192 秒，日常等待代价过高）。
+          defaultEffort: ReasoningEffortId16(AUTOCLAW_DEFAULT_EFFORT)
+        }
+      }
+    };
+  }
+  /**
+   * 解析消息里的图片附件为 data URL（2026-10-17 审计 P0 修复新增）。
+   *
+   * ⚠️ **按模型判定，不是按 provider 一刀切**（原实现是 provider 级拒绝）：
+   *   `zai_auto-fast` 的 `supportsImage: true` 有实测依据
+   *   （`docs/autoclaw-models.md:42`），其余三个是纯文本 ⇒ 同一 provider 内
+   *   **必须**存在两条通路。判据与 `resolveModel` 同源（`inputModalitiesOf`），
+   *   杜绝「声明与实现各说一套」。
+   *
+   * ⚠️ **模型不支持图片时抛 `UNSUPPORTED_CONTENT`** 而不是静默丢弃 ——
+   *   静默丢图会让用户以为模型看到了图（本仓库 Qoder 图片事故的教训）。
+   *   ⚠️ 抛**带码**的 `LlmError`（原写法是裸 `Error` ⇒ 宿主归 `'UNKNOWN'`）。
+   *
+   * ⚠️ 附件字节读不出来时**不写入该条**：`serializeMessages` 遇到缺失会产出
+   *   `[image unavailable]` 占位，至少让模型知道「这里本该有张图但没拿到」。
+   */
+  async resolveImageUrls(model, messages) {
+    const refs = /* @__PURE__ */ new Map();
+    for (const message2 of messages ?? []) {
+      if (Array.isArray(message2.content)) collectImages(message2.content, refs);
+    }
+    if (refs.size === 0) return void 0;
+    const entry = this.product.fallbackModels.find((m) => m.id === model);
+    if (entry?.supportsImage !== true) {
+      throw new LlmError20(
+        `autoclaw: \u6A21\u578B "${model}" \u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF08\u80FD\u529B\u4EE5\u515C\u5E95\u8868\u4E3A\u51C6\uFF09`,
+        "UNSUPPORTED_CONTENT"
+      );
+    }
+    if (this.options.readImage === void 0) {
+      throw new LlmError20("autoclaw: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
+    }
+    const readImage = this.options.readImage;
+    const out = /* @__PURE__ */ new Map();
+    for (const [id, ref] of refs) {
+      const image = await readImage(ref);
+      if (image === void 0) continue;
+      out.set(id, `data:${image.mediaType};base64,${Buffer.from(image.data).toString("base64")}`);
+    }
+    return out;
+  }
+  async prepareCall(provider, model, signal) {
+    return {
+      model: await this.resolveModel(provider, model, signal),
+      stream: (options) => this.stream(options)
+    };
+  }
+  async *stream(options) {
+    const model = options.model;
+    let credential = await this.resolveCredential(model);
+    if (!credential) {
+      throw new LlmError20(
+        "\u672A\u627E\u5230 AutoClaw \u51ED\u636E\uFF1A\u8BF7\u5148\u5728 AutoClaw \u684C\u9762\u7AEF\u5B8C\u6210\u767B\u5F55\uFF0C\u6216\u5728 Jet Hub \u8D26\u53F7\u7BA1\u7406\u4E2D\u6DFB\u52A0 AutoClaw \u8D26\u53F7",
+        "MISSING_CREDENTIAL"
+      );
+    }
+    const f = this.options.fetchImpl ?? fetch;
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener("abort", onAbort);
+    const imageUrls = await this.resolveImageUrls(normalizeAutoclawModel(model), options.messages);
+    const rawSerialized = serializeMessages(options.messages, imageUrls);
+    if (options.system !== void 0 && options.system.trim().length > 0) {
+      rawSerialized.unshift({ role: "system", content: options.system.trim() });
+    }
+    const wireMessages = prepareAutoclawMessages(rawSerialized);
+    const upstreamModel = normalizeAutoclawModel(model);
+    const wireMaxTokens = autoclawMaxTokens(
+      options.maxTokens,
+      this.product.fallbackModels.find((m) => m.id === upstreamModel)?.maxOutputTokens
+    );
+    const tools = options.tools && options.tools.length > 0 ? options.tools.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        ...tool.description && tool.description.length > 0 ? { description: tool.description } : {},
+        ...tool.parameters !== void 0 ? { parameters: tool.parameters } : {}
+      }
+    })) : void 0;
+    const bodyObj = {
+      model: upstreamModel,
+      messages: wireMessages,
+      stream: true,
+      // ⚠️⚠️ `max_tokens` **双向夹取**（2026-10-17 审计 P0/P1 修复）。
+      //   下限 10000：**不是**原先的 16384 —— `docs/autoclaw-models.md:53-55`
+      //   明写官方约束是「`>= 10000` **或完全不传递**，传 `< 10000`（如 IDE
+      //   默认的 4096）回 406」⇒ 抬到 16384 属**编造上游没承诺的数字**
+      //   （本仓库红线），用户只想输出 2000 token 时被强行发 16384。
+      //   上限：**必须**按本模型已声明的 `maxOutputTokens` 夹住 —— 原实现只做
+      //   下限，宿主请求 500000 时会原样发出，而 `zai_auto` 声明仅 393216
+      //   ⇒ 超上限且宿主不转可读错误。
+      //   ⚠️ 两者都取不到时**不发该字段**（网关默认），绝不编造数值。
+      ...wireMaxTokens === void 0 ? {} : { max_tokens: wireMaxTokens },
+      ...options.temperature !== void 0 ? { temperature: options.temperature } : {},
+      // ⚠️⚠️ **只发 `reasoning_effort`，不再双发 `thinking_level`**
+      //   （2026-10-17 审计修复，依据来自桌面端源码实测）。
+      //   原写法是两个字段名同值下发，且**零实测依据**；本仓库有先例：
+      //   raccoon 的 `reasoning_effort` 被接受但无效果、trae 三个名字都返 200
+      //   ⇒ 「返 200」不等于生效。
+      //   ⚠️ **实测依据**（`AutoClaw2\resources\app\dist\main.cjs`，2026-10-17）：
+      //   桌面端托管模型网关的请求体里只出现 `reasoning_effort`；
+      //   而 `thinking_level` 的全部 27 处命中**没有一个是上行请求体字段** ——
+      //   它们是 SQLite 的 `work_runs.thinking_level` **列**（含
+      //   `CHECK(thinking_level IN ('off','minimal','low','medium','high','xhigh','max'))`
+      //   的本地约束）与埋点字段（`thinking_level: analyticsCode(...)`），
+      //   属**本地会话状态**，不是协议字段。
+      //   ⇒ 保留双发的风险是：给一个上游不认识的字段赋值。**删掉它比留着安全**
+      //   （最坏情况是上游按 schema 校验拒绝整个请求）。
+      ...options.reasoningEffort !== void 0 ? {
+        reasoning_effort: String(options.reasoningEffort)
+      } : {},
+      ...options.stop !== void 0 && options.stop.length > 0 ? { stop: options.stop } : {}
+    };
+    if (tools !== void 0 && tools.length > 0) {
+      bodyObj.tools = tools;
+    }
+    const payload = JSON.stringify(bodyObj);
+    const headers = buildAutoclawHeaders({
+      product: this.product,
+      accessToken: credential.access_token,
+      modelId: upstreamModel,
+      stream: true,
+      deviceId: credential.device_id
+    });
+    let response;
+    try {
+      response = await f(`${this.product.apiBase}${AUTOCLAW_CHAT_PATH}`, {
+        method: "POST",
+        headers,
+        body: payload,
+        signal: controller.signal
+      });
+    } catch (err) {
+      options.signal?.removeEventListener("abort", onAbort);
+      throw err;
+    }
+    if (!response.ok && (response.status === 401 || response.status === 403) && this.options.refresh) {
+      try {
+        await this.options.refresh();
+        const refreshed = await this.resolveCredential(model);
+        if (refreshed && refreshed.access_token.length > 0) {
+          credential = refreshed;
+          const retryHeaders = buildAutoclawHeaders({
+            product: this.product,
+            accessToken: credential.access_token,
+            modelId: upstreamModel,
+            stream: true,
+            deviceId: credential.device_id
+          });
+          response = await f(`${this.product.apiBase}${AUTOCLAW_CHAT_PATH}`, {
+            method: "POST",
+            headers: retryHeaders,
+            body: payload,
+            signal: controller.signal
+          });
+        }
+      } catch {
+      }
+    }
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      options.signal?.removeEventListener("abort", onAbort);
+      throw new LlmError20(
+        `autoclaw: \u8BF7\u6C42\u5931\u8D25 [${response.status} ${response.statusText}]: ${errText.slice(0, 300)}`,
+        autoclawHttpErrorCode(response.status, errText),
+        { status: response.status }
+      );
+    }
+    try {
+      yield* consumeOpenAiSse(
+        response,
+        { ...options.signal === void 0 ? {} : { signal: options.signal } },
+        {
+          label: "autoclaw",
+          firstTokenTimeoutMs: 12e4,
+          chunkTimeoutMs: 6e4,
+          ...options.maxTokens === void 0 ? {} : { maxTokens: options.maxTokens }
+        }
+      );
+    } finally {
+      options.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+};
+function registerAutoclawLlm(ctx, options) {
+  const product = options.product ?? AUTOCLAW;
+  const adapter = new AutoclawAdapter({
+    ...options,
+    onCatalogLoaded: () => broadcastCatalogChanged(ctx)
+  });
+  registerAdapterIdempotent(ctx.llm, [product.id], adapter);
+  return adapter;
+}
+
 // vendor/channel-pack/src/accio-adapter.ts
-import { LlmAdapter as LlmAdapter13, LlmError as LlmError21, ReasoningEffortId as ReasoningEffortId16 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter14, LlmError as LlmError22, ReasoningEffortId as ReasoningEffortId17 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/canonical-models.ts
 var EXCLUDED_ALIASES = /* @__PURE__ */ new Set([
@@ -78975,7 +81728,7 @@ function canonicalDisplayName(key) {
 }
 
 // vendor/channel-pack/src/accio-messages.ts
-import { LlmError as LlmError20 } from "@deepseek-ai/dsh-llm";
+import { LlmError as LlmError21 } from "@deepseek-ai/dsh-llm";
 var ACCIO_QUOTA_ERROR_CODE = "402";
 var ACCIO_QUOTA_EXCEEDED_CODE = "QUOTA_EXCEEDED";
 function isAccioErrorFrame(frame) {
@@ -78997,9 +81750,9 @@ function accioErrorFrame(frame) {
   const message2 = typeof rawMessage === "string" ? rawMessage : "";
   const detail = [code === "" ? "" : `error_code=${code}`, message2].filter((s) => s !== "").join(" ");
   if (code === ACCIO_QUOTA_ERROR_CODE) {
-    return new LlmError20(`accio: \u989D\u5EA6\u6216\u8BA4\u8BC1\u5931\u8D25\uFF08${detail}\uFF09`, ACCIO_QUOTA_EXCEEDED_CODE);
+    return new LlmError21(`accio: \u989D\u5EA6\u6216\u8BA4\u8BC1\u5931\u8D25\uFF08${detail}\uFF09`, ACCIO_QUOTA_EXCEEDED_CODE);
   }
-  return new LlmError20(`accio: \u4E0A\u6E38\u8FD4\u56DE\u9519\u8BEF\u5E27\uFF08${detail}\uFF09`, "SERVER");
+  return new LlmError21(`accio: \u4E0A\u6E38\u8FD4\u56DE\u9519\u8BEF\u5E27\uFF08${detail}\uFF09`, "SERVER");
 }
 var ACCIO_IMAGE_PIXEL_BUDGET = 115e4;
 function mapUsage(raw) {
@@ -79076,8 +81829,8 @@ function normalizeAccioFrame(frame) {
   if (Array.isArray(rawParts)) {
     const parts = [];
     for (const part of rawParts) {
-      const normalized = normalizeAccioPart(part);
-      if (normalized !== void 0) parts.push(normalized);
+      const normalized2 = normalizeAccioPart(part);
+      if (normalized2 !== void 0) parts.push(normalized2);
     }
     normalizedContent.parts = parts;
   }
@@ -79124,7 +81877,7 @@ function accioUserParts(content, images) {
       const attachmentId = block.attachment?.attachmentId;
       const inline = typeof attachmentId === "string" ? images?.get(attachmentId) : void 0;
       if (inline === void 0) {
-        throw new LlmError20(
+        throw new LlmError21(
           "accio: \u56FE\u7247\u672A\u80FD\u5185\u8054\uFF08\u9644\u4EF6\u670D\u52A1\u4E0D\u53EF\u7528\u6216\u8BFB\u53D6\u5931\u8D25\uFF09\uFF0C\u62D2\u7EDD\u53D1\u51FA\u7F3A\u5C11\u56FE\u7247\u7684\u8BF7\u6C42",
           "UNSUPPORTED_CONTENT"
         );
@@ -79272,17 +82025,17 @@ function accioReasoningOf(model) {
   const fallback = model.defaultEffort;
   if (declared.length > 0) {
     return {
-      efforts: declared.map((id) => ({ id: ReasoningEffortId16(id), name: id })),
+      efforts: declared.map((id) => ({ id: ReasoningEffortId17(id), name: id })),
       // ⚠️ `defaultEffort` **必须落在 `efforts` 内**才带：DSH 会校验，
       //    指到集合外会让整条记录的档位声明被丢弃（`model-catalog.ts` 里那段
       //    `legal` 检查）—— 那不是崩溃，但会让「默认档」静默消失。
-      ...fallback !== void 0 && declared.includes(fallback) ? { defaultEffort: ReasoningEffortId16(fallback) } : {}
+      ...fallback !== void 0 && declared.includes(fallback) ? { defaultEffort: ReasoningEffortId17(fallback) } : {}
     };
   }
   if (fallback !== void 0) {
     return {
-      efforts: [{ id: ReasoningEffortId16(fallback), name: fallback }],
-      defaultEffort: ReasoningEffortId16(fallback)
+      efforts: [{ id: ReasoningEffortId17(fallback), name: fallback }],
+      defaultEffort: ReasoningEffortId17(fallback)
     };
   }
   return void 0;
@@ -79301,10 +82054,10 @@ function contentToText6(content) {
   return content.filter((block) => block?.type === "text").map((block) => String(block.text ?? "")).join("");
 }
 function toAccioWireMessages(messages) {
-  const normalized = normalizeHarnessMessages(messages);
-  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized);
+  const normalized2 = normalizeHarnessMessages(messages);
+  const { keepCallIds, keepResultIds } = resolveToolPairing(normalized2);
   const toolNames = /* @__PURE__ */ new Map();
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (!Array.isArray(message2.content)) continue;
     for (const block of message2.content) {
       const b = block;
@@ -79314,7 +82067,7 @@ function toAccioWireMessages(messages) {
     }
   }
   const wire = [];
-  for (const message2 of normalized) {
+  for (const message2 of normalized2) {
     if (message2.role === "assistant") {
       const content2 = Array.isArray(message2.content) ? message2.content : [];
       const toolCalls = content2.filter((block) => typeof block === "object" && block !== null && block.type === "tool-call").filter((block) => keepCallIds.has(String(block.id))).map((block) => ({
@@ -79635,7 +82388,7 @@ function accioToolCallMergeTransform() {
     }
   });
 }
-var AccioAdapter = class extends LlmAdapter13 {
+var AccioAdapter = class extends LlmAdapter14 {
   constructor(options) {
     super();
     this.options = options;
@@ -79809,14 +82562,14 @@ var AccioAdapter = class extends LlmAdapter13 {
       const sourceModels2 = this.remoteModels ?? this.product.fallbackModels;
       const declared = sourceModels2.find((model) => accioModelIdOf(model) === options.model) ?? sourceModels2.find((model) => model.id === options.model);
       if (declared?.supportsImage !== true) {
-        throw new LlmError21(
+        throw new LlmError22(
           `accio: \u6A21\u578B "${options.model}" \u4E0D\u63A5\u53D7\u56FE\u7247\u8F93\u5165\uFF08\u4E0A\u6E38\u5BF9\u58F0\u660E multimodal:false \u7684\u6A21\u578B\u4F1A**\u9759\u9ED8\u5FFD\u7565\u56FE\u7247**\uFF0C\u6545\u8FD9\u91CC\u663E\u5F0F\u62D2\u7EDD\u800C\u4E0D\u662F\u7167\u53D1\uFF09\u3002`,
           "UNSUPPORTED_CONTENT"
         );
       }
       const readImage = this.options.readImage;
       if (readImage === void 0 && this.options.readImageRequest === void 0) {
-        throw new LlmError21(
+        throw new LlmError22(
           "accio: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1\uFF08readImage / readImageRequest \u5747\u672A\u63D0\u4F9B\uFF09\uFF1B\u8BF7\u786E\u8BA4\u5F53\u524D profile \u5DF2\u88C5\u8F7D @deepseek-ai/dsh-attachment-local\u3002",
           "UNSUPPORTED_CONTENT"
         );
@@ -79832,7 +82585,7 @@ var AccioAdapter = class extends LlmAdapter13 {
           try {
             inline = await readImage(ref);
           } catch (error) {
-            throw new LlmError21(
+            throw new LlmError22(
               `accio: \u8BFB\u53D6\u56FE\u7247\u9644\u4EF6\u5931\u8D25\uFF08${id}\uFF09\uFF1A${errorMessage6(error)}`,
               "UNSUPPORTED_CONTENT",
               { cause: error }
@@ -79840,7 +82593,7 @@ var AccioAdapter = class extends LlmAdapter13 {
           }
         }
         if (inline === void 0 || inline.data.byteLength === 0) {
-          throw new LlmError21(
+          throw new LlmError22(
             `accio: \u56FE\u7247\u9644\u4EF6\u8BFB\u53D6\u4E0D\u5230\u5185\u5BB9\uFF08${id}\uFF09\uFF1B\u9644\u4EF6\u670D\u52A1\u53EF\u80FD\u672A\u5C31\u7EEA\uFF0C\u6216\u8BE5\u5BF9\u8C61\u5DF2\u4E0D\u5B58\u5728\u3002`,
             "UNSUPPORTED_CONTENT"
           );
@@ -79859,7 +82612,7 @@ var AccioAdapter = class extends LlmAdapter13 {
       credential = await this.options.resolveCredential(options.model);
     }
     if (credential === void 0 || credential.access_token === "") {
-      throw new LlmError21("accio: no usable credential; log in first", "MISSING_CREDENTIAL");
+      throw new LlmError22("accio: no usable credential; log in first", "MISSING_CREDENTIAL");
     }
     if (this.options.accountPool !== void 0) {
       try {
@@ -79914,7 +82667,7 @@ var AccioAdapter = class extends LlmAdapter13 {
       await this.options.refresh();
       const refreshed = await this.options.resolveCredential(options.model);
       if (refreshed === void 0 || refreshed.access_token === "") {
-        throw new LlmError21("accio: credential expired and refresh failed", "AUTH", {
+        throw new LlmError22("accio: credential expired and refresh failed", "AUTH", {
           status: response.status
         });
       }
@@ -79924,17 +82677,17 @@ var AccioAdapter = class extends LlmAdapter13 {
     }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new LlmError21(`accio: ${errorDetail5(text)}`, httpErrorCode6(response.status), {
+      throw new LlmError22(`accio: ${errorDetail5(text)}`, httpErrorCode6(response.status), {
         status: response.status
       });
     }
     if (response.body === null) {
-      throw new LlmError21("accio: empty model response body", "EMPTY_RESPONSE");
+      throw new LlmError22("accio: empty model response body", "EMPTY_RESPONSE");
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream")) {
       const peek = await response.text().catch(() => "");
-      throw new LlmError21(
+      throw new LlmError22(
         `accio: \u4E0A\u6E38\u672A\u8FD4\u56DE\u4E8B\u4EF6\u6D41\uFF08content-type: ${contentType || "(\u7A7A)"}\uFF09\u2014\u2014\u901A\u5E38\u662F\u88AB\u98CE\u63A7\u62E6\u622A\uFF08\u7F51\u5173\u8FD4\u56DE 200 + HTML \u62E6\u622A\u9875\uFF09\u3002${peek === "" ? "" : ` \u670D\u52A1\u7AEF\u539F\u6587\uFF1A${peek.slice(0, 200)}`}`,
         "SERVER",
         { status: response.status }
@@ -79965,7 +82718,7 @@ var AccioAdapter = class extends LlmAdapter13 {
     } catch (error) {
       if (options.signal?.aborted) throw error;
       if (isTransportError6(error)) {
-        throw new LlmError21(`accio: transport error: ${errorMessage6(error)}`, "TRANSPORT", {
+        throw new LlmError22(`accio: transport error: ${errorMessage6(error)}`, "TRANSPORT", {
           cause: error
         });
       }
@@ -79986,7 +82739,7 @@ function registerAccioLlm(ctx, options) {
 }
 
 // vendor/channel-pack/src/modelscope-adapter.ts
-import { LlmAdapter as LlmAdapter15, LlmError as LlmError23, ReasoningEffortId as ReasoningEffortId18 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter16, LlmError as LlmError24, ReasoningEffortId as ReasoningEffortId19 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/modelscope-messages.ts
 function buildModelscopeTools(tools) {
@@ -80015,7 +82768,7 @@ function buildModelscopePayload(input) {
 }
 
 // vendor/channel-pack/src/aggregate-adapter.ts
-import { LlmAdapter as LlmAdapter14, LlmError as LlmError22, ProviderRequestId, ReasoningEffortId as ReasoningEffortId17, contentHasImage as contentHasImage2 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter15, LlmError as LlmError23, ProviderRequestId, ReasoningEffortId as ReasoningEffortId18, contentHasImage as contentHasImage2 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/aggregate-catalog.ts
 function buildVirtualModels(catalogs) {
@@ -80053,7 +82806,7 @@ var AGGREGATE_AUTO_MODEL = "auto";
 var AGGREGATE_TTL_MS = 6e4;
 var AGGREGATE_CATALOG_TTL_MS = 6e4;
 var AGGREGATE_FALLBACK_CONTEXT_WINDOW = 2e5;
-var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
+var AggregateAdapter = class _AggregateAdapter extends LlmAdapter15 {
   constructor(ctx, options) {
     super();
     this.ctx = ctx;
@@ -80613,7 +83366,8 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
     //    （`canonicalKeyFor` 返回 `via: 'patch'` ⇒ 归并到 `qwen3-8-flash`），
     //    但候选层被那道闸门剔掉 ⇒ **用户要的「轮换列表里要有 accio」并没有实现**，
     //    且症状静默（无报错、无日志）。现两处都补齐。
-    "accio"
+    "accio",
+    "autoclaw"
   ]);
   /**
    * 本插件注册的渠道 id（`aggregate` 与 `jet-hub-auto` 自身除外）。
@@ -80827,7 +83581,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
     const virtual = this.catalog.find((entry) => entry.key === model);
     if (virtual === void 0) {
       const available2 = this.catalog.slice(0, 5).map((entry) => entry.key).join("\u3001");
-      throw new LlmError22(
+      throw new LlmError23(
         `aggregate: \u672A\u77E5\u6A21\u578B\u300C${model}\u300D\u3002\u5F53\u524D\u53EF\u7528\uFF1Aauto${available2 === "" ? "" : `\u3001${available2}`}\uFF08\u5B8C\u6574\u6E05\u5355\u89C1\u6A21\u578B\u9009\u62E9\u5668\u91CC\u7684\u300C\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09\u300D\u5206\u7EC4\uFF09`,
         "INVALID_REQUEST"
       );
@@ -80891,7 +83645,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
     const resolved = await this.resolveModel(AGGREGATE_PROVIDER, model, signal);
     const targets = await this.candidatesFor(model, signal);
     if (targets.length === 0) {
-      throw new LlmError22(
+      throw new LlmError23(
         `aggregate: \u300C${model}\u300D\u5F53\u524D\u6CA1\u6709\u4EFB\u4F55\u53EF\u7528\u5019\u9009\uFF08\u6E20\u9053\u88AB\u5173\u95ED\u3001\u6A21\u578B\u88AB\u5173\u3001\u6240\u6709\u6E20\u9053\u90FD\u65E0\u53EF\u7528\u8D26\u53F7\uFF0C\u6216\u8BE5\u6A21\u578B\u7684\u5019\u9009\u5728\u805A\u5408\u9762\u677F\u91CC\u672A\u53C2\u4E0E\u8F6E\u6362\uFF09\u3002\u8BF7\u5728 Jet Hub \u8BBE\u7F6E\u9875\u7684\u300C\u805A\u5408\u300D\u9762\u677F\u91CC\u68C0\u67E5\u5404\u5019\u9009\u662F\u5426\u53C2\u4E0E\u8F6E\u6362\uFF08\u65E0\u4E34\u671F\u79EF\u5206\u7684\u5019\u9009\u9ED8\u8BA4\u4E0D\u53C2\u4E0E\uFF0C\u53EF\u9010\u6761\u6253\u5F00\uFF09\uFF0C\u6216\u6362\u7528\u300C\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09\u300D\u5206\u7EC4\u4E0B\u7684\u5176\u5B83\u6A21\u578B\u3001\u6216\u76F4\u8FDE\u5BF9\u5E94\u6E20\u9053\u4F7F\u7528\u8BE5\u6A21\u578B\u3002`,
         "MISSING_CREDENTIAL"
       );
@@ -80923,7 +83677,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
         const hasImage = options.messages.some((message2) => contentHasImage2(message2.content));
         if (!hasImage) return this.dispatch(targets, options, model);
         if (imageTargets.length === 0) {
-          throw new LlmError22(
+          throw new LlmError23(
             `aggregate: \u300C${model}\u300D\u7684\u5019\u9009\u6E20\u9053\u90FD\u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\u3002\u8BF7\u6362\u4E00\u4E2A\u652F\u6301\u56FE\u7247\u7684\u6A21\u578B\uFF0C\u6216\u53BB\u6389\u56FE\u7247\u540E\u91CD\u8BD5\u3002`,
             "INVALID_REQUEST"
           );
@@ -81240,7 +83994,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
               const probe = (field, value) => {
                 if (value === void 0) return;
                 try {
-                  void new LlmError22(message2, code, { [field]: value });
+                  void new LlmError23(message2, code, { [field]: value });
                   Object.assign(accepted, { [field]: value });
                 } catch {
                 }
@@ -81248,7 +84002,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
               probe("status", failure.status);
               probe("providerRetryAfterMs", failure.providerRetryAfterMs);
               probe("requestId", typeof failure.requestId === "string" ? ProviderRequestId(failure.requestId) : void 0);
-              lastError = new LlmError22(message2, code, accepted);
+              lastError = new LlmError23(message2, code, accepted);
               throw lastError;
             }
             if (chunk.type === "finish" && chunk.reason.kind === "aborted") {
@@ -81291,7 +84045,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
           }
         }
       }
-      throw lastError ?? new LlmError22("aggregate: \u6240\u6709\u5019\u9009\u90FD\u5931\u8D25", "SERVER");
+      throw lastError ?? new LlmError23("aggregate: \u6240\u6709\u5019\u9009\u90FD\u5931\u8D25", "SERVER");
     })();
   }
   /** 把请求转发给一个候选，按目标档位表翻译 `reasoningEffort`。 */
@@ -81308,14 +84062,14 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
     if (mapped.kind === "mapped") {
       return this.ctx.llm.stream({
         ...base,
-        reasoningEffort: ReasoningEffortId17(mapped.effort)
+        reasoningEffort: ReasoningEffortId18(mapped.effort)
       });
     }
     return this.ctx.llm.stream({ ...base, reasoningEffort: void 0 });
   }
   /** 从不直接被 stream（总是先经 prepareCall）；兜底抛错而非静默。 */
   async *stream() {
-    throw new LlmError22("aggregate: \u8BF7\u901A\u8FC7\u6A21\u578B\u9009\u62E9\u5668\u4F7F\u7528", "INVALID_REQUEST");
+    throw new LlmError23("aggregate: \u8BF7\u901A\u8FC7\u6A21\u578B\u9009\u62E9\u5668\u4F7F\u7528", "INVALID_REQUEST");
   }
 };
 function maxAttemptsFor(models) {
@@ -81328,14 +84082,14 @@ function maxAttemptsFor(models) {
 function aggregateReasoningInfo() {
   return {
     efforts: CANONICAL_REASONING_EFFORTS.map((effort) => ({
-      id: ReasoningEffortId17(effort),
+      id: ReasoningEffortId18(effort),
       name: AGGREGATE_EFFORT_LABELS[effort] ?? effort
     })),
     // ⚠️ 默认档取 `high`，**与各渠道自己的默认一致**：实测 buddy / trae / lobsterai
     // 的 `defaultReasoningEffort` 清一色是 `high`（`product.ts` 里 14 处）。取它
     // 则聚合与直连的体感一致；取 `medium` 会让用户觉得「聚合比直连想得少」，取
     // `max` 则最费 token/积分 —— 与本功能「省钱烧临期」的目标相反。
-    defaultEffort: ReasoningEffortId17("high")
+    defaultEffort: ReasoningEffortId18("high")
   };
 }
 var AGGREGATE_EFFORT_LABELS = Object.freeze({
@@ -81462,7 +84216,7 @@ function modelscopeRetryAfterMs(kind, retryAfterMs, attempt, nowMs = Date.now())
   if (kind === "quota") return Math.max(0, nextUtc8DayStartMs(nowMs) - nowMs);
   return Math.min(RATE_LIMIT_BASE_MS * 2 ** Math.max(0, attempt - 1), RETRY_AFTER_CAP_MS);
 }
-var ModelscopeAdapter = class extends LlmAdapter15 {
+var ModelscopeAdapter = class extends LlmAdapter16 {
   constructor(options) {
     super();
     this.options = options;
@@ -81561,7 +84315,7 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
       resolved.reasoning = {
         efforts: efforts.map((effort) => ({
           // ⚠️ `id` 是**品牌类型**（`ReasoningEffortId`），必须经它的构造函数。
-          id: ReasoningEffortId18(effort),
+          id: ReasoningEffortId19(effort),
           // ⚠️ 没有官方中文名时回退到 id 本身 —— 宁可显示英文原值，
           // 也不猜一个可能错译的中文（与 opencode 同取向）。
           name: effort === "none" ? "\u5173\u95ED" : effort
@@ -81591,13 +84345,13 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
     const all = await this.catalog();
     const entry = all.find((m) => m.id === normalizeModelscopeModelId(model));
     if (entry?.supportsImage !== true) {
-      throw new LlmError23(
+      throw new LlmError24(
         `modelscope: \u6A21\u578B "${model}" \u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF08\u80FD\u529B\u4EE5\u8FDC\u7AEF\u76EE\u5F55/\u515C\u5E95\u8868\u4E3A\u51C6\uFF09`,
         "UNSUPPORTED_CONTENT"
       );
     }
     if (this.options.readImage === void 0) {
-      throw new LlmError23("modelscope: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
+      throw new LlmError24("modelscope: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
     }
     const readImage = this.options.readImage;
     const out = /* @__PURE__ */ new Map();
@@ -81619,7 +84373,7 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
   async *stream(options) {
     const slots = await this.options.slots(options.model);
     if (slots.length === 0) {
-      throw new LlmError23(
+      throw new LlmError24(
         "modelscope: \u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u8BF7\u5728 Jet Hub \u7684 ModelScope \u9762\u677F\u7C98\u8D34\u4E00\u4E2A API Key\uFF08https://modelscope.cn/my/myaccesstoken \u751F\u6210\uFF09\u3002",
         "MISSING_CREDENTIAL"
       );
@@ -81629,7 +84383,7 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
     for (; ; ) {
       const slot2 = slots.find((s) => !tried.has(s.id));
       if (slot2 === void 0) {
-        throw new LlmError23(
+        throw new LlmError24(
           `modelscope: \u6240\u6709\u8D26\u53F7\u5BF9\u8BE5\u6A21\u578B\u5747\u53D7\u9650${limited.length > 0 ? `\uFF08${limited.join("\u3001")}\uFF09` : ""}`,
           "QUOTA_EXCEEDED"
         );
@@ -81645,13 +84399,13 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
         return;
       } catch (error) {
         if (delivered) throw error;
-        if (error instanceof LlmError23 && error.code === "QUOTA_EXCEEDED") throw error;
+        if (error instanceof LlmError24 && error.code === "QUOTA_EXCEEDED") throw error;
         if (isAbortLike(error, options.signal)) {
           throw error;
         }
         const info = classifyModelscopeFailure(error);
         if (info.kind === "invalid_request") {
-          throw new LlmError23(
+          throw new LlmError24(
             `modelscope: \u8BF7\u6C42\u88AB\u4E0A\u6E38\u62D2\u7EDD\uFF08${info.detail}\uFF09`,
             "BAD_REQUEST"
           );
@@ -81706,7 +84460,7 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
         ...response.headers.get("retry-after") === null ? {} : { "retry-after": response.headers.get("retry-after") }
       });
       const code = info.kind === "quota" ? "QUOTA_EXCEEDED" : info.kind === "rate_limit" ? "RATE_LIMIT" : info.kind === "auth" ? "AUTH" : httpErrorCode(response.status);
-      throw new LlmError23(
+      throw new LlmError24(
         `modelscope: HTTP ${response.status} \u2014 ${text.slice(0, 300)}`,
         code,
         {
@@ -81718,7 +84472,7 @@ var ModelscopeAdapter = class extends LlmAdapter15 {
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream")) {
       const peek = await response.text().catch(() => "");
-      throw new LlmError23(
+      throw new LlmError24(
         `modelscope: \u4E0A\u6E38\u672A\u8FD4\u56DE\u4E8B\u4EF6\u6D41\uFF08content-type: ${contentType || "(\u7A7A)"}\uFF09\u2014\u2014\u901A\u5E38\u662F\u88AB\u98CE\u63A7\u62E6\u622A\uFF08\u7F51\u5173\u8FD4\u56DE 200 + HTML \u62E6\u622A\u9875\uFF09\u3002${peek === "" ? "" : ` \u670D\u52A1\u7AEF\u539F\u6587\uFF1A${peek.slice(0, 200)}`}`,
         "SERVER",
         { status: response.status }
@@ -81752,8 +84506,8 @@ function registerModelscopeLlm(ctx, options) {
 }
 
 // vendor/channel-pack/src/gemini-auth.ts
-import { Service as Service13 } from "@deepseek-ai/cordis";
-import { credentialRef as credentialRef18 } from "@deepseek-ai/dsh-credentials";
+import { Service as Service14 } from "@deepseek-ai/cordis";
+import { credentialRef as credentialRef19 } from "@deepseek-ai/dsh-credentials";
 
 // vendor/channel-pack/src/gemini-oauth.ts
 import { createServer as createServer9 } from "node:http";
@@ -82087,7 +84841,7 @@ var GeminiRefreshTokenExpiredError = class extends Error {
     this.name = "RefreshTokenExpiredError";
   }
 };
-var GeminiAuth = class extends Service13 {
+var GeminiAuth = class extends Service14 {
   constructor(ctx, options = {}) {
     const product = options.product ?? GEMINI;
     super(ctx, options.serviceName ?? `${product.id}Auth`);
@@ -82122,7 +84876,7 @@ var GeminiAuth = class extends Service13 {
     return queue;
   }
   async readCredential(refName) {
-    const resolved = await this.ctx.credentials.resolve(credentialRef18(refName));
+    const resolved = await this.ctx.credentials.resolve(credentialRef19(refName));
     if (!resolved) return void 0;
     return parseGeminiCredential(resolved.value);
   }
@@ -82162,7 +84916,7 @@ var GeminiAuth = class extends Service13 {
    * 展示名走 `geminiAccountLabel`（邮箱优先，回退 `sub`）。
    */
   async persistLogin(credential, options) {
-    await this.ctx.credentials.set(credentialRef18(options.refName), JSON.stringify(credential));
+    await this.ctx.credentials.set(credentialRef19(options.refName), JSON.stringify(credential));
     return credential.sub === void 0 ? {} : { accountId: credential.sub };
   }
   /** 解析默认单凭据。 */
@@ -82179,7 +84933,7 @@ var GeminiAuth = class extends Service13 {
       throw new GeminiRefreshTokenExpiredError("\u51ED\u636E\u7F3A\u5C11 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
     }
     const next = await this.refreshCredential(credential);
-    await this.ctx.credentials.set(credentialRef18(this.credentialRefName), JSON.stringify(next));
+    await this.ctx.credentials.set(credentialRef19(this.credentialRefName), JSON.stringify(next));
   }
   /**
    * 续期**指定 ref**（RPC `account.refresh` / 定时器）。
@@ -82195,7 +84949,7 @@ var GeminiAuth = class extends Service13 {
       if (!isGeminiRefreshable(credential)) {
         throw new GeminiRefreshTokenExpiredError("\u51ED\u636E\u7F3A\u5C11 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
       }
-      const ref = credentialRef18(refName);
+      const ref = credentialRef19(refName);
       if (pool === void 0) {
         const next = await this.refreshCredential(credential);
         await this.ctx.credentials.set(ref, JSON.stringify(next));
@@ -82229,7 +84983,7 @@ var GeminiAuth = class extends Service13 {
   async refreshAll(pool) {
     const accounts = await pool.listAccounts(this.product.id);
     for (const entry of accounts) {
-      const ref = credentialRef18(entry.credentialRef);
+      const ref = credentialRef19(entry.credentialRef);
       let credential;
       try {
         const resolved = await this.ctx.credentials.resolve(ref);
@@ -82331,7 +85085,7 @@ var GeminiAuth = class extends Service13 {
     }
     for (const entry of entries) {
       try {
-        const ref = credentialRef18(entry.credentialRef);
+        const ref = credentialRef19(entry.credentialRef);
         const resolved = await this.ctx.credentials.resolve(ref);
         if (!resolved) continue;
         let credential = parseGeminiCredential(resolved.value);
@@ -82406,7 +85160,7 @@ var GeminiAuth = class extends Service13 {
 };
 
 // vendor/channel-pack/src/officeace-adapter.ts
-import { LlmAdapter as LlmAdapter16 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter17 } from "@deepseek-ai/dsh-llm";
 function basicAuthFingerprint(credential) {
   return `${credential.modelAppKey}\0${credential.modelAppSecret}\0${maasBaseUrlOf(credential)}`;
 }
@@ -82418,7 +85172,7 @@ function maasBaseUrlOf(credential) {
 function isMultimodalModel(model) {
   return OFFICEACE_MODELS.some((m) => m.id === model && m.multimodal === true);
 }
-var OfficeAceAdapter = class extends LlmAdapter16 {
+var OfficeAceAdapter = class extends LlmAdapter17 {
   constructor(options = {}) {
     super();
     this.options = options;
@@ -82857,8 +85611,8 @@ function officeaceLockedError(reason, windowMs) {
 
 // vendor/channel-pack/src/gemini-sigstore.ts
 import { createHash as createHash14 } from "node:crypto";
-import { existsSync as existsSync12, mkdirSync as mkdirSync11, readFileSync as readFileSync12, renameSync as renameSync10, writeFileSync as writeFileSync11 } from "node:fs";
-import { dirname as dirname2, join as join13 } from "node:path";
+import { existsSync as existsSync12, mkdirSync as mkdirSync11, readFileSync as readFileSync13, renameSync as renameSync10, writeFileSync as writeFileSync11 } from "node:fs";
+import { dirname as dirname2, join as join14 } from "node:path";
 var GEMINI_SIG_FILE = "gemini-sigs.json";
 var GEMINI_SIG_MAX_ENTRIES = 2e3;
 var SIG_KEY_BODY_LIMIT = 512;
@@ -82873,8 +85627,8 @@ function trimGeminiSignature(signature) {
   return signature.trim();
 }
 var GeminiSigStore = class {
-  constructor(path3, logger2) {
-    this.path = path3;
+  constructor(path4, logger2) {
+    this.path = path4;
     this.logger = logger2;
     this.entries = this.load();
   }
@@ -82983,7 +85737,7 @@ var GeminiSigStore = class {
     if (this.path === void 0) return out;
     try {
       if (!existsSync12(this.path)) return out;
-      const parsed = JSON.parse(readFileSync12(this.path, "utf-8"));
+      const parsed = JSON.parse(readFileSync13(this.path, "utf-8"));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return out;
       for (const [key, value] of Object.entries(parsed)) {
         if (typeof value !== "object" || value === null) continue;
@@ -83007,11 +85761,11 @@ function createGeminiSigStore(ctx) {
     ctx.logger?.warn?.("[gemini] \u65E0\u6CD5\u5B9A\u4F4D DSH home\uFF0C\u7B7E\u540D\u7F13\u5B58\u4EC5\u5B58\u5728\u4E8E\u5185\u5B58\u4E2D\uFF08\u547D\u4E2D\u7387\u4F1A\u5728\u91CD\u542F\u540E\u5F52\u96F6\uFF09");
     return new GeminiSigStore(void 0, ctx.logger);
   }
-  return new GeminiSigStore(join13(home, "jet-hub", GEMINI_SIG_FILE), ctx.logger);
+  return new GeminiSigStore(join14(home, "jet-hub", GEMINI_SIG_FILE), ctx.logger);
 }
 
 // vendor/channel-pack/src/opencode-adapter.ts
-import { LlmAdapter as LlmAdapter17, LlmError as LlmError25, ReasoningEffortId as ReasoningEffortId19 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter18, LlmError as LlmError26, ReasoningEffortId as ReasoningEffortId20 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/opencode-messages.ts
 var FREE_LANE_GATE_TOOLS = ["read"];
@@ -83138,7 +85892,7 @@ function buildOpencodeRequest(input) {
 }
 
 // vendor/channel-pack/src/opencode-stream.ts
-import { LlmError as LlmError24 } from "@deepseek-ai/dsh-llm";
+import { LlmError as LlmError25 } from "@deepseek-ai/dsh-llm";
 function record2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
 }
@@ -83147,7 +85901,7 @@ function createOpencodeFrameNormalizer(request3, warn) {
   const aliases = request3.toolAliases;
   const candidates = [...aliases.keys(), ...FREE_LANE_GATE_TOOLS];
   const fail2 = (detail) => {
-    throw new LlmError24(`opencode: ${detail}`, "PERMISSION_DENIED");
+    throw new LlmError25(`opencode: ${detail}`, "PERMISSION_DENIED");
   };
   const note = (detail) => {
     try {
@@ -83263,7 +86017,7 @@ function createOpencodeFrameNormalizer(request3, warn) {
         const calls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
         const legacy = record2(delta?.function_call);
         if (delta !== void 0) {
-          const normalized = calls.map((rawCall) => {
+          const normalized2 = calls.map((rawCall) => {
             const call = record2(rawCall);
             if (call === void 0) fail2("\u4E0A\u6E38\u8FD4\u56DE\u4E86\u7578\u5F62\u5DE5\u5177\u8C03\u7528");
             const target = targetOf(state, call);
@@ -83272,10 +86026,10 @@ function createOpencodeFrameNormalizer(request3, warn) {
           });
           if (legacy !== void 0) {
             state.legacy ??= newCall(state);
-            normalized.push({ index: state.legacy.index, id: `call_legacy_${index}`, function: restore(legacy, state.legacy) });
+            normalized2.push({ index: state.legacy.index, id: `call_legacy_${index}`, function: restore(legacy, state.legacy) });
             delete delta.function_call;
           }
-          if (normalized.length > 0) delta.tool_calls = normalized;
+          if (normalized2.length > 0) delta.tool_calls = normalized2;
         }
         if (choice.finish_reason) {
           const finish = String(choice.finish_reason);
@@ -83365,10 +86119,9 @@ function normalizeOpencodeResponse(response, request3, warn) {
 }
 
 // vendor/channel-pack/src/opencode-capability.ts
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { readFileSync as readFileSync13 } from "node:fs";
-import { homedir as homedir7 } from "node:os";
-import { join as join14 } from "node:path";
+setOpencodeCapabilityHook(() => {
+  readNormalized();
+});
 var MEASURED_IMAGE_OVERRIDES = {
   // 实测 2026-10-02：models.dev 标 `modalities.input: ["text"]`，
   // 但 1×1 PNG 的多模态请求真实返回 200（big-pickle 是最常用的免费模型）。
@@ -83426,110 +86179,56 @@ function normalizeEntry(id, raw) {
     reasoning: entry.reasoning === true && efforts.length > 0,
     efforts,
     toolCall: entry.tool_call !== false,
-    isFree: isFiniteNumber(entry.cost?.input) && entry.cost.input === 0 && isFiniteNumber(entry.cost?.output) && entry.cost.output === 0
+    isFree: isFiniteNumber(entry.cost?.input) && entry.cost.input === 0 && isFiniteNumber(entry.cost?.output) && entry.cost.output === 0,
+    // ⚠️⚠️ 协议可达性（issue IKM9LR）。**缺字段 = 不知道**，不是「不可达」：
+    //   实测 `jev-1.13-free` 连 models.dev 条目都没有，而 `claude-*` / `gemini-*`
+    //   的 `api` 指向本插件**未实现**的协议（实测 `/v1/messages` 恒 500）。
+    chatProtocol: typeof entry.provider?.api === "string" ? entry.provider.api === OPENCODE_CHAT_PROTOCOL_API : void 0
   };
 }
-function cacheFilePath() {
-  const home = process.env.DSH_HOME?.trim() || join14(homedir7(), ".dsh");
-  return join14(home, "cache", "opencode-capabilities.json");
-}
-var memory = [];
-var cacheFileAt = 0;
-var refreshing;
-var diskLoaded = false;
-async function ensureDiskLoaded() {
-  if (diskLoaded) return;
-  diskLoaded = true;
-  try {
-    const raw = await readFile(cacheFilePath(), "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed?.version === 2 && Array.isArray(parsed.entries) && parsed.entries.length > 0) {
-      memory = parsed.entries;
-      cacheFileAt = typeof parsed.at === "number" ? parsed.at : 0;
-    }
-  } catch {
-  }
-}
-function loadDiskCacheSync() {
-  if (diskLoaded) return;
-  diskLoaded = true;
-  try {
-    const raw = readFileSync13(cacheFilePath(), "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed?.version === 2 && Array.isArray(parsed.entries) && parsed.entries.length > 0) {
-      memory = parsed.entries;
-      cacheFileAt = typeof parsed.at === "number" ? parsed.at : 0;
-    }
-  } catch {
-  }
-}
-async function writeDiskCache(entries) {
-  try {
-    const path3 = cacheFilePath();
-    await mkdir(join14(path3, ".."), { recursive: true });
-    const payload = { version: 2, at: Date.now(), entries };
-    await writeFile(path3, JSON.stringify(payload), "utf8");
-  } catch {
-  }
-}
-var FETCH_TIMEOUT_MS2 = 2e4;
-async function fetchAndCache() {
-  const response = await fetch(OPENCODE_MODELS_DEV_URL, {
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS2)
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const body = await response.json();
-  const models = body["opencode"]?.models;
-  if (typeof models !== "object" || models === null) throw new Error("\u7F3A\u5C11 opencode \u6761\u76EE");
+var normalized = [];
+var normalizedFrom = void 0;
+function readNormalized() {
+  const block = readProviderModelsSync("opencode");
+  if (normalizedFrom === block) return normalized;
   const out = [];
-  for (const [id, raw] of Object.entries(models)) {
+  for (const [id, raw] of Object.entries(block)) {
     const entry = normalizeEntry(id, raw);
     if (entry !== null) out.push(entry);
   }
-  if (out.length === 0) throw new Error("\u89E3\u6790\u7ED3\u679C\u4E3A\u7A7A");
-  memory = out;
-  await writeDiskCache(out);
+  normalized = out;
+  normalizedFrom = block;
+  publishRemoteTables(out);
+  return out;
 }
-function refreshOpencodeCapabilities(onUpdated, force = false) {
-  if (refreshing !== void 0 && Date.now() - refreshingStartedAt > FETCH_TIMEOUT_MS2 * 2) {
-    refreshing = void 0;
+function publishRemoteTables(entries) {
+  const reachability = /* @__PURE__ */ new Map();
+  const freeFlags = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (entry.chatProtocol !== void 0) reachability.set(entry.id, entry.chatProtocol);
+    freeFlags.set(entry.id, entry.isFree);
   }
-  if (refreshing !== void 0) return;
-  refreshingStartedAt = Date.now();
-  refreshing = (async () => {
-    try {
-      await ensureDiskLoaded();
-      if (!force && cacheFileAt > 0 && Date.now() - cacheFileAt < OPENCODE_MODELS_DEV_TTL_MS) return;
-      await fetchAndCache();
-      onUpdated?.();
-    } catch {
-    } finally {
-      refreshing = void 0;
-    }
-  })();
+  setRemoteOpencodeReachability(reachability);
+  setRemoteOpencodeFreeFlags(freeFlags);
 }
-var refreshingStartedAt = 0;
 function getOpencodeCapabilitiesSync() {
-  loadDiskCacheSync();
-  return memory;
+  return readNormalized();
 }
-function primeOpencodeCapabilities() {
-  loadDiskCacheSync();
-  void ensureDiskLoaded().then(() => {
-    if (memory.length === 0) refreshOpencodeCapabilities();
-  });
+function invalidateOpencodeCapabilities() {
+  normalizedFrom = void 0;
 }
 function supportsOpencodeImage(capability) {
   return capability?.modalities.includes("image") === true;
 }
 
 // vendor/channel-pack/src/opencode-adapter.ts
-function inputModalitiesOf(capabilities, modelId) {
+function inputModalitiesOf2(capabilities, modelId) {
   return supportsOpencodeImage(capabilities.find((c) => c.id === modelId)) ? ["text", "image"] : ["text"];
 }
 var DEFAULT_CATALOG_TTL_MS2 = 3e5;
 var catalogCache2 = /* @__PURE__ */ new Map();
 async function loadOpencodeCatalog(fetchCatalog, slot2, ttlMs2 = DEFAULT_CATALOG_TTL_MS2) {
+  getOpencodeCapabilitiesSync();
   const cached2 = catalogCache2.get(slot2.id);
   if (cached2 !== void 0 && ttlMs2 > 0 && Date.now() - cached2.at < ttlMs2) return cached2.entries;
   let entries;
@@ -83584,7 +86283,7 @@ function opencodeRetryAfterMs(kind, retryAfterMs, attempt) {
   if (kind === "auth") return RATE_LIMIT_BASE_MS2;
   return Math.min(RATE_LIMIT_BASE_MS2 * 2 ** Math.max(0, attempt - 1), RETRY_AFTER_CAP_MS2);
 }
-var OpencodeAdapter = class extends LlmAdapter17 {
+var OpencodeAdapter = class extends LlmAdapter18 {
   constructor(options) {
     super();
     this.options = options;
@@ -83617,10 +86316,10 @@ var OpencodeAdapter = class extends LlmAdapter17 {
     const slots = await this.options.identitySlots();
     if (slots.length === 0) return [];
     const all = await this.catalog();
-    const hasAccountSlot = slots.some((s) => s.kind === "account");
-    const visible = hasAccountSlot ? all : all.filter((m) => m.isFree);
-    const disabled = this.options.disabledModels?.() ?? /* @__PURE__ */ new Set();
     const capabilities = getOpencodeCapabilitiesSync();
+    const hasAccountSlot = slots.some((s) => s.kind === "account");
+    const visible = hasAccountSlot ? all : all.filter((m) => isFreeOpencodeModel(m.id));
+    const disabled = this.options.disabledModels?.() ?? /* @__PURE__ */ new Set();
     return visible.filter((m) => !disabled.has(m.id)).map((m) => ({
       provider: OPENCODE.id,
       id: m.id,
@@ -83630,7 +86329,7 @@ var OpencodeAdapter = class extends LlmAdapter17 {
       // 而我们硬编码 ['text'] 让 DSH 在本地就把图投影成了文字占位符）。
       // ⚠️ 能力表拿不到时**保守回退 text**（`inputModalitiesOf` 的实现）——
       // 声明支持就必须真支持，这是本仓库的硬约定。
-      inputModalities: inputModalitiesOf(capabilities, m.id)
+      inputModalities: inputModalitiesOf2(capabilities, m.id)
     }));
   }
   async resolveModel(provider, model, _signal) {
@@ -83642,7 +86341,7 @@ var OpencodeAdapter = class extends LlmAdapter17 {
       provider,
       id: model,
       name: entry?.name ?? model,
-      inputModalities: inputModalitiesOf(capabilities, model)
+      inputModalities: inputModalitiesOf2(capabilities, model)
     };
     const contextWindow = capability?.contextWindow ?? entry?.contextWindow ?? 0;
     if (contextWindow > 0) {
@@ -83653,7 +86352,7 @@ var OpencodeAdapter = class extends LlmAdapter17 {
         efforts: capability.efforts.map((effort) => ({
           // ⚠️ `id` 是**品牌类型**（`ReasoningEffortId`），必须经它的构造函数 ——
           // 与 Qoder 同款（`src/qoder-adapter.ts`）。
-          id: ReasoningEffortId19(effort),
+          id: ReasoningEffortId20(effort),
           // ⚠️ 没有官方中文的档位（models.dev 会下发 `minimal` / `xhigh` 等
           // Qoder 那份表里没有的值）**回退到 id 本身** —— 宁可显示英文原值，
           // 也不猜一个可能错译的中文。
@@ -83679,10 +86378,10 @@ var OpencodeAdapter = class extends LlmAdapter17 {
   async *stream(options) {
     const slots = await this.options.identitySlots();
     if (slots.length === 0) {
-      throw new LlmError25("opencode: \u6CA1\u6709\u53EF\u7528\u901A\u9053", "MISSING_CREDENTIAL");
+      throw new LlmError26("opencode: \u6CA1\u6709\u53EF\u7528\u901A\u9053", "MISSING_CREDENTIAL");
     }
     if (pickSlot(slots, options.model, /* @__PURE__ */ new Set()) === void 0) {
-      throw new LlmError25(
+      throw new LlmError26(
         `opencode: \u6A21\u578B "${options.model}" \u9700\u8981 API key \u8D26\u53F7\u901A\u9053\uFF08\u533F\u540D\u901A\u9053\u53EA\u652F\u6301\u514D\u8D39\u6A21\u578B\uFF09\uFF0C\u8BF7\u5148\u5728 Jet Hub \u7684 OpenCode \u9762\u677F\u6DFB\u52A0\u4E00\u4E2A\u8D26\u53F7`,
         "MISSING_CREDENTIAL"
       );
@@ -83692,7 +86391,7 @@ var OpencodeAdapter = class extends LlmAdapter17 {
     for (; ; ) {
       const slot2 = pickSlot(slots, options.model, tried);
       if (slot2 === void 0) {
-        throw new LlmError25(
+        throw new LlmError26(
           `opencode: \u6240\u6709\u901A\u9053\u5BF9\u8BE5\u6A21\u578B\u5747\u53D7\u9650${limited.length > 0 ? `\uFF08${limited.join("\u3001")}\uFF09` : ""}`,
           "QUOTA_EXCEEDED"
         );
@@ -83709,13 +86408,13 @@ var OpencodeAdapter = class extends LlmAdapter17 {
       } catch (error) {
         if (options.signal?.aborted) throw options.signal.reason ?? error;
         if (delivered) throw error;
-        if (error instanceof LlmError25 && (error.code === "QUOTA_EXCEEDED" || error.code === "PERMISSION_DENIED")) throw error;
+        if (error instanceof LlmError26 && (error.code === "QUOTA_EXCEEDED" || error.code === "PERMISSION_DENIED")) throw error;
         const info = classifyOpencodeFailure(error);
         if (info.kind === "free_tier") {
           this.options.warn?.(
             `opencode: \u514D\u8D39\u901A\u9053\u88AB FreeTierError \u62D2\u7EDD \u2014\u2014 \u68C0\u67E5 V2 \u7AEF\u70B9\u3001session \u7B97\u6CD5\u3001UA \u4E0E\u5DE5\u5177 schema\uFF1A${info.detail}`
           );
-          throw new LlmError25(
+          throw new LlmError26(
             `opencode: \u514D\u8D39\u901A\u9053\u88AB\u4E0A\u6E38\u62D2\u7EDD\uFF08FreeTierError\uFF09\u3002\u8BE5\u9519\u8BEF\u7531\u8BF7\u6C42\u534F\u8BAE\u95E8\u7981\u89E6\u53D1\uFF0C\u8BF7\u68C0\u67E5 V2 \u7AEF\u70B9\u3001session \u7B97\u6CD5\u3001\u8BF7\u6C42\u5934\u53CA\u5DE5\u5177\u63CF\u8FF0/schema\uFF1B\u6362 API key \u6216\u6362\u51FA\u53E3\u90FD\u65E0\u6548\u3002`,
             "PERMISSION_DENIED",
             { status: 403 }
@@ -83759,13 +86458,13 @@ var OpencodeAdapter = class extends LlmAdapter17 {
     if (refs.size === 0) return void 0;
     const capabilities = getOpencodeCapabilitiesSync();
     if (!supportsOpencodeImage(capabilities.find((c) => c.id === model))) {
-      throw new LlmError25(
+      throw new LlmError26(
         `opencode: \u6A21\u578B "${model}" \u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF08\u80FD\u529B\u4EE5\u8FDC\u7AEF models.dev \u4E3A\u51C6\uFF09`,
         "UNSUPPORTED_CONTENT"
       );
     }
     if (this.options.readImage === void 0) {
-      throw new LlmError25("opencode: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
+      throw new LlmError26("opencode: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
     }
     const readImage = this.options.readImage;
     const out = /* @__PURE__ */ new Map();
@@ -83813,7 +86512,7 @@ var OpencodeAdapter = class extends LlmAdapter17 {
       ...options.signal !== void 0 ? { signal: options.signal } : {}
     };
     const headerController = new AbortController();
-    const headerTimer = setTimeout(() => headerController.abort(new LlmError25("opencode: \u7B49\u5F85\u54CD\u5E94\u5934\u8D85\u65F6", "TIMEOUT")), OPENCODE.chatHeaderTimeoutMs);
+    const headerTimer = setTimeout(() => headerController.abort(new LlmError26("opencode: \u7B49\u5F85\u54CD\u5E94\u5934\u8D85\u65F6", "TIMEOUT")), OPENCODE.chatHeaderTimeoutMs);
     let response;
     try {
       response = await proxyFetch(`${OPENCODE.baseUrl}${OPENCODE.chatPath}`, {
@@ -83829,7 +86528,7 @@ var OpencodeAdapter = class extends LlmAdapter17 {
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       const retryAfterMs = retryAfterMsFromResponse(response.headers);
-      throw new LlmError25(
+      throw new LlmError26(
         `opencode: HTTP ${response.status} \u2014 ${text.slice(0, 300)}`,
         httpErrorCode(response.status),
         {
@@ -83840,16 +86539,16 @@ var OpencodeAdapter = class extends LlmAdapter17 {
         }
       );
     }
-    const normalized = normalizeOpencodeResponse(response, request3, this.options.warn);
+    const normalized2 = normalizeOpencodeResponse(response, request3, this.options.warn);
     try {
-      yield* consumeOpenAiSse(normalized, options.signal !== void 0 ? { signal: options.signal } : {}, {
+      yield* consumeOpenAiSse(normalized2, options.signal !== void 0 ? { signal: options.signal } : {}, {
         label: "opencode",
         firstTokenTimeoutMs: OPENCODE.chatHeaderTimeoutMs,
         chunkTimeoutMs: OPENCODE.chatChunkTimeoutMs,
         ...options.maxTokens !== void 0 ? { maxTokens: options.maxTokens } : {}
       });
     } finally {
-      await normalized.body?.cancel().catch(() => {
+      await normalized2.body?.cancel().catch(() => {
       });
     }
   }
@@ -84069,6 +86768,20 @@ function createProviderExpiry() {
         MODELSCOPE,
         context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
       )
+    },
+    // ⚠️ **AutoClaw**（智谱，2026-10-17 审计 P0 修复）：与 modelscope **同格**
+    //    （钱包余额不下发到期时间 ⇒ 有余额即 `NEVER`、烧光即 `UNUSABLE`）。
+    //    ⚠️ 三处必须同改（本表 + `WIRED_EXPIRY_PROVIDERS` + 折算原语）——
+    //    这是该陷阱的第 4 次复发，漏任何一处的症状都是**静默**的
+    //    （用户在聚合轮换列表里看不到该渠道，零报错零日志）。
+    //    ⚠️ **必须走 `cachedBalance`**：与 buddy / trae / modelscope 同款 ——
+    //    聚合每轮折算会对同一账号反复提问，没有共享读数就白发大量重复请求。
+    autoclaw: {
+      credentialExpiry: (c, context) => autoclawExpiry(
+        c,
+        AUTOCLAW,
+        context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
+      )
     }
   };
 }
@@ -84077,14 +86790,14 @@ function createProviderExpiry() {
 var import_undici2 = __toESM(require_undici(), 1);
 import { execFile as execFile3 } from "node:child_process";
 import { promisify } from "node:util";
-import path2 from "node:path";
+import path3 from "node:path";
 function parseWindowsProxy(output) {
   const value = (name2) => new RegExp(`^\\s*${name2}\\s+REG_\\w+\\s+(.+)$`, "mi").exec(output)?.[1]?.trim() ?? "";
   if (Number(value("ProxyEnable")) !== 1 || value("ProxyServer") === "") return void 0;
   return { server: value("ProxyServer"), bypass: value("ProxyOverride") };
 }
 async function readWindowsProxy() {
-  const executable = path2.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "reg.exe");
+  const executable = path3.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "reg.exe");
   try {
     const { stdout } = await promisify(execFile3)(executable, [
       "query",
@@ -84302,7 +87015,7 @@ var probeById = {
   // CodeBuddy 系（buddy / workbuddy）→ BuddyAdapter，按各自 product 发请求。
   buddy: {
     createProbeAdapter: (ref, credential) => new BuddyAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84311,7 +87024,7 @@ var probeById = {
   },
   workbuddy: {
     createProbeAdapter: (ref, credential) => new BuddyAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84321,7 +87034,7 @@ var probeById = {
   // LobsterAI → 自己的端点与头族。
   lobsterai: {
     createProbeAdapter: (ref, credential) => new LobsteraiAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84334,7 +87047,7 @@ var probeById = {
   //（旧凭据缺 uid 时适配器会明确报错，而不是发出必然失败的请求）。
   qoder: {
     createProbeAdapter: (ref, credential) => new QoderAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84343,7 +87056,7 @@ var probeById = {
   },
   qodercn: {
     createProbeAdapter: (ref, credential) => new QoderAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84353,7 +87066,7 @@ var probeById = {
   // Cline → WorkOS 凭据 + 自己的端点。
   cline: {
     createProbeAdapter: (ref, credential) => new ClineAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84368,7 +87081,7 @@ var probeById = {
   //    且它会在 `listModels` 里回退兜底表（不会抛）。
   modelscope: {
     createProbeAdapter: (ref, credential) => new ModelscopeAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       slots: async () => [{ id: MODELSCOPE.id, apiKey: credential.access_token }],
       product: MODELSCOPE
       // ⚠️ 不传 `warn`：`probeById` 是**模块级**常量（在 `apply()` 之前求值），
@@ -84388,7 +87101,7 @@ var probeById = {
   // 与 `index.ts` 的 `zcode.mintCaptcha` 共用同一台常驻浏览器。
   zcode: {
     createProbeAdapter: (ref, credential) => new ZcodeAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84400,7 +87113,7 @@ var probeById = {
   // 不传 product → TraeAdapter 内部默认用 TRAE。
   trae: {
     createProbeAdapter: (ref, credential) => new TraeAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       }
@@ -84422,7 +87135,7 @@ var probeById = {
   // 了用户点「重测」想知道的答案。探测**不写**任何东西（不传 persistProject）。
   gemini: {
     createProbeAdapter: (ref, credential) => new GeminiAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84436,7 +87149,7 @@ var probeById = {
   // **显式登记**，未登记的 provider 不再被静默交给它。
   codearts: {
     createProbeAdapter: (ref, credential) => new CodeArtsAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       }
@@ -84445,7 +87158,7 @@ var probeById = {
   // Loomy（讯飞）→ 自己的端点。⚠️ 旧链**漏了它**（第 5 次同型缺陷，见上）。
   loomy: {
     createProbeAdapter: (ref, credential) => new LoomyAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84455,7 +87168,7 @@ var probeById = {
   // Raccoon Work（商汤小浣熊）→ 自己的端点。⚠️ 旧链**漏了它**（同第 5 次）。
   raccoon: {
     createProbeAdapter: (ref, credential) => new RaccoonAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84473,7 +87186,7 @@ var probeById = {
   // 复活（探测失败若写回限流标记，会把「重测 A 账号」变成污染池的副作用）。
   minimax: {
     createProbeAdapter: (ref, credential) => new MinimaxAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84485,7 +87198,7 @@ var probeById = {
   // 否则国际站账号的「重测」会用国内站主机发凭据、必然 401 ⇒ 标记永远清不掉）。
   minimaxintl: {
     createProbeAdapter: (ref, credential) => new MinimaxAdapter({
-      credentialRef: credentialRef19(ref),
+      credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -84601,7 +87314,7 @@ function apply(ctx, config = {}) {
     ctx.logger.warn(`[jet-hub] \u6E05\u7406 WorkBuddy \u65E7\u7248\u8D26\u53F7\u5931\u8D25\uFF1A${String(error)}`);
   });
   const codearts = registerCodeArtsLlm(ctx, {
-    credentialRef: credentialRef19(CODEARTS_CREDENTIAL_REF),
+    credentialRef: credentialRef20(CODEARTS_CREDENTIAL_REF),
     resolveCredential: async () => {
       const available2 = await pool.getAvailableAccount("codearts", "");
       return available2?.credential;
@@ -84625,7 +87338,7 @@ function apply(ctx, config = {}) {
     accountPool: pool
   });
   const resolveBuddyCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef20(refName));
     if (!resolved) return void 0;
     try {
       return JSON.parse(resolved.value);
@@ -84649,7 +87362,7 @@ function apply(ctx, config = {}) {
       modelId ?? ""
     );
     if (limited === void 0) return;
-    throw new LlmError26(
+    throw new LlmError27(
       `${product.displayName}\uFF1A\u6A21\u578B ${modelId} \u7684\u53EF\u7528\u8D26\u53F7\u5747\u5728\u9650\u6D41\u4E2D\uFF0C\u6700\u8FD1\u4E00\u4E2A\u5C06\u4E8E ${new Date(limited.resetAtMs).toLocaleString("zh-CN")} \u89E3\u7981\u3002\u53EF\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF0C\u6216\u7B49\u5F85\u89E3\u7981\u540E\u518D\u8BD5\uFF08\u65E0\u9700\u91CD\u65B0\u767B\u5F55\uFF09\u3002`,
       "QUOTA_EXCEEDED"
     );
@@ -84680,13 +87393,13 @@ function apply(ctx, config = {}) {
   const loomyLockedError = (reason) => {
     const details = reason.kind === "exhausted" ? "" : `\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09`;
     if (reason.kind === "all-unknown") {
-      return new LlmError26(
+      return new LlmError27(
         `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C**\u6240\u6709**\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u90FD\u5931\u8D25\u4E86${details}\u3002\u8FD9\u901A\u5E38\u662F\u4E0A\u6E38\u9650\u6D41 / \u98CE\u63A7 / \u7F51\u7EDC\u4E2D\u65AD\uFF0C**\u4E0D\u662F**\u51ED\u636E\u5931\u6548 \u2014\u2014 \u65E0\u9700\u91CD\u65B0\u767B\u5F55\u3002\u53EF\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF1B\u82E5\u6025\u4E8E\u7EE7\u7EED\uFF0C\u53EF\u5728 Jet Hub \u7684 Loomy \u9762\u677F**\u4E34\u65F6\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u4F1A\u6D88\u8017\u6C38\u4E45\u79EF\u5206\uFF09\u3002`,
         "TRANSPORT"
       );
     }
     if (reason.kind === "partial") {
-      return new LlmError26(
+      return new LlmError27(
         `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C**\u90E8\u5206**\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25${details}\u3002\u5176\u4F59\u8D26\u53F7\u7684\u4ECA\u65E5\u989D\u5EA6\u5DF2\u786E\u8BA4\u7528\u5C3D\uFF1B\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u4ECA\u65E5\u989D\u5EA6 \u2014\u2014 \u8BF7\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684 Loomy \u9762\u677F\u6838\u5BF9\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\u3002`,
         "TRANSPORT"
       );
@@ -84700,7 +87413,7 @@ function apply(ctx, config = {}) {
   const buddy = new BuddyAuth(ctx);
   buddy.lastCatalogOutcome = { scopedOk: false, configOk: false };
   const buddyAdapter = registerBuddyLlm(ctx, {
-    credentialRef: credentialRef19(BUDDY_CREDENTIAL_REF),
+    credentialRef: credentialRef20(BUDDY_CREDENTIAL_REF),
     resolveCredential: createCredentialResolver(
       // ⚠️ 依赖在**每次 apply() 时**构造一次，闭包捕获的是同一批引用。
       { pool, reportAccount: (id) => {
@@ -84749,7 +87462,7 @@ function apply(ctx, config = {}) {
   const workbuddy = new BuddyAuth(ctx, { product: WORKBUDDY });
   workbuddy.lastCatalogOutcome = { scopedOk: false, configOk: false };
   const workbuddyAdapter = registerBuddyLlm(ctx, {
-    credentialRef: credentialRef19(WORKBUDDY.defaultCredentialRef),
+    credentialRef: credentialRef20(WORKBUDDY.defaultCredentialRef),
     // 只从 workbuddy 的账号池取账号，回退到 WorkBuddy 自己的单凭据 ref，
     // 保证不会串用 CodeBuddy 的凭据。
     // 选号策略与 CodeBuddy 同款，但用的是**WorkBuddy 自己的锁状态与余额缓存**
@@ -84793,7 +87506,7 @@ function apply(ctx, config = {}) {
   });
   const lobsterai = new LobsteraiAuth(ctx);
   const resolveLobsteraiCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef20(refName));
     if (!resolved) return void 0;
     try {
       const parsed = JSON.parse(resolved.value);
@@ -84808,7 +87521,7 @@ function apply(ctx, config = {}) {
     fetchBalance: (credential, product) => fetchLobsteraiCreditBalance(credential, product)
   });
   const lobsteraiAdapter = registerLobsteraiLlm(ctx, {
-    credentialRef: credentialRef19(LOBSTERAI.defaultCredentialRef),
+    credentialRef: credentialRef20(LOBSTERAI.defaultCredentialRef),
     // 只从 LobsterAI 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用 CodeBuddy / WorkBuddy / CodeArts 的凭据。
     // provider 实参用 LOBSTERAI 而非字面量 'lobsterai'：写死字面量在
@@ -84856,7 +87569,7 @@ function apply(ctx, config = {}) {
   const qoder = new QoderAuth(ctx);
   const activeQoderAccountId = /* @__PURE__ */ new Map();
   const qoderAdapter = registerQoderLlm(ctx, {
-    credentialRef: credentialRef19(QODER.defaultCredentialRef),
+    credentialRef: credentialRef20(QODER.defaultCredentialRef),
     // 只从 Qoder 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用其它 provider 的凭据。
     // provider 实参用 QODER 而非字面量 'qoder'：写死字面量在
@@ -84877,7 +87590,7 @@ function apply(ctx, config = {}) {
       {
         product: QODER,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84909,7 +87622,7 @@ function apply(ctx, config = {}) {
   });
   const qoderCn = new QoderAuth(ctx, { product: QODER_CN });
   const qoderCnAdapter = registerQoderLlm(ctx, {
-    credentialRef: credentialRef19(QODER_CN.defaultCredentialRef),
+    credentialRef: credentialRef20(QODER_CN.defaultCredentialRef),
     // 只取中国版自己账号池的账号，回退到 QODERCN_ACCESS_TOKEN。
     // ⚠️ provider 实参必须是 QODER_CN：写死 'qoder' 会让中国版
     // 永远查不到自己的账号（本插件在 workbuddy 上踩过同类坑）。
@@ -84926,7 +87639,7 @@ function apply(ctx, config = {}) {
       {
         product: QODER_CN,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84957,7 +87670,7 @@ function apply(ctx, config = {}) {
   });
   const trae = new TraeAuth(ctx);
   const resolveTraeCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef20(refName));
     if (!resolved) return void 0;
     try {
       const parsed = JSON.parse(resolved.value);
@@ -84972,7 +87685,7 @@ function apply(ctx, config = {}) {
     fetchBalance: (credential, product) => fetchTraeCreditBalance(credential, product)
   });
   const traeAdapter = registerTraeLlm(ctx, {
-    credentialRef: credentialRef19(TRAE.defaultCredentialRef),
+    credentialRef: credentialRef20(TRAE.defaultCredentialRef),
     // 优先按「快到期积分」分档选号（锁定永久积分时只挑有快到期积分的号）。
     // 与 buddy 系同一套编排：候选先按「enabled + 模型未受限」筛，
     // 分档只在这批候选内部进行 —— 不能因为某个号积分多就绕开限流标记。
@@ -85016,7 +87729,7 @@ function apply(ctx, config = {}) {
   const cline = new ClineAuth(ctx, { fetcher: network.fetch });
   let activeClineAccountId = "";
   const clineAdapter = registerClineLlm(ctx, {
-    credentialRef: credentialRef19(CLINE.defaultCredentialRef),
+    credentialRef: credentialRef20(CLINE.defaultCredentialRef),
     // 只从 Cline 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用其它 provider 的凭据。
     // provider 实参用 CLINE 而非字面量 'cline'：写死字面量在
@@ -85035,7 +87748,7 @@ function apply(ctx, config = {}) {
       {
         product: CLINE,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -85070,7 +87783,7 @@ function apply(ctx, config = {}) {
   });
   const loomy = new LoomyAuth(ctx);
   const resolveLoomyCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef20(refName));
     if (!resolved) return void 0;
     try {
       return JSON.parse(resolved.value);
@@ -85132,7 +87845,7 @@ function apply(ctx, config = {}) {
     }
   });
   const loomyAdapter = registerLoomyLlm(ctx, {
-    credentialRef: credentialRef19(LOOMY.defaultCredentialRef),
+    credentialRef: credentialRef20(LOOMY.defaultCredentialRef),
     /**
      * 解析本轮该用哪个账号的凭据。
      *
@@ -85177,7 +87890,7 @@ function apply(ctx, config = {}) {
     // 失败时返回空数组，由适配器回退兜底表。
     fetchRemoteModels: async () => {
       const available2 = await pool.getAvailableAccount(LOOMY.id, "");
-      const resolved = available2 !== null && available2 !== void 0 ? { value: JSON.stringify(available2.credential) } : await ctx.credentials.resolve(credentialRef19(LOOMY.defaultCredentialRef));
+      const resolved = available2 !== null && available2 !== void 0 ? { value: JSON.stringify(available2.credential) } : await ctx.credentials.resolve(credentialRef20(LOOMY.defaultCredentialRef));
       if (resolved === void 0) return [];
       let credential;
       try {
@@ -85199,7 +87912,7 @@ function apply(ctx, config = {}) {
   });
   const raccoon = new RaccoonAuth(ctx);
   const raccoonAdapter = registerRaccoonLlm(ctx, {
-    credentialRef: credentialRef19(RACCOON.defaultCredentialRef),
+    credentialRef: credentialRef20(RACCOON.defaultCredentialRef),
     // 只从 raccoon 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用其它 provider 的凭据。
     // provider 实参用 RACCOON 而非字面量：写死字面量在改名/多产品场景下
@@ -85214,7 +87927,7 @@ function apply(ctx, config = {}) {
         // ⚠️ raccoon 的兜底是**裸 `JSON.parse`**（历史形态，本 Task 逐字保留）。
         // 它此前也没有形状校验，本 Task 的约束是零行为变更 ⇒ 不在此处加严。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -85253,7 +87966,7 @@ function apply(ctx, config = {}) {
   });
   const minimax = new MinimaxAuth(ctx);
   const minimaxAdapter = registerMinimaxLlm(ctx, {
-    credentialRef: credentialRef19(MINIMAX.defaultCredentialRef),
+    credentialRef: credentialRef20(MINIMAX.defaultCredentialRef),
     // provider 实参用 MINIMAX 而非字面量：写死字面量在改名/多产品场景下
     // 会静默查不到账号（本插件在 workbuddy 上踩过同类坑）。
     // ⚠️ 只从 minimax 自己的账号池取账号，回退到自己的单凭据 ref，
@@ -85267,7 +87980,7 @@ function apply(ctx, config = {}) {
         // ⚠️ 与 raccoon / gemini 同款：兜底是**裸 `JSON.parse`**（历史形态，
         // 本 Task 逐字保留，不在此处加形状校验 —— 那会是行为变更）。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -85311,7 +88024,7 @@ function apply(ctx, config = {}) {
   });
   const minimaxIntl = new MinimaxAuth(ctx, { product: MINIMAX_INTL });
   const minimaxIntlAdapter = registerMinimaxLlm(ctx, {
-    credentialRef: credentialRef19(MINIMAX_INTL.defaultCredentialRef),
+    credentialRef: credentialRef20(MINIMAX_INTL.defaultCredentialRef),
     // ⚠️ provider 实参必须是 MINIMAX_INTL：写死 MINIMAX 会让国际站永远查不到
     // 自己的账号（本插件在 workbuddy 上踩过同类坑）。
     resolveCredential: createCredentialResolver(
@@ -85321,7 +88034,7 @@ function apply(ctx, config = {}) {
       {
         product: MINIMAX_INTL,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -85354,7 +88067,7 @@ function apply(ctx, config = {}) {
   const geminiSigStore = createGeminiSigStore(ctx);
   const geminiProjectCache = /* @__PURE__ */ new Map();
   const geminiAdapter = registerGeminiLlm(ctx, {
-    credentialRef: credentialRef19(GEMINI.defaultCredentialRef),
+    credentialRef: credentialRef20(GEMINI.defaultCredentialRef),
     // ⚠️ provider 实参用 GEMINI 而非字面量（同 minimax 的既有约定：
     // 写死字面量在改名/多产品场景下会静默查不到账号）。
     resolveCredential: createCredentialResolver(
@@ -85369,7 +88082,7 @@ function apply(ctx, config = {}) {
         // `GeminiCredential` 无充分重叠，故经 `unknown` 转换；运行时安全性由
         // provider 过滤保证（查询用 `GEMINI.id`，取到的必是 gemini 凭据）。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -85407,10 +88120,54 @@ function apply(ctx, config = {}) {
     projectCache: geminiProjectCache,
     persistProject: async (value) => {
       const available2 = await pool.getAvailableAccount(GEMINI.id, "");
-      const ref = available2 ? available2.entry.credentialRef : credentialRef19(GEMINI.defaultCredentialRef);
-      await ctx.credentials.set(credentialRef19(ref), value);
+      const ref = available2 ? available2.entry.credentialRef : credentialRef20(GEMINI.defaultCredentialRef);
+      await ctx.credentials.set(credentialRef20(ref), value);
     },
     ...ctx.logger === void 0 ? {} : { logger: ctx.logger }
+  });
+  const autoclaw = new AutoclawAuth(ctx);
+  const autoclawAdapter = registerAutoclawLlm(ctx, {
+    resolveCredential: createCredentialResolver(
+      { pool, reportAccount: (id) => {
+        if (id !== void 0) reportLedgerAccount(AUTOCLAW.id, id);
+      } },
+      {
+        product: AUTOCLAW,
+        readCredential: async (refName) => {
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
+          if (!resolved) return void 0;
+          try {
+            return JSON.parse(resolved.value);
+          } catch {
+            return void 0;
+          }
+        },
+        fallback: { kind: "ref", refName: AUTOCLAW.defaultCredentialRef },
+        // ⚠️ **必须接**（与 accio 同因）：本工厂的兜底是**固定 ref**
+        //    （`AUTOCLAW_ACCESS_TOKEN`），而 Jet Hub 登录只写
+        //    `AUTOCLAW_ACCOUNT_XXX` ⇒ 池被筛空时它会退到那个**从不被写入**的
+        //    ref，报出误导性的「请先登录」（issue IKJOZ9 的形态）。
+        //    ⚠️ 今天它是**恒不命中的死代码**（`autoclaw-adapter.ts` 不写
+        //    `modelRateLimits` —— `provider-runtime-wiring.spec.ts` 的
+        //    `WRITE_SITE_FILES` 把这一点登记为空并**验证**了「确实没有写点」）。
+        //    保留它是有意的：判据是「兜底形态是否会让池被筛空时报错」，
+        //    而不是「今天有没有标记」。
+        throwIfAllRateLimited: throwIfAllAccountsRateLimited
+      }
+    ),
+    product: AUTOCLAW,
+    // ⚠️⚠️ **必须接 `readImage`**（2026-10-17 审计 P0 修复）。
+    //    `zai_auto-fast` 的 `supportsImage: true` 有实测依据
+    //    （`docs/autoclaw-models.md:42`：AutoClaw 体系内唯一支持图文多模态
+    //    的通道），`resolveModel` 已据此向宿主声明 `['text','image']`
+    //    ⇒ 宿主**不投影**图片、**原样**下发（`dsh-llm/lib/index.js:2311`）。
+    //    ⚠️ **漏了它这条路径恒抛 `UNSUPPORTED_CONTENT`**：声明支持图片却
+    //    必然失败，正是「声明即承诺」被破坏的形态（与 modelscope / opencode
+    //    同约定：不传 `readImage` 时带图请求抛 `UNSUPPORTED_CONTENT`，而不是
+    //    静默丢图让用户以为模型看到了图）。
+    //    ⚠️ 刻意**不接** `readImageRequest` 缩放桥接：智谱侧对单图字节上限
+    //    无实测依据，编一个预算是凭空造数字（同 modelscope 的取舍）。
+    readImage: makeReadImage(ctx)
   });
   const accio = new AccioAuth(ctx);
   const accioAdapter = registerAccioLlm(ctx, {
@@ -85432,7 +88189,7 @@ function apply(ctx, config = {}) {
         //    `AccioCredential` 无充分重叠，故经 `unknown` 转换；运行时安全性由
         //    provider 过滤保证（查询用 `ACCIO.id`，取到的必是 accio 凭据）。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef20(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -85485,7 +88242,7 @@ function apply(ctx, config = {}) {
   const modelscope = new ModelscopeAuth(ctx);
   const modelscopeAdapter = registerModelscopeLlm(ctx, {
     // 单凭据回退 ref：池里没有 modelscope 账号时用它（与其余 provider 同约定）。
-    credentialRef: credentialRef19(MODELSCOPE.defaultCredentialRef),
+    credentialRef: credentialRef20(MODELSCOPE.defaultCredentialRef),
     // ⚠️ 槽序列由**接线层**解析好传进来（适配器不直接读凭据）。
     //    `modelId` 透传：接线层据此过滤「该模型正处于限流窗口」的账号
     //    （与其余 provider 的 `getAvailableAccount` 同语义）。
@@ -85497,7 +88254,7 @@ function apply(ctx, config = {}) {
           const resetAt = entry.modelRateLimits?.[modelId];
           if (typeof resetAt === "number" && resetAt > Date.now()) return void 0;
         }
-        const resolved = await ctx.credentials.resolve(credentialRef19(entry.credentialRef));
+        const resolved = await ctx.credentials.resolve(credentialRef20(entry.credentialRef));
         if (!resolved) return void 0;
         try {
           const parsed = JSON.parse(resolved.value);
@@ -85579,7 +88336,7 @@ function apply(ctx, config = {}) {
   };
   const activeZcodeAccountId = /* @__PURE__ */ new Map();
   const zcodeAdapter = registerZcodeLlm(ctx, {
-    credentialRef: credentialRef19(ZCODE.defaultCredentialRef),
+    credentialRef: credentialRef20(ZCODE.defaultCredentialRef),
     resolveCredential: createCredentialResolver(
       {
         pool,
@@ -85918,7 +88675,7 @@ function apply(ctx, config = {}) {
     opencodeAdapter = registerOpencodeLlm(ctx, {
       identitySlots: async () => listIdentitySlots(
         await Promise.all(pool.listAccountsByProvider(OPENCODE.id).map(async (entry) => {
-          const resolved = await ctx.credentials.resolve(credentialRef19(entry.credentialRef)).catch(() => void 0);
+          const resolved = await ctx.credentials.resolve(credentialRef20(entry.credentialRef)).catch(() => void 0);
           let parsed = {};
           if (resolved !== void 0) {
             try {
@@ -85965,7 +88722,7 @@ function apply(ctx, config = {}) {
     });
     void ensureDefaultAnonymousSlot(
       (entry) => pool.addAccount(entry),
-      (refName, value) => ctx.credentials.set(credentialRef19(refName), value),
+      (refName, value) => ctx.credentials.set(credentialRef20(refName), value),
       () => pool.listAccountsByProvider(OPENCODE.id),
       // ⚠️ 判据是「池里有没有匿名条目」而不是「有没有账号」：用户若主动
       // 删光了匿名通道，那是明确选择，不该每次启动又塞回来（删除会像失灵）。
@@ -85975,11 +88732,30 @@ function apply(ctx, config = {}) {
     }).catch((error) => {
       ctx.logger.warn(`[codearts-auth] \u521B\u5EFA\u9ED8\u8BA4 OpenCode \u533F\u540D\u901A\u9053\u5931\u8D25\uFF1A${String(error)}`);
     });
-    primeOpencodeCapabilities();
-    refreshOpencodeCapabilities(() => {
-      broadcastCatalogChanged(ctx);
-    });
   }
+  primeModelsDev();
+  refreshModelsDev(() => {
+    broadcastCatalogChanged(ctx);
+  }, {
+    onUpdated: () => {
+      invalidateOpencodeCapabilities();
+    },
+    warn: (message2) => ctx.logger?.warn?.(message2)
+  });
+  const modelsDevTimer = setInterval(() => {
+    refreshModelsDev(() => {
+      broadcastCatalogChanged(ctx);
+    }, {
+      onUpdated: () => {
+        invalidateOpencodeCapabilities();
+      },
+      warn: (message2) => ctx.logger?.warn?.(message2)
+    });
+  }, Math.floor(MODELS_DEV_TTL_MS / 2));
+  modelsDevTimer.unref?.();
+  ctx.effect(() => () => {
+    clearInterval(modelsDevTimer);
+  });
   ctx.effect(() => () => {
     void closeAllProxyDispatchers();
   });
@@ -85989,7 +88765,7 @@ function apply(ctx, config = {}) {
     if (impl === void 0) throw new Error(`unsupported provider: ${provider}`);
     if (entry.credential === void 0) throw new Error("\u51ED\u636E\u672A\u63D0\u4F9B");
     const callContext = {
-      resolveCredential: (refName) => ctx.credentials.resolve(credentialRef19(refName)),
+      resolveCredential: (refName) => ctx.credentials.resolve(credentialRef20(refName)),
       warn: (message2) => ctx.logger?.warn?.(message2),
       accountPool: pool2
     };
@@ -86102,6 +88878,7 @@ function apply(ctx, config = {}) {
     raccoon: pruned(RACCOON.id, raccoonAdapter),
     minimax: pruned(MINIMAX.id, minimaxAdapter),
     minimaxintl: pruned(MINIMAX_INTL.id, minimaxIntlAdapter),
+    autoclaw: pruned(AUTOCLAW.id, autoclawAdapter),
     accio: pruned(ACCIO.id, accioAdapter),
     gemini: pruned(GEMINI.id, geminiAdapter),
     zcode: pruned(ZCODE.id, zcodeAdapter),
@@ -86160,7 +88937,20 @@ function apply(ctx, config = {}) {
     // ⚠️ LobsterAI 的 `clientVersion` 是签到**必填**参数且**动态**解析（带 TTL 缓存）
     //    —— 故传**惰性**解析器，不能先 await 成一个常量（那会让「缓存过期后拿到
     //    新版本」失效）。见 `ProviderCreditsDeps.lobsteraiClientVersion`。
-    lobsteraiClientVersion: () => lobsterai.resolveClientVersion()
+    lobsteraiClientVersion: () => lobsterai.resolveClientVersion(),
+    // ⚠️⚠️ **MiniMax 国际站的 XFF 必须在这里也接上**（真实缺陷，2026-10-17 审计打穿）。
+    //
+    // 本文件与 `jet-hub-rpc.ts` 是**两个独立的 `createProviderCredits` 调用**
+    //（上面那段注释正是为此而写），而 `ProviderRuntime.credits` 被
+    // `fetchBalanceReading`（本文件 L≈3136）消费 —— 后者是 `balanceCache` 的
+    // **取数原语**：`collectCreditBalances` 命中缓存前会先走它，失败才回落到端点表。
+    //
+    // ⇒ 只接端点表的话，**面板第一次查国际站余额走的正是这条无 XFF 的路径**，
+    //   失败后还要吃满 failureTtl（15s）才可能重试 —— 症状就是「设了 XFF，
+    //   积分行仍然查询失败」。本次只改了一处，正是那份注释警告的形态。
+    //
+    // ⚠️ 惰性读（用户随时可能改设置），不能固化成字符串。
+    minimaxXff: () => pool.minimaxXff()
   });
   const onboardingTable = createProviderOnboarding({ loomy, raccoon });
   const expiryTable = createProviderExpiry();
@@ -86219,6 +89009,7 @@ function apply(ctx, config = {}) {
       // `auths.officeace` 是**同一个对象**，否则守卫用例布在 ctx 上的 spy
       // 收不到本循环的调用（实测症状：`续期没有分派到它自己的实例（实际：无）`）。
       ["officeace", officeaceAuthService],
+      ["autoclaw", autoclaw],
       ["accio", accio],
       // ⚠️ **本 fork 独有**的 provider（上游 rc.11 仍无 modelscope）。
       //    漏加这一行 = 它不出现在注册表里 ⇒ 续期/积分/探测三条链路全部静默失效。
@@ -86309,6 +89100,7 @@ function apply(ctx, config = {}) {
     // OfficeAce（华为 ModelArts MaaS 云端直连）：值是 **auth 服务形状的包装对象**
     //（纯函数集合 + 统一 auth 契约），不是 Service 实例。
     officeace: officeaceAuthService,
+    autoclaw,
     accio,
     // ⚠️ **本 fork 独有**（modelscope，2026-10-16）。漏加 = 客户端把它当
     //    「客户端已登记但宿主没有同名键」⇒ zcode-wiring 的守卫会红，

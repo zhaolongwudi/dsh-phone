@@ -334,7 +334,10 @@ CAPSULE_RENAME_PATCH
 #      渠道功能，得自己用 `_ofm` 工具装 OFM。本段把 OFM 的**发行形态**随 APK 一起部署：
 #
 #        · 源 = `.github/capsule/files/vendor/dsh-our-free-model/`（由 `_ofm` 工作区导出，
-#          已是**打过补丁 B/C/D/E/F/G/H/I/J** 的版本 —— 原样入库即可直接用）
+#          已是**打过补丁 B/C/D/F/J/G** 的版本 —— 原样入库即可直接用）
+#          ⚠️ 2026-10-18 起补丁面缩小：E 已按用户要求下线；**H/I/K 退役**（换补丁 G 的源
+#             到 `dsh-providers-hub@1.8.261017` 后，聚合三态/排序拖动/补偿面板原生已在；
+#             H 的五条、K 的六条中四条锚点在 1.8 上恒 0 次命中，想打也打不上）。
 #        · 只带**运行时必需**文件，刻意**不带**：
 #            - `vendor/channel-pack/src/`（渠道包 197 个 .ts，4.5 MB）⇒ pack.js 的**打包前源码**，
 #              维护期素材（patch-channelpack-port.mjs 用），运行时只用 `pack.js`
@@ -342,7 +345,13 @@ CAPSULE_RENAME_PATCH
 #            - ⚠️ **顶层 `src/` 必须带**（0.9 MB）：`index.js` 顶层 import 它 27 处
 #              （2026-10-17 事故：漏了 src ⇒ 设备上 index.js 加载抛错 ⇒ 插件整个静默
 #              挂载失败 ⇒ 渠道页/胶囊/聚合全消失，而构建与 CI 全绿）—— 见 ④ 的注释
-#          发行现在的体积 = 6.4 MB（含顶层 src，不含 channel-pack/src）。
+#            - ⚠️ **`vendor/jet-hub-ui/` 要带**（0.6 MB）：它是**补丁 G 的源**（老 Jet Hub
+#              客户端产物 + 溯源 NOTICE），随 OFM 走 ⇒ 任何拿到 OFM 安装副本的机器都能
+#              重放 G，不再依赖 `_ofm/` 本地素材或设备上那份已退役的 dsh-providers-hub。
+#              它不是运行时依赖，与上面要清除的渠道包 `scripts/`、`tsconfig.json`
+#              （构建期一次性素材）性质不同，故保留；一致性校验见
+#              `_ofm/check-jet-hub-source.mjs`（源 ↔ 产物 ↔ 三处副本）。
+#          发行现在的体积 ≈ 7.0 MB（含顶层 src 与 jet-hub-ui，不含 channel-pack/src）。
 #        · 为什么放 `files/`（而非 `overrides/`）：它是**全新增路径**，由 §1.5 门禁保证
 #          不会静默覆盖上游文件。
 #
@@ -480,6 +489,9 @@ const NEED = [
   'cordis.patch.yml', 'LICENSE', 'src',
   'vendor/channel-pack/pack.js', 'vendor/channel-pack/qoder-auth-wasm.wasm',
   'vendor/channel-pack/locale', 'vendor/channel-pack/package.json',
+  // ⚠️ 2026-10-18 加：补丁 G 的**源**随 OFM 走（见段头说明）。断言它必须存在，
+  //    防「导出时漏掉」⇒ 换了机器/目录就再也打不上补丁 G，而现象只在装包后出现。
+  'vendor/jet-hub-ui/jet-hub.js', 'vendor/jet-hub-ui/NOTICE.md',
 ];
 for (const rel of NEED) {
   const p = 'vendor/dsh-our-free-model/' + rel;

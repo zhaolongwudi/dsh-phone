@@ -59,8 +59,8 @@ function viaRawProxy(inner) {
 export const DEFAULT_MANIFEST_SOURCES = [
   `https://raw.githubusercontent.com/${REPO}/main/feed/manifest.json`,
   `https://cdn.jsdelivr.net/gh/${REPO}@main/feed/manifest.json`,
+  `https://gcore.jsdelivr.net/gh/${REPO}@main/feed/manifest.json`,
   viaRawProxy(`${REPO}/main/feed/manifest.json`),
-  `https://raw.githubusercontent.com/${REPO}/master/feed/manifest.json`,
 ]
 
 /**
@@ -257,12 +257,88 @@ export function fileUrlOf(manifestUrl, manifest, relativePath) {
   return new URL(manifest.base + relativePath.split('/').map(encodeURIComponent).join('/'), manifestUrl).href
 }
 
+/** Git pkt-line lengths count bytes, including UTF-8 ref names. */
+export function parseUploadPackRefs(body) {
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body)
+  const refs = new Map()
+  let offset = 0
+  let ended = false
+  while (offset < bytes.length) {
+    const header = bytes.subarray(offset, offset + 4).toString('latin1')
+    if (!/^[0-9a-fA-F]{4}$/.test(header)) throw new Error('invalid ref advertisement packet')
+    const length = Number.parseInt(header, 16)
+    if (length <= 2) {
+      offset += 4
+      ended = offset === bytes.length && (length === 0 || length === 2)
+      continue
+    }
+    ended = false
+    if (length < 4 || offset + length > bytes.length) throw new Error('truncated ref advertisement packet')
+    const payload = bytes.subarray(offset + 4, offset + length).toString('utf8').split('\0')[0]
+    const match = /^([a-f0-9]{40}) ([^\s]+)\n?$/.exec(payload)
+    if (match !== null) refs.set(match[2], match[1])
+    offset += length
+  }
+  if (!ended) throw new Error('incomplete ref advertisement packet sequence')
+  return refs
+}
+
+async function resolveViaApi(ref, fetchImpl, signal) {
+  const response = await fetchImpl(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`, {
+    redirect: 'error', signal,
+    headers: { accept: 'application/vnd.github.sha', 'user-agent': 'our-free-model-updater' },
+  })
+  if (!response.ok) {
+    const remaining = response.headers?.get('x-ratelimit-remaining')
+    const limited = response.status === 429 || (response.status === 403 && remaining === '0')
+    const diagnostics = ['x-ratelimit-remaining', 'x-ratelimit-reset', 'retry-after'].flatMap(name => {
+      const value = response.headers?.get(name)
+      return value !== null && /^\d{1,16}$/.test(value) ? [`${name}=${value}`] : []
+    })
+    throw new Error(`HTTP ${response.status}${limited ? '; GitHub API rate limit exceeded' : ''}${diagnostics.length ? '; ' + diagnostics.join('; ') : ''}`)
+  }
+  const text = (await response.text()).trim()
+  if (text.length > MAX_MANIFEST_BYTES) throw new Error('snapshot resolution response too large')
+  const sha = /^[a-f0-9]{40}$/.test(text) ? text : JSON.parse(text)?.sha
+  if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/.test(sha)) throw new Error('snapshot resolution did not return a full commit SHA')
+  return sha
+}
+
+async function resolveViaRefAdvertisement(ref, fetchImpl, signal) {
+  const response = await fetchImpl(`https://github.com/${REPO}/info/refs?service=git-upload-pack`, {
+    redirect: 'error', signal,
+    headers: { accept: 'application/x-git-upload-pack-advertisement', 'user-agent': 'our-free-model-updater' },
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const body = Buffer.from(await response.arrayBuffer())
+  if (body.length > MAX_MANIFEST_BYTES * 8) throw new Error('ref advertisement too large')
+  const refs = parseUploadPackRefs(body)
+  for (const name of [`refs/heads/${ref}`, `refs/tags/${ref}^{}`, `refs/tags/${ref}`, ...(ref === 'HEAD' ? ['HEAD'] : [])]) {
+    if (refs.has(name)) return refs.get(name)
+  }
+  throw new Error(`no full commit SHA for ${ref} in ref advertisement`)
+}
+
+async function resolveViaCommitFeed(ref, fetchImpl, signal) {
+  const response = await fetchImpl(`https://github.com/${REPO}/commits/${encodeURIComponent(ref)}.atom`, {
+    redirect: 'error', signal,
+    headers: { accept: 'application/atom+xml', 'user-agent': 'our-free-model-updater' },
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const body = await response.text()
+  if (Buffer.byteLength(body) > MAX_MANIFEST_BYTES * 8) throw new Error('commit feed too large')
+  const entry = /<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/.exec(body)
+  const match = entry && /<id>\s*tag:github\.com,2008:Grit::Commit\/([a-f0-9]{40})\s*<\/id>/.exec(entry[1])
+  if (!match) throw new Error('commit feed carried no full commit SHA')
+  return match[1]
+}
+
 /** Pin an official discovery URL without changing the signed manifest format.
  *  A resolution is reused across mirrors in this check, so a moving branch
  *  cannot select different snapshots when raw fails and the CDN takes over.
  *  Custom/local sources and already immutable SHA URLs retain their semantics.
  *  The resolver supplies a location, never authority to install its contents. */
-async function snapshotManifestSource(source, fetchImpl, signal, revisions) {
+async function snapshotManifestSource(source, fetchImpl, signal, revisions, resolverTimeoutMs) {
   const url = new URL(source)
   if (url.protocol !== 'https:' || url.port || url.username || url.password) return source
   const rawPrefix = `/${REPO}/`
@@ -273,7 +349,7 @@ async function snapshotManifestSource(source, fetchImpl, signal, revisions) {
   // as the direct source — never left as a mutable branch.
   const proxiedRawPrefix = `/https://raw.githubusercontent.com/${REPO}/`
   const prefix = url.hostname === 'raw.githubusercontent.com' ? rawPrefix
-    : url.hostname === 'cdn.jsdelivr.net' ? cdnPrefix
+    : ['cdn.jsdelivr.net', 'gcore.jsdelivr.net'].includes(url.hostname) ? cdnPrefix
       : url.hostname === 'gh-proxy.com' ? proxiedRawPrefix : null
   if (prefix === null || !url.pathname.startsWith(prefix)) return source
   const match = /^([^/]+)\/feed\/manifest\.json$/.exec(url.pathname.slice(prefix.length))
@@ -283,26 +359,29 @@ async function snapshotManifestSource(source, fetchImpl, signal, revisions) {
   // Never insert arbitrary URL/path syntax in a resolver request.
   if (!/^[A-Za-z0-9._-]+$/.test(ref)) throw new Error('unsupported update source ref')
   let revision = revisions.get(ref)
+  if (revision instanceof Error) throw revision
   if (revision === undefined) {
-    const response = await fetchImpl(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`, {
-      redirect: 'error', signal,
-      // `application/vnd.github.sha` answers with the bare 40-character SHA. The
-      // default JSON envelope carries the commit's full patch list, and a merge
-      // that touched hundreds of files pushes that document past
-      // MAX_MANIFEST_BYTES — for a payload whose only consumed field is `.sha`
-      // — which failed every update check against exactly the releases a big
-      // merge produced (v2.1.0's own merge commit). The JSON spelling stays as
-      // a fallback for a hop that rewrote the Accept header.
-      headers: { accept: 'application/vnd.github.sha', 'user-agent': 'our-free-model-updater' },
-    })
-    if (!response.ok) throw new Error(`snapshot resolution failed for ${ref}: HTTP ${response.status}`)
-    const text = (await response.text()).trim()
-    if (text.length > MAX_MANIFEST_BYTES) throw new Error('snapshot resolution response too large')
-    const sha = /^[a-f0-9]{40}$/.test(text) ? text : JSON.parse(text)?.sha
-    if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/.test(sha)) {
-      throw new Error(`snapshot resolution did not return a full commit SHA for ${ref}`)
+    const failures = []
+    for (const [name, resolve] of [['api', resolveViaApi], ['refs', resolveViaRefAdvertisement], ['feed', resolveViaCommitFeed]]) {
+      try {
+        // Leave time for the remaining resolvers and the signed manifest even
+        // when one official endpoint accepts a connection but never responds.
+        const timeout = AbortSignal.timeout(resolverTimeoutMs)
+        const routeSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
+        revision = await resolve(ref, fetchImpl, routeSignal)
+        break
+      } catch (error) {
+        failures.push(`${name}: ${error?.message ?? error}`)
+        if (signal?.aborted) break
+      }
     }
-    revision = sha
+    if (revision === undefined) {
+      const error = new Error(`snapshot resolution failed for ${ref} (${failures.join('; ')})`)
+      // An exhausted deadline gets another budget on the next mirror. A
+      // completed failed lookup is shared so mirrors do not repeat API limits.
+      if (!signal?.aborted) revisions.set(ref, error)
+      throw error
+    }
     revisions.set(ref, revision)
   }
   url.pathname = `${prefix}${revision}/feed/manifest.json`
@@ -329,7 +408,7 @@ export async function downloadManifest(sources, { timeoutMs = 15000, fetchImpl =
     try {
       // One deadline covers resolution, manifest headers and body for this leg.
       const signal = AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined
-      const snapshot = await snapshotManifestSource(source, fetchImpl, signal, revisions)
+      const snapshot = await snapshotManifestSource(source, fetchImpl, signal, revisions, Math.max(1, Math.min(3000, Math.floor(timeoutMs / 4))))
       const response = await fetchImpl(bustCdnCache(snapshot), {
         redirect: 'error',
         headers: { accept: 'application/json' },
@@ -467,7 +546,7 @@ export function verifyStaged(stageDir, manifest) {
  * the new release dropped" would delete the pack's readiness records out from
  * under the harness's bundle validation on the first in-app upgrade.
  */
-const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules', 'catalog', 'worker', 'vendor']
+const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules', 'catalog', 'worker', 'vendor', 'tsconfig.json']
 // Actual published runtime assets must participate in backup and rollback,
 // including when an upgrade crosses the 1.x/2.x boundary. Keep vendor source
 // trees protected; package.json is overwritten during installation, so it
@@ -608,9 +687,7 @@ export function restoreBackup(backupDir, pkgDir) {
     // Copy loop must survive a locked file: attempting every entry keeps the
     // restore as complete as this machine allows instead of crashing halfway.
     try {
-      const target = path.join(pkgDir, ...rel.split('/'))
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.copyFileSync(path.join(backupDir, ...rel.split('/')), target)
+      copyIntoPackage(path.join(backupDir, ...rel.split('/')), path.join(pkgDir, ...rel.split('/')))
     } catch (error) { failures.push(`${rel} (${error?.message ?? error})`) }
   }
   // Restore first. Deleting every installed file before copying made a denied
@@ -624,6 +701,27 @@ export function restoreBackup(backupDir, pkgDir) {
     verifySnapshot(pkgDir, snapshot)
   } catch (error) { failures.push(String(error?.message ?? error)) }
   if (failures.length > 0) throw new Error(`rollback incomplete: ${failures.slice(0, 3).join('; ')}${failures.length > 3 ? ` +${failures.length - 3} more` : ''}`)
+}
+
+function copyIntoPackage(source, target) {
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  try {
+    fs.copyFileSync(source, target)
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) throw error
+    const stat = fs.statSync(target, { throwIfNoEntry: false })
+    if (!stat?.isFile()) throw error
+    try { fs.chmodSync(target, stat.mode | 0o200) } catch { throw error }
+    try {
+      fs.copyFileSync(source, target)
+    } catch (retryError) {
+      try { fs.chmodSync(target, stat.mode) } catch (modeError) {
+        throw new Error(`${retryError?.message ?? retryError}; restoring file permissions failed (${modeError?.message ?? modeError})`, { cause: retryError })
+      }
+      throw retryError
+    }
+    fs.chmodSync(target, stat.mode)
+  }
 }
 
 /** Windows can transiently refuse a rename while a file is scanned; retry briefly. */
@@ -837,7 +935,7 @@ export class PluginUpdater {
     this.applying = true
     upgradeLocks.add(this.deps.pkgDir)
     const previous = this.currentVersion()
-    let targetVersion = version ?? ''
+    let targetVersion = version ?? this.latest?.version ?? ''
     let state
     let installed = false
     let activated = false
