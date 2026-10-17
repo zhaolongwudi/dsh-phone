@@ -59,24 +59,53 @@ jobs:
             exit 0
           fi
 
-          # 合并冲突兜底：README.md 的下载区块是本仓库自动生成的，
-          # 可安全改用上游版本并重建区块；其余文件冲突必须人工处理。
+          # 合并冲突兜底（2026-10-17 重写）。两类**已知**冲突可自动处理，其余一律中止。
+          #
+          # ① README.md：⚠️ **保留我方**（`--ours`），只刷新自动生成的下载区块。
+          #    实测依据：我方 README 是**精编版**（3.5 KB：这是什么 / 快速开始 /
+          #    深入了解 / 致谢与上游项目），而上游的是长文档（22 KB）——
+          #    原实现 `--theirs` 会把我方那 47 行独有内容整份换掉（静默丢文档）。
+          #    下载区块由 `.github/scripts/apk-link.py` 维护，本就该自动重建。
+          #    若哪天要改为采纳上游文档，把这里的 `--ours` 换成 `--theirs` 即可。
+          # ② `vendor/dsh-codearts-auth/**` 的 **modify/delete**：本仓库在 `a586fdb6`
+          #    里**有意删除**了 6 个「已被 rc.11 淘汰的孤儿模块」，而上游那条线仍在改它们。
+          #    功能已由 capsule 的 `src/zcode-entitlements.ts` 承接（apply.sh §4 有断言）
+          #    ⇒ 这类冲突**保留删除**。⚠️ 白名单只到该前缀，且逐个核对「在本仓库 HEAD 里
+          #    确实不存在」，不满足即中止（不猜）。
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
-          echo "冲突文件：$CONFLICTS"
-          if [ "$CONFLICTS" = "README.md" ]; then
-            git checkout --theirs README.md
+          echo "冲突文件："
+          echo "$CONFLICTS" | sed 's/^/  - /'
+          OTHER=$(echo "$CONFLICTS" | grep -v '^README\.md$' | grep -v '^vendor/dsh-codearts-auth/' || true)
+          if [ -n "$OTHER" ]; then
+            git merge --abort || true
+            echo "::error::与上游存在**未知类**冲突，需人工处理（不自动猜）："
+            echo "$OTHER"
+            exit 1
+          fi
+
+          if echo "$CONFLICTS" | grep -q '^README\.md$'; then
+            echo "  README.md：保留我方版本，只刷新下载区块"
+            git checkout --ours README.md
             TAG=$(gh api repos/zhaolongwudi/dsh-phone/releases/latest --jq .tag_name 2>/dev/null || true)
             python3 .github/scripts/apk-link.py README.md "$TAG"
             git add README.md
-            # 同上恢复胶囊 workflow + 应用外挂。
-            cp .github/capsule/build-apk.yml .github/workflows/build-apk.yml
-            bash .github/capsule/apply.sh
-            git add .github/workflows/build-apk.yml
-            git commit --no-edit
-            git push origin main
-            gh workflow run build-apk.yml
-          else
-            git merge --abort || true
-            echo "::error::与上游存在非 README 冲突，需人工处理：$CONFLICTS"
-            exit 1
           fi
+
+          for f in $(echo "$CONFLICTS" | grep '^vendor/dsh-codearts-auth/' || true); do
+            if git cat-file -e "HEAD:$f" 2>/dev/null; then
+              git merge --abort || true
+              echo "::error::$f 在本仓库 HEAD 里仍存在 —— 不属于「已删除的孤儿模块」，拒绝自动解决"
+              exit 1
+            fi
+            echo "  保留删除（孤儿模块，功能已由 capsule 的 zcode-entitlements.ts 承接）：$f"
+            git rm -q --ignore-unmatch "$f"
+          done
+
+          # 与成功路径同样的收尾：恢复胶囊 workflow + 跑一遍 apply.sh（顺带验证
+          # 合并后胶囊的锚点仍然成立），然后提交、推送、触发构建。
+          cp .github/capsule/build-apk.yml .github/workflows/build-apk.yml
+          bash .github/capsule/apply.sh
+          git add .github/workflows/build-apk.yml
+          git commit --no-edit
+          git push origin main
+          gh workflow run build-apk.yml
