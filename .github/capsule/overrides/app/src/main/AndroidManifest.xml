@@ -41,6 +41,12 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <queries>
+        <!-- ⚠️ 上游 jwoo1982217-eng/dsh-phone@7f55f00c（2026-10-16「同步安卓 0.2.1」）新增：
+             TTS 服务可见性声明，供新增的 MediaSpeech / MediaWave（语音播报）在 Android 11+
+             的包可见性规则下找到系统 TTS。**整份覆盖会静默遮蔽上游新增项** —— 故这里必须
+             跟随上游同步（apply.sh §2.7 的门禁会在漏掉时报错，但预置可避免一次红构建）。
+             位置与上游一致（`<queries>` 首个子项），便于日后与上游逐行对照。 -->
+        <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
         <package android:name="com.termux" />
         <package android:name="moe.shizuku.privileged.api" />
         <package android:name="com.reqable.android" />

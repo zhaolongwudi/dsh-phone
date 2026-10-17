@@ -171,6 +171,42 @@ jobs:
           cd ..
           python3 scripts/build-assets.py
           ls -l app/src/main/assets/ | head
+          # ⚠️⚠️ **部署侧硬门禁**（2026-10-17 事故固化，配套 apply.sh §2.9）：
+          #    build-assets.py 的 `copy_bundle` 用**共用 entries 白名单**决定打包内容，
+          #    而 §2.9 的 NEED 只查「仓库导出目录」（`.github/capsule/files/vendor/...`）
+          #    在不在 —— 白名单漏一项时 NEED 依然全绿，tar 里却真的缺文件：
+          #    build-20261016-1919 / -2013 两个发布的 `dsh-tree.tar` 都缺 OFM 顶层 `src/`，
+          #    而 `index.js` 顶层 `import './src/...'`（27 处）⇒ 装包后 OFM 一加载就抛
+          #    `Cannot find module .../src/adapter.js` ⇒ 插件整体不挂载（用户看到「模型
+          #    插件全没了」），而构建、类型检查、NEED 断言**全绿**，只有真机装包才暴露。
+          #    故这里**不查仓库、只查真正要装进 APK 的那个 tar**；判据是不变量：
+          #    「凡打包了 dsh-our-free-model 的 tar，必须同时带它的运行时三件套」。
+          if [ -f .github/capsule/DISABLED ]; then
+            echo "::warning::纯净构建（DISABLED）：出厂不内嵌 OFM，跳过部署侧门禁。"
+          else
+            for TAR in app/src/main/assets/dsh-tree.tar app/src/main/assets/dsh-home.tar; do
+              test -f "$TAR" || { echo "::error::找不到 $TAR —— 组装步骤未产出预期资源"; exit 1; }
+              tar -tf "$TAR" > "$RUNNER_TEMP/tar-list.txt"
+              if grep -q 'dsh-our-free-model/index\.js$' "$RUNNER_TEMP/tar-list.txt"; then
+                MISSING=''
+                # ⚠️ 判据用**后缀锚定**：两个 tar 的路径前缀不同
+                #    （tree = `node_modules/…`；home = `profiles/phone/node_modules/…`），
+                #    写死整行（grep -x）会恒不命中 —— 本门禁自己的反向验证抓过这个错。
+                for NEEDED in 'src/adapter.js' 'client.js' 'vendor/channel-pack/pack.js'; do
+                  grep -q "dsh-our-free-model/$NEEDED\$" "$RUNNER_TEMP/tar-list.txt" \
+                    || MISSING="$MISSING dsh-our-free-model/$NEEDED"
+                done
+                if [ -n "$MISSING" ]; then
+                  echo "::error::$TAR 打包了 dsh-our-free-model 却缺运行时文件：$MISSING"
+                  echo "::error::根因通常是 apply.sh §2.9 的 copy_bundle 白名单漏项（NEED 只查仓库，查不到这里）。"
+                  exit 1
+                fi
+                echo "  ✓ $TAR：OFM 运行时三件套齐备（src/adapter.js / client.js / vendor/channel-pack/pack.js）"
+              else
+                echo "::warning::$TAR 未含 dsh-our-free-model（纯上游构建？）"
+              fi
+            done
+          fi
 
       - name: 编译 APK
         # `-I` 引入胶囊的 init script：把 debug 变体的 `android:debuggable` 关掉
