@@ -349,41 +349,29 @@ async function readRemainder(head, signal) {
  * @param {string} options.path - gateway path
  * @param {object} options.body - JSON request body
  * @param {string} options.session - canonical upstream session id
- * @param {string} options.requestId - per-turn request id
- * @param {string} [options.attributionUserAgent] - harness User-Agent merged into the request
+ * @param {string} [options.attributionUserAgent] - kept for the host API; this lane sends the v2 fingerprint UA instead
  * @param {AbortSignal} [options.signal]
  * @param {(payload: string) => void} options.onData - one `data:` payload, in order
  * @returns {Promise<{status:number, headers:Headers}>}
  */
 /**
- * Compose the request User-Agent.
+ * The User-Agent this lane sends.
  *
- * Two independent requirements meet in one header: the harness mandates an
- * attribution User-Agent on every provider request, and the gateway identifies a
- * desktop client by an `opencode/<version>` token (>= 1.17). The gateway tests
- * with a search rather than an anchored match, so one value can satisfy both —
- * verified live against this lane.
+ * ⚠️ v2 指纹（2026-10-14 起）要求这一串**原样单独**出现：形状
+ * `opencode/<channel>/<version>/<client>`、major ≥ 2，且按整串匹配。旧实现
+ * 「归属 UA + `opencode/1.18.x`」的拼接方式现在两处都会踩雷 —— v1 版本号被按名字
+ * 拒掉，任何前后缀又会让整串不再是 v2 客户端形状。
  *
- * Since 2026-10-14 the gate also refuses any User-Agent that contains the
- * versioned token `deepseek-harness/<version>` (case-insensitive, anywhere in the
- * string), which is exactly the attribution this host falls back to when the
- * kernel does not supply one. The attribution is kept, but that spelling is
- * rewritten to `dsh` and a parenthesised URL that repeats it is dropped, so the
- * harness is still named and the lane still opens.
+ * ⇒ 本车道的 UA 就是官方那一串，归属信息不再随行；归属仍保留在其余车道
+ * （channel pack / EAC / Kilo 各自带自己的 UA）。`attributionUserAgent` 因此在本
+ * 车道上不再影响线上字节，参数保留是为了不动宿主 API 与调用方签名。
  */
-const UA_REFUSED = /deepseek[-_]harness/gi
-
-function userAgentWith(attribution) {
-  let agent = typeof attribution === 'string' ? attribution : ''
-  if (attribution !== '' && /deepseek[-_]harness/i.test(agent)) {
-    agent = agent.replace(UA_REFUSED, 'dsh').replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
-  }
-  if (agent === '') return CLIENT_UA
-  return agent.includes('opencode/') ? agent : `${agent} ${CLIENT_UA}`
+function userAgentWith(_attribution) {
+  return CLIENT_UA
 }
 
-export async function postStreamed({ path, body, session, requestId, attributionUserAgent, signal, onData, timeoutMs = 300000 }) {
-  const headers = gatewayHeaders({ session: truncateSession(session), requestId, stream: true })
+export async function postStreamed({ path, body, session, attributionUserAgent, signal, onData, timeoutMs = 300000 }) {
+  const headers = gatewayHeaders({ session: truncateSession(session), stream: true })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   let response
   try {
@@ -522,8 +510,8 @@ function emit(line, onData) {
 }
 
 /** Fetch a small JSON document from the gateway with the fingerprint headers. */
-export async function getJson(path, { session, requestId, attributionUserAgent, signal, timeoutMs = 15000 } = {}) {
-  const headers = gatewayHeaders({ session: truncateSession(session ?? ''), requestId: requestId ?? '', stream: false, accept: 'application/json' })
+export async function getJson(path, { session, attributionUserAgent, signal, timeoutMs = 15000 } = {}) {
+  const headers = gatewayHeaders({ session: truncateSession(session ?? ''), stream: false, accept: 'application/json' })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)

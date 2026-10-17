@@ -9,7 +9,7 @@ import { STATE, detectEgress, probeCatalog } from '../probe.js'
 import { CODE, getJson } from '../http.js'
 import { fetchSealedListing } from '../eac.js'
 import { fetchKiloListing } from '../kilo.js'
-import { mintRequestId, sessionForConversation } from '../upstream.js'
+import { sessionForConversation } from '../upstream.js'
 import { createForwardCompletion, publicModelRows } from './completion.js'
 
 const FALLBACK_CATALOG = buildCatalog([
@@ -240,7 +240,6 @@ export function createModelRuntime({
     const started = Date.now()
     const listing = await getJson('/inference/v1/models', {
       session: sessionForConversation('catalog:our-free-model'),
-      requestId: mintRequestId(),
       attributionUserAgent,
       signal: lifetime.signal,
     })

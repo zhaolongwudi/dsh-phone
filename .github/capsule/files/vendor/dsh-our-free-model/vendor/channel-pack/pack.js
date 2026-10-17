@@ -29166,8 +29166,8 @@ ${captureLines}` : capture.stack;
 });
 
 // vendor/channel-pack/src/index.ts
-import { credentialRef as credentialRef17 } from "@deepseek-ai/dsh-credentials";
-import { LlmError as LlmError25 } from "@deepseek-ai/dsh-llm";
+import { credentialRef as credentialRef19 } from "@deepseek-ai/dsh-credentials";
+import { LlmError as LlmError26 } from "@deepseek-ai/dsh-llm";
 import Schema2 from "@deepseek-ai/schemastery";
 
 // vendor/channel-pack/src/llm-adapter.ts
@@ -29496,6 +29496,14 @@ var REF_PREFIX_TO_PROVIDER = [
   // ⚠️ 第 13 个 provider（opencode，2026-10-01）—— 与上面 minimax 同款坑：
   // 漏加会让「恢复备份」认不出 opencode 账号（见上方注释 ②）。
   ["OPENCODE", "opencode"],
+  // ⚠️ **本 fork 独有**的 provider（modelscope，2026-10-16）—— 同款坑第 **五** 次。
+  // 漏加 = `MODELSCOPE_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
+  //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新授权）。
+  //
+  // ⚠️ 前缀取 `MODELSCOPE`（不是旧 fork 反代的 `PROXY_UPSTREAM_MODELSCOPE`）：
+  //    上游整套反代命名空间都不存在，且 `account.create` 生成的账号 ref 恒为
+  //    `${provider.toUpperCase()}_ACCOUNT_${suffix}` —— 两者必须对上，否则本表认不出它。
+  ["MODELSCOPE", "modelscope"],
   // ⚠️ 第 14 个 provider（gemini，2026-10-03）—— 同款坑第 **三** 次。
   // 漏加 = `GEMINI_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
   //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新授权）。
@@ -36966,13 +36974,20 @@ function asRecord(value) {
 }
 function isContentRejection(body) {
   if (body.length === 0) return false;
+  if (isChannelVerificationIllegalBody(body)) return false;
   return /"code"\s*:\s*11140/.test(body) || /request illegal/i.test(body) || /安全审核|safety review/i.test(body);
 }
 var CHANNEL_VERIFICATION_MSG_FIELD = /"m(?:sg|essage)"\s*:\s*"[^"]*conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing/iu;
 var CHANNEL_VERIFICATION_BARE = /conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing/iu;
+var ILLEGAL_CODE = /"code"\s*:\s*"?11128(?![\d.])/iu;
+var ILLEGAL_MSG = /"m(?:sg|essage)"\s*:\s*"[^"]{0,200}?request(?:[\s:_\-\p{Cf}]|\\[nrt])+illegal/iu;
+function isChannelVerificationIllegalBody(body) {
+  return ILLEGAL_CODE.test(body) && ILLEGAL_MSG.test(body);
+}
 function isChannelVerificationRejection(body, status) {
   if (body.length === 0) return false;
   if (CHANNEL_VERIFICATION_MSG_FIELD.test(body)) return true;
+  if (isChannelVerificationIllegalBody(body)) return true;
   if (status !== void 0 && status !== 400 && status !== 403) return false;
   if (/"m(?:sg|essage)"\s*:/.test(body)) return false;
   if (/^\s*\{/.test(body) && /"code"\s*:/.test(body)) return false;
@@ -38102,7 +38117,7 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             channelVerificationStatus = response.status;
             channelVerificationBody = errorText;
             console.warn(
-              `[${this.product.id}] \u8D26\u53F7 ${currentAccountId || "(current)"} \u672A\u901A\u8FC7\u6E20\u9053\u6821\u9A8C\uFF08HTTP ${response.status}\uFF0Ccode 11128 conversation id missing\uFF09\uFF0C\u7EE7\u7EED\u6362\u53F7\uFF08\u4E0D\u5199\u51B7\u5374\uFF09\uFF1A${errorDetail2(errorText).slice(0, 200)}`
+              `[${this.product.id}] \u8D26\u53F7 ${currentAccountId || "(current)"} \u672A\u901A\u8FC7\u6E20\u9053\u6821\u9A8C\uFF08HTTP ${response.status}\uFF0Ccode 11128\uFF09\uFF0C\u7EE7\u7EED\u6362\u53F7\uFF08\u4E0D\u5199\u51B7\u5374\uFF09\uFF1A${errorDetail2(errorText).slice(0, 200)}`
             );
             continue;
           }
@@ -59447,7 +59462,7 @@ var MultiAccountRefreshScheduler = class {
 
 // vendor/channel-pack/src/jet-hub-rpc.ts
 init_login();
-import { credentialRef as credentialRef14 } from "@deepseek-ai/dsh-credentials";
+import { credentialRef as credentialRef16 } from "@deepseek-ai/dsh-credentials";
 
 // vendor/channel-pack/src/auto-adapter.ts
 import { LlmAdapter as LlmAdapter10, LlmError as LlmError14, ReasoningEffortId as ReasoningEffortId10, contentHasImage } from "@deepseek-ai/dsh-llm";
@@ -60477,6 +60492,266 @@ async function fetchTraeCreditBalance(credential, _product, fetcher = fetch) {
     total += pkg.remaining;
   }
   return { total, packages, expiredTotal };
+}
+
+// vendor/channel-pack/src/modelscope-product.ts
+var MODELSCOPE = {
+  id: "modelscope",
+  // ⚠️ 与客户端 PROVIDERS 的 label 逐字一致；长度也刻意控制在不撑破 rail 的
+  // 范围内（该 label 是本表新增里较长的，但仍短于既有最长的
+  // 'WorkBuddy (国际版)' 与 'Gemini Code Assist'）。
+  displayName: "ModelScope (\u9B54\u642D)",
+  baseUrl: "https://api-inference.modelscope.cn/v1",
+  chatPath: "/chat/completions",
+  modelsPath: "/models",
+  // 与本仓库其余 provider 的流式超时常量同档（保守值）。
+  chatHeaderTimeoutMs: 6e4,
+  chunkTimeoutMs: 12e4,
+  catalogTimeoutMs: 15e3,
+  // ⚠️ 余额端点在**另一个 host**且前缀是 `/openapi/`（不是 `/api/`、也不是 `/v1/`）——
+  //    见字段注释里的实测矩阵与「怎么找到它」的留档。
+  balanceUrl: "https://www.modelscope.cn/openapi/v1/magicubes/balance",
+  balanceTimeoutMs: 15e3,
+  defaultCredentialRef: "MODELSCOPE_ACCESS_TOKEN"
+};
+var MODELSCOPE_FALLBACK_MODELS = [
+  // ── DeepSeek 系（仓库实测 1_048_576：officeace-product.ts 的 deepseek-v4.1-flash
+  //    与 loomy-product.ts 的 deepseek-v4-flash-0731 均为该值）──
+  {
+    id: "deepseek-ai/DeepSeek-V4.1-Flash",
+    name: "DeepSeek-V4.1-Flash (\u9B54\u642D)",
+    contextWindow: 1048576,
+    // ⚠️ 视觉能力有实测出处（旧 fork remote-upstream.ts:87-91：
+    // 「modelscope / chatanywhere / deepseek 官方的 deepseek-v4.1-flash
+    //   都有视觉能力（1×1 纯色 PNG 红/蓝/绿全答对）」；2026-10-17 本仓库
+    //   复测 32×32 纯红 PNG → 模型答 `Red`，读图确实生效）。
+    supportsImage: true,
+    // ⚠️⚠️ **只有「关闭思考」是确证的一档**（2026-10-17 真机三档对照，每档 3 次）：
+    //    `none` → reasoning 0/0/0（**稳定为 0**，「关闭」确实生效）；
+    //    而 `medium`（中位数 1462）与 `high`（1734）**低于「不指定」的 1676**，
+    //    差距远小于同档内波动（同档极差 460+）
+    //    ⇒ **`medium`/`high` 被服务端静默忽略**（请求返 200，但不改变思考量）。
+    //    ⚠️ 这正是仓库记过的判据（「能正常请求」≠「档位生效」，必须用服务端
+    //    权威计数证明档位间有**可区分**的差距，见 providers-accio.md §7）。
+    //    ⇒ 只声明确证的一档；给出手感档位会让用户以为能控思考量。
+    efforts: ["none"]
+  },
+  {
+    id: "deepseek-ai/DeepSeek-V4-Pro",
+    name: "DeepSeek-V4-Pro (\u9B54\u642D)",
+    contextWindow: 1048576,
+    // ⚠️ 视觉能力**未实测** ⇒ 按仓库硬约定「声明支持就必须真支持」记 false。
+    //    ⚠️ 注意这与 accio-product.ts 里 DeepSeek V4 Pro 的 `supportsImage:false` 一致。
+    supportsImage: false
+  },
+  {
+    id: "deepseek-ai/DeepSeek-V4-Flash-0731",
+    name: "DeepSeek-V4-Flash-0731 (\u9B54\u642D)",
+    contextWindow: 1048576,
+    // loomy-product.ts:322 的 deepseek-v4-flash-0731 实测值
+    supportsImage: false
+  },
+  {
+    id: "deepseek-ai/DeepSeek-V4-Pro-0813",
+    name: "DeepSeek-V4-Pro-0813 (\u9B54\u642D)",
+    contextWindow: 1048576,
+    supportsImage: false
+  },
+  // ── GLM / 智谱 系（仓库实测 1_048_576：officeace-product.ts:136 的 glm-5.3）──
+  { id: "ZhipuAI/GLM-5.2", name: "GLM-5.2 (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "ZhipuAI/GLM-4.7-Flash", name: "GLM-4.7-Flash (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  // ── MiniMax 系（仓库实测 1_000_000：minimax-product.ts:149/162）──
+  { id: "MiniMax/MiniMax-M3", name: "MiniMax-M3 (\u9B54\u642D)", contextWindow: 1e6, supportsImage: false },
+  // ⚠️⚠️ `M1-80k` 的**名字里就写着 80k** ⇒ 1M 显然是错的，但仓库**无该模型的
+  //    实测值** ⇒ 按「② 无先例」口径给 512_000（保守）。实测成本对用户过高
+  //    （用户 2026-10-17 明示「没实测也不用测了」）。
+  { id: "MiniMax/MiniMax-M1-80k", name: "MiniMax-M1-80k (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  // ── Qwen 系（仓库实测 1_048_576：cline-product.ts:189/198）──
+  { id: "Qwen/Qwen3.8-Flash-Next", name: "Qwen3.8-Flash-Next (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "Qwen/Qwen3.8-27B", name: "Qwen3.8-27B (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "Qwen/Qwen3.5-27B", name: "Qwen3.5-27B (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "Qwen/Qwen3.5-35B-A3B", name: "Qwen3.5-35B-A3B (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "Qwen/Qwen3.5-122B-A10B", name: "Qwen3.5-122B-A10B (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "Qwen/Qwen3.5-397B-A17B", name: "Qwen3.5-397B-A17B (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  // ⚠️ 生图模型：声明 `supportsImage:false` 是**输入**维度（它们接受图片**输出**）。
+  { id: "Qwen/Qwen-Image-Edit", name: "Qwen-Image-Edit (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "MusePublic/Qwen-Image-Edit", name: "Qwen-Image-Edit (\u9B54\u642D\xB7\u955C\u50CF)", contextWindow: 1048576, supportsImage: false },
+  { id: "XGenerationLab/XiYanSQL-QwenCoder-32B-2412", name: "XiYanSQL-QwenCoder-32B-2412 (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  { id: "XGenerationLab/XiYanSQL-QwenCoder-32B-2504", name: "XiYanSQL-QwenCoder-32B-2504 (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  // ── InternVL 系（仓库实测 1_048_576：cline-product.ts 同档口径）──
+  // ⚠️⚠️ `supportsImage: false` 是**诚实标记**，不是「不支持」：InternVL 系列
+  //    以视觉著称，**魔搭侧极可能支持**，但 2026-10-17 **未实测**
+  //    （实测成本对用户过高，用户明示「没实测也不用测了」）。
+  //    ⚠️ 按仓库硬约定「声明支持就必须真支持」+ accio 那轮的教训
+  //    （漏报 false 会让模型对图片**幻觉出答案**：HTTP 200、不报错，比报错危险），
+  //    ⇒ 未实测一律记 false。将来实测通过后再改。
+  { id: "OpenGVLab/InternVL3_5-241B-A28B", name: "InternVL3.5-241B-A28B (\u9B54\u642D)", contextWindow: 1048576, supportsImage: false },
+  // ── ② 无仓库先例：保守占位 512_000（未实测，见表头说明）──
+  { id: "Shanghai_AI_Laboratory/Intern-S1", name: "Intern-S1 (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "Shanghai_AI_Laboratory/Intern-S1-mini", name: "Intern-S1-mini (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "Shanghai_AI_Laboratory/Intern-S2-Preview", name: "Intern-S2-Preview (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "stepfun-ai/Step-3.7-Flash", name: "Step-3.7-Flash (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "stepfun-ai/Step-3.5-Flash", name: "Step-3.5-Flash (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "nex-agi/Nex-N2.5-Pro", name: "Nex-N2.5-Pro (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "nex-agi/Nex-N2.5-mini", name: "Nex-N2.5-mini (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "mistralai/Mistral-Large-Instruct-2407", name: "Mistral-Large-Instruct-2407 (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "PaddlePaddle/ERNIE-4.5-300B-A47B-PT", name: "ERNIE-4.5-300B-A47B (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "PaddlePaddle/ERNIE-4.5-21B-A3B-PT", name: "ERNIE-4.5-21B-A3B (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "PaddlePaddle/ERNIE-4.5-VL-28B-A3B-PT", name: "ERNIE-4.5-VL-28B (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "PaddlePaddle/ERNIE-4.5-0.3B-PT", name: "ERNIE-4.5-0.3B (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "MedAIBase/AntAngelMed", name: "AntAngelMed (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "opencompass/CompassJudger-1-32B-Instruct", name: "CompassJudger-1-32B (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "early-access/EA-29B-A4B", name: "EA-29B-A4B (\u9B54\u642D\xB7\u65E9\u671F\u4F53\u9A8C)", contextWindow: 512e3, supportsImage: false },
+  { id: "meituan-longcat/LongCat-Flash-Lite", name: "LongCat-Flash-Lite (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false },
+  { id: "ACE-Step/acestep-v15-xl-sft", name: "ACE-Step-v15-xl (\u9B54\u642D)", contextWindow: 512e3, supportsImage: false }
+];
+function readableDetail2(body) {
+  const text = body.trim();
+  if (text === "") return "\uFF08\u4E0A\u6E38\u672A\u8FD4\u56DE\u9519\u8BEF\u8BE6\u60C5\uFF09";
+  try {
+    const data = JSON.parse(text);
+    const nested = typeof data.error === "object" && data.error !== null ? data.error.message : data.error;
+    const parts = [data.message, nested, data.msg].filter((v) => typeof v === "string" && v.length > 0);
+    if (parts.length > 0) return parts.join(" ");
+  } catch {
+  }
+  return text.length > 500 ? `${text.slice(0, 500)}\u2026` : text;
+}
+function classifyModelscopeError(status, body, headers) {
+  const retryAfterMs = retryAfterMsFromRecord(headers);
+  const detail = readableDetail2(body);
+  const lower = body.toLowerCase();
+  if (lower.includes("maximum context length") || lower.includes("context length") || lower.includes("context window") || lower.includes("context") && lower.includes("limit") || lower.includes("context_length_exceeded") || lower.includes("reduce the length") || lower.includes("too many tokens") || lower.includes("input tokens exceed")) {
+    return { kind: "context_window", detail };
+  }
+  if (status === 429 || lower.includes("too many requests") || lower.includes("rate limit") || lower.includes("throttl")) {
+    return { kind: "rate_limit", ...retryAfterMs === void 0 ? {} : { retryAfterMs }, detail };
+  }
+  if (status === 402 || lower.includes("insufficient") || lower.includes("quota") || lower.includes("exceed") || lower.includes("balance") || lower.includes("\u9B54\u7C92")) {
+    return { kind: "quota", ...retryAfterMs === void 0 ? {} : { retryAfterMs }, detail };
+  }
+  if (status === 0 || lower.includes("fetch failed") || lower.includes("terminated") || lower.includes("econnreset") || lower.includes("socket hang up") || lower.includes("getaddrinfo") || lower.includes("econnrefused")) {
+    return { kind: "transport", detail };
+  }
+  if (status === 400 || status === 422) return { kind: "invalid_request", detail };
+  if (status === 401 || status === 403) return { kind: "auth", detail };
+  if (status >= 500) return { kind: "server", detail };
+  return { kind: "server", detail };
+}
+
+// vendor/channel-pack/src/modelscope.ts
+function modelscopeCredentialExpiresAtMs(credential) {
+  const raw = credential?.expires_at;
+  if (typeof raw !== "string" || raw.trim().length === 0) return void 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return void 0;
+  return parsed > 1e12 ? parsed : parsed * 1e3;
+}
+function isModelscopeExpired(credential) {
+  const expiresAt = modelscopeCredentialExpiresAtMs(credential);
+  if (expiresAt === void 0) return false;
+  return expiresAt <= Date.now();
+}
+function modelscopeIdentityOf(credential) {
+  return typeof credential?.access_token === "string" ? credential.access_token : "";
+}
+function maskModelscopeKey(key) {
+  if (typeof key !== "string") return "";
+  const trimmed = key.trim();
+  if (!/^ms-[A-Za-z0-9_-]{16,}$/.test(trimmed)) return "";
+  return `${trimmed.slice(0, 3)}\u2026${trimmed.slice(-4)}`;
+}
+function modelscopeHeaders(apiKey, accept = "text/event-stream") {
+  return {
+    "content-type": "application/json",
+    accept,
+    authorization: `Bearer ${apiKey}`
+  };
+}
+function modelscopeChatUrl(product = MODELSCOPE) {
+  return `${product.baseUrl}${product.chatPath}`;
+}
+function modelscopeModelsUrl(product = MODELSCOPE) {
+  return `${product.baseUrl}${product.modelsPath}`;
+}
+function normalizeModelscopeModelId(raw) {
+  return raw.trim();
+}
+
+// vendor/channel-pack/src/modelscope-credits.ts
+function readAmount(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return void 0;
+  return Math.floor(value);
+}
+async function fetchModelscopeBalanceDetailed(credential, product = MODELSCOPE) {
+  const apiKey = credential?.access_token;
+  if (typeof apiKey !== "string" || apiKey.length === 0) {
+    return { balance: null, error: "\u6CA1\u6709\u53EF\u7528\u7684 API Key" };
+  }
+  let response;
+  try {
+    response = await fetch(product.balanceUrl, {
+      method: "GET",
+      headers: {
+        ...modelscopeHeaders(apiKey, "application/json"),
+        referer: "https://www.modelscope.cn/my/overview"
+      },
+      signal: AbortSignal.timeout(product.balanceTimeoutMs)
+    });
+  } catch (error) {
+    const reason = error instanceof Error && error.name === "TimeoutError" ? "\u8BF7\u6C42\u8D85\u65F6" : "\u7F51\u7EDC\u8BF7\u6C42\u5931\u8D25";
+    return { balance: null, error: `\u9B54\u7C92\u4F59\u989D\u67E5\u8BE2\u5931\u8D25\uFF1A${reason}` };
+  }
+  const text = await response.text().catch(() => "");
+  if (response.status === 401) {
+    return { balance: null, error: "API Key \u65E0\u6548\u6216\u5DF2\u5931\u6548\uFF08\u9B54\u642D\u8FD4\u56DE 401\uFF09\uFF0C\u8BF7\u5230 modelscope.cn \u91CD\u65B0\u751F\u6210\u8BBF\u95EE\u4EE4\u724C" };
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return {
+      balance: null,
+      error: `\u9B54\u7C92\u4F59\u989D\u54CD\u5E94\u4E0D\u662F JSON\uFF08HTTP ${response.status}\uFF09\uFF1A${text.slice(0, 120)}`
+    };
+  }
+  if (body.success !== true) {
+    const message2 = typeof body.message === "string" ? body.message : "";
+    const code = typeof body.code === "string" ? body.code : "";
+    const suffix = message2 === "" && code === "" ? "" : `\uFF08${code} ${message2}\uFF09`.trim();
+    return {
+      balance: null,
+      error: `\u9B54\u642D\u672A\u8FD4\u56DE\u9B54\u7C92\u4F59\u989D${suffix}\u3002\u82E5\u8BE5\u8D26\u53F7\u521A\u6CE8\u518C\uFF0C\u53EF\u80FD\u9700\u8981\u5148\u5728 modelscope.cn \u5B8C\u5584\u4E2A\u4EBA\u4FE1\u606F\u5E76\u5B9E\u540D\u8BA4\u8BC1\uFF08\u5E73\u53F0\u89C4\u5219\uFF1A\u9B54\u7C92\u9700\u4E2A\u4EBA\u4FE1\u606F\u5B8C\u5584\u540E\u65B9\u53EF\u4F7F\u7528\uFF09`
+    };
+  }
+  const total = readAmount(body.data?.total_balance);
+  if (total === void 0) {
+    return { balance: null, error: "\u9B54\u642D\u54CD\u5E94\u91CC\u6CA1\u6709 total_balance \u5B57\u6BB5\uFF08\u4E0A\u6E38\u53EF\u80FD\u6539\u7248\uFF09\uFF0C\u65E0\u6CD5\u663E\u793A\u4F59\u989D" };
+  }
+  const available2 = readAmount(body.data?.available_balance);
+  const packages = [{
+    name: "\u9B54\u7C92",
+    total,
+    used: total - (available2 ?? total),
+    remaining: available2 ?? total,
+    unit: "credit",
+    active: true,
+    // ⚠️ 三个时间字段对魔搭**没有意义**（上游不下发任何时间），填空串 = 「不适用」，
+    //    与 trae / raccoon / qoder / lobsterai / gemini / codearts / loomy /
+    //    accio / cline **十家逐一相同**的写法一致。
+    //    ⚠️ **刻意不编造**具体日期：本仓库红线「绝不编造数字」——宁可让 UI 按
+    //    「无周期概念」渲染，也不要写一个看似真实的过期时间。
+    cycleStartTime: "",
+    cycleEndTime: "",
+    expiredTime: ""
+  }];
+  return {
+    balance: {
+      total,
+      packages,
+      expiredTotal: 0
+    }
+  };
 }
 
 // vendor/channel-pack/src/accio-product.ts
@@ -61762,7 +62037,19 @@ var WIRED_EXPIRY_PROVIDERS = Object.freeze([
   //    （订阅的每个积分桶都带 `expiresAt`），折算原语见 `officeaceExpiry`。
   //    ⚠️ 与 accio 同款陷阱：**决定候选表可见性的是这张表、不是
   //    `AGGREGATE_CHANNELS`** —— 只加后者 ⇒ 归一化再对也没用，症状静默。
-  "officeace"
+  "officeace",
+  // ⚠️ **本 fork 独有**（魔搭，2026-10-17，用户明确要求加入）：
+  //    折算原语见 `modelscopeExpiry`，属「**有余额但不下发到期时间**」那一类
+  //    （魔搭余额报文里没有任何时间字段）⇒ 有余额即 `NEVER`、烧光即 `UNUSABLE`。
+  //
+  //    ⚠️⚠️ **代价（用户已知并接受）**：魔粒烧光时**不会被提前剔出轮换** ——
+  //    平台既不下发「配额何时重置」，也没有别的额度端点（`/api/v1/quota/status`
+  //    经实测是**任务奖励**、不是额度）。⇒ 耗尽后仍会被选中并失败一次。
+  //    ⚠️ **不许用「猜一个每日 UTC+8 零点」消除它**：那是凭空造一个上游从未
+  //    承诺的重置时刻（本仓库红线「绝不编造数字」）。
+  //    ⚠️ 与 accio / officeace 同款陷阱：**决定候选表可见性的是这张表、
+  //    不是 `AGGREGATE_CHANNELS`** —— 只加后者等于没接。
+  "modelscope"
 ]);
 var EXPIRY_CACHE_TTL_MS = 6e4;
 function createExpiryProbe(pool, firstModelIdOf, options = {}) {
@@ -61940,6 +62227,15 @@ async function traeExpiry(credential, product, cached2) {
   return sharedPackageExpiry(() => fetchBalanceWithCache(
     cached2,
     () => fetchTraeCreditBalance(credential, product)
+  ));
+}
+async function modelscopeExpiry(credential, product, cached2) {
+  return sharedPackageExpiry(() => fetchBalanceWithCache(
+    cached2,
+    async () => {
+      const result = await fetchModelscopeBalanceDetailed(credential, product);
+      return result.balance;
+    }
   ));
 }
 async function loomyExpiry(credential) {
@@ -64879,6 +65175,63 @@ var PROVIDER_REGISTRY = Object.freeze([
     channel: true
   },
   {
+    id: "modelscope",
+    label: "ModelScope (\u9B54\u642D)",
+    displayName: "ModelScope (\u9B54\u642D)",
+    logoClass: "modelscope",
+    // ⚠️⚠️ **2026-10-17 更正：本条已从 `false` 改为 `true`**（带真实 Key 实测）。
+    //
+    // 上面那段「12 条候选路径全 404 ⇒ 没有额度查询 API」的结论**是错的**，
+    // 错在**前缀**：那批探测只试过 `/api/v1/*` 与 `/v1/*`，而真端点在
+    // **`/openapi/v1/`** ——
+    //
+    //     GET https://www.modelscope.cn/openapi/v1/magicubes/balance
+    //     Authorization: Bearer <ms-…>
+    //     → {"success":true,"data":{"total_balance":281,"available_balance":281,
+    //        "frozen_amount":0}}
+    //
+    // ⚠️ 用错前缀时它落在 SPA catch-all 上（SPA 对**任何**路径都回 200 HTML ——
+    //    本仓库在 accio 记过同款「假 200」），两种表现都会让人误判成「不存在」。
+    //
+    // ⚠️⚠️ **「它是真余额」的判据是实测会随消耗下降**，不是字段名像余额：
+    //    实测 281 → 发 2 次推理（旗舰档每次扣 2 魔粒）→ 277，**恰好 -4**。
+    //    对照组 `/api/v1/quota/status`（API Key 也能读）实测发 3 次推理后
+    //    **逐字节不变** ⇒ 那是**任务奖励**（点赞/分享/绑定云账号），不是余额。
+    //
+    // ⇒ 不需要网页登录态、不需要采集 cookie、不需要起浏览器（三种认证实测：
+    //    API Key 200 / 网页 cookie 200 / 无凭据 401 `InvalidAuthentication`，
+    //    即它**确实在校验凭据**，符合仓库「目录能读 ≠ 凭据有效」的纪律）。
+    //
+    // ⚠️ **与 opencode 的关键差异**（别把两者当同一格）：opencode 的「余额」是
+    // 本地派生的**通道可用性**（零网络）；魔搭是**云侧真读数**，走 `credits` 域的
+    // `fetchBalanceDetailed`（三种失败的用户动作不同，故不用笼统的 `fetchBalance`）。
+    credits: { balance: true, dailyCheckin: false },
+    // ⚠️ 无签到：额度是**每日自动刷新**（每账号 250 魔粒、UTC+8 零点重置，
+    //    旗舰档每次扣 2），**没有「领取」动作、也没有签到 API**。
+    //    宿主侧 credits.claimAll 仍要显式回一句可读错误（见 jet-hub-rpc.ts），
+    //    否则自动签到会把它记成 **failed** 而不是 **inactive**。
+    //
+    // ⚠️⚠️ **登记 `rateLimit: false`（用户要求，2026-10-17）** —— 这**不是**能力缺失，
+    //    是**产品取舍**，两者的区别必须留在注释里：
+    //
+    //    - 能力上：魔搭确实会回 429，本适配器**确实会写** `modelRateLimits`
+    //      （`modelscope-adapter.ts` 的 `modelscopeRetryAfterMs`），接线层也注入了
+    //      `markLimited`（`index.ts`）；
+    //    - 取舍上：用户不要「重测 / 重置」两个按钮，故关掉入口。
+    //
+    //    ⚠️⚠️ **代价（必须如实记录）**：冷却标记**仍会写进池**，只是用户**没法用按钮
+    //    清除它** ⇒ 遇到 429 后只能等它自然过期，或删掉该账号重加。
+    //    ⚠️ 与 loomy / gemini / officeace / accio 的 `rateLimit: false` **不同源**：
+    //    那几家是「拿不到探测材料」（点了必然报「没有探测适配器」），魔搭是
+    //    「探测材料齐全但入口刻意关闭」。**别把它当成漏登记**。
+    //    ⚠️ 前两行那条「不登记 rateLimit：魔搭确实会回 429…」的旧注释已被本条取代。
+    rateLimit: false,
+    // ⚠️ 不登记 accountTest / creditPackages / permanentLock / usesExpiryWindow
+    //    —— 全部省略 = false，与能力实情一致。
+    // ⚠️ 不登记 settingsNamespace：它不在老契约（≤0.1.6）的 namespace 清单里。
+    channel: true
+  },
+  {
     id: "aggregate",
     label: "\u805A\u5408 (\u8DE8\u6E20\u9053)",
     displayName: "\u805A\u5408 (\u8DE8\u6E20\u9053)",
@@ -67313,6 +67666,22 @@ function createProviderCredits(deps = {}) {
       precheckStatus: true
     },
     /**
+     * ModelScope（魔搭）：**本 fork 独有**（2026-10-17 接入魔粒余额）。
+     *
+     * ⚠️⚠️ **这一条推翻了 PR 的核心前提**。PR（及本仓库一度）判定「魔搭没有额度
+     * 查询 API」并把 `credits.balance` 登记为 `false`、还写进了豁免表。**那是错的**：
+     * 真端点是 `GET https://www.modelscope.cn/openapi/v1/magicubes/balance`，
+     * **带 API Key 直接返 200**（实测 281 → 发 2 次推理 → 277，恰好 -4）。
+     * ⇒ 不需要网页登录态、不需要 cookie、不需要起浏览器。
+     *
+     * ⚠️ 用 {@link ProviderCredits.fetchBalanceDetailed}：三种失败的**用户动作**
+     * 完全不同（Key 失效 → 重生成；端点侧拒绝 → 多半是账号未实名，换 Key 无用；
+     * 缺字段 → 上游改版该报「读数格式变了」），压成笼统的「查询失败」会误导。
+     */
+    modelscope: {
+      fetchBalanceDetailed: async (credential) => fetchModelscopeBalanceDetailed(credential, MODELSCOPE)
+    },
+    /**
      * Cline：协议原语自带**具体**原因（含 HTTP 状态码与错误体摘要），
      * 压成「余额查询失败」会丢掉唯一有用的线索。
      *
@@ -69008,6 +69377,277 @@ async function handleOpencodeRpc(ctx, pool, method, payload) {
   }
 }
 
+// vendor/channel-pack/src/modelscope-rpc.ts
+import { credentialRef as credentialRef15 } from "@deepseek-ai/dsh-credentials";
+
+// vendor/channel-pack/src/modelscope-auth.ts
+import { Service as Service11 } from "@deepseek-ai/cordis";
+import { credentialRef as credentialRef14 } from "@deepseek-ai/dsh-credentials";
+var MODELSCOPE_EXPIRY_ACCESSORS = {
+  expiresAtOf: modelscopeCredentialExpiresAtMs,
+  identityOf: modelscopeIdentityOf
+};
+function parseModelscopeCredential(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && typeof parsed.access_token === "string" && parsed.access_token.length > 0 ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+var ModelscopeAuth = class extends Service11 {
+  /** 本实例所属的产品配置。 */
+  product;
+  /** 本实例默认读写的凭据 ref 名称（`MODELSCOPE_ACCESS_TOKEN`）。 */
+  credentialRefName;
+  constructor(ctx, options = {}) {
+    const product = options.product ?? MODELSCOPE;
+    super(ctx, options.serviceName ?? `${product.id}Auth`);
+    this.product = product;
+    this.credentialRefName = product.defaultCredentialRef;
+  }
+  /**
+   * 面板状态：只看**池里有没有该 provider 的凭据**（与其余 provider 的门控
+   * 判据完全一致）。
+   *
+   * ⚠️ 与 AGENTS.md 的「十个 provider 门控判据完全一致：都只看账号池」同款 ——
+   * 本 provider 也**不**为单凭据 ref 开例外（那里早期有过 `extraCredentialRefs`，
+   * 已整体删除）。
+   */
+  async status(pool) {
+    if (pool === void 0) {
+      const resolved = await this.ctx.credentials.resolve(credentialRef14(this.credentialRefName)).catch(() => void 0);
+      if (resolved === void 0) return { configured: false, refreshable: false };
+      const credential = parseModelscopeCredential(resolved.value);
+      if (credential === void 0) return { configured: false, refreshable: false };
+      const expiresAt = modelscopeCredentialExpiresAtMs(credential);
+      return {
+        configured: true,
+        source: "api-key",
+        refreshable: false,
+        ...expiresAt === void 0 ? {} : { expiresAt }
+      };
+    }
+    const entries = pool.listAccountsByProvider(this.product.id);
+    for (const entry of entries) {
+      const credential = await this.readCredential(entry.credentialRef);
+      if (credential === void 0) continue;
+      const expiresAt = modelscopeCredentialExpiresAtMs(credential);
+      return {
+        configured: true,
+        source: "api-key",
+        refreshable: false,
+        ...expiresAt === void 0 ? {} : { expiresAt }
+      };
+    }
+    return { configured: false, refreshable: false };
+  }
+  /**
+   * 单凭据路径的「续期」。
+   *
+   * ⚠️ **这里不发出任何网络请求，也不写凭据** —— 魔搭没有 refresh 端点。
+   * 它只做一次**有效性对账**：凭据不可读时抛可读错误（引导用户在面板重新粘贴），
+   * 可读时静默通过。**绝不返回「续期成功」的假象**（与 Loomy 的
+   * `RefreshTokenExpiredError` 同口径）。
+   */
+  async refresh() {
+    const resolved = await this.ctx.credentials.resolve(credentialRef14(this.credentialRefName)).catch(() => void 0);
+    if (resolved === void 0 || parseModelscopeCredential(resolved.value) === void 0) {
+      throw new Error(
+        `ModelScope\uFF1A\u51ED\u636E ${this.credentialRefName} \u4E0D\u53EF\u7528\u3002\u9B54\u642D\u7684 API Key \u6CA1\u6709\u7EED\u671F\u7AEF\u70B9\uFF0C\u8BF7\u5728 Jet Hub \u7684 ModelScope \u9762\u677F\u91CD\u65B0\u7C98\u8D34\u4E00\u4E2A Key\u3002`
+      );
+    }
+  }
+  /**
+   * 按**凭据 ref** 对账指定账号（RPC `account.refresh` 的分派目标）。
+   *
+   * ⚠️ 签名里的 `pool` / `accountId` **必须接受并透传**给 `syncAccountExpiry`：
+   * 它们是「续期后把新的 `expiresAt` 回写账号池」这条链路的唯一入口
+   * （issue !IKIRTT）。魔搭这边通常没有 `expires_at` 可写，但**接口不能少**
+   * —— `tests/unit/refresh-bootstrap-wiring.spec.ts` 会逐个 provider 扫这条
+   * 不变式，缺参数能编译、类型全绿，但会静默丢回写。
+   *
+   * @param refName  账号的凭据 ref（**不是**默认单凭据 ref）。
+   * @param pool     账号池；提供时才回写 `expiresAt`。
+   * @param accountId 账号 id；提供时免去按凭据身份反查。
+   */
+  async refreshAccountCredential(refName, pool, accountId) {
+    const credential = await this.readCredential(refName);
+    if (credential === void 0) {
+      throw new Error(
+        `ModelScope\uFF1A\u51ED\u636E ${refName} \u4E0D\u53EF\u7528\u6216\u4E0D\u662F\u5408\u6CD5\u7684 API Key \u51ED\u636E\u3002\u8BF7\u5728 Jet Hub \u7684 ModelScope \u9762\u677F\u91CD\u65B0\u7C98\u8D34\u4E00\u4E2A Key\u3002`
+      );
+    }
+    await syncAccountExpiry({
+      pool,
+      provider: this.product.id,
+      credential,
+      accessors: MODELSCOPE_EXPIRY_ACCESSORS,
+      ...accountId === void 0 ? {} : { accountId },
+      tag: "[modelscope]"
+    });
+  }
+  /**
+   * 批量对账（启动首轮 + 每 30 分钟的定时器）。
+   *
+   * ## ⚠️ 三条必须同时满足（见 AGENTS.md 的「续期三件事缺一不可」）
+   *
+   * 1. **不看 `enabled`**：停用账号的凭据同样要保持新鲜。魔搭这里没有网络
+   *    请求，但判据必须写对 —— 否则将来加 refresh 端点即成单向门；
+   * 2. **不过滤 `refreshable`**：那个布尔只是**凭据材料的镜像**，拿它当门禁会把
+   *    一次瞬时失败固化成永久状态（AGENTS.md 的「账号池的 `refreshable` 只是
+   *    凭据材料的镜像」一节）。魔搭的凭据恒 `refreshable:false`，用它会变成
+   *    **一条都进不来**；
+   * 3. **判据用凭据自己的值，不用池里的 `expiresAt`**：池值正是可能陈旧的那份
+   *    数据（`syncAccountExpiry` 的 lead-time 注释）。
+   *
+   * 本 provider 的「跳过」分支**只跳过对账之外的动作**，且每轮仍会调用
+   * `syncAccountExpiry` —— 存量账号的池值即便早已陈旧（例如上一版插件从未
+   * 回写过），也会在第一次运行后被自动更正。
+   */
+  async refreshAll(pool) {
+    if (pool === void 0) return;
+    const entries = pool.listAccountsByProvider(this.product.id);
+    for (const entry of entries) {
+      const credential = await this.readCredential(entry.credentialRef);
+      if (credential === void 0) {
+        this.ctx.logger?.warn?.(
+          `[modelscope] \u8D26\u53F7 ${entry.id} \u7684\u51ED\u636E ${entry.credentialRef} \u4E0D\u53EF\u7528\uFF0C\u8DF3\u8FC7\u5BF9\u8D26`
+        );
+        continue;
+      }
+      await syncAccountExpiry({
+        pool,
+        provider: this.product.id,
+        credential,
+        accessors: MODELSCOPE_EXPIRY_ACCESSORS,
+        accountId: entry.id,
+        current: {
+          ...entry.expiresAt === void 0 ? {} : { expiresAt: entry.expiresAt },
+          refreshable: entry.refreshable
+        },
+        tag: "[modelscope]",
+        warn: (message2) => this.ctx.logger?.warn?.(message2)
+      });
+    }
+  }
+  /** 凭据是否被判定为已失效（供门控与面板用）。 */
+  async checkExpired(pool) {
+    const status = await this.status(pool);
+    if (!status.configured) return true;
+    if (status.expiresAt === void 0) return false;
+    return isModelscopeExpired({ access_token: "", expires_at: String(status.expiresAt) });
+  }
+  /** 读一个 ref 下的凭据（不可用或非 JSON 时返回 undefined）。 */
+  async readCredential(refName) {
+    const resolved = await this.ctx.credentials.resolve(credentialRef14(refName)).catch(() => void 0);
+    if (resolved === void 0) return void 0;
+    return parseModelscopeCredential(resolved.value);
+  }
+};
+var MODELSCOPE_CREDENTIAL_REF = credentialRef14(MODELSCOPE.defaultCredentialRef);
+
+// vendor/channel-pack/src/modelscope-rpc.ts
+var KEY_PATTERN2 = /^ms-[A-Za-z0-9_-]{16,}$/;
+function modelscopeSlotNamesOf(apiKey) {
+  const tail = apiKey.slice(-8);
+  return {
+    id: `${MODELSCOPE.id}-${tail.toLowerCase()}`,
+    // ⚠️ 前缀必须是 `MODELSCOPE` —— `jet-hub-store.ts` 的
+    // `REF_PREFIX_TO_PROVIDER` 按它反推 provider，漏登记会让
+    // `MODELSCOPE_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**。
+    refName: `MODELSCOPE_ACCOUNT_${tail.toUpperCase()}`
+  };
+}
+async function handleModelscopeRpc(ctx, pool, method, payload) {
+  const fail2 = (message2) => ({ ok: false, error: { code: "bad-request", message: message2 } });
+  const done = (value) => ({ ok: true, value });
+  try {
+    switch (method) {
+      case "modelscope.addAccount": {
+        const req = payload ?? {};
+        const apiKey = typeof req.apiKey === "string" ? req.apiKey.trim() : "";
+        if (!KEY_PATTERN2.test(apiKey)) {
+          return fail2(
+            "API Key \u5F62\u72B6\u4E0D\u5BF9\uFF08\u5E94\u4EE5 ms- \u5F00\u5934\u3001\u81F3\u5C11 20 \u4F4D\uFF1B\u53EF\u5728 https://modelscope.cn/my/myaccesstoken \u751F\u6210\uFF09"
+          );
+        }
+        const { id, refName } = modelscopeSlotNamesOf(apiKey);
+        if (pool.listAccountsByProvider(MODELSCOPE.id).some((a) => a.id === id)) {
+          return done({ accountId: id, existed: true });
+        }
+        const nickname = typeof req.nickname === "string" && req.nickname.trim().length > 0 ? req.nickname.trim() : `ModelScope ${apiKey.slice(-6)}`;
+        await ctx.credentials.set(credentialRef15(refName), JSON.stringify({
+          // ⚠️ 字段名必须是 `access_token`（AccountPool 身份反查用，见 modelscope.ts）。
+          access_token: apiKey,
+          nickname
+        }));
+        await pool.addAccount({
+          id,
+          provider: MODELSCOPE.id,
+          nickname,
+          enabled: true,
+          credentialRef: refName,
+          // ⚠️ 魔搭**没有 refresh 端点**（API Key 是静态材料，默认长期有效），
+          // 标 true 会让 UI 显示「可自动续期」——一个永远不会发生的承诺。
+          refreshable: false,
+          createdAt: Date.now()
+        });
+        return done({ accountId: id, existed: false });
+      }
+      case "modelscope.setApiKey": {
+        const req = payload ?? {};
+        if (typeof req.accountId !== "string" || req.accountId.length === 0) {
+          return fail2("\u7F3A\u5C11 accountId");
+        }
+        const apiKey = typeof req.apiKey === "string" ? req.apiKey.trim() : "";
+        if (!KEY_PATTERN2.test(apiKey)) {
+          return fail2(
+            "API Key \u5F62\u72B6\u4E0D\u5BF9\uFF08\u5E94\u4EE5 ms- \u5F00\u5934\u3001\u81F3\u5C11 20 \u4F4D\uFF1B\u53EF\u5728 https://www.modelscope.cn/my/myaccesstoken \u751F\u6210\uFF09"
+          );
+        }
+        const old = pool.listAccountsByProvider(MODELSCOPE.id).find((a) => a.id === req.accountId);
+        if (!old) return fail2(`\u672A\u627E\u5230\u8D26\u53F7 ${req.accountId}`);
+        const { id, refName } = modelscopeSlotNamesOf(apiKey);
+        if (id === req.accountId) {
+          await ctx.credentials.set(credentialRef15(refName), JSON.stringify({
+            access_token: apiKey,
+            // ⚠️ 昵称**沿用旧的**：改 Key 不该顺手把用户起的名字冲掉。
+            nickname: typeof old.nickname === "string" && old.nickname.length > 0 ? old.nickname : `ModelScope ${apiKey.slice(-6)}`
+          }));
+          return done({ accountId: id, masked: maskModelscopeKey(apiKey), renamed: false });
+        }
+        const target = pool.listAccountsByProvider(MODELSCOPE.id).find((a) => a.id === id);
+        if (target) {
+          return fail2(`\u8BE5 API Key \u5DF2\u5BF9\u5E94\u53E6\u4E00\u4E2A\u8D26\u53F7\uFF08${id}\uFF09\uFF0C\u8BF7\u76F4\u63A5\u7F16\u8F91\u90A3\u4E2A\u8D26\u53F7\uFF0C\u907F\u514D\u540C\u4E00 Key \u51FA\u73B0\u4E24\u6B21`);
+        }
+        await ctx.credentials.set(credentialRef15(refName), JSON.stringify({
+          access_token: apiKey,
+          // ⚠️ 昵称**继承旧的**（含用户手改过的），别让改 Key 顺手改名。
+          nickname: typeof old.nickname === "string" && old.nickname.length > 0 ? old.nickname : `ModelScope ${apiKey.slice(-6)}`
+        }));
+        await pool.addAccount({
+          id,
+          provider: MODELSCOPE.id,
+          nickname: typeof old.nickname === "string" && old.nickname.length > 0 ? old.nickname : `ModelScope ${apiKey.slice(-6)}`,
+          // ⚠️ 停用状态**继承**旧的：用户特意关掉的账号不该被改 Key 顺手启用。
+          enabled: old.enabled,
+          credentialRef: refName,
+          // ⚠️ 同 `addAccount`：静态 API Key，没有 refresh 端点 ⇒ 诚实记 false。
+          refreshable: false,
+          createdAt: Date.now()
+        });
+        await pool.removeAccount(req.accountId);
+        return done({ accountId: id, masked: maskModelscopeKey(apiKey), renamed: true });
+      }
+      default:
+        return void 0;
+    }
+  } catch (error) {
+    return fail2(error instanceof Error ? error.message : String(error));
+  }
+}
+
 // vendor/channel-pack/src/badge-preferences.ts
 import { existsSync as existsSync8, mkdirSync as mkdirSync7, readFileSync as readFileSync8, renameSync as renameSync6, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join8 } from "node:path";
@@ -69691,7 +70331,7 @@ async function collectCreditsStatus(accounts, product, deps) {
   for (const entry of accounts) {
     let status = null;
     try {
-      const resolved = await deps.resolve(credentialRef14(entry.credentialRef));
+      const resolved = await deps.resolve(credentialRef16(entry.credentialRef));
       if (resolved !== void 0) {
         const credential = JSON.parse(resolved.value);
         status = await fetchStatus(credential, product);
@@ -69726,7 +70366,7 @@ async function collectClaimResults(accounts, product, deps) {
   for (const entry of accounts) {
     let outcome;
     try {
-      const resolved = await deps.resolve(credentialRef14(entry.credentialRef));
+      const resolved = await deps.resolve(credentialRef16(entry.credentialRef));
       if (resolved === void 0) {
         outcome = { kind: "failed", code: -1, message: "\u51ED\u636E\u672A\u914D\u7F6E" };
       } else {
@@ -69756,7 +70396,7 @@ async function collectClaimResults(accounts, product, deps) {
     results.push({ accountId: entry.id, nickname: entry.nickname, outcome });
     if (deps.afterClaim !== void 0) {
       try {
-        const resolvedForGrowth = await deps.resolve(credentialRef14(entry.credentialRef));
+        const resolvedForGrowth = await deps.resolve(credentialRef16(entry.credentialRef));
         if (resolvedForGrowth !== void 0) {
           const credentialForGrowth = JSON.parse(resolvedForGrowth.value);
           const extra = await deps.afterClaim(
@@ -69805,7 +70445,7 @@ async function collectCreditBalances(accounts, product, deps) {
     }
     if (balance === null) {
       try {
-        const resolved = await deps.resolve(credentialRef14(entry.credentialRef));
+        const resolved = await deps.resolve(credentialRef16(entry.credentialRef));
         if (resolved === void 0) {
           error = "\u51ED\u636E\u672A\u914D\u7F6E";
         } else {
@@ -69966,7 +70606,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     raccoon
   });
   const callContext = {
-    resolveCredential: (refName) => ctx.credentials.resolve(credentialRef14(refName)),
+    resolveCredential: (refName) => ctx.credentials.resolve(credentialRef16(refName)),
     warn: (message2) => ctx.logger?.warn?.(message2),
     accountPool: pool
   };
@@ -70024,6 +70664,18 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     // 池内 `expiresAt` 确实会被写 ⇒ 不属 loomy / zcode 那类豁免。
     // 漏登记的后果是「凭据明明能续，面板却报未登录」（2026-10-12 复审发现）。
     ACCIO.id
+    // ⚠️ **本 fork 独有**（modelscope，2026-10-17 改判）**仍刻意不在本表里**：
+    //    ⚠️ 原注释写「它是 `balance: false`（魔搭没有额度 API）⇒ 积分端点压根不会
+    //    为它走这条链」——**那条已被证伪**：魔搭**有**魔粒余额端点
+    //    （`/openapi/v1/magicubes/balance`，带 API Key 返 200，实测随消耗下降），
+    //    `balance` 已改为 `true` ⇒ **积分端点现在确实会为它触发**。
+    //    ⇒ 仍豁免的依据只剩一条，且比 loomy / zcode 更根本：它的凭据是**长期有效的
+    //    静态 API Key**（`expires_at` 可选、实测默认不过期）⇒ 没有「快过期」，
+    //    自愈链对它无事可做；`refreshAccountCredential` 只做本地有效性对账、
+    //    不发网络请求，调它等于白跑一趟。
+    //    ⚠️ **「余额能读」与「凭据能续」是两件事** —— 正因为余额现在能读了，
+    //    才更需要显式留下这条豁免，否则后人会当成「忘了登记」而补进去。
+    //    显式豁免登记在 `credits-balance-self-heal.spec.ts` 的 `SELF_HEAL_EXEMPT`。
   ]);
   const balanceHealInFlight = /* @__PURE__ */ new Map();
   const refreshAccountByProvider = async (provider, credentialRefName, accountId) => {
@@ -70185,7 +70837,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         }
       })();
       if (own !== void 0) return "yes";
-      const resolved = await ctx.credentials.resolve(credentialRef14(name2)).catch(() => {
+      const resolved = await ctx.credentials.resolve(credentialRef16(name2)).catch(() => {
         readFailed = true;
         return void 0;
       });
@@ -70249,7 +70901,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     if (poolEntryOf(accountId) === void 0) {
       pendingOfficeAceState.delete(accountId);
       try {
-        await ctx.credentials.unset(credentialRef14(landedRef));
+        await ctx.credentials.unset(credentialRef16(landedRef));
         ctx.logger.info(
           `[jet-hub] officeace \u767B\u5F55\u5B8C\u6210\u65F6\u8D26\u53F7\u6761\u76EE ${accountId} \u5DF2\u88AB\u5220\u9664\uFF0C\u5DF2\u56DE\u6536\u521A\u5199\u5165\u7684\u51ED\u636E ${landedRef}\uFF08\u5426\u5219\u5B83\u4F1A\u6210\u4E3A\u6C38\u4E0D\u6E05\u7406\u7684\u5B64\u513F\u51ED\u636E\uFF09`
         );
@@ -70296,7 +70948,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
       }
       if (handedOver && handoverRef !== landedRef) {
         try {
-          await ctx.credentials.unset(credentialRef14(landedRef));
+          await ctx.credentials.unset(credentialRef16(landedRef));
         } catch (error) {
           ctx.logger.warn(
             `[jet-hub] officeace \u91CD\u590D\u8D26\u53F7\uFF1A\u6E05\u91CD\u590D\u51ED\u636E ${landedRef} \u5931\u8D25\uFF08\u65E0\u5BB3\uFF1A\u90A3\u5F20\u5361\u5DF2\u505C\u7528\u3001\u4E0D\u53C2\u4E0E\u9009\u53F7\uFF1B\u53EA\u662F\u5B83\u82E5\u88AB\u7EED\u671F\u4F1A\u767D\u5931\u8D25\u4E00\u6B21\uFF09\uFF1A${String(error)}`
@@ -70449,11 +71101,32 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     }
   });
   async function enrichAccountIdentity(accounts, provider) {
-    if (provider !== ZCODE.id) return [...accounts];
+    if (provider === ZCODE.id) return enrichZcodeIdentity(accounts);
+    if (provider === MODELSCOPE.id) {
+      const out = [];
+      for (const account of accounts) {
+        try {
+          const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
+          if (!resolved) {
+            out.push(account);
+            continue;
+          }
+          const parsed = JSON.parse(resolved.value);
+          const masked = typeof parsed.access_token === "string" ? maskModelscopeKey(parsed.access_token) : "";
+          out.push({ ...account, ...masked === "" ? {} : { modelscopeKeyMask: masked } });
+        } catch {
+          out.push(account);
+        }
+      }
+      return out;
+    }
+    return [...accounts];
+  }
+  async function enrichZcodeIdentity(accounts) {
     const out = [];
     for (const account of accounts) {
       try {
-        const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+        const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
         if (!resolved) {
           out.push(account);
           continue;
@@ -70477,6 +71150,10 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
       const handled = await handleOpencodeRpc(ctx, pool, method, payload);
       if (handled !== void 0) return handled;
     }
+    if (method.startsWith("modelscope.")) {
+      const handled = await handleModelscopeRpc(ctx, pool, method, payload);
+      if (handled !== void 0) return handled;
+    }
     switch (method) {
       case "account.list": {
         const req = payload;
@@ -70487,7 +71164,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         if (req.provider === OFFICEACE.id && accounts.some((a) => a.expiresAt === void 0)) {
           for (const account of accounts) {
             if (account.expiresAt !== void 0) continue;
-            const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef)).catch(() => null);
+            const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef)).catch(() => null);
             if (!resolved) continue;
             let expiresAt = Number.NaN;
             try {
@@ -70522,7 +71199,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             const reason = error instanceof Error ? error.message : String(error);
             throw new Error(`\u65E0\u6CD5\u83B7\u53D6 ${product.displayName} \u767B\u5F55\u5730\u5740\uFF08Host \u7F51\u7EDC\u8BF7\u6C42\u5931\u8D25\uFF09\uFF1A${reason}`);
           }
-          const ref = credentialRef14(refName);
+          const ref = credentialRef16(refName);
           await pool.addAccount({
             id,
             provider: product.id,
@@ -70616,7 +71293,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
               nickname = await fetchQoderUserNickname(credential, product2);
               if (nickname !== void 0 && loginResult.access.length > 0) {
                 const updated = withQoderNickname(credential, nickname);
-                await ctx.credentials.set(credentialRef14(refName), JSON.stringify(updated));
+                await ctx.credentials.set(credentialRef16(refName), JSON.stringify(updated));
               }
             }
             await pool.updateAccount(id, {
@@ -71014,7 +71691,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         const accounts = await pool.listAllAccounts();
         const entry = accounts.find((a) => a.id === req.accountId);
         if (!entry) return { ok: true, value: { done: false } };
-        const ref = credentialRef14(entry.credentialRef);
+        const ref = credentialRef16(entry.credentialRef);
         const resolved = await ctx.credentials.resolve(ref);
         if (!resolved) {
           if (entry.provider === OFFICEACE.id) {
@@ -71145,7 +71822,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         if (account === void 0) {
           return { ok: false, error: { code: "bad-request", message: "\u8D26\u53F7\u4E0D\u5B58\u5728" } };
         }
-        const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+        const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
         if (!resolved) {
           return { ok: false, error: { code: "bad-request", message: "\u51ED\u636E\u672A\u914D\u7F6E" } };
         }
@@ -71225,7 +71902,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         if (account === void 0) {
           return { ok: false, error: { code: "bad-request", message: "\u8D26\u53F7\u4E0D\u5B58\u5728" } };
         }
-        const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+        const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
         if (!resolved) {
           return { ok: false, error: { code: "bad-request", message: "\u51ED\u636E\u672A\u914D\u7F6E" } };
         }
@@ -71404,7 +72081,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           const results = [];
           const outcomes = [];
           for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+            const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
             let accountOutcomes;
             if (!resolved) {
               accountOutcomes = [{ kind: "failed", code: -1, message: "\u51ED\u636E\u672A\u914D\u7F6E" }];
@@ -71494,7 +72171,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         const resolveCredentialForCache = async (accountId) => {
           const entry = accounts.find((a) => a.id === accountId);
           if (entry === void 0) return void 0;
-          const resolved = await ctx.credentials.resolve(credentialRef14(entry.credentialRef));
+          const resolved = await ctx.credentials.resolve(credentialRef16(entry.credentialRef));
           if (resolved === void 0) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -71541,7 +72218,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           const { product } = requireQoderFamily(req.provider);
           const values2 = [];
           for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+            const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
             if (!resolved) {
               values2.push({
                 accountId: account.id,
@@ -71720,7 +72397,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         const accounts = await pool.listAccounts(req.provider);
         const values = [];
         for (const account of accounts) {
-          const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+          const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
           if (!resolved) {
             values.push({
               accountId: account.id,
@@ -71824,7 +72501,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         if (account === void 0) {
           return { ok: false, error: { code: "bad-request", message: `\u8D26\u53F7\u4E0D\u5B58\u5728\uFF1A${req.accountId}` } };
         }
-        const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+        const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
         if (resolved === void 0) {
           return { ok: false, error: { code: "bad-request", message: "\u51ED\u636E\u4E0D\u53EF\u7528\uFF0C\u8BF7\u5148\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7" } };
         }
@@ -71862,7 +72539,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         if (account === void 0) {
           return { ok: false, error: { code: "bad-request", message: `\u8D26\u53F7\u4E0D\u5B58\u5728\uFF1A${req.accountId}` } };
         }
-        const resolved = await ctx.credentials.resolve(credentialRef14(account.credentialRef));
+        const resolved = await ctx.credentials.resolve(credentialRef16(account.credentialRef));
         if (resolved === void 0) {
           return { ok: false, error: { code: "bad-request", message: "\u51ED\u636E\u4E0D\u53EF\u7528\uFF0C\u8BF7\u5148\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7" } };
         }
@@ -72973,7 +73650,7 @@ import { mkdirSync as mkdirSync9, readFileSync as readFileSync10, renameSync as 
 import { randomBytes as randomBytes14 } from "node:crypto";
 import { join as join10 } from "node:path";
 var KEY_FILE = "api-key";
-var KEY_PATTERN2 = /^[A-Za-z0-9_-]{43}$/;
+var KEY_PATTERN3 = /^[A-Za-z0-9_-]{43}$/;
 function loadOrCreateApiKey(home, env = process.env) {
   const configured = env.DSH_OPENAI_GATEWAY_API_KEY?.trim();
   if (configured) return { value: configured, fromEnv: true, path: null };
@@ -72985,7 +73662,7 @@ function loadOrCreateApiKey(home, env = process.env) {
   } catch {
   }
   if (stored) {
-    if (KEY_PATTERN2.test(stored)) return { value: stored, fromEnv: false, path: path3 };
+    if (KEY_PATTERN3.test(stored)) return { value: stored, fromEnv: false, path: path3 };
     throw new Error(
       `\u7F51\u5173\u5BC6\u94A5\u6587\u4EF6\u5185\u5BB9\u5F02\u5E38\uFF08\u4E0D\u662F\u672C\u63D2\u4EF6\u751F\u6210\u7684\u5F62\u6001\uFF09\uFF1A${path3}\u3002\u53EF\u80FD\u662F\u88AB\u624B\u5DE5\u7F16\u8F91\u6216\u88AB\u5176\u5B83\u7A0B\u5E8F\u6539\u5199\uFF1B\u672C\u63D2\u4EF6\u4E0D\u4F1A\u9759\u9ED8\u66F4\u6362\u5B83\uFF0C\u5426\u5219\u5DF2\u914D\u7F6E\u7684\u5BA2\u6237\u7AEF\u4F1A\u5168\u90E8\u5931\u6548\u3002\u5982\u9700\u66F4\u6362\uFF1A\u5220\u9664\u8BE5\u6587\u4EF6\u540E\u91CD\u542F DSH\uFF08\u4F1A\u91CD\u65B0\u751F\u6210\uFF09\uFF0C\u6216\u6539\u7528 DSH_OPENAI_GATEWAY_API_KEY \u73AF\u5883\u53D8\u91CF\u3002`
     );
@@ -72999,7 +73676,7 @@ function loadOrCreateApiKey(home, env = process.env) {
   } catch (error) {
     if (existsSync10(path3)) {
       const existing = readFileSync10(path3, "utf8").trim();
-      if (KEY_PATTERN2.test(existing)) return { value: existing, fromEnv: false, path: path3 };
+      if (KEY_PATTERN3.test(existing)) return { value: existing, fromEnv: false, path: path3 };
     }
     throw error;
   }
@@ -75815,8 +76492,8 @@ function createCredentialResolver(deps, config) {
 }
 
 // vendor/channel-pack/src/minimax-auth.ts
-import { Service as Service11 } from "@deepseek-ai/cordis";
-import { credentialRef as credentialRef15 } from "@deepseek-ai/dsh-credentials";
+import { Service as Service12 } from "@deepseek-ai/cordis";
+import { credentialRef as credentialRef17 } from "@deepseek-ai/dsh-credentials";
 
 // vendor/channel-pack/src/minimax-oauth.ts
 import { createHash as createHash13, randomBytes as randomBytes15 } from "node:crypto";
@@ -76030,7 +76707,7 @@ function parseMinimaxCredential(value) {
     return void 0;
   }
 }
-var MinimaxAuth = class extends Service11 {
+var MinimaxAuth = class extends Service12 {
   constructor(ctx, options = {}) {
     const product = options.product ?? MINIMAX;
     super(ctx, options.serviceName ?? `${product.id}Auth`);
@@ -76088,13 +76765,13 @@ var MinimaxAuth = class extends Service11 {
       ...credential,
       ...options.nickname === void 0 ? {} : { nickname: options.nickname }
     };
-    await this.ctx.credentials.set(credentialRef15(options.refName), JSON.stringify(payload));
+    await this.ctx.credentials.set(credentialRef17(options.refName), JSON.stringify(payload));
     this.lastRefreshError = void 0;
     return { ...credential.account_id === void 0 ? {} : { accountId: credential.account_id } };
   }
   /** 解析默认单凭据。 */
   async resolveDefaultCredential() {
-    const resolved = await this.ctx.credentials.resolve(credentialRef15(this.credentialRefName));
+    const resolved = await this.ctx.credentials.resolve(credentialRef17(this.credentialRefName));
     if (!resolved) return void 0;
     return parseMinimaxCredential(resolved.value);
   }
@@ -76113,7 +76790,7 @@ var MinimaxAuth = class extends Service11 {
         this.fetchImpl,
         this.product
       );
-      await this.ctx.credentials.set(credentialRef15(this.credentialRefName), JSON.stringify(next));
+      await this.ctx.credentials.set(credentialRef17(this.credentialRefName), JSON.stringify(next));
       this.lastRefreshError = void 0;
     } catch (error) {
       const message2 = error instanceof Error ? error.message : String(error);
@@ -76129,7 +76806,7 @@ var MinimaxAuth = class extends Service11 {
    * 也把池值对账（见 `refreshAll` 的注释）。
    */
   async refreshAccountCredential(refName, pool, accountId) {
-    const ref = credentialRef15(refName);
+    const ref = credentialRef17(refName);
     const resolved = await this.ctx.credentials.resolve(ref);
     if (!resolved) throw new Error("\u51ED\u636E\u672A\u914D\u7F6E");
     const credential = parseMinimaxCredential(resolved.value);
@@ -76171,7 +76848,7 @@ var MinimaxAuth = class extends Service11 {
     for (const entry of accounts) {
       if (!entry.refreshable) continue;
       try {
-        const ref = credentialRef15(entry.credentialRef);
+        const ref = credentialRef17(entry.credentialRef);
         const resolved = await this.ctx.credentials.resolve(ref);
         if (!resolved) {
           await pool.updateAccount(entry.id, { refreshable: false });
@@ -79308,9 +79985,1775 @@ function registerAccioLlm(ctx, options) {
   return adapter;
 }
 
+// vendor/channel-pack/src/modelscope-adapter.ts
+import { LlmAdapter as LlmAdapter15, LlmError as LlmError23, ReasoningEffortId as ReasoningEffortId18 } from "@deepseek-ai/dsh-llm";
+
+// vendor/channel-pack/src/modelscope-messages.ts
+function buildModelscopeTools(tools) {
+  if (tools === void 0 || tools.length === 0) return [];
+  return tools.map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      // ⚠️ 空描述**整个省略**（不是发空串）：与 `openai-compat` 同口径。
+      ...typeof tool.description === "string" && tool.description.length > 0 ? { description: tool.description } : {},
+      ...tool.parameters === void 0 ? {} : { parameters: tool.parameters }
+    }
+  }));
+}
+function buildModelscopePayload(input) {
+  return {
+    model: input.model,
+    messages: input.messages,
+    stream: true,
+    tools: buildModelscopeTools(input.tools),
+    ...input.system !== void 0 && input.system.length > 0 ? { system: input.system } : {},
+    ...typeof input.temperature === "number" && Number.isFinite(input.temperature) ? { temperature: input.temperature } : {},
+    ...Number.isSafeInteger(input.maxTokens) && (input.maxTokens ?? 0) > 0 ? { max_tokens: input.maxTokens } : {},
+    ...typeof input.reasoningEffort === "string" && input.reasoningEffort.length > 0 ? { reasoning_effort: input.reasoningEffort } : {}
+  };
+}
+
+// vendor/channel-pack/src/aggregate-adapter.ts
+import { LlmAdapter as LlmAdapter14, LlmError as LlmError22, ProviderRequestId, ReasoningEffortId as ReasoningEffortId17, contentHasImage as contentHasImage2 } from "@deepseek-ai/dsh-llm";
+
+// vendor/channel-pack/src/aggregate-catalog.ts
+function buildVirtualModels(catalogs) {
+  const byKey = /* @__PURE__ */ new Map();
+  for (const [provider, models2] of Object.entries(catalogs)) {
+    for (const model of models2) {
+      if (typeof model?.id !== "string" || model.id.trim().length === 0) continue;
+      const realName = typeof model.name === "string" && model.name.length > 0 ? model.name : model.id;
+      const mapped = canonicalKeyFor(provider, model.id, realName);
+      if (mapped === void 0) continue;
+      const entry = {
+        provider,
+        realId: model.id,
+        realName,
+        price: priceFactorFromName(realName),
+        via: mapped.via
+      };
+      const list = byKey.get(mapped.key);
+      if (list === void 0) byKey.set(mapped.key, [entry]);
+      else list.push(entry);
+    }
+  }
+  const models = [];
+  for (const [key, candidates] of byKey.entries()) {
+    candidates.sort((a, b) => a.provider !== b.provider ? a.provider.localeCompare(b.provider) : a.realId.localeCompare(b.realId));
+    models.push({ key, name: canonicalDisplayName(key), candidates });
+  }
+  models.sort((a, b) => b.candidates.length !== a.candidates.length ? b.candidates.length - a.candidates.length : a.key.localeCompare(b.key));
+  return models;
+}
+
+// vendor/channel-pack/src/aggregate-adapter.ts
+var AGGREGATE_PROVIDER = "aggregate";
+var AGGREGATE_AUTO_MODEL = "auto";
+var AGGREGATE_TTL_MS = 6e4;
+var AGGREGATE_CATALOG_TTL_MS = 6e4;
+var AGGREGATE_FALLBACK_CONTEXT_WINDOW = 2e5;
+var AggregateAdapter = class _AggregateAdapter extends LlmAdapter14 {
+  constructor(ctx, options) {
+    super();
+    this.ctx = ctx;
+    this.options = options;
+  }
+  ctx;
+  options;
+  /** 上次目录读取结果（面板与 listModels 共用一次推导）。 */
+  catalog = [];
+  /** 上次推导时刻（目录缓存的判据）。 */
+  catalogAt = 0;
+  /**
+   * **按虚拟模型**缓存的候选序（键 = 虚拟模型 id）。
+   *
+   * ## 为什么需要它（规格 §9 要求，初版漏实现 ⇒ 死配置）
+   *
+   * `candidatesFor` 会对每个候选渠道 `await probe(...)` —— 那是一次**上游余额
+   * GET**。而 `prepareCall` 是**每请求一次**（`dsh-llm/lib/index.js:1667`），
+   * 于是 `auto` 最坏每轮要打十几次余额查询；而**旧的 `auto` 有 60 秒缓存**
+   * （`auto-adapter.ts` 的 `AUTO_CHOICE_TTL_MS`）⇒ 新主路径反而**严格劣于**旧路径。
+   *
+   * ⚠️ 必须**按模型分别缓存**（规格 §9）：不同虚拟模型的候选表不同，共用一条会让
+   * A 模型的候选序被 B 模型的请求覆盖。
+   * ⚠️ 缓存的是**候选序**，不是「最终选中的渠道」—— 失败切换仍在同一次请求内
+   * 逐个尝试（那是 `dispatch` 的事，与本缓存无关）。
+   * ⚠️ 一分钟内临期时刻不会显著变化，故 60 秒 TTL 不破坏「临期优先」的语义。
+   */
+  choiceCache = /* @__PURE__ */ new Map();
+  /**
+   * 「上次**实际**转发成功的渠道」——按虚拟模型分别记录（P3，供用量徽标显示）。
+   *
+   * ## ⚠️ 语义是**真实历史**，不是预测
+   *
+   * 只在**产出可见内容时**写入（= 这个候选真的成功了）。**不做预测**：
+   * 预测的胜者可能因失败切换而实际未被使用，徽标显示一个错的渠道比不显示更误导。
+   *
+   * ## ⚠️ 纯内存、进程内
+   *
+   * 插件重启即清空 ⇒ 徽标「无历史 ⇒ 不渲染」（规格 §6.3 的 P4）。
+   * ⚠️ **不落盘**：这是展示用的瞬时状态，写盘只会带来无谓的 IO 与陈旧值
+   *（重启后显示一个早已不用的渠道，反而误导）。
+   *
+   * ⚠️ 与 `choiceCache` 的区别：那个缓存的是**候选序**（可预测），
+   * 本表记录的是**实际结果**（已发生）——两者不可互相推导。
+   */
+  activeProviderByModel = /* @__PURE__ */ new Map();
+  /**
+   * 每个候选（`provider\0realId`）的**能力**缓存：窗口 / 档位 / 图片。
+   *
+   * ## 为什么需要它
+   *
+   * 窗口推导（{@link contextWindowFor}）与派发前的能力解析（{@link capabilityOf}）
+   * 问的是**同一件事**，而两者都会被高频调用：
+   * - DSH 的 `buildModelCatalog` 对**目录里每个模型**都调一次 `resolveModelInfo`
+   *   （`dsh-api-session-controller/lib/index.js:506`）⇒ 窗口推导会在用户每次打开
+   *   模型选择器时对全部虚拟模型的全部候选各问一次；
+   * - `prepareCall` 每次请求都会对本次候选逐个解析能力。
+   *
+   * 没有缓存时同一份元数据会被反复解析（对**远端目录**类适配器是本地查表，
+   * 但对目录尚未拉全的适配器会重试拉取）。缓存让两者共用一次结果。
+   *
+   * ## ⚠️ 只缓存**成功**的结果，绝不缓存失败
+   *
+   * 失败时 `capabilityOf` 返回保守默认值（无档位 / 不支持图片 / 无窗口）。
+   * 把「这一次没问出来」缓存 60 秒会把**瞬时**故障固化成单向门 —— 那正是
+   * 本仓库反复修过的缺陷形态（见 `AGENTS.md` 的「`refreshable` 单向门」）。
+   * ⇒ 失败不写缓存，下一次调用照常重试；上游恢复后自动生效。
+   *
+   * ⚠️ 与目录同生命周期：{@link refreshCatalog} 重建目录时清空 —— 目录变了，
+   *    「哪些候选存在」就变了，缓存必须跟着失效。
+   */
+  capabilityCache = /* @__PURE__ */ new Map();
+  /**
+   * 每个虚拟模型（含 `auto`）的**窗口声明值**缓存。
+   *
+   * ⚠️ 判决结果是「候选集的最大值」，是个**纯函数**（同一份目录 + 同一份能力缓存
+   * 必然得到同一个值）⇒ 记忆化不改变语义，只是避免每次 `resolveModel` 都重算。
+   * ⚠️ 同样在 {@link refreshCatalog} 里清空（目录变了 ⇒ 候选集变了 ⇒ 最大值可能变）。
+   */
+  contextWindowCache = /* @__PURE__ */ new Map();
+  providerInfo(provider) {
+    return { id: provider, name: "\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09" };
+  }
+  /**
+   * 该虚拟模型下被**拒绝轮换**的候选集合，键是 `` `${provider}\u0000${realId}` ``。
+   *
+   * ⚠️ 用 `\u0000` 作分隔符（不是 `:` 或 `/`）：provider id 与 realId 里都可能含
+   * 冒号或斜杠（如 `cline-free/deepseek-v4.1-flash`），用它们会**误判**（把
+   * `a/b` + `c` 与 `a` + `b/c` 拼成同一个键）。NUL 在两者里都不可能出现。
+   */
+  rejectedIn(canonicalId) {
+    const table2 = this.options.rejections?.() ?? {};
+    const byProvider = table2[canonicalId];
+    const out = /* @__PURE__ */ new Set();
+    if (byProvider === void 0) return out;
+    for (const [provider, byRealId] of Object.entries(byProvider)) {
+      for (const [realId, flag] of Object.entries(byRealId)) {
+        if (flag === true) out.add(`${provider}\0${realId}`);
+      }
+    }
+    return out;
+  }
+  /**
+   * 该虚拟模型下**实际应被拒绝**的候选集合（**含 D4 的 id 漂移降级**）。
+   *
+   * ## ⚠️ 为什么需要它（规格 §0.3 D4 + §1.9 + §5.1 的成文要求）
+   *
+   * 规格 §5.1 的判据表：
+   * ```
+   * 查 (虚拟模型, provider, realId) 是否有拒绝记录
+   * ├─ 有精确匹配 → 拒绝该候选
+   * ├─ 无精确匹配，但该 (虚拟模型, provider) 下有**任何**拒绝记录
+   * │     且该记录对应的 realId **已不在当前候选中**（id 漂移）
+   * │     → 降级为渠道级拒绝（该虚拟模型下该渠道全部候选都被拒），并记一条 warn
+   * └─ 无记录 → 参与轮换
+   * ```
+   *
+   * ## ⚠️ 不实现它的**真实后果**（规格 §1.9 记录的静默失效）
+   *
+   * `lobsterai` 的候选 id 会随「远端可用 / 兜底」切换：远端是 `deepseek-flash`
+   *（真 V4.1 Flash），兜底表是 `deepseek-v4-flash`（更旧的型号）。
+   * 若拒绝记录只锁 `realId`，**状态一翻转就匹配不上、静默失效** ——
+   * 用户明确拒绝过的候选**悄悄复活**，而他以为还拒着。
+   *
+   * ⚠️ 降级判据是「该记录对应的 realId **已不在当前候选中**」——
+   *    **不是**「没有精确匹配」（那样会把「同渠道的另一个候选没被拒」也降级掉，
+   *    那是过度拒绝，方向相反的错误）。
+   *
+   * @param virtual - 当前的虚拟模型（用来知道该渠道眼下有哪些 realId）
+   * @returns 应拒绝的 `provider\u0000realId` 集合（**已展开为渠道级**，若降级发生）
+   */
+  rejectedFor(virtual) {
+    const table2 = this.options.rejections?.() ?? {};
+    const byProvider = table2[virtual.key];
+    const out = /* @__PURE__ */ new Set();
+    if (byProvider === void 0) return out;
+    for (const [provider, byRealId] of Object.entries(byProvider)) {
+      const currentIds = new Set(
+        virtual.candidates.filter((c) => c.provider === provider).map((c) => c.realId)
+      );
+      let hasExact = false;
+      for (const realId of currentIds) {
+        if (byRealId[realId] === true) {
+          out.add(`${provider}\0${realId}`);
+          hasExact = true;
+        }
+      }
+      if (currentIds.size === 0) continue;
+      if (hasExact) continue;
+      const hasDrifted = Object.entries(byRealId).some(([, flag]) => flag === true);
+      if (!hasDrifted) continue;
+      this.ctx.logger?.warn?.(
+        `[aggregate] ${virtual.key} \u4E0B ${provider} \u7684\u62D2\u7EDD\u8BB0\u5F55\u5DF2\u6F02\u79FB\uFF08\u8BB0\u5F55\u91CC\u7684 realId \u4E0D\u5728\u5F53\u524D\u5019\u9009 ${JSON.stringify([...currentIds])} \u4E2D\uFF09\u21D2 **\u964D\u7EA7\u4E3A\u6E20\u9053\u7EA7\u62D2\u7EDD**\uFF08\u8BE5\u6E20\u9053\u5728\u8FD9\u4E2A\u865A\u62DF\u6A21\u578B\u4E0B\u5168\u90E8\u5019\u9009\u90FD\u88AB\u62D2\uFF09\u3002\u26A0\uFE0F \u82E5\u8FD9\u662F\u8BEF\u5224\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u9875\u300C\u805A\u5408\u300D\u9762\u677F\u7684\u8BE5\u6A21\u578B\u5B50\u5217\u8868\u91CC\u91CD\u65B0\u6253\u5F00\u5B83\uFF08\u90A3\u4F1A**\u6E05\u6389\u8BE5\u6E20\u9053\u7684\u5168\u90E8\u62D2\u7EDD\u8BB0\u5F55**\uFF0C\u542B\u5DF2\u6F02\u79FB\u7684\u65E7 id\uFF0C\u6545\u964D\u7EA7\u968F\u5373\u89E3\u9664\uFF09\u3002`
+      );
+      for (const realId of currentIds) out.add(`${provider}\0${realId}`);
+    }
+    return out;
+  }
+  /**
+   * 清空选型缓存。
+   *
+   * ⚠️ **改了拒绝表之后必须调它**：`choiceCache` 的 TTL 是 60 秒，而面板上的开关
+   * 是「立刻生效」的语义 —— 不清缓存的话，用户在面板上关掉的候选在 60 秒内仍会被
+   * 尝试（用户会以为开关坏了）。RPC 的 `aggregate.setRejected` / `clearRejected`
+   * 负责调用。
+   */
+  clearChoiceCache() {
+    this.choiceCache.clear();
+  }
+  /**
+   * 清空**临期折算缓存**（领取成功后由 RPC 调用）。
+   *
+   * ## ⚠️⚠️ 为什么领取之后必须清（真实缺陷，对抗审计实测证伪，2026-10-07）
+   *
+   * 折算缓存**也缓存 `UNUSABLE`**，而 `zcodeExpiry` 现在把「余额为 0」判成
+   * `UNUSABLE`（修掉「额度已尽仍被 auto 选中」的真实缺陷）。zcode 的每日赠送额度
+   * **要先领取才进 `balances` 桶** ⇒ 「先撞额度尽（写 `UNUSABLE`）→ 去签到 → 立刻用
+   * auto」时，**最长 60 秒内 auto 仍说没有候选**，用户会以为签到没用。
+   *
+   * ⚠️ 已有的两个清理入口（`pool.onAccountAdded` / 拒绝表变更）**都不覆盖领取**。
+   *
+   * ⚠️ 必须清**共享的**那一份探针（装配层 `src/index.ts` 把同一个实例同时给
+   * aggregate 与 auto）—— 只清一份会让 auto 仍看到旧的 `UNUSABLE`。
+   * 故这里清的是注入进来的 `options.expiryProbe`（与 auto 同一个对象）。
+   */
+  clearExpiryCache() {
+    const probe = this.options.expiryProbe;
+    probe?.clear?.();
+  }
+  /**
+   * 「上次**实际**转发成功的渠道」（P3，供用量徽标）。
+   *
+   * ⚠️ **纯内存读、零网络零余额查询** —— 徽标在**门控阶段**就要拿到它
+   *（规格 §6.3 的 P2：重定向必须发生在门控之前），查网络会让外层渲染抖动。
+   *
+   * @param canonicalId - 虚拟模型 id。**省略时返回「最近一次任意虚拟模型的转发渠道」**
+   *   （规格 §8.4：徽标只关心「当前在跑的是哪个渠道」，不必区分模型）。
+   *   实现上「最近一次」取 `Map` 的**最后一个插入项** —— 但 `Map` 的迭代顺序是
+   *   **插入顺序**而非「最近写入顺序」（覆盖已存在的键**不改变**其位置）。
+   *   ⚠️ 故这里**显式维护一个「最近写入」指针**，而不是依赖迭代顺序
+   *   （否则「切回一个之前用过的渠道」时顺序会错，徽标显示旧渠道）。
+   * @returns 渠道 id；无历史时 `null`（调用方据此**不渲染**徽标）。
+   */
+  activeProvider(canonicalId) {
+    if (typeof canonicalId === "string" && canonicalId.length > 0) {
+      return this.activeProviderByModel.get(canonicalId) ?? null;
+    }
+    return this.lastActiveProvider;
+  }
+  /** 最近一次（任意虚拟模型）实际转发成功的渠道；无历史时 `null`。 */
+  lastActiveProvider = null;
+  /**
+   * 「按临期排序」用的候选到期时刻（面板的可选按钮，用户 2026-10-07 选定方案 C）。
+   *
+   * ## ⚠️⚠️ 这是**唯一**会做余额探测的面板端点 —— 且**只在用户显式点击时**调用
+   *
+   * 为什么必须单独一个方法而不是给 `describeCatalog` 加参数：那个方法的契约是
+   * **零余额查询**（规格 §8.3，且有专门用例断言 `expiryProbe` 零调用）。
+   * 面板一打开就打十几次上游请求是不可接受的；而「按临期排序」**必须**探测才知道顺序。
+   * ⇒ 两者分开：默认零探测，用户点按钮才走这里。
+   *
+   * ## 为什么需要它（用户报障）
+   *
+   * 面板标题写「临期优先」，但候选列表来自 `aggregate-catalog.ts` 的
+   * `candidates.sort(...)` —— 那是按 `provider` **字母序**
+   * （用户原话：「codearts 的 4.1 flash 没有显示在最后」）。
+   * ⇒ 标题与列表**矛盾**（面板没说真话）。
+   *
+   * ## 返回形状
+   *
+   * `{ <provider>: expiry }` —— 按渠道去重（同一渠道的多个候选共享一次探测，
+   * 与 `candidatesFor` 的 `seen` 表同一口径，避免重复打上游）。
+   * ⚠️ 探测失败（`UNUSABLE`）也如实返回该值，由客户端决定怎么显示/排序
+   *（`sortCandidatesByExpiry` 把非有限值排最后）。
+   *
+   * ⚠️ **只读**：不改拒绝表、不写缓存、不落盘。
+   *
+   * @param force - `true` 时绕过探针自己的折算缓存（`EXPIRY_CACHE_TTL_MS` 60 秒）。
+   *   面板的「每 5 分钟自动重探」与用户手动点击都传 `true`（那两种情形要的是**新鲜**值）；
+   *   进入模式时那次传 `false`（省一次上游请求）。
+   */
+  async describeExpiryOrder(signal, force = false) {
+    await this.ensureCatalog();
+    signal?.throwIfAborted();
+    const probe = this.expiryProbe();
+    if (force) probe.clear?.();
+    const out = {};
+    for (const virtual of this.catalog) {
+      for (const candidate of virtual.candidates) {
+        if (!WIRED_EXPIRY_PROVIDERS.includes(candidate.provider)) continue;
+        if (Object.hasOwn(out, candidate.provider)) continue;
+        signal?.throwIfAborted();
+        try {
+          out[candidate.provider] = await probe(candidate.provider, signal);
+        } catch (error) {
+          if (isAbortLike(error, signal)) throw error;
+          out[candidate.provider] = UNUSABLE;
+        }
+      }
+    }
+    return out;
+  }
+  /**
+   * 组装给设置面板的目录（**只读、零余额查询**，规格 §8.3）。
+   *
+   * ⚠️⚠️ **不得调用 `expiryProbe` / `resolveModelInfo`** —— 面板一打开就会对每个
+   * 渠道打一次上游请求；而本端点只回答「有哪些虚拟模型、各自有哪些候选、哪些被拒」，
+   * 与余额无关。实时余额仍由各渠道自己的面板负责。
+   *
+   * ⚠️ 「按临期排序」需要探测 ⇒ 它走**单独的** {@link describeExpiryOrder}，
+   * 不在这里加参数（那会破坏本方法的零查询契约，且有专门用例断言）。
+   *
+   * ⚠️ 也**不得**改动拒绝表（纯读）。
+   *
+   * @param force - **绕过目录 TTL 缓存**（面板的「刷新」按钮用）。
+   *   ⚠️ 真实缺陷（对抗审计实测证伪）：初版**不传 force**，而 `refreshCatalog` 有
+   *   60 秒缓存 ⇒ 面板的「刷新」按钮实际是「读缓存」，用户在渠道侧新增/关闭模型后
+   *   点刷新**看不到任何变化**，会以为聚合坏了。同时 `refreshCatalog` 的 `force`
+   *   参数在**全仓零调用点**（死参数）—— 两处都是这条缺陷的一部分。
+   *   ⚠️ 只有**用户显式点刷新**时才传 `true`：`listModels` 等高频路径必须继续走缓存，
+   *   否则每次打开模型选择器都会重推整个目录。
+   */
+  async describeCatalog(force = false, signal) {
+    const catalog = await this.refreshCatalog(force, signal);
+    const models = catalog.map((virtual) => {
+      const rejected = this.rejectedFor(virtual);
+      const candidates = virtual.candidates.map((candidate) => {
+        const state = this.gateOf(virtual.key, candidate.provider, candidate.realId, rejected);
+        return {
+          provider: candidate.provider,
+          realId: candidate.realId,
+          realName: candidate.realName,
+          price: candidate.price,
+          // ⚠️ 面板据此标 `⚠️补丁`（规格 §7.1）—— 补丁条目是人工核查的重点。
+          viaPatch: candidate.via === "patch",
+          // ⚠️ 语义收窄：本字段现在等于「当前不参与轮换」（含默认不参与）。
+          rejected: state !== "allowed",
+          state,
+          expiryWired: WIRED_EXPIRY_PROVIDERS.includes(candidate.provider)
+        };
+      });
+      const currentKeys = new Set(candidates.map((c) => `${c.provider}\0${c.realId}`));
+      const order = (this.options.order?.() ?? {})[virtual.key]?.filter((key) => currentKeys.has(key)) ?? [];
+      return {
+        canonicalId: virtual.key,
+        name: this.nameOf(virtual),
+        candidates,
+        order
+      };
+    });
+    return { models, orderMode: this.options.orderMode?.() === "manual" ? "manual" : "expiry" };
+  }
+  /**
+   * 某条候选当前的三态门控（**唯一判据**，同步、零网络：只读注入的三张表）。
+   *
+   * ⚠️⚠️ **只有这一处实现**：`describeCatalog` 下发 `state`、`pickerNameOf` 统计
+   * 「当前参与」的价格，都调它。两处各写一遍判据必然漂移（本仓库有过「同一文件
+   * 两套同义判据」的缺陷史）。
+   *
+   * ⚠️ `WIRED_EXPIRY_PROVIDERS` 的引用也**只在此一处**（`candidatesFor` 的建池过滤
+   * 同样走本方法）⇒ 「谁的默认态是什么」这个问题全仓只有一个答案。
+   *
+   * @param degraded - 省略时内部算（`rejectedFor`）。传入可让调用方在循环里复用
+   *   同一次降级计算（`describeCatalog` 对每个虚拟模型算一次，避免每候选重算）。
+   */
+  gateOf(canonicalId, provider, realId, degraded) {
+    const rejectedSet = degraded ?? this.rejectedFor({
+      key: canonicalId,
+      candidates: [{ provider, realId }]
+    });
+    return resolveCandidateGate({
+      // ⚠️ 用**降级后**的集合（D4：渠道级拒绝也算该候选被拒）。
+      rejected: rejectedSet.has(`${provider}\0${realId}`),
+      allowed: (this.options.allowed?.() ?? {})[canonicalId]?.[provider]?.[realId] === true,
+      expiryWired: WIRED_EXPIRY_PROVIDERS.includes(provider)
+    });
+  }
+  /**
+   * 聚合路由状态的**内容指纹**（参与 `choiceCache` 的键，见 `candidatesFor`）。
+   *
+   * ⚠️ **四项缺一不可**（用户 2026-10-15 起：拒绝表 + 白名单 + 手工顺序表 + 排序模式）：
+   * 任何一项变了，缓存里的候选序（含**次序**）都不再成立。漏一项的症状是
+   * 「用户改了门控/顺序，随后最多 60 秒内仍按旧的走」—— **静默**（用户会以为开关坏了）。
+   *
+   * ⚠️ 拒绝表与白名单用**排序后的拼接**（与键的书写顺序无关：同一集合的不同书写顺序
+   * 是同一张表，不该导致缓存失效）；顺序表**不能**排序（它的**顺序本身就是语义**）；
+   * 模式直接拼接。
+   *
+   * ⚠️ 不要改成「条目数」之类的摘要：本仓库有过「缓存失效判据按数组长度」被实测证伪的
+   * 教训（两条不同内容长度相同 ⇒ 恒不失效）。
+   */
+  routingFingerprint() {
+    const enabledKeys = (table2) => {
+      const parts = [];
+      for (const [canonicalId, byProvider] of Object.entries(table2)) {
+        for (const [provider, byRealId] of Object.entries(byProvider)) {
+          for (const [realId, flag] of Object.entries(byRealId)) {
+            if (flag === true) parts.push(`${canonicalId}\0${provider}\0${realId}`);
+          }
+        }
+      }
+      return parts.sort();
+    };
+    const order = this.options.order?.() ?? {};
+    const orderParts = Object.keys(order).sort().map((key) => `${key}=${order[key].join(",")}`);
+    return [
+      enabledKeys(this.options.rejections?.() ?? {}).join(""),
+      enabledKeys(this.options.allowed?.() ?? {}).join(""),
+      orderParts.join(""),
+      this.options.orderMode?.() === "manual" ? "manual" : "expiry"
+    ].join("");
+  }
+  /**
+   * 手工位次函数：`orderMode === 'manual'` 且该模型**有**顺序表时给出，否则 `undefined`
+   *（⇒ `rankCandidates` 走临期序）。
+   *
+   * ⚠️ `auto` **恒为 `undefined`**（用户 2026-10-15 的取舍 Q6=C）：`auto` 的池是跨全部渠道的
+   *    巨池，「手工顺序」在那里没有可解释的含义 —— 用户拖的是**某个虚拟模型**的候选。
+   *
+   * ⚠️ 未排在数组里的候选返回 `undefined` ⇒ `rankCandidates` 把它们按
+   *    **临期↑ → 倍率↑** 追加在已排过的**之后**（新增候补因此不会消失）。
+   */
+  manualRankOf(model) {
+    if (model === AGGREGATE_AUTO_MODEL) return void 0;
+    if (this.options.orderMode?.() !== "manual") return void 0;
+    const order = (this.options.order?.() ?? {})[model];
+    if (order === void 0 || order.length === 0) return void 0;
+    const rank = /* @__PURE__ */ new Map();
+    for (const [index, key] of order.entries()) if (!rank.has(key)) rank.set(key, index);
+    return (candidate) => rank.get(`${candidate.provider}\0${candidate.realId}`);
+  }
+  /**
+   * 重新推导虚拟模型表（**带 TTL 缓存**，理由见 {@link AGGREGATE_CATALOG_TTL_MS}）。
+   *
+   * ⚠️ 逐个渠道 `try/catch`：某一个渠道目录读取失败**不得**让整个聚合目录变空
+   * （那会让用户在别的渠道都正常时突然看不到任何模型）。
+   *
+   * @param force - 绕过缓存（设置页手动刷新用）。
+   */
+  async refreshCatalog(force = false, signal) {
+    const now = this.options.now?.() ?? Date.now();
+    const ttl = this.options.catalogTtlMs ?? AGGREGATE_CATALOG_TTL_MS;
+    if (!force && this.catalogAt !== 0 && now - this.catalogAt < ttl) return this.catalog;
+    signal?.throwIfAborted();
+    const providers = this.providerIds();
+    const catalogs = {};
+    for (const provider of providers) {
+      try {
+        catalogs[provider] = await this.ctx.llm.listModels(provider);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (isAbortLike(error, signal)) throw error;
+        this.ctx.logger?.warn?.(
+          `[aggregate] \u8BFB\u53D6 ${provider} \u76EE\u5F55\u5931\u8D25\uFF0C\u672C\u6B21\u8DF3\u8FC7\u8BE5\u6E20\u9053\uFF1A${String(error)}`
+        );
+      }
+      signal?.throwIfAborted();
+    }
+    const previousIds = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)];
+    this.catalog = buildVirtualModels(catalogs);
+    this.catalogAt = now;
+    this.capabilityCache.clear();
+    this.contextWindowCache.clear();
+    this.maintainProviderClosedState(previousIds);
+    return this.catalog;
+  }
+  /**
+   * 若聚合 provider 处于「整个已关闭」态，则把**新增的**虚拟模型补进黑名单。
+   *
+   * ⚠️ 详见 {@link refreshCatalog} 末尾的长注释：这是为了弥补宿主
+   * 「一键关闭写快照」与「聚合目录动态推导」之间的语义缺口。
+   *
+   * @param previousIds - **上一次**推导出的全量目录（含 `auto`）——
+   *   用它判断「用户关的是整个 provider」而不是逐个关了某几个模型。
+   */
+  maintainProviderClosedState(previousIds) {
+    const readDisabled = this.options.accountPool.listDisabledModels;
+    if (typeof readDisabled !== "function") return;
+    const disabled = readDisabled.call(this.options.accountPool, AGGREGATE_PROVIDER);
+    const hasAnyDisabled = Object.values(disabled).some((flag) => flag === true);
+    if (!hasAnyDisabled) return;
+    const closedWholeProvider = previousIds.length > 0 && previousIds.every((id) => disabled[id] === true);
+    if (!closedWholeProvider) return;
+    const missing = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)].filter((id) => disabled[id] !== true);
+    if (missing.length === 0) return;
+    const writeDisabled = this.options.accountPool.setModelsDisabled;
+    if (typeof writeDisabled !== "function") return;
+    void writeDisabled.call(this.options.accountPool, AGGREGATE_PROVIDER, missing).catch((error) => {
+      this.ctx.logger?.warn?.(
+        `[aggregate] \u8865\u5199\u300C\u6574\u4E2A provider \u5DF2\u5173\u95ED\u300D\u7684\u9ED1\u540D\u5355\u5931\u8D25\uFF08\u4E0B\u6B21\u76EE\u5F55\u63A8\u5BFC\u4F1A\u518D\u8BD5\uFF09\uFF1A${String(error)}`
+      );
+    });
+  }
+  /**
+   * 参与聚合的渠道 id 白名单 —— **只含本插件注册的渠道**。
+   *
+   * ## ⚠️ 为什么必须是白名单，不能用 `listProviders()`
+   *
+   * 初版直接 `ctx.llm.listProviders()` 并注释成「本插件注册的全部渠道」，但那个 API
+   * 返回的是**宿主全部**存活路由 —— 它会纳入 `deepseek-account`、`pi-ai` 等
+   * **别的插件**的 provider（真实缺陷，全分支终审 I1）。后果：
+   *
+   * 1. **广告出无法路由的虚拟模型**：那些渠道的临期折算没接入（`createExpiryProbe`
+   *    只接了 buddy / workbuddy / loomy / codearts / zcode），一律折算成 `UNUSABLE`
+   *    ⇒ 它们的虚拟模型**永远没有可用候选**。用户选中后拿到的是
+   *    「没有任何可用候选（渠道被关闭、模型被关、或所有渠道都无可用账号）」——
+   *    把「该渠道尚未接入」**谎报成「你没登录」**，正是本仓库反复修的误导性报错。
+   * 2. **跨渠道归一被污染**：宿主自带 provider 的模型会被并进聚合目录
+   *    （实测 `deepseek-account:deepseek-flash` 与 `qoder:dfmodel` 会被合并成同一个
+   *    虚拟模型），使「跨渠道归一」把**非本插件渠道**也算成候选。
+   *
+   * ⚠️ 用字面量而非 import 各 `product.ts` 的常量：那要引入 12 个模块，显著加重本文件
+   * 的依赖；而这些 id 是**稳定契约**（`index.ts` 的 `modelAdapters` 表同样用字面量）。
+   * 新增 provider 时**两处都要加**。
+   *
+   * ## ⚠️ 本清单**有守卫**（2026-10-12 补）
+   *
+   * 原先本行写的是「（与 `modelAdapters` 同一约定）」—— 那句是**误导**：`modelAdapters`
+   * 当时已有两条守卫（源码文本抓多余键 + 行为抓漏键），而**本数组一条都没有**。
+   * 实测（对抗性审计）：从本数组删掉 `'gemini'` 后全量测试**依然全绿**，而线上后果是
+   * 该渠道的模型**永不进聚合目录**、用户看不到、`auto` 也不用，**无报错无日志**。
+   *
+   * 现由 `tests/unit/aggregate-adapter.spec.ts` 的
+   * 「★★ 聚合渠道白名单与 registry 对齐」守：它用 `listModels` 的**调用记录**反推本
+   * 数组（该常量是私有的，行为路径才拿得到），与 `PROVIDER_REGISTRY.filter(d => d.channel)`
+   * 做**集合**比对，漏一家即红并点名。
+   * ⚠️ 判据是**集合**不是有序：本数组与 registry 的尾部顺序**本来就不同**
+   *（本数组 `… gemini, zcode, opencode`，registry `… zcode, opencode, gemini`），
+   * 故不能要求有序相等；顺序本身在本数组内有语义，由下面的排列体现。
+   */
+  static AGGREGATE_CHANNELS = Object.freeze([
+    "codearts",
+    "buddy",
+    "workbuddy",
+    "lobsterai",
+    "qoder",
+    "qodercn",
+    "trae",
+    "cline",
+    "loomy",
+    "raccoon",
+    "minimax",
+    // ⚠️ MiniMax Code 国际版（2026-10-15）：与 `minimax` 是**两个 provider**
+    //    （账号不互通、API 主机不同）⇒ 必须各自登记，否则它的模型
+    //    **永不进聚合目录、静默不可见**（同款陷阱已复发三次：cline → accio → officeace）。
+    //
+    //    ⚠️⚠️ **但本行只是第 ① 层（模型层归并）**：决定候选表可见性的还有第二道
+    //    闸门 —— `WIRED_EXPIRY_PROVIDERS`（`aggregate-expiry.ts`）。minimax 系
+    //    （含国际版）**未接入临期折算**（`ProviderRuntime.expiry` 为 `undefined`）
+    //    ⇒ 折算恒 `UNUSABLE` ⇒ 它们的候选**仍被本文件那 4 处
+    //    `WIRED_EXPIRY_PROVIDERS` 过滤剔掉**。这与国内站**行为一致**（既有设计），
+    //    本次不改变它 —— 登记本数组只是让「目录层」两站都在，与国内站同款。
+    "minimaxintl",
+    "gemini",
+    "zcode",
+    "opencode",
+    // ⚠️ **本 fork 独有**（modelscope，2026-10-16）：`channel: true` ⇒ 必须进聚合目录，
+    //    否则它的模型**永不进聚合、静默不可见**。
+    //    ⚠️ 2026-10-17（用户明确要求）**已接入 `WIRED_EXPIRY_PROVIDERS`**（折算原语
+    //    `modelscopeExpiry`）：此前那句「不接，因没有额度 API ⇒ 折算恒 UNUSABLE」
+    //    **已被证伪** —— 真端点是 `/openapi/v1/magicubes/balance`（带 API Key 返
+    //    200、随消耗下降）。它属「有余额但不下发到期时间」那一类：有余额即
+    //    `NEVER`、烧光即 `UNUSABLE`。
+    //    ⚠️⚠️ **代价（用户已知并接受）**：魔粒烧光时**不会被提前剔出轮换**
+    //    （平台既不下发重置时刻，也没有别的额度端点）⇒ 耗尽后仍会被选中、失败一次。
+    //    ⚠️ **不许用「猜一个每日 UTC+8 零点」消除它** —— 那是凭空造一个上游从未
+    //    承诺的重置时刻（本仓库红线「绝不编造数字」）。
+    "modelscope",
+    // officeace（2026-10-12）：华为 MaaS 云端直连渠道，`channel: true`
+    // ⇒ 必须进聚合目录，否则它的模型**永不进聚合、静默不可见**。
+    // ⚠️ 本数组**只是第一道门**（模型层归并）。真正决定「在不在候选表里」的是
+    //    `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`：
+    //      ① **轮换候选**的闸门 = `aggregate-expiry.ts` 的「未接入 ⇒ `UNUSABLE`」短路
+    //         （下面 `candidatesFor` 的建池处**不**按它过滤 —— 未接入渠道由那条短路
+    //          折算成 `UNUSABLE`，再由 `rankCandidates` 剔除）；
+    //      ② 本文件另有 **4 处**按它过滤（探测排序 / 面板候选 / 虚拟模型播报 /
+    //         选择器价格后缀），管的是面板与元数据面。
+    //    只加本数组是**无效接线**，症状静默；且「渠道会进聚合目录」**只在它的模型
+    //    与已接入渠道共用规范名时成立** —— **独有模型**会被 `refreshCatalog` 的
+    //    `.some(...)` 过滤整个剔掉，连目录都进不去。
+    // ✅ officeace 白名单**已于 2026-10-13 补齐**（`026a7db` "feat(officeace):
+    //    接入聚合轮换"）：折算原语 `officeaceExpiry`（与 buddy 系同形，逐包
+    //    `expiresAt`）+ `WIRED_EXPIRY_PROVIDERS` + `provider-expiry.ts` 的
+    //    `createProviderExpiry()` 三处同改，后两者的一致性由
+    //    `expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁住。
+    //    ⚠️ 本注释此前写着「officeace **未接入**……可接而未接」，那句在
+    //    2026-10-13 之后**已过期**（同类陷阱再次出现，见 accio 那条）——
+    //    留着它会让人以为聚合里看不到 officeace，故更正。
+    "officeace",
+    // ⚠️⚠️ accio（阿里 Accio Work，2026-10-13）—— 两件事**都要**做，缺一即静默：
+    //    ① 加进本数组（进聚合目录）；
+    //    ② 加进 `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`（进**候选表**）。
+    //
+    //    ⚠️ **只做 ① 是无效接线**（2026-10-13 合并审计实测）：决定候选可见性的
+    //    是 `WIRED_EXPIRY_PROVIDERS` —— 本文件有 4 处按它过滤（探测/候选/虚拟模型/
+    //    价格）。当时 accio 的 `PRIMARY_CHANNEL` 与 `CANONICAL_OVERRIDES` 都配对了
+    //    （`canonicalKeyFor` 返回 `via: 'patch'` ⇒ 归并到 `qwen3-8-flash`），
+    //    但候选层被那道闸门剔掉 ⇒ **用户要的「轮换列表里要有 accio」并没有实现**，
+    //    且症状静默（无报错、无日志）。现两处都补齐。
+    "accio"
+  ]);
+  /**
+   * 本插件注册的渠道 id（`aggregate` 与 `jet-hub-auto` 自身除外）。
+   *
+   * ⚠️ 先取 `listProviders()` 的**存活路由**再与白名单取交集：这样宿主没装载的渠道
+   * 不会进目录（否则会广告出连适配器都没有的模型），同时**排除**别的插件的 provider。
+   */
+  providerIds() {
+    let alive;
+    try {
+      alive = new Set(this.ctx.llm.listProviders().map((info) => info.id));
+    } catch {
+      alive = /* @__PURE__ */ new Set();
+    }
+    return _AggregateAdapter.AGGREGATE_CHANNELS.filter((id) => alive.has(id) && id !== AGGREGATE_PROVIDER && id !== "jet-hub-auto");
+  }
+  /**
+   * 对外播报虚拟模型（含 `auto`），**套用户黑名单**。
+   *
+   * ## ⚠️⚠️ 2026-10-16：另加一条「**全部候选都是「无临期积分且没打开」**⇒ 不播报」
+   *
+   * 用户验收反馈原话：「默认不参与轮换的无临期模型（没有一个打开轮换）则**不显示在
+   * 选择模型的列表中的聚合模型下属的列表中**」。
+   *
+   * ### 为什么这条**不违反**「候选全被拒 ≠ 关闭模型」的成文不变式（判据是**分档**）
+   *
+   * 两种「没有任何候选在轮换」必须分开对待 —— 这是本次改动的**全部要害**：
+   *
+   * | 情形 | 选择器 | 理由 |
+   * |---|---|---|
+   * | 用户**主动**把候选全拒（`rejected`） | **仍播报** | 那是既有成文不变式（`jet-hub-store.ts` 的「候选全被拒 ≠ 关闭模型」）。模型留在选择器里，用户选中它拿到**如实**报错，回面板重新打开即恢复 —— 若藏起来，恢复入口就消失了 |
+   * | 候选**全是**「无临期积分且用户没打开」（`default-rejected`） | **不播报** | 用户**从未**对该模型做过任何决定，它进选择器只会得到「没有任何可用候选」（第 4 种原因的报错）。⚠️ 它**仍在聚合面板里**（那才是唯一的打开入口），故**恢复路径没有丢** |
+   * | 混合（一部分被拒、一部分默认） | **仍播报** | 里面含用户**主动**做的决定 ⇒ 归第一档 |
+   *
+   * ⇒ 判据是「**所有**候选都 `default-rejected`」，**不是**「没有候选在轮换」。
+   * ⚠️ 别把它简化成后者 —— 那会把「用户主动全拒」的模型也藏掉，正是上面那张表第一行禁止的。
+   *
+   * ⚠️ **只作用于本方法（模型选择器）**：
+   *   - `describeCatalog`（聚合面板）**不受影响** —— 面板必须能看到并打开它们；
+   *   - `listAllModels`（设置页的开关清单）与 `provider.status` 的 `total` **不受影响**
+   *     —— 目录身份保持稳定（`this.catalog` 不随门控漂移，这是上面那份不变式的另一半）。
+   */
+  async listModels(provider) {
+    const models = await this.refreshCatalog();
+    const disabled = this.options.accountPool.disabledModelsFor(AGGREGATE_PROVIDER);
+    const entries = [];
+    if (!disabled.has(AGGREGATE_AUTO_MODEL)) entries.push(this.autoModelInfo());
+    for (const model of models) {
+      if (disabled.has(model.key)) continue;
+      if (this.isAllDefaultsUnopened(model)) continue;
+      entries.push({ provider, id: model.key, name: this.pickerNameOf(model), inputModalities: ["text", "image"] });
+    }
+    return entries;
+  }
+  /**
+   * 该虚拟模型的候选是否**全部**是「无临期积分且用户没打开」（`default-rejected`）。
+   *
+   * ⚠️ **判据必须逐条看三态**，不能写成「没有 allowed」—— 后者会把
+   * 「用户主动全拒」（`rejected`）也算进来，而那**必须仍播报**（见 `listModels` 的表）。
+   *
+   * ⚠️ 无候选 ⇒ `false`（「无候选」是另一回事：那是该渠道模型下架，不是用户的选择）。
+   */
+  isAllDefaultsUnopened(model) {
+    if (model.candidates.length === 0) return false;
+    const rejected = this.rejectedFor(model);
+    return model.candidates.every((candidate) => this.gateOf(model.key, candidate.provider, candidate.realId, rejected) === "default-rejected");
+  }
+  /**
+   * **不套黑名单**的全量目录 —— 设置页要用它渲染开关。
+   *
+   * ⚠️ 与其余 14 个适配器的同名方法同约定：被用户关闭的模型也必须出现在这里，
+   * 否则用户在设置页**连开关都摸不着**（`jet-hub-rpc.ts` 对 `model.list` 的
+   * 注释记录了该缺陷）。
+   * ⚠️ 必须是**同步**方法（`jet-hub-rpc.ts` 的 `ModelCatalogSource` 契约要求），
+   * 故只读上一次推导结果（由 {@link listModels} 刷新）。
+   */
+  listAllModels() {
+    return [
+      { id: AGGREGATE_AUTO_MODEL, name: this.autoModelInfo().name },
+      ...this.catalog.map((model) => ({ id: model.key, name: this.pickerNameOf(model) }))
+    ];
+  }
+  /** `auto` 的元数据。 */
+  autoModelInfo() {
+    return {
+      provider: AGGREGATE_PROVIDER,
+      id: AGGREGATE_AUTO_MODEL,
+      name: "Auto\uFF08\u805A\u5408 \xB7 \u8DE8\u6E20\u9053\uFF09",
+      description: "\u4E0D\u6307\u5B9A\u6A21\u578B\uFF1A\u5728\u6240\u6709\u6E20\u9053\u7684\u6240\u6709\u53EF\u7528\u6A21\u578B\u91CC\u6311\u79EF\u5206\u6700\u5FEB\u4F5C\u5E9F\u7684\u90A3\u4E2A\u3002",
+      inputModalities: ["text", "image"]
+    };
+  }
+  /** 虚拟模型的展示名 —— **设置页与解析路径用**（不带倍率，见 {@link pickerNameOf}）。
+   *
+   * ⚠️ **不加「（单渠道）」之类的后缀**（与 brief 初版的 `nameOf` 不同）：
+   * 设计文档 §12.1（`docs/superpowers/specs/2026-10-06-aggregate-provider-design.md`
+   * 的「关于 `auto-adapter.ts` 的三处名字」一节）把新 provider
+   * 定成「目录展示规范名 + 运行期渠道后缀」**单一形态**，并逐字写死三处的名字都是
+   * 规范名（`listModels` / `resolveModel` → `DeepSeek V4.1 Flash`；`prepareCall`
+   * → `DeepSeek V4.1 Flash · buddy`）。加后缀会让选择器与服务端目录名不一致，
+   * 且 `prepareCall` 会拼出 `…（单渠道） · buddy` 这类双重后缀。
+   * 「有没有冗余渠道」是**设置页**的信息（§7.3：按厂商分组、组内按候选渠道数降序、
+   * 展开看逐条候选），不该混进模型展示名。
+   *
+   * ⚠️ 本方法**保持无倍率**：`resolveModel` 与 `describeCatalog` 的返回值被三处
+   * 既有断言逐字钉住（`aggregate-adapter.spec.ts:88`、`aggregate-rejections.spec.ts:251`、
+   * `aggregate-catalog.spec.ts:21` 全是 `'DeepSeek V4.1 Flash'`），且 `describeCatalog`
+   * 的候选子列表**逐条**显示倍率（`candidateRowLabel`）—— 在模型名上再叠一次
+   * 会出现「两个倍率」的重复展示。倍率只加在**模型选择器**那一条路径上，
+   * 即 {@link pickerNameOf}。
+   */
+  nameOf(model) {
+    return model.name;
+  }
+  /**
+   * **模型选择器**里的展示名 = 规范名 + 倍率后缀（如 `GLM-5.3-Flash · 最低 x0.06`）。
+   *
+   * ## 为什么需要它（用户报障 2026-10-08）
+   *
+   * 用户原话：「没倍率显示？」—— 切到聚合后，选择器里每条虚拟模型**都没有倍率**，
+   * 而同屏的普通渠道（`GLM-5.3-Flash · x0.06`）有。用户据此无法判断「聚合给我
+   * 挑的是不是便宜的那个」，而本功能的全部卖点正是「省钱烧临期」。
+   *
+   * 根因：`nameOf` 只回规范名，而倍率其实**早就算好了** ——
+   * `aggregate-catalog.ts` 的 `CandidateEntry.price` 就是 `priceFactorFromName(realName)`
+   * 的结果，只是从没被展示层用过。
+   *
+   * ## ⚠️⚠️ 为什么文案是「**最低** x…」而不是直接 `· x…`（真实缺陷，复审实测）
+   *
+   * 初版取全局最小 `price` 并直接拼成 `· x0.03`，其注释推理是「轮换的**第二**判据
+   * 是同临期档内倍率升序 ⇒ 最便宜候选最可能被选中」。**该推理在跨临期档时不成立**：
+   * `rankCandidates` 的第一判据是**临期升序**，倍率只在**同档内**才起作用。
+   * 复审实测（真实 `lib/aggregate-adapter.js` + 真实 `prepareCall`）：
+   *
+   * ```
+   * 候选：buddy x0.29（临期 100，最早） / codearts x0.03（临期 900）
+   * 选择器显示："DeepSeek V4.1 Flash · x0.03"   <-- 让用户以为会挑便宜的
+   * 实际发往  ：["buddy"]                         <-- 实际挑的是最贵的
+   * ```
+   *
+   * ⇒ 直接写 `x0.03` 会**误导用户**，与本 PR 自己在 `types.ts` 立下的判据
+   *（「往静态名里写死倍率就是编造」）同型：显示的价与实际会用的价不符。
+   *
+   * ⚠️ 修法**不是**「按临期最早那档取最便宜候选」：`CandidateEntry` 里**没有**
+   * `expiry`（临期是运行期由 `expiryProbe` 折算的，见 `aggregate-expiry.ts`），
+   * 而本方法被 `listModels` / `listAllModels` 调用、**契约要求同步**
+   *（`ModelCatalogSource` 的注释）⇒ 这里根本拿不到临期档。若为它改成异步或
+   * 触发一轮余额查询，代价远大于收益（选择器渲染路径不能打网络）。
+   * ⇒ 采用**如实表达下界**的口径：`最低 x0.03` 的语义是「这个虚拟模型下最便宜的
+   * 可路由候选」，它**不声称**本次会选它 —— 用户据此仍能判断「值不值得选这个
+   * 模型」，且不会被误导成「一定会用 0.03」。
+   *
+   * ⚠️ **不显示「区间」**（如 `x0.03–x0.29`）：那会变成最长行，而选择器是窄菜单
+   *（与 `buddy-adapter.ts` 的「不写 `（促销 …）`」同一取舍）。
+   *
+   * ## 三条不显示倍率的规则（都是既有约定）
+   *
+   * 1. **全部候选都无标注**（`Infinity`）⇒ 不加后缀。直接拼会渲染出
+   *    `xInfinity`，那是明显的渲染缺陷（`aggregate-panel-logic.js` 同款判据）。
+   * 2. **`0` 显示「免费」**（本仓库既有口径，见 `candidateRowLabel`）。
+   * 3. **解析不出就不猜**：宁可没有倍率，也不编一个（`buddy.ts` 同款理由：
+   *    编造倍率比不显示更糟）。
+   *
+   * ⚠️ 只用于 `listModels` / `listAllModels`（选择器与设置页「显示列表」）。
+   * **不得**用于 `resolveModel` / `describeCatalog` —— 见 {@link nameOf} 的注释。
+   */
+  pickerNameOf(model) {
+    const rejected = this.rejectedFor(model);
+    const prices = model.candidates.filter((candidate) => this.gateOf(model.key, candidate.provider, candidate.realId, rejected) === "allowed").map((candidate) => candidate.price).filter((price) => Number.isFinite(price));
+    if (prices.length === 0) return model.name;
+    const best = Math.min(...prices);
+    return `${model.name} \xB7 \u6700\u4F4E ${best === 0 ? "\u514D\u8D39" : `x${best}`}`;
+  }
+  /**
+   * 解析某个虚拟模型的能力元数据。
+   *
+   * ⚠️ `provider`/`id` 必须**按入参回填**（多虚拟模型下不能硬编码）：DSH 的
+   * `normalizeModelInfo` 逐字校验，不符即 `INVALID_MODEL_INFO`。
+   * ⚠️ `inputModalities` 恒含 `image`：聚合是整池，池里有能看图的渠道，如实声明；
+   * 「这次选中的渠道收不收得了图」由分发阶段改道保证。
+   * ⚠️ **档位声明规范化档位的并集**（不是候选集交集）—— 理由见下方
+   * {@link aggregateReasoningInfo} 的注释。
+   * ⚠️ **窗口声明候选集的<u>最大值</u>**（不是写死、也不是取小）——
+   * 理由与失效形态见 {@link AggregateAdapter.contextWindowFor}。
+   */
+  /**
+   * 解析一个虚拟模型。
+   *
+   * ⚠️ `signal` 是**本适配器自己加的可选第三参**（`LlmAdapter` 契约只要求前两个）——
+   *    `prepareCall` 拿得到 signal（它是第三参），把它透传到目录读取，
+   *    否则真实请求路径的取消**不生效**（见 `ensureCatalog` 的长注释）。
+   *    ⚠️ DSH 运行时直接调本方法时**不传**第三参，那是正常的（缓存命中时无需取消）。
+   */
+  async resolveModel(provider, model, signal) {
+    if (model === AGGREGATE_AUTO_MODEL) {
+      const info = this.autoModelInfo();
+      await this.ensureCatalog(signal);
+      return {
+        provider,
+        id: model,
+        name: info.name,
+        ...info.description === void 0 ? {} : { description: info.description },
+        inputModalities: ["text", "image"],
+        // `auto` 的候选池 = **所有渠道的所有模型**（与 `candidatesFor` 的池同语义）
+        // ⇒ 它的窗口是整池的最大值（通常就是池里最大的那个 1M）。
+        context: { contextWindow: await this.contextWindowFor(model, this.autoCandidates(), signal) },
+        reasoning: aggregateReasoningInfo()
+      };
+    }
+    await this.ensureCatalog(signal);
+    const virtual = this.catalog.find((entry) => entry.key === model);
+    if (virtual === void 0) {
+      const available2 = this.catalog.slice(0, 5).map((entry) => entry.key).join("\u3001");
+      throw new LlmError22(
+        `aggregate: \u672A\u77E5\u6A21\u578B\u300C${model}\u300D\u3002\u5F53\u524D\u53EF\u7528\uFF1Aauto${available2 === "" ? "" : `\u3001${available2}`}\uFF08\u5B8C\u6574\u6E05\u5355\u89C1\u6A21\u578B\u9009\u62E9\u5668\u91CC\u7684\u300C\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09\u300D\u5206\u7EC4\uFF09`,
+        "INVALID_REQUEST"
+      );
+    }
+    return {
+      provider,
+      id: model,
+      name: this.nameOf(virtual),
+      inputModalities: ["text", "image"],
+      context: { contextWindow: await this.contextWindowFor(model, virtual.candidates, signal) },
+      reasoning: aggregateReasoningInfo()
+    };
+  }
+  /**
+   * `auto` 的候选池：所有虚拟模型的候选**并集**（按 `provider\0realId` 去重）。
+   *
+   * ⚠️ 与 `candidatesFor` 的 `auto` 分支同语义（那边还要叠加拒绝表过滤；本方法
+   *    **不过滤拒绝** —— 窗口声明是「这个池里最大能到多少」，被拒的候选仍在池的
+   *    物理能力范围内，且拒绝表随时可能被改回来）。
+   * ⚠️ 去重是必要的：同一候选可能归属多个虚拟模型（如同一 realId 同时归入两个
+   *    规范名），重复解析虽被 `capabilityCache` 吸收，但会让循环做无用功。
+   */
+  autoCandidates() {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const virtual of this.catalog) {
+      for (const candidate of virtual.candidates) {
+        const key = `${candidate.provider}\0${candidate.realId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ provider: candidate.provider, realId: candidate.realId });
+      }
+    }
+    return out;
+  }
+  /**
+   * 目录为空时先推导一次（避免 resolveModel 在 listModels 之前被调用时找不到模型）。
+   *
+   * ⚠️⚠️ **必须接收并透传 `signal`**（真实缺陷，独立审计实测证伪）：
+   *   本方法原先调 `this.refreshCatalog()` **不传 signal** ⇒ **真实请求路径**
+   *  （`prepareCall` → `resolveModel` → 本方法）的中止**不生效** ——
+   *   实测「取消于 50ms 仍跑满 312ms 的 `listModels` 才抛错」。
+   *   此前只有 `describeCatalog`（面板路径）串了 signal，故 `refreshCatalog`
+   *   自己的中止逃逸是对的，但**调用它的真实路径拿不到取消信号**。
+   */
+  async ensureCatalog(signal) {
+    if (this.catalog.length === 0) await this.refreshCatalog(false, signal);
+  }
+  /** 当前的临期探针：注入优先，否则保守返回 UNUSABLE。 */
+  expiryProbe() {
+    return this.options.expiryProbe ?? (() => Promise.resolve(UNUSABLE));
+  }
+  /**
+   * 绑定「本次候选序」到一次分发。
+   *
+   * ⚠️ 候选序必须在**这里**算好（`prepareCall` 是异步的）：返回的 `stream` 闭包
+   * 契约是**同步返回 AsyncIterable**（`PreparedAdapterCall`），闭包里拿不到
+   * `await` 的机会 ⇒ 临期折算、档位表都得在这之前备齐。
+   */
+  async prepareCall(_provider, model, signal) {
+    const resolved = await this.resolveModel(AGGREGATE_PROVIDER, model, signal);
+    const targets = await this.candidatesFor(model, signal);
+    if (targets.length === 0) {
+      throw new LlmError22(
+        `aggregate: \u300C${model}\u300D\u5F53\u524D\u6CA1\u6709\u4EFB\u4F55\u53EF\u7528\u5019\u9009\uFF08\u6E20\u9053\u88AB\u5173\u95ED\u3001\u6A21\u578B\u88AB\u5173\u3001\u6240\u6709\u6E20\u9053\u90FD\u65E0\u53EF\u7528\u8D26\u53F7\uFF0C\u6216\u8BE5\u6A21\u578B\u7684\u5019\u9009\u5728\u805A\u5408\u9762\u677F\u91CC\u672A\u53C2\u4E0E\u8F6E\u6362\uFF09\u3002\u8BF7\u5728 Jet Hub \u8BBE\u7F6E\u9875\u7684\u300C\u805A\u5408\u300D\u9762\u677F\u91CC\u68C0\u67E5\u5404\u5019\u9009\u662F\u5426\u53C2\u4E0E\u8F6E\u6362\uFF08\u65E0\u4E34\u671F\u79EF\u5206\u7684\u5019\u9009\u9ED8\u8BA4\u4E0D\u53C2\u4E0E\uFF0C\u53EF\u9010\u6761\u6253\u5F00\uFF09\uFF0C\u6216\u6362\u7528\u300C\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09\u300D\u5206\u7EC4\u4E0B\u7684\u5176\u5B83\u6A21\u578B\u3001\u6216\u76F4\u8FDE\u5BF9\u5E94\u6E20\u9053\u4F7F\u7528\u8BE5\u6A21\u578B\u3002`,
+        "MISSING_CREDENTIAL"
+      );
+    }
+    const imageTargets = targets.filter((target) => target.imageCapable);
+    return {
+      /**
+       * ⚠️ 模型名后缀附的是「**首选**渠道」（候选序第一个 = 临期最早的那个），
+       * **不是**「本次实际发往的渠道」。
+       *
+       * ## 为什么做不到「实际发往」（架构约束，不是疏忽）
+       *
+       * `prepareCall` 是**同步返回元数据 + 一个 stream 入口**的函数，而 DSH 在
+       * **发起请求之前**就要拿到 `model.name`（它用于 UI 展示与账目归属）。
+       * 而「实际发往哪个渠道」只有在 {@link dispatch} 真正尝试成功之后才确定
+       *（候选序第一个可能失败并切换）。两者是**不同时刻**的信息。
+       *
+       * ⚠️ 我用 `· <渠道>` 加 `title` 说明它是**首选**（而不是改文档去承诺做不到的事）。
+       * 真实历史由 `activeProvider()` 记录，由用量徽标显示（那条链路是准确的）。
+       * ⚠️ README 原写「本次实际发往的渠道」—— **那是过度承诺**，已同步订正。
+       */
+      model: {
+        ...resolved,
+        // 后缀是**首选**渠道（临期最早），失败时会切换。
+        name: `${resolved.name} \xB7 ${targets[0].provider}`,
+        description: `\u805A\u5408\u8DEF\u7531\uFF1A\u9996\u9009 ${targets[0].provider}\uFF08\u4E34\u671F\u6700\u65E9\uFF09\uFF1B\u5931\u8D25\u4F1A\u6309\u5019\u9009\u5E8F\u81EA\u52A8\u5207\u6362`
+      },
+      stream: (options) => {
+        const hasImage = options.messages.some((message2) => contentHasImage2(message2.content));
+        if (!hasImage) return this.dispatch(targets, options, model);
+        if (imageTargets.length === 0) {
+          throw new LlmError22(
+            `aggregate: \u300C${model}\u300D\u7684\u5019\u9009\u6E20\u9053\u90FD\u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\u3002\u8BF7\u6362\u4E00\u4E2A\u652F\u6301\u56FE\u7247\u7684\u6A21\u578B\uFF0C\u6216\u53BB\u6389\u56FE\u7247\u540E\u91CD\u8BD5\u3002`,
+            "INVALID_REQUEST"
+          );
+        }
+        this.ctx.logger?.warn?.(
+          `[aggregate] \u5E26\u56FE\u8BF7\u6C42\uFF1A\u6539\u7528\u652F\u6301\u56FE\u7247\u7684 ${imageTargets.length} \u4E2A\u5019\u9009\uFF08\u5171 ${targets.length} \u4E2A\uFF09\uFF0C\u9996\u4E2A\u4E3A ${imageTargets[0].provider}\uFF08${imageTargets[0].realId}\uFF09`
+        );
+        return this.dispatch(imageTargets, options, model);
+      }
+    };
+  }
+  /**
+   * 构造本次请求的候选序（临期升序 → 倍率升序），并备好每条的档位表。
+   *
+   * ⚠️ **带按虚拟模型的 TTL 缓存**（规格 §9）—— 否则每次 `prepareCall` 都要对每个
+   * 候选渠道重跑一次上游余额查询（见 {@link choiceCache} 的长注释）。
+   */
+  async candidatesFor(model, signal) {
+    await this.ensureCatalog();
+    signal?.throwIfAborted();
+    const now = this.options.now?.() ?? Date.now();
+    const ttl = this.options.ttlMs ?? AGGREGATE_TTL_MS;
+    const cacheKey = `${model}\0${this.routingFingerprint()}`;
+    const cached2 = this.choiceCache.get(cacheKey);
+    if (cached2 !== void 0 && now - cached2.at < ttl) return cached2.targets;
+    const probe = this.expiryProbe();
+    const pool = [];
+    if (model === AGGREGATE_AUTO_MODEL) {
+      for (const virtual of this.catalog) {
+        const rejected = this.rejectedFor(virtual);
+        for (const candidate of virtual.candidates) {
+          if (this.gateOf(virtual.key, candidate.provider, candidate.realId, rejected) !== "allowed") continue;
+          pool.push({ provider: candidate.provider, realId: candidate.realId, expiry: NEVER, price: candidate.price });
+        }
+      }
+    } else {
+      const virtual = this.catalog.find((entry) => entry.key === model);
+      if (virtual === void 0) return [];
+      const rejected = this.rejectedFor(virtual);
+      for (const candidate of virtual.candidates) {
+        if (this.gateOf(virtual.key, candidate.provider, candidate.realId, rejected) !== "allowed") continue;
+        pool.push({ provider: candidate.provider, realId: candidate.realId, expiry: NEVER, price: candidate.price });
+      }
+    }
+    const available2 = await this.availableByModel(pool, signal);
+    const usable = pool.filter((candidate) => {
+      if (available2.get(candidate) !== false) return true;
+      candidate.expiry = UNUSABLE;
+      return false;
+    });
+    const seen = /* @__PURE__ */ new Map();
+    for (const candidate of usable) {
+      if (!WIRED_EXPIRY_PROVIDERS.includes(candidate.provider)) {
+        candidate.expiry = NEVER;
+        continue;
+      }
+      let expiry = seen.get(candidate.provider);
+      if (expiry === void 0) {
+        try {
+          expiry = await probe(candidate.provider, signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (isAbortLike(error, signal)) throw error;
+          expiry = UNUSABLE;
+        }
+        seen.set(candidate.provider, expiry);
+      }
+      candidate.expiry = expiry;
+    }
+    signal?.throwIfAborted();
+    const ranked = rankCandidates(pool, this.manualRankOf(model));
+    const limit = maxAttemptsFor(this.catalog);
+    const targets = [];
+    for (const candidate of ranked.slice(0, limit)) {
+      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal);
+      targets.push({ ...candidate, efforts: capability.efforts, imageCapable: capability.imageCapable });
+    }
+    if (targets.length > 0) this.choiceCache.set(cacheKey, { at: now, targets });
+    return targets;
+  }
+  /**
+   * 逐个候选问账号池「该候选**自己的模型**上还有可用账号吗」。
+   *
+   * ## ⚠️⚠️ 为什么返回**映射**而不是「过滤后的数组」（真实缺陷，对抗审计实测证伪）
+   *
+   * 我上一版返回「过滤后的数组」，调用方拿它去折算临期 —— 但**建池时每个候选的
+   * `expiry` 初值是 `NEVER`**，而 `rankCandidates`（`aggregate-core.ts`）
+   * **只剔除 `UNUSABLE`**（`NEVER` 是合法排序值：「可用、只是不临期」）。
+   * ⇒ 被过滤掉的候选 `expiry` 仍是 `NEVER`，**照样进入候选序**、只是排最后；
+   * 当前面的候选失败时**回落到它**（`targets` 逐个尝试）。
+   *
+   * 实测：buddy 可用 + codearts 在该模型上额度已尽 ⇒ 候选序 `[buddy, codearts]`，
+   * buddy 失败后请求**发往 codearts** —— 缺陷只是被推迟而非消除。
+   *
+   * ⇒ 必须让调用方**显式把 `expiry` 置 `UNUSABLE`**（那才是 `rankCandidates` 读的字段）。
+   * 返回映射就是为了让「谁不可用」这个事实能落到调用方的赋值上。
+   *
+   * ## ⚠️⚠️ 为什么必须按 `realId` 复核，不能只靠临期折算
+   *
+   * 各 provider 的「额度耗尽」是按 **modelId** 记账的：
+   * `AccountPool.getAvailableAccount` / `listAvailableCredentials` 都按
+   * `entry.modelRateLimits[modelId]` 过滤候选（`account-pool.ts`），
+   * 而 codearts 的 benefit（免费额度）耗尽正是写进那里的
+   * （`llm-adapter.ts` 的三处 `updateModelRateLimit` 调用）。
+   *
+   * 但 `createExpiryProbe` 取号时用的模型键是**该渠道目录的第一个模型**
+   * （`src/index.ts` 的 `firstModelIdOf`：`models[0]?.id`），而**聚合层要派发的是
+   * 候选自己的 `realId`** —— 两者常常不是同一个模型（一个虚拟模型会挂多渠道多模型的
+   * 候选表）。于是：
+   *
+   * | 场景 | 探测用的键 | 实际派发 | `modelRateLimits` 过滤 | 结果 |
+   * |---|---|---|---|---|
+   * | auto | `firstModelOf`（= 实际派发） | 同一个 | ✓ 生效 | 已覆盖 |
+   * | **aggregate** | `models[0]` | **候选 `realId`** | ✗ **失效** | **缺口可达** |
+   *
+   * ## 返回值
+   *
+   * `Map<候选, 是否有可用账号>`：`false` = 明确查到「该模型上无可用账号」；
+   * `true` = 有可用账号 / 池未实现该方法 / 查询异常（后两者是**保留**的取舍）。
+   * ⚠️ 用 `Map` 而非 `Set` 是为了让「查过且为真」与「没查」在类型上可区分 ——
+   * 虽然调用方按 `=== false` 判据处理，两者等价。
+   *
+   * ## 取舍
+   *
+   * - ⚠️ **只在池实现了 `getAvailableAccount` 时过滤**：它是既有 API，但大量单测桩
+   *   只实现了 `disabledModelsFor`（见 `{@link refreshCatalog}` 的注释）。缺失时**跳过过滤**而不是
+   *   判成不可用 —— 宁可少筛一层，不可把整池误剔除（与 `aggregate-expiry.ts` 对
+   *   `listAvailableCredentials` 缺失时的降级同一取向）。
+   * - ⚠️ 查询失败（抛错）时**保留该候选**：一次池查询异常不该让渠道整体消失。
+   * - ⚠️ **中止必须原样逃逸**（与 `candidatesFor` / `capabilityOf` 同一口径，
+   *   本仓库已在该缺陷上复发三次）。
+   */
+  async availableByModel(pool, signal) {
+    const out = /* @__PURE__ */ new Map();
+    const accountPool = this.options.accountPool;
+    if (typeof accountPool.getAvailableAccount !== "function") return out;
+    for (const candidate of pool) {
+      signal?.throwIfAborted();
+      try {
+        const available2 = await accountPool.getAvailableAccount(candidate.provider, candidate.realId);
+        out.set(candidate, available2 !== null && available2 !== void 0);
+      } catch (error) {
+        if (isAbortLike(error, signal)) throw error;
+        out.set(candidate, true);
+      }
+    }
+    return out;
+  }
+  /**
+   * 取目标模型的**三项**能力：**上下文窗口**、**思考档位 id**、**是否收得了图片**。
+   *
+   * ⚠️ 三项**共用同一次 `resolveModelInfo` 调用** —— 不额外发请求。这是把窗口与
+   * 图片能力做成「顺带取回」而不是「另查一遍」的原因（选型路径上每次请求都会走这里，
+   * 多一次解析就是多一次上游交互）。
+   *
+   * ⚠️ 失败时按**保守**方向回落：窗口 `undefined`（不编造，由调用方兜底）、
+   * 档位为空（不下发该字段）、图片为 `false`（不把它当带图候选）。
+   * 理由见 {@link DispatchTarget.imageCapable} 与 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW}。
+   *
+   * ⚠️ **成功的解析结果进 {@link capabilityCache}**（见那里的长注释：失败**不**缓存）。
+   */
+  async capabilityOf(provider, realId, signal) {
+    const key = `${provider}\0${realId}`;
+    const cached2 = this.capabilityCache.get(key);
+    if (cached2 !== void 0) return cached2;
+    try {
+      const info = await this.ctx.llm.resolveModelInfo(provider, realId, signal);
+      const efforts = (info.reasoning?.efforts ?? []).map((effort) => String(effort.id)).filter((id) => id.length > 0);
+      const capability = {
+        efforts,
+        imageCapable: info.inputModalities?.includes("image") === true,
+        resolved: true,
+        ...info.context === void 0 ? {} : { contextWindow: info.context.contextWindow }
+      };
+      this.capabilityCache.set(key, capability);
+      return capability;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (isAbortLike(error, signal)) throw error;
+      return { efforts: [], imageCapable: false, resolved: false };
+    }
+  }
+  /**
+   * 该虚拟模型的**上下文窗口声明值**：**候选集的最大值**。
+   *
+   * ## 口径（设计文档 §4.1「ctx / 图片 / 档位取候选集的能力并集」）
+   *
+   * 取**最大值**而不是最小值/交集，理由与档位取并集同源：
+   *
+   * - 声明的窗口是给**宿主**看的（压缩阈值 + 占用指示器），而一次请求实际发往
+   *   哪个候选**在声明时还没定**（`prepareCall` 是发起请求之前就返回元数据的）。
+   *   取最小值意味着「池里有一条 262144 的候选，就把整池按 262144 声明」——
+   *   用户明明在用 1M 的渠道，界面与压缩却按最小的那条算，与本条报障同类；
+   * - 取最大值后，若某次真的切到了窗口更小的候选，**由既有的失败切换兜住**
+   *   （上游报超长 → 换下一个候选重试）。代价是可能白跑一轮，而最小值口径的
+   *   代价是**每一次**请求都被按最小窗口过早压缩 —— 后者持续存在，前者只在
+   *   恰好选中小窗口候选时发生。
+   *
+   * ⚠️ **一个候选的窗口都取不到时**（渠道全部未登录 / 该渠道的 `resolveModel`
+   * 不声明窗口）回落到 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW} —— 不能返回
+   * `undefined`，`dsh-compaction-basic` 会抛 `TargetPressureConfigError`。
+   *
+   * ⚠️ 本方法**不做任何余额探测**（`resolveModel` 会被 `buildModelCatalog` 对
+   * 目录里每个模型各调一次），只是读/填能力缓存。
+   *
+   * ⚠️ **取不到窗口的候选也进入循环**：它不拉低结果，但要为它解析一次能力 ——
+   * 解析结果会进缓存，供同一候选在派发路径上复用。
+   *
+   * ## ⚠️⚠️ 只有当**每一个候选都解析成功**时才记忆化结果
+   *
+   * 这是本条实现里最容易写错的一处（本用例第一版就写错了，被自己写的用例抓住）。
+   * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进 `contextWindowCache`，那么：
+   *
+   * 1. 目录服务抖动一次 ⇒ 该虚拟模型在 60 秒（目录 TTL）内恒声明兜底值，
+   *    **即使上游早已恢复**；
+   * 2. 更糟的是失效时机也错位 —— 缓存键是虚拟模型，与「哪个候选失败了」无关，
+   *    于是**一个**候选的瞬时故障会污染整个虚拟模型的声明值。
+   *
+   * 这正是 `AGENTS.md` 记录的「`refreshable` 单向门」同型缺陷：把一次瞬时失败
+   * 固化成持续状态。⇒ 失败时**返回值照给**（调用方需要立即拿到一个可用值），
+   * 但**不写缓存**，下一次调用会重新尝试解析。
+   *
+   * @param modelKey - 虚拟模型 id（含 `auto`），仅用于记忆化。
+   * @param candidates - 该虚拟模型的候选表（`auto` 传全池候选）。
+   */
+  async contextWindowFor(modelKey, candidates, signal) {
+    const remembered = this.contextWindowCache.get(modelKey);
+    if (remembered !== void 0) return remembered;
+    let widest;
+    let allResolved = true;
+    for (const candidate of candidates) {
+      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal);
+      if (!capability.resolved) allResolved = false;
+      const window = capability.contextWindow;
+      if (window !== void 0 && (widest === void 0 || window > widest)) widest = window;
+    }
+    const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW;
+    if (allResolved) this.contextWindowCache.set(modelKey, resolved);
+    return resolved;
+  }
+  /**
+   * 按候选序**逐个尝试**，成功即返回；全部失败则抛最后一个错误。
+   *
+   * ## 为什么必须自己实现失败切换
+   *
+   * DSH 层没有跨 provider 重试：`dsh-llm-retry` 的 `retryStateKey(provider, policyKey)`
+   * 只重试**同一** provider/model。故跨渠道切换只能在这里做。
+   *
+   * ## 为什么 `catch` 要包在**迭代过程**外层
+   *
+   * 生产路径只走 `prepareCall` 返回的 `call.stream`，而真实错误发生在**迭代
+   * 过程中**（dsh-llm 的 `iterator.next()`），不是 `prepareCall` 自己抛的
+   * ⇒ `try` 必须包住 `for await`。
+   *
+   * ## ⚠️⚠️ 只在「一个 chunk 都还没产出」时才能切换（本实现的关键约束）
+   *
+   * 已 `yield` 出去的内容**收不回来**。若某个候选先吐了「答案是……」然后中途失败，
+   * 我们再切到下一个候选，用户看到的是：
+   *
+   * ```
+   * 答案是……答案是 42。
+   *      ↑ A 的半截        ↑ B 的完整答案
+   * ```
+   *
+   * 这是**两段拼接的畸形回答**，比「半截 + 报错」严重得多 —— 前者看起来像一句
+   * 正常但奇怪的话，用户会当成模型的问题；后者至少明确告诉用户失败了。
+   * 本仓库对「静默降级」有明确红线（反复修过的那类缺陷），而拼接畸形内容更甚。
+   *
+   * ⇒ 规则：**该候选只要产出过「可见内容」，其后任何失败都直接向上抛**，不再尝试下一个。
+   * 「切换」只发生在「尚未产出任何可见内容」的失败上（连接失败、认证失败、上游立刻
+   * 返回错误 —— 这些恰好是跨渠道切换真正有价值的情形）。
+   *
+   * ## ⚠️ 为什么判据是「可见内容」而不是「任何 chunk」（Task 6 复审 M23）
+   *
+   * 初版用「产出过任何 chunk」作判据，于是候选**只吐了 `block-start` / `usage`
+   * 这类元数据帧**就失败时，也会放弃切换 —— 那是**过度保守**，白白丢掉一次
+   * 本可成功的切换机会。
+   *
+   * 而只产出元数据帧时切换是**安全**的（实测 `BlockAssembler` 的语义）：
+   * - `block-start` 是**幂等**的（`if (!this.partials.has(chunk.index))`）——
+   *   下一个候选重发同 index 的 `block-start` 不会产生重复块；
+   * - `usage` 是**覆盖**语义（`this._usage = chunk.usage`）—— 后到的会顶掉前一个；
+   * - 两者都**不含用户可见的正文**。
+   *
+   * ⇒ 判据：只有 `text` / `reasoning` / `image` / `tool-call` / `tool-result`
+   * 以及 `*-delta` / `block-end` 算「可见内容」；`block-start` 与 `usage` 不算。
+   * ⚠️ 未知类型一律**算可见内容**（保守方向：宁可少切换，不可拼接畸形回答）。
+   *
+   * ## 档位必须逐候选翻译
+   *
+   * 请求里的 `reasoningEffort` 来自**上一次对话**，可能带着别的模型族的档位名
+   * （如给只声明 `enabled` 的模型发 `xhigh`）。原样转发会被 DSH 按 id 严格校验
+   * 拦下 `UNSUPPORTED_REASONING_EFFORT`。故复用仓库既有的
+   * {@link translateReasoningEffort}：不可表达时**不下发该字段**而非抛错。
+   */
+  dispatch(targets, options, modelKey) {
+    const self = this;
+    return (async function* () {
+      let lastError;
+      const openedBlocks = /* @__PURE__ */ new Map();
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        let emitted = false;
+        let pendingProvider;
+        activeRoutes.record(AGGREGATE_PROVIDER, target.provider, target.realId, modelKey);
+        try {
+          for await (const chunk of self.streamThrough(target, options)) {
+            if (chunk.type === "finish" && chunk.reason.kind === "error") {
+              const upstreamCode = chunk.reason.failure.code;
+              const failure = chunk.reason.failure;
+              const message2 = `aggregate: ${target.provider}\uFF08${target.realId}\uFF09\u4E0A\u6E38\u5931\u8D25${describeFailure(failure)}`;
+              const code = typeof upstreamCode === "string" && upstreamCode.length > 0 ? upstreamCode : "SERVER";
+              const accepted = {};
+              const probe = (field, value) => {
+                if (value === void 0) return;
+                try {
+                  void new LlmError22(message2, code, { [field]: value });
+                  Object.assign(accepted, { [field]: value });
+                } catch {
+                }
+              };
+              probe("status", failure.status);
+              probe("providerRetryAfterMs", failure.providerRetryAfterMs);
+              probe("requestId", typeof failure.requestId === "string" ? ProviderRequestId(failure.requestId) : void 0);
+              lastError = new LlmError22(message2, code, accepted);
+              throw lastError;
+            }
+            if (chunk.type === "finish" && chunk.reason.kind === "aborted") {
+              throw abortError();
+            }
+            if (chunk.type === "block-start") {
+              openedBlocks.set(chunk.index, chunk.blockType);
+            }
+            if (isVisibleContent(chunk)) {
+              emitted = true;
+              pendingProvider = target.provider;
+            }
+            yield chunk;
+          }
+          if (pendingProvider !== void 0) {
+            self.activeProviderByModel.set(modelKey, pendingProvider);
+            self.lastActiveProvider = pendingProvider;
+          }
+          return;
+        } catch (error) {
+          lastError = error;
+          if (isAbortLike(error, options.signal)) throw error;
+          if (emitted) {
+            self.ctx.logger?.warn?.(
+              `[aggregate] ${target.provider}\uFF08${target.realId}\uFF09\u5728\u4EA7\u51FA\u5185\u5BB9\u540E\u5931\u8D25\uFF0C\u4E0D\u518D\u5207\u6362\u5019\u9009\uFF08\u5DF2\u4EA7\u51FA\u7684\u5185\u5BB9\u65E0\u6CD5\u64A4\u56DE\uFF09\uFF1A${String(error)}`
+            );
+            throw error;
+          }
+          if (openedBlocks.size > 0) {
+            const opened = [...openedBlocks.values()];
+            self.ctx.logger?.warn?.(
+              `[aggregate] ${target.provider}\uFF08${target.realId}\uFF09\u5DF2\u5F00\u542F ${JSON.stringify(opened)} \u5757\u540E\u5931\u8D25\uFF0C\u4E0D\u518D\u5207\u6362\u5019\u9009\uFF08BlockAssembler \u5BF9 block-start \u6309 index \u5E42\u7B49\u4E14\u4E0D\u66F4\u65B0 blockType\uFF0C\u800C\u4E0B\u4E00\u4E2A\u5019\u9009\u4F1A\u5F00\u4EC0\u4E48\u7C7B\u578B\u4E0D\u53EF\u9884\u77E5 \u21D2 \u5207\u6362\u53EF\u80FD\u628A\u5B83\u7684\u5185\u5BB9\u704C\u8FDB\u9519\u8BEF\u7C7B\u578B\u7684\u5757\uFF09\uFF1A${String(error)}`
+            );
+            throw error;
+          }
+          if (index + 1 < targets.length) {
+            self.ctx.logger?.warn?.(
+              `[aggregate] ${target.provider}\uFF08${target.realId}\uFF09\u5931\u8D25\uFF0C\u5207\u6362\u4E0B\u4E00\u4E2A\u5019\u9009\uFF1A${String(error)}`
+            );
+          }
+        }
+      }
+      throw lastError ?? new LlmError22("aggregate: \u6240\u6709\u5019\u9009\u90FD\u5931\u8D25", "SERVER");
+    })();
+  }
+  /** 把请求转发给一个候选，按目标档位表翻译 `reasoningEffort`。 */
+  streamThrough(target, options) {
+    const base = { ...options, provider: target.provider, model: target.realId };
+    const requested = options.reasoningEffort;
+    if (requested === void 0) return this.ctx.llm.stream(base);
+    const requestedEffort = String(requested);
+    if (target.efforts.length === 0) {
+      return this.ctx.llm.stream({ ...base, reasoningEffort: void 0 });
+    }
+    const mapped = translateReasoningEffort(requestedEffort, target.efforts);
+    if (mapped.kind === "exact") return this.ctx.llm.stream(base);
+    if (mapped.kind === "mapped") {
+      return this.ctx.llm.stream({
+        ...base,
+        reasoningEffort: ReasoningEffortId17(mapped.effort)
+      });
+    }
+    return this.ctx.llm.stream({ ...base, reasoningEffort: void 0 });
+  }
+  /** 从不直接被 stream（总是先经 prepareCall）；兜底抛错而非静默。 */
+  async *stream() {
+    throw new LlmError22("aggregate: \u8BF7\u901A\u8FC7\u6A21\u578B\u9009\u62E9\u5668\u4F7F\u7528", "INVALID_REQUEST");
+  }
+};
+function maxAttemptsFor(models) {
+  let longest = 1;
+  for (const model of models) {
+    if (model.candidates.length > longest) longest = model.candidates.length;
+  }
+  return Math.max(1, longest);
+}
+function aggregateReasoningInfo() {
+  return {
+    efforts: CANONICAL_REASONING_EFFORTS.map((effort) => ({
+      id: ReasoningEffortId17(effort),
+      name: AGGREGATE_EFFORT_LABELS[effort] ?? effort
+    })),
+    // ⚠️ 默认档取 `high`，**与各渠道自己的默认一致**：实测 buddy / trae / lobsterai
+    // 的 `defaultReasoningEffort` 清一色是 `high`（`product.ts` 里 14 处）。取它
+    // 则聚合与直连的体感一致；取 `medium` 会让用户觉得「聚合比直连想得少」，取
+    // `max` 则最费 token/积分 —— 与本功能「省钱烧临期」的目标相反。
+    defaultEffort: ReasoningEffortId17("high")
+  };
+}
+var AGGREGATE_EFFORT_LABELS = Object.freeze({
+  none: "\u5173\u95ED\u601D\u8003",
+  minimal: "\u6700\u5C0F",
+  low: "\u4F4E",
+  medium: "\u4E2D",
+  high: "\u9AD8",
+  xhigh: "\u6781\u9AD8",
+  max: "\u6700\u5927",
+  ultra: "\u6700\u5F3A"
+});
+function isVisibleContent(chunk) {
+  return chunk.type !== "block-start" && chunk.type !== "usage";
+}
+function describeFailure(failure) {
+  const parts = [];
+  if (typeof failure.message === "string" && failure.message.length > 0) parts.push(failure.message);
+  if (typeof failure.code === "string" && failure.code.length > 0) parts.push(`code=${failure.code}`);
+  if (typeof failure.status === "number" && Number.isInteger(failure.status) && failure.status >= 100 && failure.status <= 599) {
+    parts.push(`status=${failure.status}`);
+  } else if (typeof failure.status === "number") {
+    parts.push(`status=${String(failure.status)}\uFF08\u8D8A\u754C\uFF0C\u5DF2\u4E22\u5F03\uFF09`);
+  }
+  return parts.length === 0 ? "\uFF08\u4E0A\u6E38\u672A\u7ED9\u51FA\u539F\u56E0\uFF09" : `\uFF1A${parts.join(" ")}`;
+}
+function abortError() {
+  const error = new Error("aggregate: \u8BF7\u6C42\u5DF2\u4E2D\u6B62");
+  error.name = "AbortError";
+  error.code = "ABORTED";
+  return error;
+}
+function isAbortLike(error, signal) {
+  if (signal?.aborted === true) return true;
+  if (error === null || typeof error !== "object") return false;
+  const candidate = error;
+  if (candidate.name === "AbortError" || candidate.code === "ABORTED") return true;
+  const message2 = typeof candidate.message === "string" ? candidate.message : "";
+  return /aborted request|HTTP_?499/i.test(message2);
+}
+function registerAggregateLlm(ctx, options) {
+  const adapter = new AggregateAdapter(ctx, options);
+  registerAdapterIdempotent(
+    ctx.llm,
+    [AGGREGATE_PROVIDER],
+    adapter,
+    (message2) => ctx.logger?.warn?.(message2),
+    // ⚠️ **聚合必须完全不参与「失效模型」机制**（`enabled: false`：不记录、**也不过滤**）
+    // —— 真实缺陷（全分支终审 C2 + 审计轮次二补修的残留面）。
+    // 本机制是为「**编译期兜底快照**跟不上上游下架」设计的，而聚合层的目录是
+    // **动态推导**的（上游下架后下次推导自然消失）⇒ 既不需要记录，也不该被过滤。
+    // ① 记录的危害：观察到的是 `aggregate` + **虚拟键**（实测），于是「某一个渠道
+    //    没有该 realId」被记成「**整个规范模型**失效」，而它在其余渠道上完全可用；
+    //    且恢复入口 `model.clearDead` 的 UI 在设置页 provider 面板里，而客户端
+    //    `PROVIDERS` **没有 `aggregate`** ⇒ **没有任何 UI 能恢复**。
+    // ② 过滤的危害（补修的那半）：初版只跳过记录、仍保留过滤 ⇒ 若表里**已有**
+    //    旧版本写下的 `aggregate` 记录（C2 修复前跑过一次就会有），虚拟模型**仍被
+    //    隐藏**且同样无 UI 可恢复。实测探针：预置 `aggregate/m1` 后经真实装配的
+    //    `listModels` 只返回 `['auto','m2']`（`m1` 被隐藏）。
+    { enabled: false }
+  );
+  void adapter.refreshCatalog().catch((error) => {
+    ctx.logger?.warn?.(`[aggregate] \u6CE8\u518C\u540E\u9884\u70ED\u76EE\u5F55\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u53EF\u7528\u6027\uFF09\uFF1A${String(error)}`);
+  });
+  return adapter;
+}
+
+// vendor/channel-pack/src/modelscope-adapter.ts
+var DEFAULT_CATALOG_TTL_MS = 3e5;
+var catalogCache = /* @__PURE__ */ new Map();
+function parseModelscopeCatalog(body) {
+  const data = body?.data;
+  if (!Array.isArray(data)) return [];
+  const entries = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of data) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const record3 = raw;
+    const id = typeof record3.id === "string" ? normalizeModelscopeModelId(record3.id) : "";
+    if (id.length === 0 || seen.has(id)) continue;
+    seen.add(id);
+    const fallback = MODELSCOPE_FALLBACK_MODELS.find((m) => m.id === id);
+    const name2 = typeof record3.name === "string" && record3.name.trim().length > 0 ? record3.name.trim() : fallback?.name ?? id;
+    const remoteCtx = typeof record3.context_window === "number" ? record3.context_window : typeof record3.limit?.context === "number" ? record3.limit.context : 0;
+    const contextWindow = Number.isSafeInteger(remoteCtx) && remoteCtx > 0 ? remoteCtx : fallback?.contextWindow ?? 0;
+    const remoteModalities = Array.isArray(record3.modalities?.input) ? record3.modalities.input.filter((v) => typeof v === "string") : void 0;
+    const supportsImage = remoteModalities === void 0 ? fallback?.supportsImage ?? false : remoteModalities.includes("image");
+    entries.push({
+      id,
+      name: name2,
+      contextWindow,
+      supportsImage,
+      ...fallback?.efforts === void 0 ? {} : { efforts: fallback.efforts }
+    });
+  }
+  return entries;
+}
+async function loadModelscopeCatalog(fetchCatalog, apiKey, ttlMs2 = DEFAULT_CATALOG_TTL_MS, signal) {
+  const cached2 = catalogCache.get(apiKey);
+  if (cached2 !== void 0 && ttlMs2 > 0 && Date.now() - cached2.at < ttlMs2) return cached2.entries;
+  let entries;
+  try {
+    const response = await fetchCatalog(apiKey, signal);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const parsed = parseModelscopeCatalog(await response.json());
+    if (parsed.length === 0) throw new Error("\u7A7A\u76EE\u5F55");
+    entries = parsed;
+  } catch {
+    entries = MODELSCOPE_FALLBACK_MODELS.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contextWindow: m.contextWindow,
+      supportsImage: m.supportsImage,
+      ...m.efforts === void 0 ? {} : { efforts: m.efforts }
+    }));
+  }
+  catalogCache.set(apiKey, { at: Date.now(), entries });
+  return entries;
+}
+var RETRY_AFTER_CAP_MS = 30 * 6e4;
+var RATE_LIMIT_BASE_MS = 6e4;
+function modelscopeRetryAfterMs(kind, retryAfterMs, attempt, nowMs = Date.now()) {
+  if (retryAfterMs !== void 0) return Math.max(0, Math.min(retryAfterMs, RETRY_AFTER_CAP_MS));
+  if (kind === "quota") return Math.max(0, nextUtc8DayStartMs(nowMs) - nowMs);
+  return Math.min(RATE_LIMIT_BASE_MS * 2 ** Math.max(0, attempt - 1), RETRY_AFTER_CAP_MS);
+}
+var ModelscopeAdapter = class extends LlmAdapter15 {
+  constructor(options) {
+    super();
+    this.options = options;
+    this.product = options.product ?? MODELSCOPE;
+  }
+  options;
+  product;
+  /**
+   * 最近一次成功解析出的目录快照（**仅供同步路径**读取）。
+   *
+   * ⚠️ 它不是缓存 —— 权威缓存仍是 `loadModelscopeCatalog` 那份带 TTL 的
+   * （见 `catalog()` 的注释：在适配器上另立缓存会让目录永不过期）。
+   * 这里只是把「上一次的结果」留给 `listAllModels()` 那个**必须同步**的调用者。
+   */
+  lastCatalog;
+  providerInfo(provider) {
+    const id = typeof provider === "string" && provider.length > 0 ? provider : this.product.id;
+    return { id, name: this.product.displayName };
+  }
+  /**
+   * 完整目录（**同步**返回数组）。
+   *
+   * ⚠️ **绝不能写成 async**：`jet-hub-rpc.ts` 的 `ModelCatalogSource` 接口是
+   * 同步的且消费者**不 await**（`catalog = [...all]`），返回 Promise 会抛
+   * `TypeError: all is not iterable`（minimax 的同款真实缺陷）。
+   */
+  listAllModels() {
+    const remote = this.snapshotCatalog();
+    if (remote !== void 0) return remote.map((m) => ({ id: m.id, name: m.name }));
+    void this.warmCatalog();
+    return MODELSCOPE_FALLBACK_MODELS.map((m) => ({ id: m.id, name: m.name }));
+  }
+  /**
+   * 同步取「已缓存的远端目录」；没有缓存则返回 undefined。
+   *
+   * ⚠️ 只读缓存、**绝不发起网络请求** —— 本方法在 UI 的同步路径上被调用
+   * （`catalog = [...all]`，见 `jet-hub-rpc.ts` 的 `fullCatalogIds`）。
+   */
+  snapshotCatalog() {
+    const cached2 = this.lastCatalog;
+    return cached2 === void 0 || cached2.length === 0 ? void 0 : cached2;
+  }
+  /** 后台预热一次目录；失败静默（兜底表已保证 UI 可用）。 */
+  async warmCatalog() {
+    try {
+      await this.catalog();
+    } catch {
+    }
+  }
+  /** 当前生效的目录（远端优先，失败回退兜底）。 */
+  async catalog() {
+    const slots = await this.options.slots();
+    const slot2 = slots[0];
+    if (this.options.fetchRemoteCatalog === void 0 || slot2 === void 0) {
+      return MODELSCOPE_FALLBACK_MODELS.map((m) => ({
+        id: m.id,
+        name: m.name,
+        contextWindow: m.contextWindow,
+        supportsImage: m.supportsImage,
+        ...m.efforts === void 0 ? {} : { efforts: m.efforts }
+      }));
+    }
+    const entries = await loadModelscopeCatalog(this.options.fetchRemoteCatalog, slot2.apiKey);
+    this.lastCatalog = entries;
+    return entries;
+  }
+  async listModels(_provider) {
+    if (!await providerCatalogVisible(this.options.accountPool, this.product.id)) return [];
+    const slots = await this.options.slots();
+    if (slots.length === 0) return [];
+    const all = await this.catalog();
+    const disabled = this.options.disabledModels?.() ?? /* @__PURE__ */ new Set();
+    return all.filter((m) => !disabled.has(m.id)).map((m) => ({
+      provider: this.product.id,
+      id: m.id,
+      name: m.name,
+      // ⚠️ 能力表缺失/未知时**一律回退 `['text']`**（硬约定：声明支持就必须
+      // 真支持）。把「查不到」当成「支持」会让 DSH 把图片投影成上游不接受的形态。
+      inputModalities: m.supportsImage ? ["text", "image"] : ["text"]
+    }));
+  }
+  async resolveModel(provider, model, _signal) {
+    const id = normalizeModelscopeModelId(model);
+    const all = await this.catalog();
+    const entry = all.find((m) => m.id === id);
+    const resolved = {
+      provider,
+      id,
+      name: entry?.name ?? id,
+      inputModalities: entry?.supportsImage === true ? ["text", "image"] : ["text"]
+    };
+    const contextWindow = entry?.contextWindow ?? 0;
+    if (contextWindow > 0) resolved.context = { contextWindow };
+    const efforts = entry?.efforts ?? [];
+    if (efforts.length > 0) {
+      resolved.reasoning = {
+        efforts: efforts.map((effort) => ({
+          // ⚠️ `id` 是**品牌类型**（`ReasoningEffortId`），必须经它的构造函数。
+          id: ReasoningEffortId18(effort),
+          // ⚠️ 没有官方中文名时回退到 id 本身 —— 宁可显示英文原值，
+          // 也不猜一个可能错译的中文（与 opencode 同取向）。
+          name: effort === "none" ? "\u5173\u95ED" : effort
+        }))
+      };
+    }
+    return resolved;
+  }
+  async prepareCall(provider, model, signal) {
+    return { model: await this.resolveModel(provider, model, signal), stream: (o) => this.stream(o) };
+  }
+  /**
+   * 解析消息里的图片附件为 data URL。
+   *
+   * ⚠️ **模型不支持图片时直接抛 `UNSUPPORTED_CONTENT`**（而不是静默丢弃）——
+   * 静默丢弃会让用户以为模型看到了图（Qoder 图片事故的教训）。
+   * ⚠️ 附件字节读不出来时**不写入该条**：`openai-compat` 的
+   * `userContentParts` 遇到缺失会产出 `[image unavailable]` 占位，
+   * 至少让模型知道「这里本该有张图但没拿到」，而不是消息里凭空少一块。
+   */
+  async resolveImageUrls(model, messages) {
+    const refs = /* @__PURE__ */ new Map();
+    for (const message2 of messages) {
+      if (Array.isArray(message2.content)) collectImages(message2.content, refs);
+    }
+    if (refs.size === 0) return void 0;
+    const all = await this.catalog();
+    const entry = all.find((m) => m.id === normalizeModelscopeModelId(model));
+    if (entry?.supportsImage !== true) {
+      throw new LlmError23(
+        `modelscope: \u6A21\u578B "${model}" \u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF08\u80FD\u529B\u4EE5\u8FDC\u7AEF\u76EE\u5F55/\u515C\u5E95\u8868\u4E3A\u51C6\uFF09`,
+        "UNSUPPORTED_CONTENT"
+      );
+    }
+    if (this.options.readImage === void 0) {
+      throw new LlmError23("modelscope: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
+    }
+    const readImage = this.options.readImage;
+    const out = /* @__PURE__ */ new Map();
+    for (const [id, ref] of refs) {
+      const image = await readImage(ref);
+      if (image === void 0) continue;
+      out.set(id, `data:${image.mediaType};base64,${Buffer.from(image.data).toString("base64")}`);
+    }
+    return out;
+  }
+  /**
+   * 轮换：失败按「语义」标记该槽 → 换下一槽重发。
+   *
+   * 三条硬规则（见模块头的表）：
+   * 1. `tried` **跨迭代保留** —— 每次重置会让两个槽之间无限来回；
+   * 2. **已交付内容的流不重放**；
+   * 3. **认证类不写限流标记**（写它会放大成「全池被封」）。
+   */
+  async *stream(options) {
+    const slots = await this.options.slots(options.model);
+    if (slots.length === 0) {
+      throw new LlmError23(
+        "modelscope: \u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u8BF7\u5728 Jet Hub \u7684 ModelScope \u9762\u677F\u7C98\u8D34\u4E00\u4E2A API Key\uFF08https://modelscope.cn/my/myaccesstoken \u751F\u6210\uFF09\u3002",
+        "MISSING_CREDENTIAL"
+      );
+    }
+    const tried = /* @__PURE__ */ new Set();
+    const limited = [];
+    for (; ; ) {
+      const slot2 = slots.find((s) => !tried.has(s.id));
+      if (slot2 === void 0) {
+        throw new LlmError23(
+          `modelscope: \u6240\u6709\u8D26\u53F7\u5BF9\u8BE5\u6A21\u578B\u5747\u53D7\u9650${limited.length > 0 ? `\uFF08${limited.join("\u3001")}\uFF09` : ""}`,
+          "QUOTA_EXCEEDED"
+        );
+      }
+      tried.add(slot2.id);
+      reportLedgerAccount(this.product.id, slot2.id);
+      let delivered = false;
+      try {
+        for await (const chunk of this.streamVia(slot2, options)) {
+          delivered = true;
+          yield chunk;
+        }
+        return;
+      } catch (error) {
+        if (delivered) throw error;
+        if (error instanceof LlmError23 && error.code === "QUOTA_EXCEEDED") throw error;
+        if (isAbortLike(error, options.signal)) {
+          throw error;
+        }
+        const info = classifyModelscopeFailure(error);
+        if (info.kind === "invalid_request") {
+          throw new LlmError23(
+            `modelscope: \u8BF7\u6C42\u88AB\u4E0A\u6E38\u62D2\u7EDD\uFF08${info.detail}\uFF09`,
+            "BAD_REQUEST"
+          );
+        }
+        if (info.kind === "auth") {
+          if (tried.size >= slots.length) throw error;
+          limited.push(`${slot2.id}(\u8BA4\u8BC1\u5931\u8D25)`);
+          continue;
+        }
+        if (info.kind === "server" || info.kind === "transport") {
+          this.options.warn?.(`modelscope: \u8D26\u53F7 ${slot2.id} ${info.kind}\uFF0C\u6362\u4E0B\u4E00\u4E2A\uFF1A${info.detail}`);
+          if (tried.size >= slots.length) throw error;
+          continue;
+        }
+        if (info.kind === "context_window") {
+          throw error;
+        }
+        const resetAtMs = Date.now() + modelscopeRetryAfterMs(info.kind, info.retryAfterMs, tried.size);
+        await this.options.markLimited?.(slot2.id, options.model, resetAtMs);
+        limited.push(`${slot2.id}(${info.kind})`);
+      }
+    }
+  }
+  /** 指定槽发一次请求（轮换循环的复用单元）。 */
+  async *streamVia(slot2, options) {
+    const imageUrls = await this.resolveImageUrls(options.model, options.messages);
+    const messages = serializeMessages(
+      options.messages,
+      imageUrls
+    );
+    const payload = buildModelscopePayload({
+      model: normalizeModelscopeModelId(options.model),
+      messages,
+      ...options.system !== void 0 && options.system.length > 0 ? { system: options.system } : {},
+      ...options.tools !== void 0 ? { tools: options.tools } : {},
+      ...options.temperature !== void 0 ? { temperature: options.temperature } : {},
+      ...options.maxTokens !== void 0 ? { maxTokens: options.maxTokens } : {},
+      ...options.reasoningEffort !== void 0 ? { reasoningEffort: String(options.reasoningEffort) } : {}
+    });
+    const response = await fetch(modelscopeChatUrl(this.product), {
+      method: "POST",
+      headers: modelscopeHeaders(slot2.apiKey, "text/event-stream"),
+      body: JSON.stringify(payload),
+      ...options.signal === void 0 ? {} : { signal: options.signal }
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      const retryAfterMs = retryAfterMsFromResponse(response.headers);
+      const info = classifyModelscopeError(response.status, text, {
+        // ⚠️ `Headers` 无索引签名、不是 `Record<string,string>` ⇒ 必须显式转。
+        //    只取 `retry-after` 一格：`classifyModelscopeError` 内部只读它。
+        ...response.headers.get("retry-after") === null ? {} : { "retry-after": response.headers.get("retry-after") }
+      });
+      const code = info.kind === "quota" ? "QUOTA_EXCEEDED" : info.kind === "rate_limit" ? "RATE_LIMIT" : info.kind === "auth" ? "AUTH" : httpErrorCode(response.status);
+      throw new LlmError23(
+        `modelscope: HTTP ${response.status} \u2014 ${text.slice(0, 300)}`,
+        code,
+        {
+          status: response.status,
+          ...retryAfterMs === void 0 ? {} : { providerRetryAfterMs: retryAfterMs }
+        }
+      );
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/event-stream")) {
+      const peek = await response.text().catch(() => "");
+      throw new LlmError23(
+        `modelscope: \u4E0A\u6E38\u672A\u8FD4\u56DE\u4E8B\u4EF6\u6D41\uFF08content-type: ${contentType || "(\u7A7A)"}\uFF09\u2014\u2014\u901A\u5E38\u662F\u88AB\u98CE\u63A7\u62E6\u622A\uFF08\u7F51\u5173\u8FD4\u56DE 200 + HTML \u62E6\u622A\u9875\uFF09\u3002${peek === "" ? "" : ` \u670D\u52A1\u7AEF\u539F\u6587\uFF1A${peek.slice(0, 200)}`}`,
+        "SERVER",
+        { status: response.status }
+      );
+    }
+    yield* consumeOpenAiSse(
+      response,
+      options.signal !== void 0 ? { signal: options.signal } : {},
+      {
+        label: "modelscope",
+        firstTokenTimeoutMs: this.product.chatHeaderTimeoutMs,
+        chunkTimeoutMs: this.product.chunkTimeoutMs,
+        ...options.maxTokens !== void 0 ? { maxTokens: options.maxTokens } : {}
+      }
+    );
+  }
+};
+function classifyModelscopeFailure(error) {
+  const failure = typeof error === "object" && error !== null ? error : {};
+  const status = typeof failure.failure?.status === "number" ? failure.failure.status : 0;
+  const providerRetryAfterMs = typeof failure.failure?.providerRetryAfterMs === "number" && Number.isFinite(failure.failure.providerRetryAfterMs) ? failure.failure.providerRetryAfterMs : void 0;
+  const message2 = error instanceof Error ? error.message : String(error);
+  const info = classifyModelscopeError(status, message2);
+  return providerRetryAfterMs === void 0 ? info : { ...info, retryAfterMs: info.retryAfterMs ?? providerRetryAfterMs };
+}
+function registerModelscopeLlm(ctx, options) {
+  const product = options.product ?? MODELSCOPE;
+  const adapter = new ModelscopeAdapter(options);
+  registerAdapterIdempotent(ctx.llm, [product.id], adapter);
+  return adapter;
+}
+
 // vendor/channel-pack/src/gemini-auth.ts
-import { Service as Service12 } from "@deepseek-ai/cordis";
-import { credentialRef as credentialRef16 } from "@deepseek-ai/dsh-credentials";
+import { Service as Service13 } from "@deepseek-ai/cordis";
+import { credentialRef as credentialRef18 } from "@deepseek-ai/dsh-credentials";
 
 // vendor/channel-pack/src/gemini-oauth.ts
 import { createServer as createServer9 } from "node:http";
@@ -79644,7 +82087,7 @@ var GeminiRefreshTokenExpiredError = class extends Error {
     this.name = "RefreshTokenExpiredError";
   }
 };
-var GeminiAuth = class extends Service12 {
+var GeminiAuth = class extends Service13 {
   constructor(ctx, options = {}) {
     const product = options.product ?? GEMINI;
     super(ctx, options.serviceName ?? `${product.id}Auth`);
@@ -79679,7 +82122,7 @@ var GeminiAuth = class extends Service12 {
     return queue;
   }
   async readCredential(refName) {
-    const resolved = await this.ctx.credentials.resolve(credentialRef16(refName));
+    const resolved = await this.ctx.credentials.resolve(credentialRef18(refName));
     if (!resolved) return void 0;
     return parseGeminiCredential(resolved.value);
   }
@@ -79719,7 +82162,7 @@ var GeminiAuth = class extends Service12 {
    * 展示名走 `geminiAccountLabel`（邮箱优先，回退 `sub`）。
    */
   async persistLogin(credential, options) {
-    await this.ctx.credentials.set(credentialRef16(options.refName), JSON.stringify(credential));
+    await this.ctx.credentials.set(credentialRef18(options.refName), JSON.stringify(credential));
     return credential.sub === void 0 ? {} : { accountId: credential.sub };
   }
   /** 解析默认单凭据。 */
@@ -79736,7 +82179,7 @@ var GeminiAuth = class extends Service12 {
       throw new GeminiRefreshTokenExpiredError("\u51ED\u636E\u7F3A\u5C11 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
     }
     const next = await this.refreshCredential(credential);
-    await this.ctx.credentials.set(credentialRef16(this.credentialRefName), JSON.stringify(next));
+    await this.ctx.credentials.set(credentialRef18(this.credentialRefName), JSON.stringify(next));
   }
   /**
    * 续期**指定 ref**（RPC `account.refresh` / 定时器）。
@@ -79752,7 +82195,7 @@ var GeminiAuth = class extends Service12 {
       if (!isGeminiRefreshable(credential)) {
         throw new GeminiRefreshTokenExpiredError("\u51ED\u636E\u7F3A\u5C11 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
       }
-      const ref = credentialRef16(refName);
+      const ref = credentialRef18(refName);
       if (pool === void 0) {
         const next = await this.refreshCredential(credential);
         await this.ctx.credentials.set(ref, JSON.stringify(next));
@@ -79786,7 +82229,7 @@ var GeminiAuth = class extends Service12 {
   async refreshAll(pool) {
     const accounts = await pool.listAccounts(this.product.id);
     for (const entry of accounts) {
-      const ref = credentialRef16(entry.credentialRef);
+      const ref = credentialRef18(entry.credentialRef);
       let credential;
       try {
         const resolved = await this.ctx.credentials.resolve(ref);
@@ -79888,7 +82331,7 @@ var GeminiAuth = class extends Service12 {
     }
     for (const entry of entries) {
       try {
-        const ref = credentialRef16(entry.credentialRef);
+        const ref = credentialRef18(entry.credentialRef);
         const resolved = await this.ctx.credentials.resolve(ref);
         if (!resolved) continue;
         let credential = parseGeminiCredential(resolved.value);
@@ -79963,7 +82406,7 @@ var GeminiAuth = class extends Service12 {
 };
 
 // vendor/channel-pack/src/officeace-adapter.ts
-import { LlmAdapter as LlmAdapter14 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter16 } from "@deepseek-ai/dsh-llm";
 function basicAuthFingerprint(credential) {
   return `${credential.modelAppKey}\0${credential.modelAppSecret}\0${maasBaseUrlOf(credential)}`;
 }
@@ -79975,7 +82418,7 @@ function maasBaseUrlOf(credential) {
 function isMultimodalModel(model) {
   return OFFICEACE_MODELS.some((m) => m.id === model && m.multimodal === true);
 }
-var OfficeAceAdapter = class extends LlmAdapter14 {
+var OfficeAceAdapter = class extends LlmAdapter16 {
   constructor(options = {}) {
     super();
     this.options = options;
@@ -80568,7 +83011,7 @@ function createGeminiSigStore(ctx) {
 }
 
 // vendor/channel-pack/src/opencode-adapter.ts
-import { LlmAdapter as LlmAdapter15, LlmError as LlmError23, ReasoningEffortId as ReasoningEffortId17 } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter as LlmAdapter17, LlmError as LlmError25, ReasoningEffortId as ReasoningEffortId19 } from "@deepseek-ai/dsh-llm";
 
 // vendor/channel-pack/src/opencode-messages.ts
 var FREE_LANE_GATE_TOOLS = ["read"];
@@ -80695,7 +83138,7 @@ function buildOpencodeRequest(input) {
 }
 
 // vendor/channel-pack/src/opencode-stream.ts
-import { LlmError as LlmError22 } from "@deepseek-ai/dsh-llm";
+import { LlmError as LlmError24 } from "@deepseek-ai/dsh-llm";
 function record2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
 }
@@ -80704,7 +83147,7 @@ function createOpencodeFrameNormalizer(request3, warn) {
   const aliases = request3.toolAliases;
   const candidates = [...aliases.keys(), ...FREE_LANE_GATE_TOOLS];
   const fail2 = (detail) => {
-    throw new LlmError22(`opencode: ${detail}`, "PERMISSION_DENIED");
+    throw new LlmError24(`opencode: ${detail}`, "PERMISSION_DENIED");
   };
   const note = (detail) => {
     try {
@@ -81084,10 +83527,10 @@ function supportsOpencodeImage(capability) {
 function inputModalitiesOf(capabilities, modelId) {
   return supportsOpencodeImage(capabilities.find((c) => c.id === modelId)) ? ["text", "image"] : ["text"];
 }
-var DEFAULT_CATALOG_TTL_MS = 3e5;
-var catalogCache = /* @__PURE__ */ new Map();
-async function loadOpencodeCatalog(fetchCatalog, slot2, ttlMs2 = DEFAULT_CATALOG_TTL_MS) {
-  const cached2 = catalogCache.get(slot2.id);
+var DEFAULT_CATALOG_TTL_MS2 = 3e5;
+var catalogCache2 = /* @__PURE__ */ new Map();
+async function loadOpencodeCatalog(fetchCatalog, slot2, ttlMs2 = DEFAULT_CATALOG_TTL_MS2) {
+  const cached2 = catalogCache2.get(slot2.id);
   if (cached2 !== void 0 && ttlMs2 > 0 && Date.now() - cached2.at < ttlMs2) return cached2.entries;
   let entries;
   try {
@@ -81120,7 +83563,7 @@ async function loadOpencodeCatalog(fetchCatalog, slot2, ttlMs2 = DEFAULT_CATALOG
   } catch {
     entries = OPENCODE_FALLBACK_MODELS;
   }
-  catalogCache.set(slot2.id, { at: Date.now(), entries });
+  catalogCache2.set(slot2.id, { at: Date.now(), entries });
   return entries;
 }
 function pickSlot(slots, modelId, excluded) {
@@ -81131,17 +83574,17 @@ function pickSlot(slots, modelId, excluded) {
   }
   return void 0;
 }
-var RETRY_AFTER_CAP_MS = 30 * 6e4;
+var RETRY_AFTER_CAP_MS2 = 30 * 6e4;
 var FREE_USAGE_DEFAULT_MS = 24 * 60 * 6e4;
-var RATE_LIMIT_BASE_MS = 6e4;
+var RATE_LIMIT_BASE_MS2 = 6e4;
 function opencodeRetryAfterMs(kind, retryAfterMs, attempt) {
-  if (retryAfterMs !== void 0) return Math.max(0, Math.min(retryAfterMs, RETRY_AFTER_CAP_MS));
+  if (retryAfterMs !== void 0) return Math.max(0, Math.min(retryAfterMs, RETRY_AFTER_CAP_MS2));
   if (kind === "free_usage_limit") return FREE_USAGE_DEFAULT_MS;
   if (kind === "quota") return 24 * 60 * 6e4;
-  if (kind === "auth") return RATE_LIMIT_BASE_MS;
-  return Math.min(RATE_LIMIT_BASE_MS * 2 ** Math.max(0, attempt - 1), RETRY_AFTER_CAP_MS);
+  if (kind === "auth") return RATE_LIMIT_BASE_MS2;
+  return Math.min(RATE_LIMIT_BASE_MS2 * 2 ** Math.max(0, attempt - 1), RETRY_AFTER_CAP_MS2);
 }
-var OpencodeAdapter = class extends LlmAdapter15 {
+var OpencodeAdapter = class extends LlmAdapter17 {
   constructor(options) {
     super();
     this.options = options;
@@ -81210,7 +83653,7 @@ var OpencodeAdapter = class extends LlmAdapter15 {
         efforts: capability.efforts.map((effort) => ({
           // ⚠️ `id` 是**品牌类型**（`ReasoningEffortId`），必须经它的构造函数 ——
           // 与 Qoder 同款（`src/qoder-adapter.ts`）。
-          id: ReasoningEffortId17(effort),
+          id: ReasoningEffortId19(effort),
           // ⚠️ 没有官方中文的档位（models.dev 会下发 `minimal` / `xhigh` 等
           // Qoder 那份表里没有的值）**回退到 id 本身** —— 宁可显示英文原值，
           // 也不猜一个可能错译的中文。
@@ -81236,10 +83679,10 @@ var OpencodeAdapter = class extends LlmAdapter15 {
   async *stream(options) {
     const slots = await this.options.identitySlots();
     if (slots.length === 0) {
-      throw new LlmError23("opencode: \u6CA1\u6709\u53EF\u7528\u901A\u9053", "MISSING_CREDENTIAL");
+      throw new LlmError25("opencode: \u6CA1\u6709\u53EF\u7528\u901A\u9053", "MISSING_CREDENTIAL");
     }
     if (pickSlot(slots, options.model, /* @__PURE__ */ new Set()) === void 0) {
-      throw new LlmError23(
+      throw new LlmError25(
         `opencode: \u6A21\u578B "${options.model}" \u9700\u8981 API key \u8D26\u53F7\u901A\u9053\uFF08\u533F\u540D\u901A\u9053\u53EA\u652F\u6301\u514D\u8D39\u6A21\u578B\uFF09\uFF0C\u8BF7\u5148\u5728 Jet Hub \u7684 OpenCode \u9762\u677F\u6DFB\u52A0\u4E00\u4E2A\u8D26\u53F7`,
         "MISSING_CREDENTIAL"
       );
@@ -81249,7 +83692,7 @@ var OpencodeAdapter = class extends LlmAdapter15 {
     for (; ; ) {
       const slot2 = pickSlot(slots, options.model, tried);
       if (slot2 === void 0) {
-        throw new LlmError23(
+        throw new LlmError25(
           `opencode: \u6240\u6709\u901A\u9053\u5BF9\u8BE5\u6A21\u578B\u5747\u53D7\u9650${limited.length > 0 ? `\uFF08${limited.join("\u3001")}\uFF09` : ""}`,
           "QUOTA_EXCEEDED"
         );
@@ -81266,13 +83709,13 @@ var OpencodeAdapter = class extends LlmAdapter15 {
       } catch (error) {
         if (options.signal?.aborted) throw options.signal.reason ?? error;
         if (delivered) throw error;
-        if (error instanceof LlmError23 && (error.code === "QUOTA_EXCEEDED" || error.code === "PERMISSION_DENIED")) throw error;
+        if (error instanceof LlmError25 && (error.code === "QUOTA_EXCEEDED" || error.code === "PERMISSION_DENIED")) throw error;
         const info = classifyOpencodeFailure(error);
         if (info.kind === "free_tier") {
           this.options.warn?.(
             `opencode: \u514D\u8D39\u901A\u9053\u88AB FreeTierError \u62D2\u7EDD \u2014\u2014 \u68C0\u67E5 V2 \u7AEF\u70B9\u3001session \u7B97\u6CD5\u3001UA \u4E0E\u5DE5\u5177 schema\uFF1A${info.detail}`
           );
-          throw new LlmError23(
+          throw new LlmError25(
             `opencode: \u514D\u8D39\u901A\u9053\u88AB\u4E0A\u6E38\u62D2\u7EDD\uFF08FreeTierError\uFF09\u3002\u8BE5\u9519\u8BEF\u7531\u8BF7\u6C42\u534F\u8BAE\u95E8\u7981\u89E6\u53D1\uFF0C\u8BF7\u68C0\u67E5 V2 \u7AEF\u70B9\u3001session \u7B97\u6CD5\u3001\u8BF7\u6C42\u5934\u53CA\u5DE5\u5177\u63CF\u8FF0/schema\uFF1B\u6362 API key \u6216\u6362\u51FA\u53E3\u90FD\u65E0\u6548\u3002`,
             "PERMISSION_DENIED",
             { status: 403 }
@@ -81285,7 +83728,7 @@ var OpencodeAdapter = class extends LlmAdapter15 {
         }
         if (info.kind === "auth") {
           if (tried.size >= slots.length) throw error;
-          await this.options.markLimited?.(slot2.id, options.model, Date.now() + RATE_LIMIT_BASE_MS);
+          await this.options.markLimited?.(slot2.id, options.model, Date.now() + RATE_LIMIT_BASE_MS2);
           limited.push(`${slot2.id}(\u8BA4\u8BC1\u5931\u8D25)`);
           continue;
         }
@@ -81316,13 +83759,13 @@ var OpencodeAdapter = class extends LlmAdapter15 {
     if (refs.size === 0) return void 0;
     const capabilities = getOpencodeCapabilitiesSync();
     if (!supportsOpencodeImage(capabilities.find((c) => c.id === model))) {
-      throw new LlmError23(
+      throw new LlmError25(
         `opencode: \u6A21\u578B "${model}" \u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\uFF08\u80FD\u529B\u4EE5\u8FDC\u7AEF models.dev \u4E3A\u51C6\uFF09`,
         "UNSUPPORTED_CONTENT"
       );
     }
     if (this.options.readImage === void 0) {
-      throw new LlmError23("opencode: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
+      throw new LlmError25("opencode: \u56FE\u7247\u8F93\u5165\u9700\u8981\u9644\u4EF6\u670D\u52A1", "UNSUPPORTED_CONTENT");
     }
     const readImage = this.options.readImage;
     const out = /* @__PURE__ */ new Map();
@@ -81370,7 +83813,7 @@ var OpencodeAdapter = class extends LlmAdapter15 {
       ...options.signal !== void 0 ? { signal: options.signal } : {}
     };
     const headerController = new AbortController();
-    const headerTimer = setTimeout(() => headerController.abort(new LlmError23("opencode: \u7B49\u5F85\u54CD\u5E94\u5934\u8D85\u65F6", "TIMEOUT")), OPENCODE.chatHeaderTimeoutMs);
+    const headerTimer = setTimeout(() => headerController.abort(new LlmError25("opencode: \u7B49\u5F85\u54CD\u5E94\u5934\u8D85\u65F6", "TIMEOUT")), OPENCODE.chatHeaderTimeoutMs);
     let response;
     try {
       response = await proxyFetch(`${OPENCODE.baseUrl}${OPENCODE.chatPath}`, {
@@ -81386,7 +83829,7 @@ var OpencodeAdapter = class extends LlmAdapter15 {
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       const retryAfterMs = retryAfterMsFromResponse(response.headers);
-      throw new LlmError23(
+      throw new LlmError25(
         `opencode: HTTP ${response.status} \u2014 ${text.slice(0, 300)}`,
         httpErrorCode(response.status),
         {
@@ -81432,1383 +83875,6 @@ function sessionIdOf(options) {
 function registerOpencodeLlm(ctx, options) {
   const adapter = new OpencodeAdapter(options);
   registerAdapterIdempotent(ctx.llm, [OPENCODE.id], adapter);
-  return adapter;
-}
-
-// vendor/channel-pack/src/aggregate-adapter.ts
-import { LlmAdapter as LlmAdapter16, LlmError as LlmError24, ProviderRequestId, ReasoningEffortId as ReasoningEffortId18, contentHasImage as contentHasImage2 } from "@deepseek-ai/dsh-llm";
-
-// vendor/channel-pack/src/aggregate-catalog.ts
-function buildVirtualModels(catalogs) {
-  const byKey = /* @__PURE__ */ new Map();
-  for (const [provider, models2] of Object.entries(catalogs)) {
-    for (const model of models2) {
-      if (typeof model?.id !== "string" || model.id.trim().length === 0) continue;
-      const realName = typeof model.name === "string" && model.name.length > 0 ? model.name : model.id;
-      const mapped = canonicalKeyFor(provider, model.id, realName);
-      if (mapped === void 0) continue;
-      const entry = {
-        provider,
-        realId: model.id,
-        realName,
-        price: priceFactorFromName(realName),
-        via: mapped.via
-      };
-      const list = byKey.get(mapped.key);
-      if (list === void 0) byKey.set(mapped.key, [entry]);
-      else list.push(entry);
-    }
-  }
-  const models = [];
-  for (const [key, candidates] of byKey.entries()) {
-    candidates.sort((a, b) => a.provider !== b.provider ? a.provider.localeCompare(b.provider) : a.realId.localeCompare(b.realId));
-    models.push({ key, name: canonicalDisplayName(key), candidates });
-  }
-  models.sort((a, b) => b.candidates.length !== a.candidates.length ? b.candidates.length - a.candidates.length : a.key.localeCompare(b.key));
-  return models;
-}
-
-// vendor/channel-pack/src/aggregate-adapter.ts
-var AGGREGATE_PROVIDER = "aggregate";
-var AGGREGATE_AUTO_MODEL = "auto";
-var AGGREGATE_TTL_MS = 6e4;
-var AGGREGATE_CATALOG_TTL_MS = 6e4;
-var AGGREGATE_FALLBACK_CONTEXT_WINDOW = 2e5;
-var AggregateAdapter = class _AggregateAdapter extends LlmAdapter16 {
-  constructor(ctx, options) {
-    super();
-    this.ctx = ctx;
-    this.options = options;
-  }
-  ctx;
-  options;
-  /** 上次目录读取结果（面板与 listModels 共用一次推导）。 */
-  catalog = [];
-  /** 上次推导时刻（目录缓存的判据）。 */
-  catalogAt = 0;
-  /**
-   * **按虚拟模型**缓存的候选序（键 = 虚拟模型 id）。
-   *
-   * ## 为什么需要它（规格 §9 要求，初版漏实现 ⇒ 死配置）
-   *
-   * `candidatesFor` 会对每个候选渠道 `await probe(...)` —— 那是一次**上游余额
-   * GET**。而 `prepareCall` 是**每请求一次**（`dsh-llm/lib/index.js:1667`），
-   * 于是 `auto` 最坏每轮要打十几次余额查询；而**旧的 `auto` 有 60 秒缓存**
-   * （`auto-adapter.ts` 的 `AUTO_CHOICE_TTL_MS`）⇒ 新主路径反而**严格劣于**旧路径。
-   *
-   * ⚠️ 必须**按模型分别缓存**（规格 §9）：不同虚拟模型的候选表不同，共用一条会让
-   * A 模型的候选序被 B 模型的请求覆盖。
-   * ⚠️ 缓存的是**候选序**，不是「最终选中的渠道」—— 失败切换仍在同一次请求内
-   * 逐个尝试（那是 `dispatch` 的事，与本缓存无关）。
-   * ⚠️ 一分钟内临期时刻不会显著变化，故 60 秒 TTL 不破坏「临期优先」的语义。
-   */
-  choiceCache = /* @__PURE__ */ new Map();
-  /**
-   * 「上次**实际**转发成功的渠道」——按虚拟模型分别记录（P3，供用量徽标显示）。
-   *
-   * ## ⚠️ 语义是**真实历史**，不是预测
-   *
-   * 只在**产出可见内容时**写入（= 这个候选真的成功了）。**不做预测**：
-   * 预测的胜者可能因失败切换而实际未被使用，徽标显示一个错的渠道比不显示更误导。
-   *
-   * ## ⚠️ 纯内存、进程内
-   *
-   * 插件重启即清空 ⇒ 徽标「无历史 ⇒ 不渲染」（规格 §6.3 的 P4）。
-   * ⚠️ **不落盘**：这是展示用的瞬时状态，写盘只会带来无谓的 IO 与陈旧值
-   *（重启后显示一个早已不用的渠道，反而误导）。
-   *
-   * ⚠️ 与 `choiceCache` 的区别：那个缓存的是**候选序**（可预测），
-   * 本表记录的是**实际结果**（已发生）——两者不可互相推导。
-   */
-  activeProviderByModel = /* @__PURE__ */ new Map();
-  /**
-   * 每个候选（`provider\0realId`）的**能力**缓存：窗口 / 档位 / 图片。
-   *
-   * ## 为什么需要它
-   *
-   * 窗口推导（{@link contextWindowFor}）与派发前的能力解析（{@link capabilityOf}）
-   * 问的是**同一件事**，而两者都会被高频调用：
-   * - DSH 的 `buildModelCatalog` 对**目录里每个模型**都调一次 `resolveModelInfo`
-   *   （`dsh-api-session-controller/lib/index.js:506`）⇒ 窗口推导会在用户每次打开
-   *   模型选择器时对全部虚拟模型的全部候选各问一次；
-   * - `prepareCall` 每次请求都会对本次候选逐个解析能力。
-   *
-   * 没有缓存时同一份元数据会被反复解析（对**远端目录**类适配器是本地查表，
-   * 但对目录尚未拉全的适配器会重试拉取）。缓存让两者共用一次结果。
-   *
-   * ## ⚠️ 只缓存**成功**的结果，绝不缓存失败
-   *
-   * 失败时 `capabilityOf` 返回保守默认值（无档位 / 不支持图片 / 无窗口）。
-   * 把「这一次没问出来」缓存 60 秒会把**瞬时**故障固化成单向门 —— 那正是
-   * 本仓库反复修过的缺陷形态（见 `AGENTS.md` 的「`refreshable` 单向门」）。
-   * ⇒ 失败不写缓存，下一次调用照常重试；上游恢复后自动生效。
-   *
-   * ⚠️ 与目录同生命周期：{@link refreshCatalog} 重建目录时清空 —— 目录变了，
-   *    「哪些候选存在」就变了，缓存必须跟着失效。
-   */
-  capabilityCache = /* @__PURE__ */ new Map();
-  /**
-   * 每个虚拟模型（含 `auto`）的**窗口声明值**缓存。
-   *
-   * ⚠️ 判决结果是「候选集的最大值」，是个**纯函数**（同一份目录 + 同一份能力缓存
-   * 必然得到同一个值）⇒ 记忆化不改变语义，只是避免每次 `resolveModel` 都重算。
-   * ⚠️ 同样在 {@link refreshCatalog} 里清空（目录变了 ⇒ 候选集变了 ⇒ 最大值可能变）。
-   */
-  contextWindowCache = /* @__PURE__ */ new Map();
-  providerInfo(provider) {
-    return { id: provider, name: "\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09" };
-  }
-  /**
-   * 该虚拟模型下被**拒绝轮换**的候选集合，键是 `` `${provider}\u0000${realId}` ``。
-   *
-   * ⚠️ 用 `\u0000` 作分隔符（不是 `:` 或 `/`）：provider id 与 realId 里都可能含
-   * 冒号或斜杠（如 `cline-free/deepseek-v4.1-flash`），用它们会**误判**（把
-   * `a/b` + `c` 与 `a` + `b/c` 拼成同一个键）。NUL 在两者里都不可能出现。
-   */
-  rejectedIn(canonicalId) {
-    const table2 = this.options.rejections?.() ?? {};
-    const byProvider = table2[canonicalId];
-    const out = /* @__PURE__ */ new Set();
-    if (byProvider === void 0) return out;
-    for (const [provider, byRealId] of Object.entries(byProvider)) {
-      for (const [realId, flag] of Object.entries(byRealId)) {
-        if (flag === true) out.add(`${provider}\0${realId}`);
-      }
-    }
-    return out;
-  }
-  /**
-   * 该虚拟模型下**实际应被拒绝**的候选集合（**含 D4 的 id 漂移降级**）。
-   *
-   * ## ⚠️ 为什么需要它（规格 §0.3 D4 + §1.9 + §5.1 的成文要求）
-   *
-   * 规格 §5.1 的判据表：
-   * ```
-   * 查 (虚拟模型, provider, realId) 是否有拒绝记录
-   * ├─ 有精确匹配 → 拒绝该候选
-   * ├─ 无精确匹配，但该 (虚拟模型, provider) 下有**任何**拒绝记录
-   * │     且该记录对应的 realId **已不在当前候选中**（id 漂移）
-   * │     → 降级为渠道级拒绝（该虚拟模型下该渠道全部候选都被拒），并记一条 warn
-   * └─ 无记录 → 参与轮换
-   * ```
-   *
-   * ## ⚠️ 不实现它的**真实后果**（规格 §1.9 记录的静默失效）
-   *
-   * `lobsterai` 的候选 id 会随「远端可用 / 兜底」切换：远端是 `deepseek-flash`
-   *（真 V4.1 Flash），兜底表是 `deepseek-v4-flash`（更旧的型号）。
-   * 若拒绝记录只锁 `realId`，**状态一翻转就匹配不上、静默失效** ——
-   * 用户明确拒绝过的候选**悄悄复活**，而他以为还拒着。
-   *
-   * ⚠️ 降级判据是「该记录对应的 realId **已不在当前候选中**」——
-   *    **不是**「没有精确匹配」（那样会把「同渠道的另一个候选没被拒」也降级掉，
-   *    那是过度拒绝，方向相反的错误）。
-   *
-   * @param virtual - 当前的虚拟模型（用来知道该渠道眼下有哪些 realId）
-   * @returns 应拒绝的 `provider\u0000realId` 集合（**已展开为渠道级**，若降级发生）
-   */
-  rejectedFor(virtual) {
-    const table2 = this.options.rejections?.() ?? {};
-    const byProvider = table2[virtual.key];
-    const out = /* @__PURE__ */ new Set();
-    if (byProvider === void 0) return out;
-    for (const [provider, byRealId] of Object.entries(byProvider)) {
-      const currentIds = new Set(
-        virtual.candidates.filter((c) => c.provider === provider).map((c) => c.realId)
-      );
-      let hasExact = false;
-      for (const realId of currentIds) {
-        if (byRealId[realId] === true) {
-          out.add(`${provider}\0${realId}`);
-          hasExact = true;
-        }
-      }
-      if (currentIds.size === 0) continue;
-      if (hasExact) continue;
-      const hasDrifted = Object.entries(byRealId).some(([, flag]) => flag === true);
-      if (!hasDrifted) continue;
-      this.ctx.logger?.warn?.(
-        `[aggregate] ${virtual.key} \u4E0B ${provider} \u7684\u62D2\u7EDD\u8BB0\u5F55\u5DF2\u6F02\u79FB\uFF08\u8BB0\u5F55\u91CC\u7684 realId \u4E0D\u5728\u5F53\u524D\u5019\u9009 ${JSON.stringify([...currentIds])} \u4E2D\uFF09\u21D2 **\u964D\u7EA7\u4E3A\u6E20\u9053\u7EA7\u62D2\u7EDD**\uFF08\u8BE5\u6E20\u9053\u5728\u8FD9\u4E2A\u865A\u62DF\u6A21\u578B\u4E0B\u5168\u90E8\u5019\u9009\u90FD\u88AB\u62D2\uFF09\u3002\u26A0\uFE0F \u82E5\u8FD9\u662F\u8BEF\u5224\uFF0C\u8BF7\u5728\u8BBE\u7F6E\u9875\u300C\u805A\u5408\u300D\u9762\u677F\u7684\u8BE5\u6A21\u578B\u5B50\u5217\u8868\u91CC\u91CD\u65B0\u6253\u5F00\u5B83\uFF08\u90A3\u4F1A**\u6E05\u6389\u8BE5\u6E20\u9053\u7684\u5168\u90E8\u62D2\u7EDD\u8BB0\u5F55**\uFF0C\u542B\u5DF2\u6F02\u79FB\u7684\u65E7 id\uFF0C\u6545\u964D\u7EA7\u968F\u5373\u89E3\u9664\uFF09\u3002`
-      );
-      for (const realId of currentIds) out.add(`${provider}\0${realId}`);
-    }
-    return out;
-  }
-  /**
-   * 清空选型缓存。
-   *
-   * ⚠️ **改了拒绝表之后必须调它**：`choiceCache` 的 TTL 是 60 秒，而面板上的开关
-   * 是「立刻生效」的语义 —— 不清缓存的话，用户在面板上关掉的候选在 60 秒内仍会被
-   * 尝试（用户会以为开关坏了）。RPC 的 `aggregate.setRejected` / `clearRejected`
-   * 负责调用。
-   */
-  clearChoiceCache() {
-    this.choiceCache.clear();
-  }
-  /**
-   * 清空**临期折算缓存**（领取成功后由 RPC 调用）。
-   *
-   * ## ⚠️⚠️ 为什么领取之后必须清（真实缺陷，对抗审计实测证伪，2026-10-07）
-   *
-   * 折算缓存**也缓存 `UNUSABLE`**，而 `zcodeExpiry` 现在把「余额为 0」判成
-   * `UNUSABLE`（修掉「额度已尽仍被 auto 选中」的真实缺陷）。zcode 的每日赠送额度
-   * **要先领取才进 `balances` 桶** ⇒ 「先撞额度尽（写 `UNUSABLE`）→ 去签到 → 立刻用
-   * auto」时，**最长 60 秒内 auto 仍说没有候选**，用户会以为签到没用。
-   *
-   * ⚠️ 已有的两个清理入口（`pool.onAccountAdded` / 拒绝表变更）**都不覆盖领取**。
-   *
-   * ⚠️ 必须清**共享的**那一份探针（装配层 `src/index.ts` 把同一个实例同时给
-   * aggregate 与 auto）—— 只清一份会让 auto 仍看到旧的 `UNUSABLE`。
-   * 故这里清的是注入进来的 `options.expiryProbe`（与 auto 同一个对象）。
-   */
-  clearExpiryCache() {
-    const probe = this.options.expiryProbe;
-    probe?.clear?.();
-  }
-  /**
-   * 「上次**实际**转发成功的渠道」（P3，供用量徽标）。
-   *
-   * ⚠️ **纯内存读、零网络零余额查询** —— 徽标在**门控阶段**就要拿到它
-   *（规格 §6.3 的 P2：重定向必须发生在门控之前），查网络会让外层渲染抖动。
-   *
-   * @param canonicalId - 虚拟模型 id。**省略时返回「最近一次任意虚拟模型的转发渠道」**
-   *   （规格 §8.4：徽标只关心「当前在跑的是哪个渠道」，不必区分模型）。
-   *   实现上「最近一次」取 `Map` 的**最后一个插入项** —— 但 `Map` 的迭代顺序是
-   *   **插入顺序**而非「最近写入顺序」（覆盖已存在的键**不改变**其位置）。
-   *   ⚠️ 故这里**显式维护一个「最近写入」指针**，而不是依赖迭代顺序
-   *   （否则「切回一个之前用过的渠道」时顺序会错，徽标显示旧渠道）。
-   * @returns 渠道 id；无历史时 `null`（调用方据此**不渲染**徽标）。
-   */
-  activeProvider(canonicalId) {
-    if (typeof canonicalId === "string" && canonicalId.length > 0) {
-      return this.activeProviderByModel.get(canonicalId) ?? null;
-    }
-    return this.lastActiveProvider;
-  }
-  /** 最近一次（任意虚拟模型）实际转发成功的渠道；无历史时 `null`。 */
-  lastActiveProvider = null;
-  /**
-   * 「按临期排序」用的候选到期时刻（面板的可选按钮，用户 2026-10-07 选定方案 C）。
-   *
-   * ## ⚠️⚠️ 这是**唯一**会做余额探测的面板端点 —— 且**只在用户显式点击时**调用
-   *
-   * 为什么必须单独一个方法而不是给 `describeCatalog` 加参数：那个方法的契约是
-   * **零余额查询**（规格 §8.3，且有专门用例断言 `expiryProbe` 零调用）。
-   * 面板一打开就打十几次上游请求是不可接受的；而「按临期排序」**必须**探测才知道顺序。
-   * ⇒ 两者分开：默认零探测，用户点按钮才走这里。
-   *
-   * ## 为什么需要它（用户报障）
-   *
-   * 面板标题写「临期优先」，但候选列表来自 `aggregate-catalog.ts` 的
-   * `candidates.sort(...)` —— 那是按 `provider` **字母序**
-   * （用户原话：「codearts 的 4.1 flash 没有显示在最后」）。
-   * ⇒ 标题与列表**矛盾**（面板没说真话）。
-   *
-   * ## 返回形状
-   *
-   * `{ <provider>: expiry }` —— 按渠道去重（同一渠道的多个候选共享一次探测，
-   * 与 `candidatesFor` 的 `seen` 表同一口径，避免重复打上游）。
-   * ⚠️ 探测失败（`UNUSABLE`）也如实返回该值，由客户端决定怎么显示/排序
-   *（`sortCandidatesByExpiry` 把非有限值排最后）。
-   *
-   * ⚠️ **只读**：不改拒绝表、不写缓存、不落盘。
-   *
-   * @param force - `true` 时绕过探针自己的折算缓存（`EXPIRY_CACHE_TTL_MS` 60 秒）。
-   *   面板的「每 5 分钟自动重探」与用户手动点击都传 `true`（那两种情形要的是**新鲜**值）；
-   *   进入模式时那次传 `false`（省一次上游请求）。
-   */
-  async describeExpiryOrder(signal, force = false) {
-    await this.ensureCatalog();
-    signal?.throwIfAborted();
-    const probe = this.expiryProbe();
-    if (force) probe.clear?.();
-    const out = {};
-    for (const virtual of this.catalog) {
-      for (const candidate of virtual.candidates) {
-        if (!WIRED_EXPIRY_PROVIDERS.includes(candidate.provider)) continue;
-        if (Object.hasOwn(out, candidate.provider)) continue;
-        signal?.throwIfAborted();
-        try {
-          out[candidate.provider] = await probe(candidate.provider, signal);
-        } catch (error) {
-          if (isAbortLike(error, signal)) throw error;
-          out[candidate.provider] = UNUSABLE;
-        }
-      }
-    }
-    return out;
-  }
-  /**
-   * 组装给设置面板的目录（**只读、零余额查询**，规格 §8.3）。
-   *
-   * ⚠️⚠️ **不得调用 `expiryProbe` / `resolveModelInfo`** —— 面板一打开就会对每个
-   * 渠道打一次上游请求；而本端点只回答「有哪些虚拟模型、各自有哪些候选、哪些被拒」，
-   * 与余额无关。实时余额仍由各渠道自己的面板负责。
-   *
-   * ⚠️ 「按临期排序」需要探测 ⇒ 它走**单独的** {@link describeExpiryOrder}，
-   * 不在这里加参数（那会破坏本方法的零查询契约，且有专门用例断言）。
-   *
-   * ⚠️ 也**不得**改动拒绝表（纯读）。
-   *
-   * @param force - **绕过目录 TTL 缓存**（面板的「刷新」按钮用）。
-   *   ⚠️ 真实缺陷（对抗审计实测证伪）：初版**不传 force**，而 `refreshCatalog` 有
-   *   60 秒缓存 ⇒ 面板的「刷新」按钮实际是「读缓存」，用户在渠道侧新增/关闭模型后
-   *   点刷新**看不到任何变化**，会以为聚合坏了。同时 `refreshCatalog` 的 `force`
-   *   参数在**全仓零调用点**（死参数）—— 两处都是这条缺陷的一部分。
-   *   ⚠️ 只有**用户显式点刷新**时才传 `true`：`listModels` 等高频路径必须继续走缓存，
-   *   否则每次打开模型选择器都会重推整个目录。
-   */
-  async describeCatalog(force = false, signal) {
-    const catalog = await this.refreshCatalog(force, signal);
-    const models = catalog.map((virtual) => {
-      const rejected = this.rejectedFor(virtual);
-      const candidates = virtual.candidates.map((candidate) => {
-        const state = this.gateOf(virtual.key, candidate.provider, candidate.realId, rejected);
-        return {
-          provider: candidate.provider,
-          realId: candidate.realId,
-          realName: candidate.realName,
-          price: candidate.price,
-          // ⚠️ 面板据此标 `⚠️补丁`（规格 §7.1）—— 补丁条目是人工核查的重点。
-          viaPatch: candidate.via === "patch",
-          // ⚠️ 语义收窄：本字段现在等于「当前不参与轮换」（含默认不参与）。
-          rejected: state !== "allowed",
-          state,
-          expiryWired: WIRED_EXPIRY_PROVIDERS.includes(candidate.provider)
-        };
-      });
-      const currentKeys = new Set(candidates.map((c) => `${c.provider}\0${c.realId}`));
-      const order = (this.options.order?.() ?? {})[virtual.key]?.filter((key) => currentKeys.has(key)) ?? [];
-      return {
-        canonicalId: virtual.key,
-        name: this.nameOf(virtual),
-        candidates,
-        order
-      };
-    });
-    return { models, orderMode: this.options.orderMode?.() === "manual" ? "manual" : "expiry" };
-  }
-  /**
-   * 某条候选当前的三态门控（**唯一判据**，同步、零网络：只读注入的三张表）。
-   *
-   * ⚠️⚠️ **只有这一处实现**：`describeCatalog` 下发 `state`、`pickerNameOf` 统计
-   * 「当前参与」的价格，都调它。两处各写一遍判据必然漂移（本仓库有过「同一文件
-   * 两套同义判据」的缺陷史）。
-   *
-   * ⚠️ `WIRED_EXPIRY_PROVIDERS` 的引用也**只在此一处**（`candidatesFor` 的建池过滤
-   * 同样走本方法）⇒ 「谁的默认态是什么」这个问题全仓只有一个答案。
-   *
-   * @param degraded - 省略时内部算（`rejectedFor`）。传入可让调用方在循环里复用
-   *   同一次降级计算（`describeCatalog` 对每个虚拟模型算一次，避免每候选重算）。
-   */
-  gateOf(canonicalId, provider, realId, degraded) {
-    const rejectedSet = degraded ?? this.rejectedFor({
-      key: canonicalId,
-      candidates: [{ provider, realId }]
-    });
-    return resolveCandidateGate({
-      // ⚠️ 用**降级后**的集合（D4：渠道级拒绝也算该候选被拒）。
-      rejected: rejectedSet.has(`${provider}\0${realId}`),
-      allowed: (this.options.allowed?.() ?? {})[canonicalId]?.[provider]?.[realId] === true,
-      expiryWired: WIRED_EXPIRY_PROVIDERS.includes(provider)
-    });
-  }
-  /**
-   * 聚合路由状态的**内容指纹**（参与 `choiceCache` 的键，见 `candidatesFor`）。
-   *
-   * ⚠️ **四项缺一不可**（用户 2026-10-15 起：拒绝表 + 白名单 + 手工顺序表 + 排序模式）：
-   * 任何一项变了，缓存里的候选序（含**次序**）都不再成立。漏一项的症状是
-   * 「用户改了门控/顺序，随后最多 60 秒内仍按旧的走」—— **静默**（用户会以为开关坏了）。
-   *
-   * ⚠️ 拒绝表与白名单用**排序后的拼接**（与键的书写顺序无关：同一集合的不同书写顺序
-   * 是同一张表，不该导致缓存失效）；顺序表**不能**排序（它的**顺序本身就是语义**）；
-   * 模式直接拼接。
-   *
-   * ⚠️ 不要改成「条目数」之类的摘要：本仓库有过「缓存失效判据按数组长度」被实测证伪的
-   * 教训（两条不同内容长度相同 ⇒ 恒不失效）。
-   */
-  routingFingerprint() {
-    const enabledKeys = (table2) => {
-      const parts = [];
-      for (const [canonicalId, byProvider] of Object.entries(table2)) {
-        for (const [provider, byRealId] of Object.entries(byProvider)) {
-          for (const [realId, flag] of Object.entries(byRealId)) {
-            if (flag === true) parts.push(`${canonicalId}\0${provider}\0${realId}`);
-          }
-        }
-      }
-      return parts.sort();
-    };
-    const order = this.options.order?.() ?? {};
-    const orderParts = Object.keys(order).sort().map((key) => `${key}=${order[key].join(",")}`);
-    return [
-      enabledKeys(this.options.rejections?.() ?? {}).join(""),
-      enabledKeys(this.options.allowed?.() ?? {}).join(""),
-      orderParts.join(""),
-      this.options.orderMode?.() === "manual" ? "manual" : "expiry"
-    ].join("");
-  }
-  /**
-   * 手工位次函数：`orderMode === 'manual'` 且该模型**有**顺序表时给出，否则 `undefined`
-   *（⇒ `rankCandidates` 走临期序）。
-   *
-   * ⚠️ `auto` **恒为 `undefined`**（用户 2026-10-15 的取舍 Q6=C）：`auto` 的池是跨全部渠道的
-   *    巨池，「手工顺序」在那里没有可解释的含义 —— 用户拖的是**某个虚拟模型**的候选。
-   *
-   * ⚠️ 未排在数组里的候选返回 `undefined` ⇒ `rankCandidates` 把它们按
-   *    **临期↑ → 倍率↑** 追加在已排过的**之后**（新增候补因此不会消失）。
-   */
-  manualRankOf(model) {
-    if (model === AGGREGATE_AUTO_MODEL) return void 0;
-    if (this.options.orderMode?.() !== "manual") return void 0;
-    const order = (this.options.order?.() ?? {})[model];
-    if (order === void 0 || order.length === 0) return void 0;
-    const rank = /* @__PURE__ */ new Map();
-    for (const [index, key] of order.entries()) if (!rank.has(key)) rank.set(key, index);
-    return (candidate) => rank.get(`${candidate.provider}\0${candidate.realId}`);
-  }
-  /**
-   * 重新推导虚拟模型表（**带 TTL 缓存**，理由见 {@link AGGREGATE_CATALOG_TTL_MS}）。
-   *
-   * ⚠️ 逐个渠道 `try/catch`：某一个渠道目录读取失败**不得**让整个聚合目录变空
-   * （那会让用户在别的渠道都正常时突然看不到任何模型）。
-   *
-   * @param force - 绕过缓存（设置页手动刷新用）。
-   */
-  async refreshCatalog(force = false, signal) {
-    const now = this.options.now?.() ?? Date.now();
-    const ttl = this.options.catalogTtlMs ?? AGGREGATE_CATALOG_TTL_MS;
-    if (!force && this.catalogAt !== 0 && now - this.catalogAt < ttl) return this.catalog;
-    signal?.throwIfAborted();
-    const providers = this.providerIds();
-    const catalogs = {};
-    for (const provider of providers) {
-      try {
-        catalogs[provider] = await this.ctx.llm.listModels(provider);
-      } catch (error) {
-        signal?.throwIfAborted();
-        if (isAbortLike(error, signal)) throw error;
-        this.ctx.logger?.warn?.(
-          `[aggregate] \u8BFB\u53D6 ${provider} \u76EE\u5F55\u5931\u8D25\uFF0C\u672C\u6B21\u8DF3\u8FC7\u8BE5\u6E20\u9053\uFF1A${String(error)}`
-        );
-      }
-      signal?.throwIfAborted();
-    }
-    const previousIds = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)];
-    this.catalog = buildVirtualModels(catalogs);
-    this.catalogAt = now;
-    this.capabilityCache.clear();
-    this.contextWindowCache.clear();
-    this.maintainProviderClosedState(previousIds);
-    return this.catalog;
-  }
-  /**
-   * 若聚合 provider 处于「整个已关闭」态，则把**新增的**虚拟模型补进黑名单。
-   *
-   * ⚠️ 详见 {@link refreshCatalog} 末尾的长注释：这是为了弥补宿主
-   * 「一键关闭写快照」与「聚合目录动态推导」之间的语义缺口。
-   *
-   * @param previousIds - **上一次**推导出的全量目录（含 `auto`）——
-   *   用它判断「用户关的是整个 provider」而不是逐个关了某几个模型。
-   */
-  maintainProviderClosedState(previousIds) {
-    const readDisabled = this.options.accountPool.listDisabledModels;
-    if (typeof readDisabled !== "function") return;
-    const disabled = readDisabled.call(this.options.accountPool, AGGREGATE_PROVIDER);
-    const hasAnyDisabled = Object.values(disabled).some((flag) => flag === true);
-    if (!hasAnyDisabled) return;
-    const closedWholeProvider = previousIds.length > 0 && previousIds.every((id) => disabled[id] === true);
-    if (!closedWholeProvider) return;
-    const missing = [AGGREGATE_AUTO_MODEL, ...this.catalog.map((m) => m.key)].filter((id) => disabled[id] !== true);
-    if (missing.length === 0) return;
-    const writeDisabled = this.options.accountPool.setModelsDisabled;
-    if (typeof writeDisabled !== "function") return;
-    void writeDisabled.call(this.options.accountPool, AGGREGATE_PROVIDER, missing).catch((error) => {
-      this.ctx.logger?.warn?.(
-        `[aggregate] \u8865\u5199\u300C\u6574\u4E2A provider \u5DF2\u5173\u95ED\u300D\u7684\u9ED1\u540D\u5355\u5931\u8D25\uFF08\u4E0B\u6B21\u76EE\u5F55\u63A8\u5BFC\u4F1A\u518D\u8BD5\uFF09\uFF1A${String(error)}`
-      );
-    });
-  }
-  /**
-   * 参与聚合的渠道 id 白名单 —— **只含本插件注册的渠道**。
-   *
-   * ## ⚠️ 为什么必须是白名单，不能用 `listProviders()`
-   *
-   * 初版直接 `ctx.llm.listProviders()` 并注释成「本插件注册的全部渠道」，但那个 API
-   * 返回的是**宿主全部**存活路由 —— 它会纳入 `deepseek-account`、`pi-ai` 等
-   * **别的插件**的 provider（真实缺陷，全分支终审 I1）。后果：
-   *
-   * 1. **广告出无法路由的虚拟模型**：那些渠道的临期折算没接入（`createExpiryProbe`
-   *    只接了 buddy / workbuddy / loomy / codearts / zcode），一律折算成 `UNUSABLE`
-   *    ⇒ 它们的虚拟模型**永远没有可用候选**。用户选中后拿到的是
-   *    「没有任何可用候选（渠道被关闭、模型被关、或所有渠道都无可用账号）」——
-   *    把「该渠道尚未接入」**谎报成「你没登录」**，正是本仓库反复修的误导性报错。
-   * 2. **跨渠道归一被污染**：宿主自带 provider 的模型会被并进聚合目录
-   *    （实测 `deepseek-account:deepseek-flash` 与 `qoder:dfmodel` 会被合并成同一个
-   *    虚拟模型），使「跨渠道归一」把**非本插件渠道**也算成候选。
-   *
-   * ⚠️ 用字面量而非 import 各 `product.ts` 的常量：那要引入 12 个模块，显著加重本文件
-   * 的依赖；而这些 id 是**稳定契约**（`index.ts` 的 `modelAdapters` 表同样用字面量）。
-   * 新增 provider 时**两处都要加**。
-   *
-   * ## ⚠️ 本清单**有守卫**（2026-10-12 补）
-   *
-   * 原先本行写的是「（与 `modelAdapters` 同一约定）」—— 那句是**误导**：`modelAdapters`
-   * 当时已有两条守卫（源码文本抓多余键 + 行为抓漏键），而**本数组一条都没有**。
-   * 实测（对抗性审计）：从本数组删掉 `'gemini'` 后全量测试**依然全绿**，而线上后果是
-   * 该渠道的模型**永不进聚合目录**、用户看不到、`auto` 也不用，**无报错无日志**。
-   *
-   * 现由 `tests/unit/aggregate-adapter.spec.ts` 的
-   * 「★★ 聚合渠道白名单与 registry 对齐」守：它用 `listModels` 的**调用记录**反推本
-   * 数组（该常量是私有的，行为路径才拿得到），与 `PROVIDER_REGISTRY.filter(d => d.channel)`
-   * 做**集合**比对，漏一家即红并点名。
-   * ⚠️ 判据是**集合**不是有序：本数组与 registry 的尾部顺序**本来就不同**
-   *（本数组 `… gemini, zcode, opencode`，registry `… zcode, opencode, gemini`），
-   * 故不能要求有序相等；顺序本身在本数组内有语义，由下面的排列体现。
-   */
-  static AGGREGATE_CHANNELS = Object.freeze([
-    "codearts",
-    "buddy",
-    "workbuddy",
-    "lobsterai",
-    "qoder",
-    "qodercn",
-    "trae",
-    "cline",
-    "loomy",
-    "raccoon",
-    "minimax",
-    // ⚠️ MiniMax Code 国际版（2026-10-15）：与 `minimax` 是**两个 provider**
-    //    （账号不互通、API 主机不同）⇒ 必须各自登记，否则它的模型
-    //    **永不进聚合目录、静默不可见**（同款陷阱已复发三次：cline → accio → officeace）。
-    //
-    //    ⚠️⚠️ **但本行只是第 ① 层（模型层归并）**：决定候选表可见性的还有第二道
-    //    闸门 —— `WIRED_EXPIRY_PROVIDERS`（`aggregate-expiry.ts`）。minimax 系
-    //    （含国际版）**未接入临期折算**（`ProviderRuntime.expiry` 为 `undefined`）
-    //    ⇒ 折算恒 `UNUSABLE` ⇒ 它们的候选**仍被本文件那 4 处
-    //    `WIRED_EXPIRY_PROVIDERS` 过滤剔掉**。这与国内站**行为一致**（既有设计），
-    //    本次不改变它 —— 登记本数组只是让「目录层」两站都在，与国内站同款。
-    "minimaxintl",
-    "gemini",
-    "zcode",
-    "opencode",
-    // officeace（2026-10-12）：华为 MaaS 云端直连渠道，`channel: true`
-    // ⇒ 必须进聚合目录，否则它的模型**永不进聚合、静默不可见**。
-    // ⚠️ 本数组**只是第一道门**（模型层归并）。真正决定「在不在候选表里」的是
-    //    `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`：
-    //      ① **轮换候选**的闸门 = `aggregate-expiry.ts` 的「未接入 ⇒ `UNUSABLE`」短路
-    //         （下面 `candidatesFor` 的建池处**不**按它过滤 —— 未接入渠道由那条短路
-    //          折算成 `UNUSABLE`，再由 `rankCandidates` 剔除）；
-    //      ② 本文件另有 **4 处**按它过滤（探测排序 / 面板候选 / 虚拟模型播报 /
-    //         选择器价格后缀），管的是面板与元数据面。
-    //    只加本数组是**无效接线**，症状静默；且「渠道会进聚合目录」**只在它的模型
-    //    与已接入渠道共用规范名时成立** —— **独有模型**会被 `refreshCatalog` 的
-    //    `.some(...)` 过滤整个剔掉，连目录都进不去。
-    // ✅ officeace 白名单**已于 2026-10-13 补齐**（`026a7db` "feat(officeace):
-    //    接入聚合轮换"）：折算原语 `officeaceExpiry`（与 buddy 系同形，逐包
-    //    `expiresAt`）+ `WIRED_EXPIRY_PROVIDERS` + `provider-expiry.ts` 的
-    //    `createProviderExpiry()` 三处同改，后两者的一致性由
-    //    `expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁住。
-    //    ⚠️ 本注释此前写着「officeace **未接入**……可接而未接」，那句在
-    //    2026-10-13 之后**已过期**（同类陷阱再次出现，见 accio 那条）——
-    //    留着它会让人以为聚合里看不到 officeace，故更正。
-    "officeace",
-    // ⚠️⚠️ accio（阿里 Accio Work，2026-10-13）—— 两件事**都要**做，缺一即静默：
-    //    ① 加进本数组（进聚合目录）；
-    //    ② 加进 `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`（进**候选表**）。
-    //
-    //    ⚠️ **只做 ① 是无效接线**（2026-10-13 合并审计实测）：决定候选可见性的
-    //    是 `WIRED_EXPIRY_PROVIDERS` —— 本文件有 4 处按它过滤（探测/候选/虚拟模型/
-    //    价格）。当时 accio 的 `PRIMARY_CHANNEL` 与 `CANONICAL_OVERRIDES` 都配对了
-    //    （`canonicalKeyFor` 返回 `via: 'patch'` ⇒ 归并到 `qwen3-8-flash`），
-    //    但候选层被那道闸门剔掉 ⇒ **用户要的「轮换列表里要有 accio」并没有实现**，
-    //    且症状静默（无报错、无日志）。现两处都补齐。
-    "accio"
-  ]);
-  /**
-   * 本插件注册的渠道 id（`aggregate` 与 `jet-hub-auto` 自身除外）。
-   *
-   * ⚠️ 先取 `listProviders()` 的**存活路由**再与白名单取交集：这样宿主没装载的渠道
-   * 不会进目录（否则会广告出连适配器都没有的模型），同时**排除**别的插件的 provider。
-   */
-  providerIds() {
-    let alive;
-    try {
-      alive = new Set(this.ctx.llm.listProviders().map((info) => info.id));
-    } catch {
-      alive = /* @__PURE__ */ new Set();
-    }
-    return _AggregateAdapter.AGGREGATE_CHANNELS.filter((id) => alive.has(id) && id !== AGGREGATE_PROVIDER && id !== "jet-hub-auto");
-  }
-  /**
-   * 对外播报虚拟模型（含 `auto`），**套用户黑名单**。
-   *
-   * ## ⚠️⚠️ 2026-10-16：另加一条「**全部候选都是「无临期积分且没打开」**⇒ 不播报」
-   *
-   * 用户验收反馈原话：「默认不参与轮换的无临期模型（没有一个打开轮换）则**不显示在
-   * 选择模型的列表中的聚合模型下属的列表中**」。
-   *
-   * ### 为什么这条**不违反**「候选全被拒 ≠ 关闭模型」的成文不变式（判据是**分档**）
-   *
-   * 两种「没有任何候选在轮换」必须分开对待 —— 这是本次改动的**全部要害**：
-   *
-   * | 情形 | 选择器 | 理由 |
-   * |---|---|---|
-   * | 用户**主动**把候选全拒（`rejected`） | **仍播报** | 那是既有成文不变式（`jet-hub-store.ts` 的「候选全被拒 ≠ 关闭模型」）。模型留在选择器里，用户选中它拿到**如实**报错，回面板重新打开即恢复 —— 若藏起来，恢复入口就消失了 |
-   * | 候选**全是**「无临期积分且用户没打开」（`default-rejected`） | **不播报** | 用户**从未**对该模型做过任何决定，它进选择器只会得到「没有任何可用候选」（第 4 种原因的报错）。⚠️ 它**仍在聚合面板里**（那才是唯一的打开入口），故**恢复路径没有丢** |
-   * | 混合（一部分被拒、一部分默认） | **仍播报** | 里面含用户**主动**做的决定 ⇒ 归第一档 |
-   *
-   * ⇒ 判据是「**所有**候选都 `default-rejected`」，**不是**「没有候选在轮换」。
-   * ⚠️ 别把它简化成后者 —— 那会把「用户主动全拒」的模型也藏掉，正是上面那张表第一行禁止的。
-   *
-   * ⚠️ **只作用于本方法（模型选择器）**：
-   *   - `describeCatalog`（聚合面板）**不受影响** —— 面板必须能看到并打开它们；
-   *   - `listAllModels`（设置页的开关清单）与 `provider.status` 的 `total` **不受影响**
-   *     —— 目录身份保持稳定（`this.catalog` 不随门控漂移，这是上面那份不变式的另一半）。
-   */
-  async listModels(provider) {
-    const models = await this.refreshCatalog();
-    const disabled = this.options.accountPool.disabledModelsFor(AGGREGATE_PROVIDER);
-    const entries = [];
-    if (!disabled.has(AGGREGATE_AUTO_MODEL)) entries.push(this.autoModelInfo());
-    for (const model of models) {
-      if (disabled.has(model.key)) continue;
-      if (this.isAllDefaultsUnopened(model)) continue;
-      entries.push({ provider, id: model.key, name: this.pickerNameOf(model), inputModalities: ["text", "image"] });
-    }
-    return entries;
-  }
-  /**
-   * 该虚拟模型的候选是否**全部**是「无临期积分且用户没打开」（`default-rejected`）。
-   *
-   * ⚠️ **判据必须逐条看三态**，不能写成「没有 allowed」—— 后者会把
-   * 「用户主动全拒」（`rejected`）也算进来，而那**必须仍播报**（见 `listModels` 的表）。
-   *
-   * ⚠️ 无候选 ⇒ `false`（「无候选」是另一回事：那是该渠道模型下架，不是用户的选择）。
-   */
-  isAllDefaultsUnopened(model) {
-    if (model.candidates.length === 0) return false;
-    const rejected = this.rejectedFor(model);
-    return model.candidates.every((candidate) => this.gateOf(model.key, candidate.provider, candidate.realId, rejected) === "default-rejected");
-  }
-  /**
-   * **不套黑名单**的全量目录 —— 设置页要用它渲染开关。
-   *
-   * ⚠️ 与其余 14 个适配器的同名方法同约定：被用户关闭的模型也必须出现在这里，
-   * 否则用户在设置页**连开关都摸不着**（`jet-hub-rpc.ts` 对 `model.list` 的
-   * 注释记录了该缺陷）。
-   * ⚠️ 必须是**同步**方法（`jet-hub-rpc.ts` 的 `ModelCatalogSource` 契约要求），
-   * 故只读上一次推导结果（由 {@link listModels} 刷新）。
-   */
-  listAllModels() {
-    return [
-      { id: AGGREGATE_AUTO_MODEL, name: this.autoModelInfo().name },
-      ...this.catalog.map((model) => ({ id: model.key, name: this.pickerNameOf(model) }))
-    ];
-  }
-  /** `auto` 的元数据。 */
-  autoModelInfo() {
-    return {
-      provider: AGGREGATE_PROVIDER,
-      id: AGGREGATE_AUTO_MODEL,
-      name: "Auto\uFF08\u805A\u5408 \xB7 \u8DE8\u6E20\u9053\uFF09",
-      description: "\u4E0D\u6307\u5B9A\u6A21\u578B\uFF1A\u5728\u6240\u6709\u6E20\u9053\u7684\u6240\u6709\u53EF\u7528\u6A21\u578B\u91CC\u6311\u79EF\u5206\u6700\u5FEB\u4F5C\u5E9F\u7684\u90A3\u4E2A\u3002",
-      inputModalities: ["text", "image"]
-    };
-  }
-  /** 虚拟模型的展示名 —— **设置页与解析路径用**（不带倍率，见 {@link pickerNameOf}）。
-   *
-   * ⚠️ **不加「（单渠道）」之类的后缀**（与 brief 初版的 `nameOf` 不同）：
-   * 设计文档 §12.1（`docs/superpowers/specs/2026-10-06-aggregate-provider-design.md`
-   * 的「关于 `auto-adapter.ts` 的三处名字」一节）把新 provider
-   * 定成「目录展示规范名 + 运行期渠道后缀」**单一形态**，并逐字写死三处的名字都是
-   * 规范名（`listModels` / `resolveModel` → `DeepSeek V4.1 Flash`；`prepareCall`
-   * → `DeepSeek V4.1 Flash · buddy`）。加后缀会让选择器与服务端目录名不一致，
-   * 且 `prepareCall` 会拼出 `…（单渠道） · buddy` 这类双重后缀。
-   * 「有没有冗余渠道」是**设置页**的信息（§7.3：按厂商分组、组内按候选渠道数降序、
-   * 展开看逐条候选），不该混进模型展示名。
-   *
-   * ⚠️ 本方法**保持无倍率**：`resolveModel` 与 `describeCatalog` 的返回值被三处
-   * 既有断言逐字钉住（`aggregate-adapter.spec.ts:88`、`aggregate-rejections.spec.ts:251`、
-   * `aggregate-catalog.spec.ts:21` 全是 `'DeepSeek V4.1 Flash'`），且 `describeCatalog`
-   * 的候选子列表**逐条**显示倍率（`candidateRowLabel`）—— 在模型名上再叠一次
-   * 会出现「两个倍率」的重复展示。倍率只加在**模型选择器**那一条路径上，
-   * 即 {@link pickerNameOf}。
-   */
-  nameOf(model) {
-    return model.name;
-  }
-  /**
-   * **模型选择器**里的展示名 = 规范名 + 倍率后缀（如 `GLM-5.3-Flash · 最低 x0.06`）。
-   *
-   * ## 为什么需要它（用户报障 2026-10-08）
-   *
-   * 用户原话：「没倍率显示？」—— 切到聚合后，选择器里每条虚拟模型**都没有倍率**，
-   * 而同屏的普通渠道（`GLM-5.3-Flash · x0.06`）有。用户据此无法判断「聚合给我
-   * 挑的是不是便宜的那个」，而本功能的全部卖点正是「省钱烧临期」。
-   *
-   * 根因：`nameOf` 只回规范名，而倍率其实**早就算好了** ——
-   * `aggregate-catalog.ts` 的 `CandidateEntry.price` 就是 `priceFactorFromName(realName)`
-   * 的结果，只是从没被展示层用过。
-   *
-   * ## ⚠️⚠️ 为什么文案是「**最低** x…」而不是直接 `· x…`（真实缺陷，复审实测）
-   *
-   * 初版取全局最小 `price` 并直接拼成 `· x0.03`，其注释推理是「轮换的**第二**判据
-   * 是同临期档内倍率升序 ⇒ 最便宜候选最可能被选中」。**该推理在跨临期档时不成立**：
-   * `rankCandidates` 的第一判据是**临期升序**，倍率只在**同档内**才起作用。
-   * 复审实测（真实 `lib/aggregate-adapter.js` + 真实 `prepareCall`）：
-   *
-   * ```
-   * 候选：buddy x0.29（临期 100，最早） / codearts x0.03（临期 900）
-   * 选择器显示："DeepSeek V4.1 Flash · x0.03"   <-- 让用户以为会挑便宜的
-   * 实际发往  ：["buddy"]                         <-- 实际挑的是最贵的
-   * ```
-   *
-   * ⇒ 直接写 `x0.03` 会**误导用户**，与本 PR 自己在 `types.ts` 立下的判据
-   *（「往静态名里写死倍率就是编造」）同型：显示的价与实际会用的价不符。
-   *
-   * ⚠️ 修法**不是**「按临期最早那档取最便宜候选」：`CandidateEntry` 里**没有**
-   * `expiry`（临期是运行期由 `expiryProbe` 折算的，见 `aggregate-expiry.ts`），
-   * 而本方法被 `listModels` / `listAllModels` 调用、**契约要求同步**
-   *（`ModelCatalogSource` 的注释）⇒ 这里根本拿不到临期档。若为它改成异步或
-   * 触发一轮余额查询，代价远大于收益（选择器渲染路径不能打网络）。
-   * ⇒ 采用**如实表达下界**的口径：`最低 x0.03` 的语义是「这个虚拟模型下最便宜的
-   * 可路由候选」，它**不声称**本次会选它 —— 用户据此仍能判断「值不值得选这个
-   * 模型」，且不会被误导成「一定会用 0.03」。
-   *
-   * ⚠️ **不显示「区间」**（如 `x0.03–x0.29`）：那会变成最长行，而选择器是窄菜单
-   *（与 `buddy-adapter.ts` 的「不写 `（促销 …）`」同一取舍）。
-   *
-   * ## 三条不显示倍率的规则（都是既有约定）
-   *
-   * 1. **全部候选都无标注**（`Infinity`）⇒ 不加后缀。直接拼会渲染出
-   *    `xInfinity`，那是明显的渲染缺陷（`aggregate-panel-logic.js` 同款判据）。
-   * 2. **`0` 显示「免费」**（本仓库既有口径，见 `candidateRowLabel`）。
-   * 3. **解析不出就不猜**：宁可没有倍率，也不编一个（`buddy.ts` 同款理由：
-   *    编造倍率比不显示更糟）。
-   *
-   * ⚠️ 只用于 `listModels` / `listAllModels`（选择器与设置页「显示列表」）。
-   * **不得**用于 `resolveModel` / `describeCatalog` —— 见 {@link nameOf} 的注释。
-   */
-  pickerNameOf(model) {
-    const rejected = this.rejectedFor(model);
-    const prices = model.candidates.filter((candidate) => this.gateOf(model.key, candidate.provider, candidate.realId, rejected) === "allowed").map((candidate) => candidate.price).filter((price) => Number.isFinite(price));
-    if (prices.length === 0) return model.name;
-    const best = Math.min(...prices);
-    return `${model.name} \xB7 \u6700\u4F4E ${best === 0 ? "\u514D\u8D39" : `x${best}`}`;
-  }
-  /**
-   * 解析某个虚拟模型的能力元数据。
-   *
-   * ⚠️ `provider`/`id` 必须**按入参回填**（多虚拟模型下不能硬编码）：DSH 的
-   * `normalizeModelInfo` 逐字校验，不符即 `INVALID_MODEL_INFO`。
-   * ⚠️ `inputModalities` 恒含 `image`：聚合是整池，池里有能看图的渠道，如实声明；
-   * 「这次选中的渠道收不收得了图」由分发阶段改道保证。
-   * ⚠️ **档位声明规范化档位的并集**（不是候选集交集）—— 理由见下方
-   * {@link aggregateReasoningInfo} 的注释。
-   * ⚠️ **窗口声明候选集的<u>最大值</u>**（不是写死、也不是取小）——
-   * 理由与失效形态见 {@link AggregateAdapter.contextWindowFor}。
-   */
-  /**
-   * 解析一个虚拟模型。
-   *
-   * ⚠️ `signal` 是**本适配器自己加的可选第三参**（`LlmAdapter` 契约只要求前两个）——
-   *    `prepareCall` 拿得到 signal（它是第三参），把它透传到目录读取，
-   *    否则真实请求路径的取消**不生效**（见 `ensureCatalog` 的长注释）。
-   *    ⚠️ DSH 运行时直接调本方法时**不传**第三参，那是正常的（缓存命中时无需取消）。
-   */
-  async resolveModel(provider, model, signal) {
-    if (model === AGGREGATE_AUTO_MODEL) {
-      const info = this.autoModelInfo();
-      await this.ensureCatalog(signal);
-      return {
-        provider,
-        id: model,
-        name: info.name,
-        ...info.description === void 0 ? {} : { description: info.description },
-        inputModalities: ["text", "image"],
-        // `auto` 的候选池 = **所有渠道的所有模型**（与 `candidatesFor` 的池同语义）
-        // ⇒ 它的窗口是整池的最大值（通常就是池里最大的那个 1M）。
-        context: { contextWindow: await this.contextWindowFor(model, this.autoCandidates(), signal) },
-        reasoning: aggregateReasoningInfo()
-      };
-    }
-    await this.ensureCatalog(signal);
-    const virtual = this.catalog.find((entry) => entry.key === model);
-    if (virtual === void 0) {
-      const available2 = this.catalog.slice(0, 5).map((entry) => entry.key).join("\u3001");
-      throw new LlmError24(
-        `aggregate: \u672A\u77E5\u6A21\u578B\u300C${model}\u300D\u3002\u5F53\u524D\u53EF\u7528\uFF1Aauto${available2 === "" ? "" : `\u3001${available2}`}\uFF08\u5B8C\u6574\u6E05\u5355\u89C1\u6A21\u578B\u9009\u62E9\u5668\u91CC\u7684\u300C\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09\u300D\u5206\u7EC4\uFF09`,
-        "INVALID_REQUEST"
-      );
-    }
-    return {
-      provider,
-      id: model,
-      name: this.nameOf(virtual),
-      inputModalities: ["text", "image"],
-      context: { contextWindow: await this.contextWindowFor(model, virtual.candidates, signal) },
-      reasoning: aggregateReasoningInfo()
-    };
-  }
-  /**
-   * `auto` 的候选池：所有虚拟模型的候选**并集**（按 `provider\0realId` 去重）。
-   *
-   * ⚠️ 与 `candidatesFor` 的 `auto` 分支同语义（那边还要叠加拒绝表过滤；本方法
-   *    **不过滤拒绝** —— 窗口声明是「这个池里最大能到多少」，被拒的候选仍在池的
-   *    物理能力范围内，且拒绝表随时可能被改回来）。
-   * ⚠️ 去重是必要的：同一候选可能归属多个虚拟模型（如同一 realId 同时归入两个
-   *    规范名），重复解析虽被 `capabilityCache` 吸收，但会让循环做无用功。
-   */
-  autoCandidates() {
-    const seen = /* @__PURE__ */ new Set();
-    const out = [];
-    for (const virtual of this.catalog) {
-      for (const candidate of virtual.candidates) {
-        const key = `${candidate.provider}\0${candidate.realId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ provider: candidate.provider, realId: candidate.realId });
-      }
-    }
-    return out;
-  }
-  /**
-   * 目录为空时先推导一次（避免 resolveModel 在 listModels 之前被调用时找不到模型）。
-   *
-   * ⚠️⚠️ **必须接收并透传 `signal`**（真实缺陷，独立审计实测证伪）：
-   *   本方法原先调 `this.refreshCatalog()` **不传 signal** ⇒ **真实请求路径**
-   *  （`prepareCall` → `resolveModel` → 本方法）的中止**不生效** ——
-   *   实测「取消于 50ms 仍跑满 312ms 的 `listModels` 才抛错」。
-   *   此前只有 `describeCatalog`（面板路径）串了 signal，故 `refreshCatalog`
-   *   自己的中止逃逸是对的，但**调用它的真实路径拿不到取消信号**。
-   */
-  async ensureCatalog(signal) {
-    if (this.catalog.length === 0) await this.refreshCatalog(false, signal);
-  }
-  /** 当前的临期探针：注入优先，否则保守返回 UNUSABLE。 */
-  expiryProbe() {
-    return this.options.expiryProbe ?? (() => Promise.resolve(UNUSABLE));
-  }
-  /**
-   * 绑定「本次候选序」到一次分发。
-   *
-   * ⚠️ 候选序必须在**这里**算好（`prepareCall` 是异步的）：返回的 `stream` 闭包
-   * 契约是**同步返回 AsyncIterable**（`PreparedAdapterCall`），闭包里拿不到
-   * `await` 的机会 ⇒ 临期折算、档位表都得在这之前备齐。
-   */
-  async prepareCall(_provider, model, signal) {
-    const resolved = await this.resolveModel(AGGREGATE_PROVIDER, model, signal);
-    const targets = await this.candidatesFor(model, signal);
-    if (targets.length === 0) {
-      throw new LlmError24(
-        `aggregate: \u300C${model}\u300D\u5F53\u524D\u6CA1\u6709\u4EFB\u4F55\u53EF\u7528\u5019\u9009\uFF08\u6E20\u9053\u88AB\u5173\u95ED\u3001\u6A21\u578B\u88AB\u5173\u3001\u6240\u6709\u6E20\u9053\u90FD\u65E0\u53EF\u7528\u8D26\u53F7\uFF0C\u6216\u8BE5\u6A21\u578B\u7684\u5019\u9009\u5728\u805A\u5408\u9762\u677F\u91CC\u672A\u53C2\u4E0E\u8F6E\u6362\uFF09\u3002\u8BF7\u5728 Jet Hub \u8BBE\u7F6E\u9875\u7684\u300C\u805A\u5408\u300D\u9762\u677F\u91CC\u68C0\u67E5\u5404\u5019\u9009\u662F\u5426\u53C2\u4E0E\u8F6E\u6362\uFF08\u65E0\u4E34\u671F\u79EF\u5206\u7684\u5019\u9009\u9ED8\u8BA4\u4E0D\u53C2\u4E0E\uFF0C\u53EF\u9010\u6761\u6253\u5F00\uFF09\uFF0C\u6216\u6362\u7528\u300C\u805A\u5408\uFF08\u8DE8\u6E20\u9053\u4E34\u671F\u4F18\u5148\uFF09\u300D\u5206\u7EC4\u4E0B\u7684\u5176\u5B83\u6A21\u578B\u3001\u6216\u76F4\u8FDE\u5BF9\u5E94\u6E20\u9053\u4F7F\u7528\u8BE5\u6A21\u578B\u3002`,
-        "MISSING_CREDENTIAL"
-      );
-    }
-    const imageTargets = targets.filter((target) => target.imageCapable);
-    return {
-      /**
-       * ⚠️ 模型名后缀附的是「**首选**渠道」（候选序第一个 = 临期最早的那个），
-       * **不是**「本次实际发往的渠道」。
-       *
-       * ## 为什么做不到「实际发往」（架构约束，不是疏忽）
-       *
-       * `prepareCall` 是**同步返回元数据 + 一个 stream 入口**的函数，而 DSH 在
-       * **发起请求之前**就要拿到 `model.name`（它用于 UI 展示与账目归属）。
-       * 而「实际发往哪个渠道」只有在 {@link dispatch} 真正尝试成功之后才确定
-       *（候选序第一个可能失败并切换）。两者是**不同时刻**的信息。
-       *
-       * ⚠️ 我用 `· <渠道>` 加 `title` 说明它是**首选**（而不是改文档去承诺做不到的事）。
-       * 真实历史由 `activeProvider()` 记录，由用量徽标显示（那条链路是准确的）。
-       * ⚠️ README 原写「本次实际发往的渠道」—— **那是过度承诺**，已同步订正。
-       */
-      model: {
-        ...resolved,
-        // 后缀是**首选**渠道（临期最早），失败时会切换。
-        name: `${resolved.name} \xB7 ${targets[0].provider}`,
-        description: `\u805A\u5408\u8DEF\u7531\uFF1A\u9996\u9009 ${targets[0].provider}\uFF08\u4E34\u671F\u6700\u65E9\uFF09\uFF1B\u5931\u8D25\u4F1A\u6309\u5019\u9009\u5E8F\u81EA\u52A8\u5207\u6362`
-      },
-      stream: (options) => {
-        const hasImage = options.messages.some((message2) => contentHasImage2(message2.content));
-        if (!hasImage) return this.dispatch(targets, options, model);
-        if (imageTargets.length === 0) {
-          throw new LlmError24(
-            `aggregate: \u300C${model}\u300D\u7684\u5019\u9009\u6E20\u9053\u90FD\u4E0D\u652F\u6301\u56FE\u7247\u8F93\u5165\u3002\u8BF7\u6362\u4E00\u4E2A\u652F\u6301\u56FE\u7247\u7684\u6A21\u578B\uFF0C\u6216\u53BB\u6389\u56FE\u7247\u540E\u91CD\u8BD5\u3002`,
-            "INVALID_REQUEST"
-          );
-        }
-        this.ctx.logger?.warn?.(
-          `[aggregate] \u5E26\u56FE\u8BF7\u6C42\uFF1A\u6539\u7528\u652F\u6301\u56FE\u7247\u7684 ${imageTargets.length} \u4E2A\u5019\u9009\uFF08\u5171 ${targets.length} \u4E2A\uFF09\uFF0C\u9996\u4E2A\u4E3A ${imageTargets[0].provider}\uFF08${imageTargets[0].realId}\uFF09`
-        );
-        return this.dispatch(imageTargets, options, model);
-      }
-    };
-  }
-  /**
-   * 构造本次请求的候选序（临期升序 → 倍率升序），并备好每条的档位表。
-   *
-   * ⚠️ **带按虚拟模型的 TTL 缓存**（规格 §9）—— 否则每次 `prepareCall` 都要对每个
-   * 候选渠道重跑一次上游余额查询（见 {@link choiceCache} 的长注释）。
-   */
-  async candidatesFor(model, signal) {
-    await this.ensureCatalog();
-    signal?.throwIfAborted();
-    const now = this.options.now?.() ?? Date.now();
-    const ttl = this.options.ttlMs ?? AGGREGATE_TTL_MS;
-    const cacheKey = `${model}\0${this.routingFingerprint()}`;
-    const cached2 = this.choiceCache.get(cacheKey);
-    if (cached2 !== void 0 && now - cached2.at < ttl) return cached2.targets;
-    const probe = this.expiryProbe();
-    const pool = [];
-    if (model === AGGREGATE_AUTO_MODEL) {
-      for (const virtual of this.catalog) {
-        const rejected = this.rejectedFor(virtual);
-        for (const candidate of virtual.candidates) {
-          if (this.gateOf(virtual.key, candidate.provider, candidate.realId, rejected) !== "allowed") continue;
-          pool.push({ provider: candidate.provider, realId: candidate.realId, expiry: NEVER, price: candidate.price });
-        }
-      }
-    } else {
-      const virtual = this.catalog.find((entry) => entry.key === model);
-      if (virtual === void 0) return [];
-      const rejected = this.rejectedFor(virtual);
-      for (const candidate of virtual.candidates) {
-        if (this.gateOf(virtual.key, candidate.provider, candidate.realId, rejected) !== "allowed") continue;
-        pool.push({ provider: candidate.provider, realId: candidate.realId, expiry: NEVER, price: candidate.price });
-      }
-    }
-    const available2 = await this.availableByModel(pool, signal);
-    const usable = pool.filter((candidate) => {
-      if (available2.get(candidate) !== false) return true;
-      candidate.expiry = UNUSABLE;
-      return false;
-    });
-    const seen = /* @__PURE__ */ new Map();
-    for (const candidate of usable) {
-      if (!WIRED_EXPIRY_PROVIDERS.includes(candidate.provider)) {
-        candidate.expiry = NEVER;
-        continue;
-      }
-      let expiry = seen.get(candidate.provider);
-      if (expiry === void 0) {
-        try {
-          expiry = await probe(candidate.provider, signal);
-        } catch (error) {
-          signal?.throwIfAborted();
-          if (isAbortLike(error, signal)) throw error;
-          expiry = UNUSABLE;
-        }
-        seen.set(candidate.provider, expiry);
-      }
-      candidate.expiry = expiry;
-    }
-    signal?.throwIfAborted();
-    const ranked = rankCandidates(pool, this.manualRankOf(model));
-    const limit = maxAttemptsFor(this.catalog);
-    const targets = [];
-    for (const candidate of ranked.slice(0, limit)) {
-      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal);
-      targets.push({ ...candidate, efforts: capability.efforts, imageCapable: capability.imageCapable });
-    }
-    if (targets.length > 0) this.choiceCache.set(cacheKey, { at: now, targets });
-    return targets;
-  }
-  /**
-   * 逐个候选问账号池「该候选**自己的模型**上还有可用账号吗」。
-   *
-   * ## ⚠️⚠️ 为什么返回**映射**而不是「过滤后的数组」（真实缺陷，对抗审计实测证伪）
-   *
-   * 我上一版返回「过滤后的数组」，调用方拿它去折算临期 —— 但**建池时每个候选的
-   * `expiry` 初值是 `NEVER`**，而 `rankCandidates`（`aggregate-core.ts`）
-   * **只剔除 `UNUSABLE`**（`NEVER` 是合法排序值：「可用、只是不临期」）。
-   * ⇒ 被过滤掉的候选 `expiry` 仍是 `NEVER`，**照样进入候选序**、只是排最后；
-   * 当前面的候选失败时**回落到它**（`targets` 逐个尝试）。
-   *
-   * 实测：buddy 可用 + codearts 在该模型上额度已尽 ⇒ 候选序 `[buddy, codearts]`，
-   * buddy 失败后请求**发往 codearts** —— 缺陷只是被推迟而非消除。
-   *
-   * ⇒ 必须让调用方**显式把 `expiry` 置 `UNUSABLE`**（那才是 `rankCandidates` 读的字段）。
-   * 返回映射就是为了让「谁不可用」这个事实能落到调用方的赋值上。
-   *
-   * ## ⚠️⚠️ 为什么必须按 `realId` 复核，不能只靠临期折算
-   *
-   * 各 provider 的「额度耗尽」是按 **modelId** 记账的：
-   * `AccountPool.getAvailableAccount` / `listAvailableCredentials` 都按
-   * `entry.modelRateLimits[modelId]` 过滤候选（`account-pool.ts`），
-   * 而 codearts 的 benefit（免费额度）耗尽正是写进那里的
-   * （`llm-adapter.ts` 的三处 `updateModelRateLimit` 调用）。
-   *
-   * 但 `createExpiryProbe` 取号时用的模型键是**该渠道目录的第一个模型**
-   * （`src/index.ts` 的 `firstModelIdOf`：`models[0]?.id`），而**聚合层要派发的是
-   * 候选自己的 `realId`** —— 两者常常不是同一个模型（一个虚拟模型会挂多渠道多模型的
-   * 候选表）。于是：
-   *
-   * | 场景 | 探测用的键 | 实际派发 | `modelRateLimits` 过滤 | 结果 |
-   * |---|---|---|---|---|
-   * | auto | `firstModelOf`（= 实际派发） | 同一个 | ✓ 生效 | 已覆盖 |
-   * | **aggregate** | `models[0]` | **候选 `realId`** | ✗ **失效** | **缺口可达** |
-   *
-   * ## 返回值
-   *
-   * `Map<候选, 是否有可用账号>`：`false` = 明确查到「该模型上无可用账号」；
-   * `true` = 有可用账号 / 池未实现该方法 / 查询异常（后两者是**保留**的取舍）。
-   * ⚠️ 用 `Map` 而非 `Set` 是为了让「查过且为真」与「没查」在类型上可区分 ——
-   * 虽然调用方按 `=== false` 判据处理，两者等价。
-   *
-   * ## 取舍
-   *
-   * - ⚠️ **只在池实现了 `getAvailableAccount` 时过滤**：它是既有 API，但大量单测桩
-   *   只实现了 `disabledModelsFor`（见 `{@link refreshCatalog}` 的注释）。缺失时**跳过过滤**而不是
-   *   判成不可用 —— 宁可少筛一层，不可把整池误剔除（与 `aggregate-expiry.ts` 对
-   *   `listAvailableCredentials` 缺失时的降级同一取向）。
-   * - ⚠️ 查询失败（抛错）时**保留该候选**：一次池查询异常不该让渠道整体消失。
-   * - ⚠️ **中止必须原样逃逸**（与 `candidatesFor` / `capabilityOf` 同一口径，
-   *   本仓库已在该缺陷上复发三次）。
-   */
-  async availableByModel(pool, signal) {
-    const out = /* @__PURE__ */ new Map();
-    const accountPool = this.options.accountPool;
-    if (typeof accountPool.getAvailableAccount !== "function") return out;
-    for (const candidate of pool) {
-      signal?.throwIfAborted();
-      try {
-        const available2 = await accountPool.getAvailableAccount(candidate.provider, candidate.realId);
-        out.set(candidate, available2 !== null && available2 !== void 0);
-      } catch (error) {
-        if (isAbortLike(error, signal)) throw error;
-        out.set(candidate, true);
-      }
-    }
-    return out;
-  }
-  /**
-   * 取目标模型的**三项**能力：**上下文窗口**、**思考档位 id**、**是否收得了图片**。
-   *
-   * ⚠️ 三项**共用同一次 `resolveModelInfo` 调用** —— 不额外发请求。这是把窗口与
-   * 图片能力做成「顺带取回」而不是「另查一遍」的原因（选型路径上每次请求都会走这里，
-   * 多一次解析就是多一次上游交互）。
-   *
-   * ⚠️ 失败时按**保守**方向回落：窗口 `undefined`（不编造，由调用方兜底）、
-   * 档位为空（不下发该字段）、图片为 `false`（不把它当带图候选）。
-   * 理由见 {@link DispatchTarget.imageCapable} 与 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW}。
-   *
-   * ⚠️ **成功的解析结果进 {@link capabilityCache}**（见那里的长注释：失败**不**缓存）。
-   */
-  async capabilityOf(provider, realId, signal) {
-    const key = `${provider}\0${realId}`;
-    const cached2 = this.capabilityCache.get(key);
-    if (cached2 !== void 0) return cached2;
-    try {
-      const info = await this.ctx.llm.resolveModelInfo(provider, realId, signal);
-      const efforts = (info.reasoning?.efforts ?? []).map((effort) => String(effort.id)).filter((id) => id.length > 0);
-      const capability = {
-        efforts,
-        imageCapable: info.inputModalities?.includes("image") === true,
-        resolved: true,
-        ...info.context === void 0 ? {} : { contextWindow: info.context.contextWindow }
-      };
-      this.capabilityCache.set(key, capability);
-      return capability;
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (isAbortLike(error, signal)) throw error;
-      return { efforts: [], imageCapable: false, resolved: false };
-    }
-  }
-  /**
-   * 该虚拟模型的**上下文窗口声明值**：**候选集的最大值**。
-   *
-   * ## 口径（设计文档 §4.1「ctx / 图片 / 档位取候选集的能力并集」）
-   *
-   * 取**最大值**而不是最小值/交集，理由与档位取并集同源：
-   *
-   * - 声明的窗口是给**宿主**看的（压缩阈值 + 占用指示器），而一次请求实际发往
-   *   哪个候选**在声明时还没定**（`prepareCall` 是发起请求之前就返回元数据的）。
-   *   取最小值意味着「池里有一条 262144 的候选，就把整池按 262144 声明」——
-   *   用户明明在用 1M 的渠道，界面与压缩却按最小的那条算，与本条报障同类；
-   * - 取最大值后，若某次真的切到了窗口更小的候选，**由既有的失败切换兜住**
-   *   （上游报超长 → 换下一个候选重试）。代价是可能白跑一轮，而最小值口径的
-   *   代价是**每一次**请求都被按最小窗口过早压缩 —— 后者持续存在，前者只在
-   *   恰好选中小窗口候选时发生。
-   *
-   * ⚠️ **一个候选的窗口都取不到时**（渠道全部未登录 / 该渠道的 `resolveModel`
-   * 不声明窗口）回落到 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW} —— 不能返回
-   * `undefined`，`dsh-compaction-basic` 会抛 `TargetPressureConfigError`。
-   *
-   * ⚠️ 本方法**不做任何余额探测**（`resolveModel` 会被 `buildModelCatalog` 对
-   * 目录里每个模型各调一次），只是读/填能力缓存。
-   *
-   * ⚠️ **取不到窗口的候选也进入循环**：它不拉低结果，但要为它解析一次能力 ——
-   * 解析结果会进缓存，供同一候选在派发路径上复用。
-   *
-   * ## ⚠️⚠️ 只有当**每一个候选都解析成功**时才记忆化结果
-   *
-   * 这是本条实现里最容易写错的一处（本用例第一版就写错了，被自己写的用例抓住）。
-   * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进 `contextWindowCache`，那么：
-   *
-   * 1. 目录服务抖动一次 ⇒ 该虚拟模型在 60 秒（目录 TTL）内恒声明兜底值，
-   *    **即使上游早已恢复**；
-   * 2. 更糟的是失效时机也错位 —— 缓存键是虚拟模型，与「哪个候选失败了」无关，
-   *    于是**一个**候选的瞬时故障会污染整个虚拟模型的声明值。
-   *
-   * 这正是 `AGENTS.md` 记录的「`refreshable` 单向门」同型缺陷：把一次瞬时失败
-   * 固化成持续状态。⇒ 失败时**返回值照给**（调用方需要立即拿到一个可用值），
-   * 但**不写缓存**，下一次调用会重新尝试解析。
-   *
-   * @param modelKey - 虚拟模型 id（含 `auto`），仅用于记忆化。
-   * @param candidates - 该虚拟模型的候选表（`auto` 传全池候选）。
-   */
-  async contextWindowFor(modelKey, candidates, signal) {
-    const remembered = this.contextWindowCache.get(modelKey);
-    if (remembered !== void 0) return remembered;
-    let widest;
-    let allResolved = true;
-    for (const candidate of candidates) {
-      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal);
-      if (!capability.resolved) allResolved = false;
-      const window = capability.contextWindow;
-      if (window !== void 0 && (widest === void 0 || window > widest)) widest = window;
-    }
-    const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW;
-    if (allResolved) this.contextWindowCache.set(modelKey, resolved);
-    return resolved;
-  }
-  /**
-   * 按候选序**逐个尝试**，成功即返回；全部失败则抛最后一个错误。
-   *
-   * ## 为什么必须自己实现失败切换
-   *
-   * DSH 层没有跨 provider 重试：`dsh-llm-retry` 的 `retryStateKey(provider, policyKey)`
-   * 只重试**同一** provider/model。故跨渠道切换只能在这里做。
-   *
-   * ## 为什么 `catch` 要包在**迭代过程**外层
-   *
-   * 生产路径只走 `prepareCall` 返回的 `call.stream`，而真实错误发生在**迭代
-   * 过程中**（dsh-llm 的 `iterator.next()`），不是 `prepareCall` 自己抛的
-   * ⇒ `try` 必须包住 `for await`。
-   *
-   * ## ⚠️⚠️ 只在「一个 chunk 都还没产出」时才能切换（本实现的关键约束）
-   *
-   * 已 `yield` 出去的内容**收不回来**。若某个候选先吐了「答案是……」然后中途失败，
-   * 我们再切到下一个候选，用户看到的是：
-   *
-   * ```
-   * 答案是……答案是 42。
-   *      ↑ A 的半截        ↑ B 的完整答案
-   * ```
-   *
-   * 这是**两段拼接的畸形回答**，比「半截 + 报错」严重得多 —— 前者看起来像一句
-   * 正常但奇怪的话，用户会当成模型的问题；后者至少明确告诉用户失败了。
-   * 本仓库对「静默降级」有明确红线（反复修过的那类缺陷），而拼接畸形内容更甚。
-   *
-   * ⇒ 规则：**该候选只要产出过「可见内容」，其后任何失败都直接向上抛**，不再尝试下一个。
-   * 「切换」只发生在「尚未产出任何可见内容」的失败上（连接失败、认证失败、上游立刻
-   * 返回错误 —— 这些恰好是跨渠道切换真正有价值的情形）。
-   *
-   * ## ⚠️ 为什么判据是「可见内容」而不是「任何 chunk」（Task 6 复审 M23）
-   *
-   * 初版用「产出过任何 chunk」作判据，于是候选**只吐了 `block-start` / `usage`
-   * 这类元数据帧**就失败时，也会放弃切换 —— 那是**过度保守**，白白丢掉一次
-   * 本可成功的切换机会。
-   *
-   * 而只产出元数据帧时切换是**安全**的（实测 `BlockAssembler` 的语义）：
-   * - `block-start` 是**幂等**的（`if (!this.partials.has(chunk.index))`）——
-   *   下一个候选重发同 index 的 `block-start` 不会产生重复块；
-   * - `usage` 是**覆盖**语义（`this._usage = chunk.usage`）—— 后到的会顶掉前一个；
-   * - 两者都**不含用户可见的正文**。
-   *
-   * ⇒ 判据：只有 `text` / `reasoning` / `image` / `tool-call` / `tool-result`
-   * 以及 `*-delta` / `block-end` 算「可见内容」；`block-start` 与 `usage` 不算。
-   * ⚠️ 未知类型一律**算可见内容**（保守方向：宁可少切换，不可拼接畸形回答）。
-   *
-   * ## 档位必须逐候选翻译
-   *
-   * 请求里的 `reasoningEffort` 来自**上一次对话**，可能带着别的模型族的档位名
-   * （如给只声明 `enabled` 的模型发 `xhigh`）。原样转发会被 DSH 按 id 严格校验
-   * 拦下 `UNSUPPORTED_REASONING_EFFORT`。故复用仓库既有的
-   * {@link translateReasoningEffort}：不可表达时**不下发该字段**而非抛错。
-   */
-  dispatch(targets, options, modelKey) {
-    const self = this;
-    return (async function* () {
-      let lastError;
-      const openedBlocks = /* @__PURE__ */ new Map();
-      for (let index = 0; index < targets.length; index += 1) {
-        const target = targets[index];
-        let emitted = false;
-        let pendingProvider;
-        activeRoutes.record(AGGREGATE_PROVIDER, target.provider, target.realId, modelKey);
-        try {
-          for await (const chunk of self.streamThrough(target, options)) {
-            if (chunk.type === "finish" && chunk.reason.kind === "error") {
-              const upstreamCode = chunk.reason.failure.code;
-              const failure = chunk.reason.failure;
-              const message2 = `aggregate: ${target.provider}\uFF08${target.realId}\uFF09\u4E0A\u6E38\u5931\u8D25${describeFailure(failure)}`;
-              const code = typeof upstreamCode === "string" && upstreamCode.length > 0 ? upstreamCode : "SERVER";
-              const accepted = {};
-              const probe = (field, value) => {
-                if (value === void 0) return;
-                try {
-                  void new LlmError24(message2, code, { [field]: value });
-                  Object.assign(accepted, { [field]: value });
-                } catch {
-                }
-              };
-              probe("status", failure.status);
-              probe("providerRetryAfterMs", failure.providerRetryAfterMs);
-              probe("requestId", typeof failure.requestId === "string" ? ProviderRequestId(failure.requestId) : void 0);
-              lastError = new LlmError24(message2, code, accepted);
-              throw lastError;
-            }
-            if (chunk.type === "finish" && chunk.reason.kind === "aborted") {
-              throw abortError();
-            }
-            if (chunk.type === "block-start") {
-              openedBlocks.set(chunk.index, chunk.blockType);
-            }
-            if (isVisibleContent(chunk)) {
-              emitted = true;
-              pendingProvider = target.provider;
-            }
-            yield chunk;
-          }
-          if (pendingProvider !== void 0) {
-            self.activeProviderByModel.set(modelKey, pendingProvider);
-            self.lastActiveProvider = pendingProvider;
-          }
-          return;
-        } catch (error) {
-          lastError = error;
-          if (isAbortLike(error, options.signal)) throw error;
-          if (emitted) {
-            self.ctx.logger?.warn?.(
-              `[aggregate] ${target.provider}\uFF08${target.realId}\uFF09\u5728\u4EA7\u51FA\u5185\u5BB9\u540E\u5931\u8D25\uFF0C\u4E0D\u518D\u5207\u6362\u5019\u9009\uFF08\u5DF2\u4EA7\u51FA\u7684\u5185\u5BB9\u65E0\u6CD5\u64A4\u56DE\uFF09\uFF1A${String(error)}`
-            );
-            throw error;
-          }
-          if (openedBlocks.size > 0) {
-            const opened = [...openedBlocks.values()];
-            self.ctx.logger?.warn?.(
-              `[aggregate] ${target.provider}\uFF08${target.realId}\uFF09\u5DF2\u5F00\u542F ${JSON.stringify(opened)} \u5757\u540E\u5931\u8D25\uFF0C\u4E0D\u518D\u5207\u6362\u5019\u9009\uFF08BlockAssembler \u5BF9 block-start \u6309 index \u5E42\u7B49\u4E14\u4E0D\u66F4\u65B0 blockType\uFF0C\u800C\u4E0B\u4E00\u4E2A\u5019\u9009\u4F1A\u5F00\u4EC0\u4E48\u7C7B\u578B\u4E0D\u53EF\u9884\u77E5 \u21D2 \u5207\u6362\u53EF\u80FD\u628A\u5B83\u7684\u5185\u5BB9\u704C\u8FDB\u9519\u8BEF\u7C7B\u578B\u7684\u5757\uFF09\uFF1A${String(error)}`
-            );
-            throw error;
-          }
-          if (index + 1 < targets.length) {
-            self.ctx.logger?.warn?.(
-              `[aggregate] ${target.provider}\uFF08${target.realId}\uFF09\u5931\u8D25\uFF0C\u5207\u6362\u4E0B\u4E00\u4E2A\u5019\u9009\uFF1A${String(error)}`
-            );
-          }
-        }
-      }
-      throw lastError ?? new LlmError24("aggregate: \u6240\u6709\u5019\u9009\u90FD\u5931\u8D25", "SERVER");
-    })();
-  }
-  /** 把请求转发给一个候选，按目标档位表翻译 `reasoningEffort`。 */
-  streamThrough(target, options) {
-    const base = { ...options, provider: target.provider, model: target.realId };
-    const requested = options.reasoningEffort;
-    if (requested === void 0) return this.ctx.llm.stream(base);
-    const requestedEffort = String(requested);
-    if (target.efforts.length === 0) {
-      return this.ctx.llm.stream({ ...base, reasoningEffort: void 0 });
-    }
-    const mapped = translateReasoningEffort(requestedEffort, target.efforts);
-    if (mapped.kind === "exact") return this.ctx.llm.stream(base);
-    if (mapped.kind === "mapped") {
-      return this.ctx.llm.stream({
-        ...base,
-        reasoningEffort: ReasoningEffortId18(mapped.effort)
-      });
-    }
-    return this.ctx.llm.stream({ ...base, reasoningEffort: void 0 });
-  }
-  /** 从不直接被 stream（总是先经 prepareCall）；兜底抛错而非静默。 */
-  async *stream() {
-    throw new LlmError24("aggregate: \u8BF7\u901A\u8FC7\u6A21\u578B\u9009\u62E9\u5668\u4F7F\u7528", "INVALID_REQUEST");
-  }
-};
-function maxAttemptsFor(models) {
-  let longest = 1;
-  for (const model of models) {
-    if (model.candidates.length > longest) longest = model.candidates.length;
-  }
-  return Math.max(1, longest);
-}
-function aggregateReasoningInfo() {
-  return {
-    efforts: CANONICAL_REASONING_EFFORTS.map((effort) => ({
-      id: ReasoningEffortId18(effort),
-      name: AGGREGATE_EFFORT_LABELS[effort] ?? effort
-    })),
-    // ⚠️ 默认档取 `high`，**与各渠道自己的默认一致**：实测 buddy / trae / lobsterai
-    // 的 `defaultReasoningEffort` 清一色是 `high`（`product.ts` 里 14 处）。取它
-    // 则聚合与直连的体感一致；取 `medium` 会让用户觉得「聚合比直连想得少」，取
-    // `max` 则最费 token/积分 —— 与本功能「省钱烧临期」的目标相反。
-    defaultEffort: ReasoningEffortId18("high")
-  };
-}
-var AGGREGATE_EFFORT_LABELS = Object.freeze({
-  none: "\u5173\u95ED\u601D\u8003",
-  minimal: "\u6700\u5C0F",
-  low: "\u4F4E",
-  medium: "\u4E2D",
-  high: "\u9AD8",
-  xhigh: "\u6781\u9AD8",
-  max: "\u6700\u5927",
-  ultra: "\u6700\u5F3A"
-});
-function isVisibleContent(chunk) {
-  return chunk.type !== "block-start" && chunk.type !== "usage";
-}
-function describeFailure(failure) {
-  const parts = [];
-  if (typeof failure.message === "string" && failure.message.length > 0) parts.push(failure.message);
-  if (typeof failure.code === "string" && failure.code.length > 0) parts.push(`code=${failure.code}`);
-  if (typeof failure.status === "number" && Number.isInteger(failure.status) && failure.status >= 100 && failure.status <= 599) {
-    parts.push(`status=${failure.status}`);
-  } else if (typeof failure.status === "number") {
-    parts.push(`status=${String(failure.status)}\uFF08\u8D8A\u754C\uFF0C\u5DF2\u4E22\u5F03\uFF09`);
-  }
-  return parts.length === 0 ? "\uFF08\u4E0A\u6E38\u672A\u7ED9\u51FA\u539F\u56E0\uFF09" : `\uFF1A${parts.join(" ")}`;
-}
-function abortError() {
-  const error = new Error("aggregate: \u8BF7\u6C42\u5DF2\u4E2D\u6B62");
-  error.name = "AbortError";
-  error.code = "ABORTED";
-  return error;
-}
-function isAbortLike(error, signal) {
-  if (signal?.aborted === true) return true;
-  if (error === null || typeof error !== "object") return false;
-  const candidate = error;
-  if (candidate.name === "AbortError" || candidate.code === "ABORTED") return true;
-  const message2 = typeof candidate.message === "string" ? candidate.message : "";
-  return /aborted request|HTTP_?499/i.test(message2);
-}
-function registerAggregateLlm(ctx, options) {
-  const adapter = new AggregateAdapter(ctx, options);
-  registerAdapterIdempotent(
-    ctx.llm,
-    [AGGREGATE_PROVIDER],
-    adapter,
-    (message2) => ctx.logger?.warn?.(message2),
-    // ⚠️ **聚合必须完全不参与「失效模型」机制**（`enabled: false`：不记录、**也不过滤**）
-    // —— 真实缺陷（全分支终审 C2 + 审计轮次二补修的残留面）。
-    // 本机制是为「**编译期兜底快照**跟不上上游下架」设计的，而聚合层的目录是
-    // **动态推导**的（上游下架后下次推导自然消失）⇒ 既不需要记录，也不该被过滤。
-    // ① 记录的危害：观察到的是 `aggregate` + **虚拟键**（实测），于是「某一个渠道
-    //    没有该 realId」被记成「**整个规范模型**失效」，而它在其余渠道上完全可用；
-    //    且恢复入口 `model.clearDead` 的 UI 在设置页 provider 面板里，而客户端
-    //    `PROVIDERS` **没有 `aggregate`** ⇒ **没有任何 UI 能恢复**。
-    // ② 过滤的危害（补修的那半）：初版只跳过记录、仍保留过滤 ⇒ 若表里**已有**
-    //    旧版本写下的 `aggregate` 记录（C2 修复前跑过一次就会有），虚拟模型**仍被
-    //    隐藏**且同样无 UI 可恢复。实测探针：预置 `aggregate/m1` 后经真实装配的
-    //    `listModels` 只返回 `['auto','m2']`（`m1` 被隐藏）。
-    { enabled: false }
-  );
-  void adapter.refreshCatalog().catch((error) => {
-    ctx.logger?.warn?.(`[aggregate] \u6CE8\u518C\u540E\u9884\u70ED\u76EE\u5F55\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u53EF\u7528\u6027\uFF09\uFF1A${String(error)}`);
-  });
   return adapter;
 }
 
@@ -82990,6 +84056,19 @@ function createProviderExpiry() {
     //    同 accio：两处（本表 + `WIRED_EXPIRY_PROVIDERS`）必须同改。
     officeace: {
       credentialExpiry: (c, context) => officeaceExpiry(c, context?.credentialRef)
+    },
+    // ⚠️ **本 fork 独有**（魔搭，2026-10-17，用户明确要求加入聚合轮换）：
+    //    属「有余额但不下发到期时间」那一类 ⇒ 有余额即 `NEVER`、烧光即 `UNUSABLE`。
+    //    ⚠️ **必须走 `cachedBalance`**：与 buddy / trae 同款 —— 聚合每轮折算会对
+    //    同一账号反复提问，没有共享读数就会白发大量重复请求。
+    //    同 accio / officeace：两处（本表 + `WIRED_EXPIRY_PROVIDERS`）必须同改，
+    //    由 `expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁一致。
+    modelscope: {
+      credentialExpiry: (c, context) => modelscopeExpiry(
+        c,
+        MODELSCOPE,
+        context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
+      )
     }
   };
 }
@@ -83223,7 +84302,7 @@ var probeById = {
   // CodeBuddy 系（buddy / workbuddy）→ BuddyAdapter，按各自 product 发请求。
   buddy: {
     createProbeAdapter: (ref, credential) => new BuddyAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83232,7 +84311,7 @@ var probeById = {
   },
   workbuddy: {
     createProbeAdapter: (ref, credential) => new BuddyAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83242,7 +84321,7 @@ var probeById = {
   // LobsterAI → 自己的端点与头族。
   lobsterai: {
     createProbeAdapter: (ref, credential) => new LobsteraiAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83255,7 +84334,7 @@ var probeById = {
   //（旧凭据缺 uid 时适配器会明确报错，而不是发出必然失败的请求）。
   qoder: {
     createProbeAdapter: (ref, credential) => new QoderAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83264,7 +84343,7 @@ var probeById = {
   },
   qodercn: {
     createProbeAdapter: (ref, credential) => new QoderAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83274,11 +84353,26 @@ var probeById = {
   // Cline → WorkOS 凭据 + 自己的端点。
   cline: {
     createProbeAdapter: (ref, credential) => new ClineAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
       product: CLINE
+    })
+  },
+  // ⚠️ **本 fork 独有**（modelscope，2026-10-16）。
+  //
+  // 探测只发一次最小请求（`probe` 走适配器的 `listModels` / 一次最小补全），
+  // 故只需把**这一份凭据**喂进 `slots`（单槽），不需要池 —— 与 cline 同款。
+  // ⚠️ `fetchRemoteCatalog` 留空：目录探测不是「探活」的职责，
+  //    且它会在 `listModels` 里回退兜底表（不会抛）。
+  modelscope: {
+    createProbeAdapter: (ref, credential) => new ModelscopeAdapter({
+      credentialRef: credentialRef19(ref),
+      slots: async () => [{ id: MODELSCOPE.id, apiKey: credential.access_token }],
+      product: MODELSCOPE
+      // ⚠️ 不传 `warn`：`probeById` 是**模块级**常量（在 `apply()` 之前求值），
+      //    此处**没有 `ctx`**。与 cline / lobsterai 的 probe 条目同款。
     })
   },
   // ZCode（智谱）→ Anthropic Messages 体 + 阿里云 captcha 参数。
@@ -83294,7 +84388,7 @@ var probeById = {
   // 与 `index.ts` 的 `zcode.mintCaptcha` 共用同一台常驻浏览器。
   zcode: {
     createProbeAdapter: (ref, credential) => new ZcodeAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83306,7 +84400,7 @@ var probeById = {
   // 不传 product → TraeAdapter 内部默认用 TRAE。
   trae: {
     createProbeAdapter: (ref, credential) => new TraeAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       }
@@ -83328,7 +84422,7 @@ var probeById = {
   // 了用户点「重测」想知道的答案。探测**不写**任何东西（不传 persistProject）。
   gemini: {
     createProbeAdapter: (ref, credential) => new GeminiAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83342,7 +84436,7 @@ var probeById = {
   // **显式登记**，未登记的 provider 不再被静默交给它。
   codearts: {
     createProbeAdapter: (ref, credential) => new CodeArtsAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       }
@@ -83351,7 +84445,7 @@ var probeById = {
   // Loomy（讯飞）→ 自己的端点。⚠️ 旧链**漏了它**（第 5 次同型缺陷，见上）。
   loomy: {
     createProbeAdapter: (ref, credential) => new LoomyAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83361,7 +84455,7 @@ var probeById = {
   // Raccoon Work（商汤小浣熊）→ 自己的端点。⚠️ 旧链**漏了它**（同第 5 次）。
   raccoon: {
     createProbeAdapter: (ref, credential) => new RaccoonAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83379,7 +84473,7 @@ var probeById = {
   // 复活（探测失败若写回限流标记，会把「重测 A 账号」变成污染池的副作用）。
   minimax: {
     createProbeAdapter: (ref, credential) => new MinimaxAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83391,7 +84485,7 @@ var probeById = {
   // 否则国际站账号的「重测」会用国内站主机发凭据、必然 401 ⇒ 标记永远清不掉）。
   minimaxintl: {
     createProbeAdapter: (ref, credential) => new MinimaxAdapter({
-      credentialRef: credentialRef17(ref),
+      credentialRef: credentialRef19(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
@@ -83507,7 +84601,7 @@ function apply(ctx, config = {}) {
     ctx.logger.warn(`[jet-hub] \u6E05\u7406 WorkBuddy \u65E7\u7248\u8D26\u53F7\u5931\u8D25\uFF1A${String(error)}`);
   });
   const codearts = registerCodeArtsLlm(ctx, {
-    credentialRef: credentialRef17(CODEARTS_CREDENTIAL_REF),
+    credentialRef: credentialRef19(CODEARTS_CREDENTIAL_REF),
     resolveCredential: async () => {
       const available2 = await pool.getAvailableAccount("codearts", "");
       return available2?.credential;
@@ -83531,7 +84625,7 @@ function apply(ctx, config = {}) {
     accountPool: pool
   });
   const resolveBuddyCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
     if (!resolved) return void 0;
     try {
       return JSON.parse(resolved.value);
@@ -83555,7 +84649,7 @@ function apply(ctx, config = {}) {
       modelId ?? ""
     );
     if (limited === void 0) return;
-    throw new LlmError25(
+    throw new LlmError26(
       `${product.displayName}\uFF1A\u6A21\u578B ${modelId} \u7684\u53EF\u7528\u8D26\u53F7\u5747\u5728\u9650\u6D41\u4E2D\uFF0C\u6700\u8FD1\u4E00\u4E2A\u5C06\u4E8E ${new Date(limited.resetAtMs).toLocaleString("zh-CN")} \u89E3\u7981\u3002\u53EF\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF0C\u6216\u7B49\u5F85\u89E3\u7981\u540E\u518D\u8BD5\uFF08\u65E0\u9700\u91CD\u65B0\u767B\u5F55\uFF09\u3002`,
       "QUOTA_EXCEEDED"
     );
@@ -83586,13 +84680,13 @@ function apply(ctx, config = {}) {
   const loomyLockedError = (reason) => {
     const details = reason.kind === "exhausted" ? "" : `\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09`;
     if (reason.kind === "all-unknown") {
-      return new LlmError25(
+      return new LlmError26(
         `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C**\u6240\u6709**\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u90FD\u5931\u8D25\u4E86${details}\u3002\u8FD9\u901A\u5E38\u662F\u4E0A\u6E38\u9650\u6D41 / \u98CE\u63A7 / \u7F51\u7EDC\u4E2D\u65AD\uFF0C**\u4E0D\u662F**\u51ED\u636E\u5931\u6548 \u2014\u2014 \u65E0\u9700\u91CD\u65B0\u767B\u5F55\u3002\u53EF\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF1B\u82E5\u6025\u4E8E\u7EE7\u7EED\uFF0C\u53EF\u5728 Jet Hub \u7684 Loomy \u9762\u677F**\u4E34\u65F6\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u4F1A\u6D88\u8017\u6C38\u4E45\u79EF\u5206\uFF09\u3002`,
         "TRANSPORT"
       );
     }
     if (reason.kind === "partial") {
-      return new LlmError25(
+      return new LlmError26(
         `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C**\u90E8\u5206**\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25${details}\u3002\u5176\u4F59\u8D26\u53F7\u7684\u4ECA\u65E5\u989D\u5EA6\u5DF2\u786E\u8BA4\u7528\u5C3D\uFF1B\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u4ECA\u65E5\u989D\u5EA6 \u2014\u2014 \u8BF7\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684 Loomy \u9762\u677F\u6838\u5BF9\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\u3002`,
         "TRANSPORT"
       );
@@ -83606,7 +84700,7 @@ function apply(ctx, config = {}) {
   const buddy = new BuddyAuth(ctx);
   buddy.lastCatalogOutcome = { scopedOk: false, configOk: false };
   const buddyAdapter = registerBuddyLlm(ctx, {
-    credentialRef: credentialRef17(BUDDY_CREDENTIAL_REF),
+    credentialRef: credentialRef19(BUDDY_CREDENTIAL_REF),
     resolveCredential: createCredentialResolver(
       // ⚠️ 依赖在**每次 apply() 时**构造一次，闭包捕获的是同一批引用。
       { pool, reportAccount: (id) => {
@@ -83655,7 +84749,7 @@ function apply(ctx, config = {}) {
   const workbuddy = new BuddyAuth(ctx, { product: WORKBUDDY });
   workbuddy.lastCatalogOutcome = { scopedOk: false, configOk: false };
   const workbuddyAdapter = registerBuddyLlm(ctx, {
-    credentialRef: credentialRef17(WORKBUDDY.defaultCredentialRef),
+    credentialRef: credentialRef19(WORKBUDDY.defaultCredentialRef),
     // 只从 workbuddy 的账号池取账号，回退到 WorkBuddy 自己的单凭据 ref，
     // 保证不会串用 CodeBuddy 的凭据。
     // 选号策略与 CodeBuddy 同款，但用的是**WorkBuddy 自己的锁状态与余额缓存**
@@ -83699,7 +84793,7 @@ function apply(ctx, config = {}) {
   });
   const lobsterai = new LobsteraiAuth(ctx);
   const resolveLobsteraiCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
     if (!resolved) return void 0;
     try {
       const parsed = JSON.parse(resolved.value);
@@ -83714,7 +84808,7 @@ function apply(ctx, config = {}) {
     fetchBalance: (credential, product) => fetchLobsteraiCreditBalance(credential, product)
   });
   const lobsteraiAdapter = registerLobsteraiLlm(ctx, {
-    credentialRef: credentialRef17(LOBSTERAI.defaultCredentialRef),
+    credentialRef: credentialRef19(LOBSTERAI.defaultCredentialRef),
     // 只从 LobsterAI 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用 CodeBuddy / WorkBuddy / CodeArts 的凭据。
     // provider 实参用 LOBSTERAI 而非字面量 'lobsterai'：写死字面量在
@@ -83762,7 +84856,7 @@ function apply(ctx, config = {}) {
   const qoder = new QoderAuth(ctx);
   const activeQoderAccountId = /* @__PURE__ */ new Map();
   const qoderAdapter = registerQoderLlm(ctx, {
-    credentialRef: credentialRef17(QODER.defaultCredentialRef),
+    credentialRef: credentialRef19(QODER.defaultCredentialRef),
     // 只从 Qoder 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用其它 provider 的凭据。
     // provider 实参用 QODER 而非字面量 'qoder'：写死字面量在
@@ -83783,7 +84877,7 @@ function apply(ctx, config = {}) {
       {
         product: QODER,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -83815,7 +84909,7 @@ function apply(ctx, config = {}) {
   });
   const qoderCn = new QoderAuth(ctx, { product: QODER_CN });
   const qoderCnAdapter = registerQoderLlm(ctx, {
-    credentialRef: credentialRef17(QODER_CN.defaultCredentialRef),
+    credentialRef: credentialRef19(QODER_CN.defaultCredentialRef),
     // 只取中国版自己账号池的账号，回退到 QODERCN_ACCESS_TOKEN。
     // ⚠️ provider 实参必须是 QODER_CN：写死 'qoder' 会让中国版
     // 永远查不到自己的账号（本插件在 workbuddy 上踩过同类坑）。
@@ -83832,7 +84926,7 @@ function apply(ctx, config = {}) {
       {
         product: QODER_CN,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -83863,7 +84957,7 @@ function apply(ctx, config = {}) {
   });
   const trae = new TraeAuth(ctx);
   const resolveTraeCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
     if (!resolved) return void 0;
     try {
       const parsed = JSON.parse(resolved.value);
@@ -83878,7 +84972,7 @@ function apply(ctx, config = {}) {
     fetchBalance: (credential, product) => fetchTraeCreditBalance(credential, product)
   });
   const traeAdapter = registerTraeLlm(ctx, {
-    credentialRef: credentialRef17(TRAE.defaultCredentialRef),
+    credentialRef: credentialRef19(TRAE.defaultCredentialRef),
     // 优先按「快到期积分」分档选号（锁定永久积分时只挑有快到期积分的号）。
     // 与 buddy 系同一套编排：候选先按「enabled + 模型未受限」筛，
     // 分档只在这批候选内部进行 —— 不能因为某个号积分多就绕开限流标记。
@@ -83922,7 +85016,7 @@ function apply(ctx, config = {}) {
   const cline = new ClineAuth(ctx, { fetcher: network.fetch });
   let activeClineAccountId = "";
   const clineAdapter = registerClineLlm(ctx, {
-    credentialRef: credentialRef17(CLINE.defaultCredentialRef),
+    credentialRef: credentialRef19(CLINE.defaultCredentialRef),
     // 只从 Cline 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用其它 provider 的凭据。
     // provider 实参用 CLINE 而非字面量 'cline'：写死字面量在
@@ -83941,7 +85035,7 @@ function apply(ctx, config = {}) {
       {
         product: CLINE,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -83976,7 +85070,7 @@ function apply(ctx, config = {}) {
   });
   const loomy = new LoomyAuth(ctx);
   const resolveLoomyCredentialByRef = async (refName) => {
-    const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+    const resolved = await ctx.credentials.resolve(credentialRef19(refName));
     if (!resolved) return void 0;
     try {
       return JSON.parse(resolved.value);
@@ -84038,7 +85132,7 @@ function apply(ctx, config = {}) {
     }
   });
   const loomyAdapter = registerLoomyLlm(ctx, {
-    credentialRef: credentialRef17(LOOMY.defaultCredentialRef),
+    credentialRef: credentialRef19(LOOMY.defaultCredentialRef),
     /**
      * 解析本轮该用哪个账号的凭据。
      *
@@ -84083,7 +85177,7 @@ function apply(ctx, config = {}) {
     // 失败时返回空数组，由适配器回退兜底表。
     fetchRemoteModels: async () => {
       const available2 = await pool.getAvailableAccount(LOOMY.id, "");
-      const resolved = available2 !== null && available2 !== void 0 ? { value: JSON.stringify(available2.credential) } : await ctx.credentials.resolve(credentialRef17(LOOMY.defaultCredentialRef));
+      const resolved = available2 !== null && available2 !== void 0 ? { value: JSON.stringify(available2.credential) } : await ctx.credentials.resolve(credentialRef19(LOOMY.defaultCredentialRef));
       if (resolved === void 0) return [];
       let credential;
       try {
@@ -84105,7 +85199,7 @@ function apply(ctx, config = {}) {
   });
   const raccoon = new RaccoonAuth(ctx);
   const raccoonAdapter = registerRaccoonLlm(ctx, {
-    credentialRef: credentialRef17(RACCOON.defaultCredentialRef),
+    credentialRef: credentialRef19(RACCOON.defaultCredentialRef),
     // 只从 raccoon 自己的账号池取账号，回退到自己的单凭据 ref，
     // 保证不会串用其它 provider 的凭据。
     // provider 实参用 RACCOON 而非字面量：写死字面量在改名/多产品场景下
@@ -84120,7 +85214,7 @@ function apply(ctx, config = {}) {
         // ⚠️ raccoon 的兜底是**裸 `JSON.parse`**（历史形态，本 Task 逐字保留）。
         // 它此前也没有形状校验，本 Task 的约束是零行为变更 ⇒ 不在此处加严。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84159,7 +85253,7 @@ function apply(ctx, config = {}) {
   });
   const minimax = new MinimaxAuth(ctx);
   const minimaxAdapter = registerMinimaxLlm(ctx, {
-    credentialRef: credentialRef17(MINIMAX.defaultCredentialRef),
+    credentialRef: credentialRef19(MINIMAX.defaultCredentialRef),
     // provider 实参用 MINIMAX 而非字面量：写死字面量在改名/多产品场景下
     // 会静默查不到账号（本插件在 workbuddy 上踩过同类坑）。
     // ⚠️ 只从 minimax 自己的账号池取账号，回退到自己的单凭据 ref，
@@ -84173,7 +85267,7 @@ function apply(ctx, config = {}) {
         // ⚠️ 与 raccoon / gemini 同款：兜底是**裸 `JSON.parse`**（历史形态，
         // 本 Task 逐字保留，不在此处加形状校验 —— 那会是行为变更）。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84217,7 +85311,7 @@ function apply(ctx, config = {}) {
   });
   const minimaxIntl = new MinimaxAuth(ctx, { product: MINIMAX_INTL });
   const minimaxIntlAdapter = registerMinimaxLlm(ctx, {
-    credentialRef: credentialRef17(MINIMAX_INTL.defaultCredentialRef),
+    credentialRef: credentialRef19(MINIMAX_INTL.defaultCredentialRef),
     // ⚠️ provider 实参必须是 MINIMAX_INTL：写死 MINIMAX 会让国际站永远查不到
     // 自己的账号（本插件在 workbuddy 上踩过同类坑）。
     resolveCredential: createCredentialResolver(
@@ -84227,7 +85321,7 @@ function apply(ctx, config = {}) {
       {
         product: MINIMAX_INTL,
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84260,7 +85354,7 @@ function apply(ctx, config = {}) {
   const geminiSigStore = createGeminiSigStore(ctx);
   const geminiProjectCache = /* @__PURE__ */ new Map();
   const geminiAdapter = registerGeminiLlm(ctx, {
-    credentialRef: credentialRef17(GEMINI.defaultCredentialRef),
+    credentialRef: credentialRef19(GEMINI.defaultCredentialRef),
     // ⚠️ provider 实参用 GEMINI 而非字面量（同 minimax 的既有约定：
     // 写死字面量在改名/多产品场景下会静默查不到账号）。
     resolveCredential: createCredentialResolver(
@@ -84275,7 +85369,7 @@ function apply(ctx, config = {}) {
         // `GeminiCredential` 无充分重叠，故经 `unknown` 转换；运行时安全性由
         // provider 过滤保证（查询用 `GEMINI.id`，取到的必是 gemini 凭据）。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84313,8 +85407,8 @@ function apply(ctx, config = {}) {
     projectCache: geminiProjectCache,
     persistProject: async (value) => {
       const available2 = await pool.getAvailableAccount(GEMINI.id, "");
-      const ref = available2 ? available2.entry.credentialRef : credentialRef17(GEMINI.defaultCredentialRef);
-      await ctx.credentials.set(credentialRef17(ref), value);
+      const ref = available2 ? available2.entry.credentialRef : credentialRef19(GEMINI.defaultCredentialRef);
+      await ctx.credentials.set(credentialRef19(ref), value);
     },
     ...ctx.logger === void 0 ? {} : { logger: ctx.logger }
   });
@@ -84338,7 +85432,7 @@ function apply(ctx, config = {}) {
         //    `AccioCredential` 无充分重叠，故经 `unknown` 转换；运行时安全性由
         //    provider 过滤保证（查询用 `ACCIO.id`，取到的必是 accio 凭据）。
         readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(refName));
+          const resolved = await ctx.credentials.resolve(credentialRef19(refName));
           if (!resolved) return void 0;
           try {
             return JSON.parse(resolved.value);
@@ -84388,6 +85482,69 @@ function apply(ctx, config = {}) {
     readImage: makeReadImage(ctx),
     readImageRequest: makeReadImageRequest(ctx)
   });
+  const modelscope = new ModelscopeAuth(ctx);
+  const modelscopeAdapter = registerModelscopeLlm(ctx, {
+    // 单凭据回退 ref：池里没有 modelscope 账号时用它（与其余 provider 同约定）。
+    credentialRef: credentialRef19(MODELSCOPE.defaultCredentialRef),
+    // ⚠️ 槽序列由**接线层**解析好传进来（适配器不直接读凭据）。
+    //    `modelId` 透传：接线层据此过滤「该模型正处于限流窗口」的账号
+    //    （与其余 provider 的 `getAvailableAccount` 同语义）。
+    slots: async (modelId) => {
+      const entries = await pool.listAccounts(MODELSCOPE.id);
+      const usable = await Promise.all(entries.map(async (entry) => {
+        if (!entry.enabled) return void 0;
+        if (modelId !== void 0 && modelId.length > 0) {
+          const resetAt = entry.modelRateLimits?.[modelId];
+          if (typeof resetAt === "number" && resetAt > Date.now()) return void 0;
+        }
+        const resolved = await ctx.credentials.resolve(credentialRef19(entry.credentialRef));
+        if (!resolved) return void 0;
+        try {
+          const parsed = JSON.parse(resolved.value);
+          if (typeof parsed.access_token !== "string" || parsed.access_token.length === 0) return void 0;
+          return { id: entry.id, apiKey: parsed.access_token };
+        } catch {
+          return void 0;
+        }
+      }));
+      return usable.filter((s) => s !== void 0);
+    },
+    accountPool: pool,
+    product: MODELSCOPE,
+    // ⚠️ **本 fork 独有**（2026-10-17 审计 P1 修复）：限流标记的**写入端**。
+    //    ⚠️ 本回调此前**没有注入**，而上面 `slots()` 里却在**主动读**
+    //    `entry.modelRateLimits?.[modelId]` 来跳过受限账号 —— 读端存在、写端缺失
+    //    ⇒ 那段判据恒不命中（死代码），适配器里的 `this.options.markLimited?.()`
+    //    也恒为 no-op ⇒ **限流标记永远写不进池**。
+    //    守卫为什么没抓住：`provider-runtime-wiring.spec.ts` 只检查**适配器文件里
+    //    有没有调用形**（`.markLimited?.(` 确实存在 ⇒ 绿），**从不检查接线层有没有
+    //    注入该回调** ⇒ 「适配器写了调用、接线层没注入」这一形态打不穿。
+    //    与 opencode（`index.ts:2940`）同款实现。
+    markLimited: async (slotId, modelId, resetAtMs) => {
+      await pool.updateModelRateLimit(slotId, modelId, resetAtMs);
+    },
+    // 远端目录：`GET {base}/v1/models`。失败回退 `MODELSCOPE_FALLBACK_MODELS`
+    // （适配器的 `loadModelscopeCatalog` 内部兜底，不会抛）。
+    // ⚠️ **必须带超时**：桌面版到外部域名的 fetch 可能永不 settle
+    //（opencode 的真机事故 2026-10-02：没有超时 ⇒ listModels 永不返回 ⇒
+    //  模型列表与徽标同时空白）。超时后回退兜底表，UI 立刻可用。
+    fetchRemoteCatalog: (apiKey, signal) => fetch(modelscopeModelsUrl(MODELSCOPE), {
+      headers: modelscopeHeaders(apiKey),
+      signal: signal ?? AbortSignal.timeout(1e4)
+    }),
+    // ⚠️ **刻意不接 `readImageRequest`**：`ModelscopeAdapterOptions` 没有该字段
+    //    （它按「像素预算发请求版本」的形态只在 opencode / accio 那几家实现）。
+    //    魔搭的图片走 `readImage` 单一路径，逐模型按 `supportsImage` 声明模态。
+    readImage: makeReadImage(ctx),
+    // ⚠️⚠️ **必须接 `disabledModels`**（2026-10-17 审计发现）：模型黑名单是
+    //    「设置页 → 显示列表」逐 id 开关的产物，而**模型选择器读的正是这份黑名单**
+    //    （`ModelscopeAdapter.listModels` 读 `options.disabledModels?.()`）。
+    //    ⚠️ 本回调此前**没有传** ⇒ 黑名单完全失效 ⇒ 用户在「显示列表」里关掉的模型
+    //    **照样出现在模型选择器里**（实测：只开了 V4.1 Flash，选择器仍列全部 36 个）。
+    //    ⚠️ 典型形态：适配器**支持**该能力（字段与消费点都在），只是**接线层漏了实参**
+    //    ⇒ 无报错、无日志，纯静默。
+    disabledModels: () => pool.disabledModelsFor(MODELSCOPE.id)
+  });
   void raccoon.repairAccountNicknames(pool, buildRaccoonNickname).then((repaired) => {
     if (repaired.length > 0) {
       ctx.logger.info(
@@ -84422,7 +85579,7 @@ function apply(ctx, config = {}) {
   };
   const activeZcodeAccountId = /* @__PURE__ */ new Map();
   const zcodeAdapter = registerZcodeLlm(ctx, {
-    credentialRef: credentialRef17(ZCODE.defaultCredentialRef),
+    credentialRef: credentialRef19(ZCODE.defaultCredentialRef),
     resolveCredential: createCredentialResolver(
       {
         pool,
@@ -84761,7 +85918,7 @@ function apply(ctx, config = {}) {
     opencodeAdapter = registerOpencodeLlm(ctx, {
       identitySlots: async () => listIdentitySlots(
         await Promise.all(pool.listAccountsByProvider(OPENCODE.id).map(async (entry) => {
-          const resolved = await ctx.credentials.resolve(credentialRef17(entry.credentialRef)).catch(() => void 0);
+          const resolved = await ctx.credentials.resolve(credentialRef19(entry.credentialRef)).catch(() => void 0);
           let parsed = {};
           if (resolved !== void 0) {
             try {
@@ -84808,7 +85965,7 @@ function apply(ctx, config = {}) {
     });
     void ensureDefaultAnonymousSlot(
       (entry) => pool.addAccount(entry),
-      (refName, value) => ctx.credentials.set(credentialRef17(refName), value),
+      (refName, value) => ctx.credentials.set(credentialRef19(refName), value),
       () => pool.listAccountsByProvider(OPENCODE.id),
       // ⚠️ 判据是「池里有没有匿名条目」而不是「有没有账号」：用户若主动
       // 删光了匿名通道，那是明确选择，不该每次启动又塞回来（删除会像失灵）。
@@ -84832,7 +85989,7 @@ function apply(ctx, config = {}) {
     if (impl === void 0) throw new Error(`unsupported provider: ${provider}`);
     if (entry.credential === void 0) throw new Error("\u51ED\u636E\u672A\u63D0\u4F9B");
     const callContext = {
-      resolveCredential: (refName) => ctx.credentials.resolve(credentialRef17(refName)),
+      resolveCredential: (refName) => ctx.credentials.resolve(credentialRef19(refName)),
       warn: (message2) => ctx.logger?.warn?.(message2),
       accountPool: pool2
     };
@@ -84949,6 +86106,12 @@ function apply(ctx, config = {}) {
     gemini: pruned(GEMINI.id, geminiAdapter),
     zcode: pruned(ZCODE.id, zcodeAdapter),
     opencode: pruned(OPENCODE.id, opencodeAdapter),
+    // ⚠️ **本 fork 独有**（modelscope，2026-10-16）。必须进这张表：
+    //    `provider.status` 的「已关闭」判据是 `total > 0 && disabled === total`，
+    //    它读的是 `listAllModels()` 那份**不套黑名单**的全量目录。表里缺它 ⇒
+    //    退化到 `llm.listModels`（已按黑名单过滤）⇒ 「关闭整个 provider」时
+    //    漏写黑名单 ⇒ 出现「provider 显示已关闭、模型却仍可选用」的矛盾态。
+    modelscope: pruned(MODELSCOPE.id, modelscopeAdapter),
     // OfficeAce（华为 MaaS 云端直连）：目录静态 + 平台侧可用性，同其余渠道。
     officeace: pruned(OFFICEACE.id, officeAceAdapter),
     // ⚠️ 聚合 provider 也必须进这张表（设计文档 §5.2 的必改点）：`jet-hub-rpc.ts` 的
@@ -85056,7 +86219,10 @@ function apply(ctx, config = {}) {
       // `auths.officeace` 是**同一个对象**，否则守卫用例布在 ctx 上的 spy
       // 收不到本循环的调用（实测症状：`续期没有分派到它自己的实例（实际：无）`）。
       ["officeace", officeaceAuthService],
-      ["accio", accio]
+      ["accio", accio],
+      // ⚠️ **本 fork 独有**的 provider（上游 rc.11 仍无 modelscope）。
+      //    漏加这一行 = 它不出现在注册表里 ⇒ 续期/积分/探测三条链路全部静默失效。
+      ["modelscope", modelscope]
     ];
     for (const [id, auth] of registry) {
       const descriptor = descriptorOf(id);
@@ -85143,7 +86309,11 @@ function apply(ctx, config = {}) {
     // OfficeAce（华为 ModelArts MaaS 云端直连）：值是 **auth 服务形状的包装对象**
     //（纯函数集合 + 统一 auth 契约），不是 Service 实例。
     officeace: officeaceAuthService,
-    accio
+    accio,
+    // ⚠️ **本 fork 独有**（modelscope，2026-10-16）。漏加 = 客户端把它当
+    //    「客户端已登记但宿主没有同名键」⇒ zcode-wiring 的守卫会红，
+    //    且 Jet Hub 的 modelscope 面板所有 RPC 全部 `unknown provider`。
+    modelscope
   }, modelAdapters);
   mountOpenAiGateway(ctx, pool);
   installLoopResume(ctx);

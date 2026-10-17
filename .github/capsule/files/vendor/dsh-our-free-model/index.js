@@ -41,9 +41,10 @@ import { directFetch } from './src/eac.js'
 import { clearEacUser, readEacUser, writeEacUser } from './src/eac-user.js'
 import { createEacLoginPoller } from './src/eac-login.js'
 import { unlockSealedLane } from './src/vault.js'
-import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
+import { DEFAULT_LEVEL, budgetLadder, hasDeclaredEffortMenu } from './src/effort.js'
 import { windowTokens } from './src/stream.js'
 import { AnnouncementFeed } from './src/feed.js'
+import { createPickStats } from './src/picks.js'
 import { PluginUpdater } from './src/updater.js'
 import { selfReload, watchPackage, isReloading } from './src/reload.js'
 import { createPushHub } from './src/push.js'
@@ -127,7 +128,7 @@ function openExternal(url) {
 export const inject = ['llm']
 
 /** Where the plugin's own announcement copy lives; bump it to re-announce. */
-export const ANNOUNCEMENT_VERSION = '2026-09-25.1'
+export const ANNOUNCEMENT_VERSION = '2026-10-17.3'
 
 /**
  * Who owns the plugin's bytes — the distribution mode:
@@ -375,6 +376,14 @@ export function apply(ctx, config) {
     log: message => logger.info?.(message),
   })
   feed.load()
+
+  // The recommendation page's star counts. Not part of the feed: the feed is
+  // the owner's channel to the user, this is a read of GitHub's public numbers,
+  // and a failure here only ever costs the page its figures.
+  const picks = createPickStats({
+    cacheFile: path.join(dataDir, 'picks.json'),
+    log: message => logger.info?.(message),
+  })
 
   /**
    * The announcement view the settings page reads. A managed install polls no
@@ -1074,6 +1083,7 @@ export function apply(ctx, config) {
     refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
     pool: fetchPoolSnapshot,
     eacAuth,
+    picks,
     // ── the aggregate lane's settings surface ────────────────────────────────
     // The registry is static data; the configured half is the settings file with
     // every key masked. Writing one provider rebuilds the catalog and re-emits
@@ -1826,6 +1836,9 @@ function createApiRoutes(deps) {
         const view = deps.announcements.view()
         return send(200, { ...view, acked: [...ackedSet(deps)], notifyOs: deps.settings.get().notifyOs === true })
       }
+      if (method === 'GET' && routePath === '/picks') {
+        return send(200, await deps.picks.view())
+      }
       if (method === 'POST' && routePath === '/announcements/ack') {
         const body = await readJson(req)
         const acked = ackedSet(deps)
@@ -2317,7 +2330,9 @@ function buildSummary(deps) {
       latencyMs: unprobed(entry) ? undefined : snapshot.results?.[entry.id]?.latencyMs,
       // What each rung of the effort menu will really put on the wire for this
       // model, so the page never shows a 32K "output ceiling" beside a call that
-      // was cut off at 8K. A model with no effort menu has no ladder to show.
+      // was cut off at 8K. A model with no effort menu has no ladder to show;
+      // a menu model's rungs are flat (its level, not the ladder, is the wire
+      // control), which is what the card's "default ceiling" tag then reads.
       ...(entry.reasoning === true ? { budgets: budgetLadder(entry, undefined, defaultMaxTokens) } : {}),
       // `null` here is what the picker does not advertise; the roster still lists
       // those models, because "the probe refused it" is the user's only evidence.

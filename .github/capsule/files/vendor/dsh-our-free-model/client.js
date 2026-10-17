@@ -62,10 +62,25 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'tag.thinkingShared': '思考不可关',
         'tag.rung': '默认档上限',
         'tag.rungTitle': '各档位实际发出的输出上限：{ladder}。档位是思考与回答共用的额度，且不会超过上面的最长输出与设置里的单次上限。',
+        'tag.levels': '思考档',
+        'tag.levelsTitle': '该模型自己声明的思考档位，选中后按原值下发到上游的 reasoning_effort 字段；档位之外的取值会被上游拒绝。',
+        'effort.off': '关闭',
+        'effort.minimal': '最小',
+        'effort.low': '低',
+        'effort.medium': '中',
+        'effort.high': '高',
+        'effort.xhigh': '极高',
+        'effort.max': '最大',
         'tag.context': '上下文',
         'tag.output': '最长输出',
         'tag.latency': '首字',
         'tag.eacChannel': 'EAC 渠道 · 协付',
+        'tag.new': 'NEW',
+        'tag.newTitle': '新上线的模型，经 EAC 渠道转发自 OpenCode 免费车道。',
+        'tag.hot': '爆',
+        'tag.hotTitle': '当前最热门的免费模型之一。',
+        'tag.fast': '高速',
+        'tag.fastTitle': '响应快、吞吐高，适合长对话与连续调用。',
         'tag.kiloChannel': 'Kilo 渠道 · 免费池（prompt 可能被上游记录用于改进服务，勿发送敏感内容）',
         'roster.noLane': 'EAC 协付模型在当前运行环境不可用：宿主未提供可识别的桌面 / Web 配置，因此不加载该渠道。',
         'section.models': '模型清单',
@@ -224,6 +239,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'bench.result': '首帧 {ttft}ms · 输出 {tps} tok/s · 推理 {reasoning} tok',
         'ann.preamble': '前言',
         'ann.models': '模型清单',
+        'ann.newlane': '新模型上线',
         'ann.steps': '使用步骤',
         'ann.features': '功能介绍',
         'ann.later': '稍后再说',
@@ -231,7 +247,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'ann.openSettings': '打开设置页',
         'ann.p1': '免密：安装即可用，不需要注册、不需要填任何 API Key。',
         'ann.p2': '清单跟随上游：模型集合、上下文长度与能力每次刷新都重新拉取。',
-        'ann.p3': '诚实的能力声明：探测不出来的能力不会显示，思考强度档位是真实生效的输出预算上限。',
+        'ann.p3': '诚实的能力声明：探测不出来的能力不会显示，思考强度档位是真实生效的输出上限。',
+        'ann.n1': '两个新模型已通过 EAC 渠道上线，由 OpenCode 免费车道转发：DeepSeek V4.1 Flash Free 与 GLM 5.3 Flash Free。',
+        'ann.n2': '它们排在 EAC 模型页最前面，带红色 NEW / 爆 徽标和「高速」标签，一眼就能找到。',
+        'ann.n3': '两个模型都真实支持思考档位（低 / 高 / 最大），DeepSeek 还能关闭思考；档位直接下发到上游，不是提示词。',
         'ann.s1': '在输入框的模型选择器里选 “Our Free Model” 分组下的任意模型。',
         'ann.s2': '需要更强推理时点开 Effort 档位；它是真实下发的输出预算，不是提示词。',
         'ann.s3': '想被其它本地工具调用：设置页 → 本地转发 → 启用，把 Base URL 和 Key 填进去。',
@@ -309,8 +328,45 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'nav.tab.free': '免费模型',
         'nav.tab.eac': 'EAC 模型',
         'nav.tab.channels': '白嫖模型接入',
+        'nav.tab.picks': '推荐项目',
         'star.cta': '点个 Star',
         'star.title': '在 GitHub 上给本仓库点 Star',
+        'picks.title': '推荐项目',
+        'picks.sub': '同一作者的两个开源项目：一个把 Agent 装进原生桌面，一个让上百个插件和谐共存。用得上，就顺手点个 Star。',
+        'picks.foot': 'Star 是开源项目唯一的「工资条」——它决定作者还能投入多少时间。两个项目都免费、开源、无广告，点一下就是最实在的支持。',
+        'picks.stars': 'Stars',
+        'picks.forks': 'Forks',
+        'picks.fork': 'Fork',
+        'picks.totalStars': '两个项目共 {n} 个 Star',
+        'picks.updated': '最近更新',
+        'picks.stale': '缓存数据',
+        'picks.liveFailed': '暂时读不到 GitHub 数据，数字稍后自动补上——不影响下面的链接。',
+        'picks.getDesktop': '下载安装',
+        'picks.getPack': '安装说明',
+        'picks.getDesign': '安装说明',
+        'picks.star': '点个 Star',
+        'picks.starHint': '在 GitHub 上打开并点 Star',
+        'picks.desktop.badge': '桌面工作台',
+        'picks.desktop.tagline': '把 Agent 的能力，组织成一张真正能工作的桌面。',
+        'picks.desktop.body': '基于 DeepSeek Harness 的开源桌面工作台：Tauri 原生窗口、随包 Node 运行时，双击即进入工作。项目文件、会话变更、插件目录与皮肤市场都在一处，Windows / Linux / macOS 都有安装包。',
+        'picks.desktop.tag1': 'Tauri 原生窗口',
+        'picks.desktop.tag2': '随包运行时',
+        'picks.desktop.tag3': '文件协作与还原',
+        'picks.desktop.tag4': '插件市场与皮肤',
+        'picks.pack.badge': '插件整合包',
+        'picks.pack.tagline': '揽尽万象：让数百个 DSH 插件和谐共存。',
+        'picks.pack.body': '为 DSH Desktop 提供插件目录、批量安装、更新与移除管理，内置 72 个基线子插件、皮肤预览与 Prompt 合集；固定摘要清单逐字节校验，装出来的环境完整可信。',
+        'picks.pack.tag1': '72 个基线插件',
+        'picks.pack.tag2': '批量安装 / 更新',
+        'picks.pack.tag3': '皮肤预览',
+        'picks.pack.tag4': '摘要校验',
+        'picks.design.badge': '设计工作台',
+        'picks.design.tagline': '在本地把视频和设计做完，不把素材交给别人。',
+        'picks.design.body': 'DeepSeek Harness 的本地视频制作与设计插件：多轨剪辑、模板与设计体系、原生预览画布，成品导出为真实文件。全流程在本机完成，素材与工程留在自己硬盘上。',
+        'picks.design.tag1': '多轨剪辑',
+        'picks.design.tag2': '模板与设计体系',
+        'picks.design.tag3': '原生预览画布',
+        'picks.design.tag4': '真实文件导出',
         'free.title': '免费模型',
         'free.sub': '免登录、免 Key、免配置：模型清单跟随上游刷新，可用性由这台机器实测。',
         'free.tankLabel': '免费车道可用度',
@@ -675,10 +731,25 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'tag.thinkingShared': 'Thinking always on',
         'tag.rung': 'Default ceiling',
         'tag.rungTitle': 'What each rung actually sends: {ladder}. A rung is one ceiling shared by thinking and the answer, and it never exceeds the max output above or the per-call ceiling in settings.',
+        'tag.levels': 'Thinking levels',
+        'tag.levelsTitle': 'The levels this model declares itself; the selected one is sent as-is in the upstream reasoning_effort field, and a value outside the set is rejected upstream.',
+        'effort.off': 'Off',
+        'effort.minimal': 'Minimal',
+        'effort.low': 'Low',
+        'effort.medium': 'Medium',
+        'effort.high': 'High',
+        'effort.xhigh': 'Extra high',
+        'effort.max': 'Max',
         'tag.context': 'Context',
         'tag.output': 'Max output',
         'tag.latency': 'First token',
         'tag.eacChannel': 'EAC lane · co-paid',
+        'tag.new': 'NEW',
+        'tag.newTitle': 'Just added: relayed to the EAC lane from OpenCode’s free tier.',
+        'tag.hot': '爆',
+        'tag.hotTitle': 'One of the most requested free models right now.',
+        'tag.fast': 'Fast',
+        'tag.fastTitle': 'Quick first token and high throughput — good for long or back-to-back turns.',
         'tag.kiloChannel': 'Kilo channel · free pool (prompts may be logged by the upstream provider — never send sensitive content)',
         'roster.noLane': 'The co-paid EAC models are unavailable in this composition: the host did not present a recognized desktop or web profile, so the lane is not loaded.',
         'section.models': 'Model roster',
@@ -837,6 +908,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'bench.result': 'first frame {ttft}ms · {tps} tok/s · {reasoning} reasoning tokens',
         'ann.preamble': 'Preamble',
         'ann.models': 'Model roster',
+        'ann.newlane': 'New models',
         'ann.steps': 'How to use',
         'ann.features': 'What it does',
         'ann.later': 'Later',
@@ -845,6 +917,9 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'ann.p1': 'No credentials: install and use it — no sign-up, no API key to paste.',
         'ann.p2': 'The roster follows upstream: models, context lengths and capabilities are re-fetched on every refresh.',
         'ann.p3': 'Honest capability claims: anything a probe cannot confirm stays hidden, and each effort level is a real output budget.',
+        'ann.n1': 'Two new models are live on the EAC lane, relayed from OpenCode’s free tier: DeepSeek V4.1 Flash Free and GLM 5.3 Flash Free.',
+        'ann.n2': 'They lead the EAC models page, marked with a red NEW / 爆 badge and a “Fast” tag.',
+        'ann.n3': 'Both expose real thinking levels (Low / High / Max), and DeepSeek can also switch thinking off; the level goes to the upstream as-is, not as a prompt hint.',
         'ann.s1': 'Pick any model under the “Our Free Model” group in the composer’s model selector.',
         'ann.s2': 'For harder reasoning, open the Effort menu — it sends a real budget, not a prompt hint.',
         'ann.s3': 'To serve other local tools: Settings → Local forward → enable, then copy the base URL and key.',
@@ -922,8 +997,45 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'nav.tab.free': 'Free models',
         'nav.tab.eac': 'EAC models',
         'nav.tab.channels': 'Free channels',
+        'nav.tab.picks': 'Picks',
         'star.cta': 'Star',
         'star.title': 'Star this repository on GitHub',
+        'picks.title': 'Recommended projects',
+        'picks.sub': 'Two open-source projects by the same author: one puts the agent on a native desktop, the other keeps hundreds of plugins living together. If they are useful, a star is the thanks they understand.',
+        'picks.foot': 'A star is the only payslip an open-source project gets — it decides how much more time the author can spend. Both projects are free, open source and ad-free; one click is the most concrete support there is.',
+        'picks.stars': 'Stars',
+        'picks.forks': 'Forks',
+        'picks.fork': 'Fork',
+        'picks.totalStars': '{n} stars across both projects',
+        'picks.updated': 'Last push',
+        'picks.stale': 'cached',
+        'picks.liveFailed': 'GitHub numbers are unreachable right now; they will fill in later — the links below are unaffected.',
+        'picks.getDesktop': 'Download',
+        'picks.getPack': 'Install guide',
+        'picks.getDesign': 'Install guide',
+        'picks.star': 'Star it',
+        'picks.starHint': 'Open GitHub and star',
+        'picks.desktop.badge': 'Desktop workbench',
+        'picks.desktop.tagline': 'Agent capability, organized into a desktop that actually works.',
+        'picks.desktop.body': 'An open-source desktop workbench built on DeepSeek Harness: a Tauri native window with Node bundled in, so a double-click lands you in the work. Project files, session changes, a plugin catalog and a skin market in one place — with installers for Windows, Linux and macOS.',
+        'picks.desktop.tag1': 'Tauri native window',
+        'picks.desktop.tag2': 'Bundled runtime',
+        'picks.desktop.tag3': 'File changes & revert',
+        'picks.desktop.tag4': 'Plugin market & skins',
+        'picks.pack.badge': 'Plugin suite',
+        'picks.pack.tagline': 'Embracing all creation: hundreds of DSH plugins, living together.',
+        'picks.pack.body': 'A catalog, batch install, update and removal manager for DSH Desktop, carrying 72 baseline sub-plugins, skin previews and prompt sets; a pinned digest manifest verifies every byte, so an install is complete and trustworthy.',
+        'picks.pack.tag1': '72 baseline plugins',
+        'picks.pack.tag2': 'Batch install / update',
+        'picks.pack.tag3': 'Skin previews',
+        'picks.pack.tag4': 'Digest verification',
+        'picks.design.badge': 'Design workbench',
+        'picks.design.tagline': 'Finish video and design work locally, without handing your footage to anyone.',
+        'picks.design.body': 'A local video-production and design plugin for DeepSeek Harness: multi-track editing, templates and a design system, a native preview canvas, and exports that are real files. The whole pipeline runs on this machine, so footage and projects stay on your own disk.',
+        'picks.design.tag1': 'Multi-track editing',
+        'picks.design.tag2': 'Templates & design system',
+        'picks.design.tag3': 'Native preview canvas',
+        'picks.design.tag4': 'Real file export',
         'free.title': 'Free models',
         'free.sub': 'No login, no key, no setup: the roster follows upstream, availability is measured from this machine.',
         'free.tankLabel': 'Free-lane availability',
@@ -1330,6 +1442,12 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_tags{display:flex;gap:5px;flex-wrap:wrap}
 .ofm_tag{font-size:10.5px;padding:2px 8px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
 .ofm_chantag{font-size:10px;font-weight:650;padding:2px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 50%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 9%,transparent);color:var(--dsw-alias-state-business-primary);white-space:nowrap}
+/* ══ 新品/热门徽标与高速标签（置顶的 opencode 免费模型） ═════════════════ */
+.ofm_newtag{flex:none;font-size:9.5px;font-weight:750;letter-spacing:.4px;padding:2px 7px;border-radius:999px;color:#fff;background:var(--dsw-alias-state-error-primary);box-shadow:0 1px 4px color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);white-space:nowrap;text-transform:uppercase}
+.ofm_hottag{flex:none;font-size:10px;font-weight:700;line-height:1;padding:2px 6px;border-radius:999px;color:#fff;background:var(--dsw-alias-state-error-primary);box-shadow:0 1px 4px color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);white-space:nowrap}
+.ofm_tag.fast{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);font-weight:650}
+.ofm_card.pinned{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 42%,var(--dsw-alias-border-l2));box-shadow:inset 0 1px 0 rgb(255 255 255 / 6%),0 2px 6px color-mix(in srgb,var(--dsw-alias-state-error-primary) 14%,transparent),0 6px 18px color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}
+.ofm_card.pinned:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 62%,var(--dsw-alias-border-l2))}
 .ofm_metrics{display:flex;gap:12px;font-size:11px;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap}
 .ofm_metrics b{color:var(--dsw-alias-label-secondary);font-weight:600;font-variant-numeric:tabular-nums}
 .ofm_note{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5}
@@ -2134,6 +2252,54 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_snippet{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;padding:9px 11px;border-radius:10px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);white-space:pre;overflow:auto;max-height:230px}
 @media (max-width:600px){.ofm_duo{grid-template-columns:1fr}.ofm_picklist{grid-template-columns:1fr}.ofm_member{flex-wrap:wrap}}
 @media (prefers-reduced-motion:reduce){.ofm_rise,.ofm_page{animation:none}.ofm_pickrow,.ofm_member,.ofm_meter i,.ofm_card,.ofm_kpi,.ofm_chan{transition:none}.ofm_root .ofm_card:hover,.ofm_pickrow:hover:not(:disabled){transform:none}}
+
+/* ── 推荐项目页：两张「去点 Star」的卡片 ─────────────────────────────────
+   这一页只有一件事要促成——点开仓库、点下 Star。所以卡片比常规模型卡大一档，
+   入场逐张错峰（--i 由调用方给），悬停抬升；主 CTA 是渐变星按钮，带一圈呼吸
+   光环与悬停扫光；数字用 count-up 落地。全部只动 transform/opacity/颜色。
+   动效降级：文件末尾的 reduced-motion 块统一关掉位移与动画。 */
+.ofm_recogrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));gap:14px;align-items:stretch}
+.ofm_recocard{position:relative;display:flex;flex-direction:column;gap:12px;padding:18px;border-radius:18px;border:1px solid var(--dsw-alias-border-l2);background:linear-gradient(168deg,color-mix(in srgb,var(--dsw-alias-bg-layer-3) 86%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-2) 80%,transparent));box-shadow:inset 0 1px 0 rgb(255 255 255 / 7%),0 2px 8px rgb(0 0 0 / 5%),0 14px 34px color-mix(in srgb,var(--dsw-alias-state-business-primary) 6%,transparent);overflow:hidden;animation:ofm-reco-in .5s var(--ease-instrument) backwards;animation-delay:calc(var(--i,0)*90ms);transition:transform .24s var(--ease-instrument),box-shadow .28s ease,border-color .2s ease}
+.ofm_recocard::before{content:"";position:absolute;inset:-45% 45% 50% -35%;pointer-events:none;opacity:0;background:radial-gradient(58% 58% at 32% 32%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 13%,transparent),transparent 72%);transition:opacity .4s ease}
+.ofm_recocard:hover::before{opacity:1}
+.ofm_recocard:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-border-l2));box-shadow:inset 0 1px 0 rgb(255 255 255 / 10%),0 18px 44px color-mix(in srgb,var(--dsw-alias-state-business-primary) 15%,transparent)}
+@keyframes ofm-reco-in{from{opacity:0;transform:translateY(16px) scale(.985)}to{opacity:1;transform:none}}
+.ofm_recotop{display:flex;align-items:center;gap:11px;min-width:0}
+.ofm_recomark{display:flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;border-radius:13px;color:var(--dsw-alias-label-on-accent,#fff);background:linear-gradient(145deg,var(--dsw-alias-state-business-primary),color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-label-primary)));box-shadow:inset 0 1px 0 rgb(255 255 255 / 28%),0 4px 12px color-mix(in srgb,var(--dsw-alias-state-business-primary) 24%,transparent);transition:transform .3s var(--ease-settle)}
+.ofm_recomark svg{width:22px;height:22px;fill:currentColor}
+.ofm_recocard:hover .ofm_recomark{transform:rotate(-4deg) scale(1.06)}
+.ofm_recoid{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ofm_reconame{font-size:15px;font-weight:700;letter-spacing:-.2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ofm_recorepo{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ofm_recobadge{margin-left:auto;flex:none;font-size:10.5px;font-weight:650;padding:3px 10px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 10%,transparent);color:var(--dsw-alias-state-business-primary);white-space:nowrap}
+.ofm_recotagline{margin:0;font-size:13.5px;font-weight:650;line-height:1.5;letter-spacing:-.1px}
+.ofm_recobody{margin:0;flex:1;font-size:12px;line-height:1.75;color:var(--dsw-alias-label-secondary)}
+.ofm_recochips{display:flex;gap:6px;flex-wrap:wrap}
+.ofm_recochip{font-size:10.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 66%,transparent);color:var(--dsw-alias-label-secondary);transition:border-color .16s ease,color .16s ease,transform .16s ease}
+.ofm_recochip:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,var(--dsw-alias-border-l1));color:var(--dsw-alias-label-primary);transform:translateY(-1px)}
+.ofm_recofoot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:auto;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1)}
+.ofm_recofacts{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.ofm_recofact{display:flex;align-items:baseline;gap:5px}
+.ofm_recofact b{font-size:13.5px;font-weight:700;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
+.ofm_recoacts{display:flex;gap:8px;align-items:center;margin-left:auto}
+.ofm_recogo{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 58%,transparent);color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap;transition:border-color .16s ease,color .16s ease,transform .16s ease,background .16s ease}
+.ofm_recogo:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 50%,var(--dsw-alias-border-l2));color:var(--dsw-alias-label-primary);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 82%,transparent);transform:translateY(-1px)}
+.ofm_recogo svg{width:12px;height:12px;fill:currentColor;opacity:.7;transition:transform .2s var(--ease-instrument)}
+.ofm_recogo:hover svg{transform:translateX(2px)}
+.ofm_recostar{position:relative;display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;overflow:hidden;font-size:13px;font-weight:700;letter-spacing:.1px;text-decoration:none;white-space:nowrap;color:var(--dsw-alias-label-on-accent,#fff);background:linear-gradient(135deg,var(--dsw-alias-state-business-primary),color-mix(in srgb,var(--dsw-alias-state-business-primary) 58%,var(--dsw-alias-label-primary)));box-shadow:inset 0 1px 0 rgb(255 255 255 / 26%),0 6px 18px color-mix(in srgb,var(--dsw-alias-state-business-primary) 28%,transparent);transition:transform .18s var(--ease-settle),box-shadow .24s var(--ease-instrument),filter .2s ease}
+.ofm_recostar:hover{transform:translateY(-2px) scale(1.02);filter:saturate(1.06);box-shadow:inset 0 1px 0 rgb(255 255 255 / 32%),0 12px 28px color-mix(in srgb,var(--dsw-alias-state-business-primary) 34%,transparent)}
+.ofm_recostar:active{transform:scale(.97)}
+.ofm_recostar svg{width:16px;height:16px;fill:currentColor;transition:transform .5s var(--ease-settle)}
+.ofm_recostar:hover svg{transform:rotate(72deg) scale(1.15)}
+.ofm_recostar::after{content:"";position:absolute;top:0;bottom:0;width:36%;left:-45%;pointer-events:none;background:linear-gradient(100deg,transparent,rgb(255 255 255 / 38%),transparent);transform:skewX(-18deg);transition:left .6s var(--ease-instrument)}
+.ofm_recostar:hover::after{left:115%}
+.ofm_recostarring{position:absolute;inset:0;border-radius:inherit;pointer-events:none;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 62%,transparent);animation:ofm-reco-ring 2.8s var(--ease-instrument) infinite}
+@keyframes ofm-reco-ring{0%{opacity:.6;transform:scale(1)}70%,100%{opacity:0;transform:scale(1.22)}}
+.ofm_recoglow{position:absolute;inset:-50% -12% auto;height:175%;z-index:0;pointer-events:none;background:radial-gradient(42% 52% at 24% 62%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 15%,transparent),transparent 70%),radial-gradient(38% 46% at 78% 38%,color-mix(in srgb,var(--dsw-alias-state-success-primary) 11%,transparent),transparent 72%);filter:blur(10px);animation:ofm-reco-aurora 18s ease-in-out infinite alternate}
+@keyframes ofm-reco-aurora{from{transform:translate3d(-3%,1%,0) scale(1)}to{transform:translate3d(3%,-2%,0) scale(1.08)}}
+.ofm_reconote{margin:0;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}
+@media (max-width:600px){.ofm_recogrid{grid-template-columns:1fr}.ofm_recoacts{width:100%;margin-left:0}}
+@media (prefers-reduced-motion:reduce){.ofm_recocard,.ofm_recostar,.ofm_recogo,.ofm_recochip,.ofm_recomark{animation:none;transition:border-color .12s ease,background .12s ease,box-shadow .12s ease,opacity .12s ease,color .12s ease}.ofm_recocard:hover,.ofm_recostar:hover,.ofm_recostar:active,.ofm_recogo:hover,.ofm_recochip:hover,.ofm_recocard:hover .ofm_recomark{transform:none}.ofm_recostar::after,.ofm_recostarring,.ofm_recoglow{display:none}}
 `
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -2634,21 +2800,41 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       const stateKey = `state.${m.availability}`
       const dim = m.availability !== 'available'
       const rung = (m.budgets ?? []).find(row => row.isDefault === true)
-      return h('article', { className: 'ofm_card' + (dim ? ' dim' : '') },
+      // A model that declares its own thinking levels shows them beside the
+      // ceiling tag, so the card names what the composer's Effort menu offers.
+      // Each id is looked up with a literal call so the dictionary lint can see
+      // the key, and an id with no translation falls back to the id itself.
+      const levelName = id => id === 'disabled' || id === 'none' ? t('effort.off')
+        : id === 'minimal' ? t('effort.minimal')
+          : id === 'low' ? t('effort.low')
+            : id === 'medium' ? t('effort.medium')
+              : id === 'high' ? t('effort.high')
+                : id === 'xhigh' ? t('effort.xhigh')
+                  : id === 'max' ? t('effort.max') : id
+      const levels = Array.isArray(m.efforts) && m.efforts.length > 0
+        ? m.efforts.map(levelName).join(' / ')
+        : undefined
+      return h('article', { className: 'ofm_card' + (dim ? ' dim' : '') + (m.pinned === true ? ' pinned' : '') },
         h('div', { className: 'ofm_cardhead' },
           m.channel === 'eac' ? h('span', { className: 'ofm_chantag', title: t('tag.eacChannel') }, 'EAC') : null,
           m.channel === 'eac' && locked === true ? h('span', { className: 'ofm_chantag', title: t('eac.lockedTitle') }, '🔒') : null,
           m.channel === 'kilo' ? h('span', { className: 'ofm_chantag', title: t('tag.kiloChannel') }, 'Kilo') : null,
           h('span', { className: 'ofm_cardname', title: m.name }, m.name),
+          m.isNew === true ? h('span', { className: 'ofm_newtag', title: t('tag.newTitle') }, t('tag.new')) : null,
+          m.hot === true ? h('span', { className: 'ofm_hottag', title: t('tag.hotTitle') }, t('tag.hot')) : null,
           h('span', { className: 'ofm_badge ' + m.availability }, t(stateKey))),
-        h('div', { className: 'ofm_id', title: m.id }, m.id),
+        h('div', { className: 'ofm_id', title: m.id }, m.label ?? m.id),
         h('div', { className: 'ofm_tags' },
+          m.fast === true ? h('span', { className: 'ofm_tag fast', title: t('tag.fastTitle') }, t('tag.fast')) : null,
           h('span', { className: 'ofm_tag' }, m.vision ? t('tag.vision') : t('tag.text')),
           m.reasoning ? h('span', { className: 'ofm_tag' }, m.canDisableThinking === false ? t('tag.thinkingShared') : t('tag.thinking')) : null,
           h('span', { className: 'ofm_tag' }, `${t('tag.context')} ${kilo(m.contextWindow)}`),
           h('span', { className: 'ofm_tag' }, `${t('tag.output')} ${kilo(m.maxOutput)}`),
-          rung === undefined ? null : h('span', { className: 'ofm_tag', title: t('tag.rungTitle').replace('{ladder}', m.budgets.map(row => `${row.name} ${kilo(row.tokens)}`).join(' · ')) },
-            `${t('tag.rung')} ${kilo(rung.tokens)}`)),
+          rung === undefined ? null
+            : h('span', { className: 'ofm_tag', title: t('tag.rungTitle').replace('{ladder}', m.budgets.map(row => `${row.name} ${kilo(row.tokens)}`).join(' · ')) },
+              `${t('tag.rung')} ${kilo(rung.tokens)}`),
+          levels === undefined ? null
+            : h('span', { className: 'ofm_tag', title: t('tag.levelsTitle') }, `${t('tag.levels')} ${levels}`)),
         m.channel === 'eac' && locked === true
           ? h(Fragment, null,
             h('p', { className: 'ofm_note' }, t('eac.lockedNote')),
@@ -2677,8 +2863,12 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       const roster = only === undefined ? summary.catalog
         : only === 'eac' ? summary.catalog.filter(m => m.channel === 'eac')
           : summary.catalog.filter(m => m.channel !== 'eac')
-      const available = roster.filter(m => m.route === 'our-free-model' || (only === 'eac' && m.channel === 'eac'))
-      const limited = roster.filter(m => m.route === 'our-free-model-region')
+      // Featured rows lead their group: the pinned flag rides the catalog row, so
+      // the order is the same on the EAC page and in the onboarding roster, and a
+      // row that is not featured keeps its upstream order.
+      const lead = list => [...list].sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0))
+      const available = lead(roster.filter(m => m.route === 'our-free-model' || (only === 'eac' && m.channel === 'eac')))
+      const limited = lead(roster.filter(m => m.route === 'our-free-model-region'))
       // 只有拿到过明确判定（网关答过 /eac/status）且未授权时才上锁：状态未知
       // 不该显示一把凭空的锁，网关不可达时本地记录仍算已授权。
       const locked = auth !== undefined && auth.available === true && auth.authorized !== true
@@ -2799,6 +2989,9 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       return { active, capacityKnown, pct, rawPct, level }
     }
 
+    /** The GitHub star every call to action on this page carries. */
+    const STAR_GLYPH = 'M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z'
+
     /** The repository every page's star button points at, opened in a new tab. */
     function StarButton(props) {
       const { t, repo = POOL_REPO_URL } = props
@@ -2810,7 +3003,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         rel: 'noreferrer noopener',
         title: `${t('star.title')} · ${repo}`,
       }, h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' },
-        h('path', { d: 'M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z' })),
+        h('path', { d: STAR_GLYPH })),
         label)
     }
     /** Where the pool's capacity number comes from, in one sentence. */
@@ -2939,7 +3132,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         const current = ++attempt.current
         setBusy(true); setNotice('')
         try {
-          const started = await post('/eac/login/start', undefined, 20_000)
+          const started = await post('/eac/login/start', undefined, 30_000)
           if (current !== attempt.current) return
           if (started?.error !== undefined) { setNotice(t('eac.startFailed').replace('{reason}', started.error)); return }
           updatePending({ link: started.link, url: started.url, startedAt: Date.now() })
@@ -2987,7 +3180,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
               h('div', null, t('eac.waiting')),
               h(Button, { kind: 'ghost', disabled: busy, onClick: cancel }, t('eac.cancel')),
               h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 } },
-                h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, wordBreak: 'break-all' } }, pending.url),
+                h('a', { href: pending.url, target: '_blank', rel: 'noreferrer noopener', className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 0, overflowWrap: 'anywhere' } }, pending.url),
                 h(Button, { kind: 'ghost', onClick: () => copy(pending.url, ok => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1600) } }) }, copied ? t('eac.copied') : t('eac.copy')))))
           : null,
         notice !== '' ? h('p', { className: 'ofm_note' }, notice) : null)
@@ -3540,6 +3733,154 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         h(UpgradePanel, { t, settings, onApply, busy }))
     }
 
+    // ── 推荐项目页 ────────────────────────────────────────────────────────────
+    // 这一页只有一个任务：让人点开仓库、点下 Star。所以文案是「说清它解决什么
+    // 问题」，动作是「一眼能看到的星按钮」，数字是宿主 /picks 取回的真实 Star /
+    // Fork / 最近提交——拿不到就整块不显示，绝不用占位数字凑版面（这块页面的
+    // 全部说服力都在数字是真的）。每张卡片的文案按语言直写 t('字面量')，字典
+    // 保持可 grep；两个仓库的地址与「第二个动作」在这里各写一份。
+    const RECO_LINKS = {
+      desktop: { repo: 'https://github.com/Ebony-Vinyl/EAC-Desktop', extra: 'https://github.com/Ebony-Vinyl/EAC-Desktop/releases' },
+      pack: { repo: 'https://github.com/Ebony-Vinyl/EAC-Pack', extra: 'https://github.com/Ebony-Vinyl/EAC-Pack#git-安装' },
+      designWorld: { repo: 'https://github.com/Ebony-Vinyl/EAC-design-world', extra: 'https://github.com/Ebony-Vinyl/EAC-design-world#安装' },
+    }
+    const RECO_DESKTOP_MARK = 'M1.4 3.1h13.2a.7.7 0 01.7.7v6a.7.7 0 01-.7.7H1.4a.7.7 0 01-.7-.7v-6a.7.7 0 01.7-.7zM5.6 12h4.8v1.4H5.6z'
+    const RECO_PACK_MARK = 'M8 1.2l6.3 3.2L8 7.6 1.7 4.4 8 1.2zM12.9 7.3l1.4.7L8 11.2 1.7 8l1.4-.7L8 9.8l4.9-2.5zM12.9 10.6l1.4.7L8 14.5 1.7 11.3l1.4-.7L8 13.1l4.9-2.5z'
+    const RECO_DESIGN_MARK = 'M2.6 1.6h7.1l3.7 3.7v7.1a2 2 0 01-2 2H2.6a2 2 0 01-2-2V3.6a2 2 0 012-2zm.9 1.9v7.6h9V6.1h-2.5a1 1 0 01-1-1V3.5H3.5zm8.7 2.1h.6v-1.4l-.6-.6v2zM4.2 7.1h7.6a.7.7 0 010 1.4H4.2a.7.7 0 010-1.4zm0 3h5.2a.7.7 0 010 1.4H4.2a.7.7 0 010-1.4z'
+    const RECO_EXT_MARK = 'M3.75 2A1.75 1.75 0 002 3.75v8.5C2 13.216 2.784 14 3.75 14h8.5A1.75 1.75 0 0014 12.25v-4.5a.75.75 0 00-1.5 0v4.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-8.5a.25.25 0 01.25-.25h4.5a.75.75 0 000-1.5h-4.5zM9.5 2a.75.75 0 000 1.5h2.19L7.22 7.97a.75.75 0 101.06 1.06l4.47-4.47v2.19a.75.75 0 001.5 0v-4a.75.75 0 00-.75-.75h-4z'
+
+    /** 2,034 — a star count is read, not computed, so it keeps its separators. */
+    const grouped = value => String(Math.max(0, Math.round(Number(value) || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+    /**
+     * 0 → n in about a second, once per arrival.
+     *
+     * The page's whole argument is that these numbers are real and moving, and a
+     * number that counts up reads as a live reading rather than a printed one.
+     * Reduced motion skips straight to the value — the number is the point, the
+     * motion is not.
+     */
+    function useCountUp(target) {
+      const [value, setValue] = useState(target ?? null)
+      useEffect(() => {
+        if (typeof target !== 'number') return
+        const reduced = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        if (reduced) { setValue(target); return }
+        const started = Date.now()
+        let raf = 0
+        const tick = () => {
+          const progress = Math.min(1, (Date.now() - started) / 900)
+          setValue(Math.round(target * (1 - Math.pow(1 - progress, 3))))
+          if (progress < 1) raf = requestAnimationFrame(tick)
+        }
+        raf = requestAnimationFrame(tick)
+        return () => cancelAnimationFrame(raf)
+      }, [target])
+      return value
+    }
+
+    function RecoCard(props) {
+      const { t, index, stat, mark, name, repo, badge, tagline, body, chips, repoUrl, extraUrl, extraLabel } = props
+      const stars = stat !== null && typeof stat.stars === 'number' ? stat.stars : null
+      const shown = useCountUp(stars)
+      const forks = stat !== null && typeof stat.forks === 'number' ? stat.forks : null
+      const pushedAt = stat !== null && typeof stat.pushedAt === 'number' ? stat.pushedAt : null
+      const stale = stat !== null && stat.stale === true
+      // One fork is one fork; the label is the only place the page can tell.
+      const forkLabel = forks === 1 ? t('picks.fork') : t('picks.forks')
+      return h('article', { className: 'ofm_recocard', style: { '--i': String(index) } },
+        h('div', { className: 'ofm_recotop' },
+          h('span', { className: 'ofm_recomark', 'aria-hidden': 'true' }, h('svg', { viewBox: '0 0 16 16' }, h('path', { d: mark }))),
+          h('div', { className: 'ofm_recoid' },
+            h('span', { className: 'ofm_reconame' }, name),
+            h('span', { className: 'ofm_recorepo' }, repo)),
+          h('span', { className: 'ofm_recobadge' }, badge)),
+        h('p', { className: 'ofm_recotagline' }, tagline),
+        h('p', { className: 'ofm_recobody' }, body),
+        h('div', { className: 'ofm_recochips' }, chips.map(chip => h('span', { key: chip, className: 'ofm_recochip' }, chip))),
+        h('div', { className: 'ofm_recofoot' },
+          h('div', { className: 'ofm_recofacts' },
+            stars === null ? null : h('span', { className: 'ofm_recofact' },
+              h('b', null, grouped(shown ?? stars)),
+              h('span', null, t('picks.stars')),
+              stale ? h('span', { className: 'ofm_reconote' }, t('picks.stale')) : null),
+            forks === null ? null : h('span', { className: 'ofm_recofact' }, h('b', null, grouped(forks)), h('span', null, forkLabel)),
+            pushedAt === null ? null : h('span', { className: 'ofm_recofact' }, h('b', null, ago(pushedAt, t.locale)), h('span', null, t('picks.updated')))),
+          h('div', { className: 'ofm_recoacts' },
+            h('a', { className: 'ofm_recogo', href: extraUrl, target: '_blank', rel: 'noreferrer noopener' },
+              extraLabel,
+              h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' }, h('path', { d: RECO_EXT_MARK }))),
+            h('a', {
+              className: 'ofm_recostar', href: repoUrl, target: '_blank', rel: 'noreferrer noopener',
+              title: `${t('picks.starHint')} · ${repo}`,
+            },
+              h('span', { className: 'ofm_recostarring', 'aria-hidden': 'true' }),
+              h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' }, h('path', { d: STAR_GLYPH })),
+              t('picks.star')))))
+    }
+
+    function PicksPage(props) {
+      const { t } = props
+      const picks = useAsync(() => api('/picks'), [])
+      const repos = picks.data?.repos ?? []
+      const statOf = id => repos.find(row => row.id === id) ?? null
+      // A cold read gives the host four seconds to reach GitHub, so a slow first
+      // answer can land after the page is already on screen. One delayed re-read
+      // fills the numbers in; the flag makes sure it is one, not a poll.
+      const [retried, setRetried] = useState(false)
+      const numbers = repos.some(row => typeof row.stars === 'number')
+      useEffect(() => {
+        if (retried || numbers || picks.status !== 'ready') return undefined
+        const timer = setTimeout(() => { setRetried(true); picks.reload() }, 6000)
+        return () => clearTimeout(timer)
+      }, [retried, numbers, picks.status, picks.reload])
+      // The two counts the page is asking for, added up — social proof the reader
+      // can check against the cards below, and nothing at all when GitHub has not
+      // answered (an invented total would poison the one claim this page makes).
+      const total = repos.reduce((sum, row) => sum + (typeof row.stars === 'number' ? row.stars : 0), 0)
+      return h('div', { className: 'ofm_page' },
+        h('header', { className: 'ofm_hero ofm_glass' },
+          h('span', { className: 'ofm_recoglow', 'aria-hidden': 'true' }),
+          h('div', { className: 'ofm_pagehead' },
+            h('div', { className: 'ofm_pagetitle' },
+              h('h2', null, t('picks.title')),
+              h('p', { className: 'ofm_pagesub' }, t('picks.sub'))),
+            h('div', { className: 'ofm_pills' },
+              total > 0 ? h(Pill, { strong: true }, t('picks.totalStars').replace('{n}', grouped(total))) : null,
+              h(StarButton, { t })))),
+        h('div', { className: 'ofm_recogrid' },
+          h(RecoCard, {
+            t, index: 0, stat: statOf('eac-desktop'), mark: RECO_DESKTOP_MARK,
+            name: 'EAC-Desktop', repo: 'Ebony-Vinyl/EAC-Desktop',
+            badge: t('picks.desktop.badge'),
+            tagline: t('picks.desktop.tagline'),
+            body: t('picks.desktop.body'),
+            chips: [t('picks.desktop.tag1'), t('picks.desktop.tag2'), t('picks.desktop.tag3'), t('picks.desktop.tag4')],
+            repoUrl: RECO_LINKS.desktop.repo, extraUrl: RECO_LINKS.desktop.extra, extraLabel: t('picks.getDesktop'),
+          }),
+          h(RecoCard, {
+            t, index: 1, stat: statOf('eac-pack'), mark: RECO_PACK_MARK,
+            name: 'EAC-Pack', repo: 'Ebony-Vinyl/EAC-Pack',
+            badge: t('picks.pack.badge'),
+            tagline: t('picks.pack.tagline'),
+            body: t('picks.pack.body'),
+            chips: [t('picks.pack.tag1'), t('picks.pack.tag2'), t('picks.pack.tag3'), t('picks.pack.tag4')],
+            repoUrl: RECO_LINKS.pack.repo, extraUrl: RECO_LINKS.pack.extra, extraLabel: t('picks.getPack'),
+          }),
+          h(RecoCard, {
+            t, index: 2, stat: statOf('eac-design-world'), mark: RECO_DESIGN_MARK,
+            name: 'EAC-design-world', repo: 'Ebony-Vinyl/EAC-design-world',
+            badge: t('picks.design.badge'),
+            tagline: t('picks.design.tagline'),
+            body: t('picks.design.body'),
+            chips: [t('picks.design.tag1'), t('picks.design.tag2'), t('picks.design.tag3'), t('picks.design.tag4')],
+            repoUrl: RECO_LINKS.designWorld.repo, extraUrl: RECO_LINKS.designWorld.extra, extraLabel: t('picks.getDesign'),
+          })),
+        picks.status === 'error' ? h('p', { className: 'ofm_reconote' }, t('picks.liveFailed')) : null,
+        h('p', { className: 'ofm_reconote' }, t('picks.foot')))
+    }
+
     // ── 白嫖模型接入页 ────────────────────────────────────────────────────────
     // Real channel logos carried over from the upstream Channel Pack client (see
     // vendor/channel-pack/NOTICE.md) — the same artwork users know from those
@@ -3583,6 +3924,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       { id: 'opencode', name: 'OpenCode', org: '匿名免费线', accent: '#6B7280', note: '无需登录的匿名免费通道，余额位显示通道可用性', login: 'none' },
       { id: 'officeace', name: 'OfficeAce', org: 'OfficeAce', accent: '#0F9D58', note: '云侧积分余额，订阅页挂载时自动领取每日额度', login: 'browser' },
       { id: 'accio', name: 'Accio', org: '阿里', accent: '#FF6A00', note: '每日 200 积分由登录触发（24h 内有效，不累积）', login: 'browser' },
+      { id: 'modelscope', name: 'ModelScope', org: '魔搭', accent: '#6B7280', note: '由渠道包提供', login: 'browser' },
     ]
 
     /** 与现有 RPC 的能力对应：余额、每日领取及独立签到状态分别判断。 */
@@ -3604,6 +3946,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       opencode: {},
       officeace: {},
       accio: {},
+      modelscope: {},
     }
 
     /**
@@ -5553,7 +5896,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
     // The active page lives in localStorage so a reload — or the hot reload the
     // upgrader triggers — comes back to the page the user was reading.
     const TAB_KEY = 'ofm.tab'
-    const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade']
+    const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks']
 
     function Shell(props) {
       const { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, setBusy, apply, bench, benches, ctx } = props
@@ -5594,6 +5937,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         ['logs', t('nav.tab.logs'), null],
         ['gateway', t('nav.tab.gateway'), null],
         ['upgrade', t('nav.tab.upgrade'), null],
+        ['picks', t('nav.tab.picks'), null],
       ]
       const nav = h('nav', { className: 'ofm_nav' },
         h('span', { className: 'ofm_navbrand' },
@@ -5627,6 +5971,8 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                     ? h(GatewayPage, { t, ctx })
                     : tab === 'upgrade'
                       ? h(UpgradePage, { t, settings: data.settings, onApply: apply, busy })
+                    : tab === 'picks'
+                      ? h(PicksPage, { t })
                     : tab === 'eac'
                       ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
                       : h(FreePage, { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
@@ -5754,7 +6100,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
     }
 
     // ── announcement ──────────────────────────────────────────────────────────
-    const PAGES = ['ann.preamble', 'ann.models', 'ann.steps', 'ann.features', 'ann.updates']
+    const PAGES = ['ann.preamble', 'ann.newlane', 'ann.models', 'ann.steps', 'ann.features', 'ann.updates']
 
     function announcementPortalHost() {
       let host = document.querySelector('[data-ofm-announcement-root]')
@@ -5810,7 +6156,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         h('h3', null, t('ann.preamble')),
         h('p', null, t('ann.pitch')),
         h('ul', null, list(t, ['ann.p1', 'ann.p2', 'ann.p3'])))
-      if (page === 1) {
+      if (page === 1) return h(Fragment, null,
+        h('h3', null, t('ann.newlane')),
+        h('ul', null, list(t, ['ann.n1', 'ann.n2', 'ann.n3'])))
+      if (page === 2) {
         // Advertised models first: this page is the tour a new user reads before
         // they pick anything, and a refused id at the top of it is a bad first
         // impression of a lane that is actually working.
@@ -5823,10 +6172,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
             h('span', null, `${t(`state.${m.availability}`)} · ${m.vision ? t('tag.vision') : t('tag.text')} · ${kilo(m.contextWindow)}`)))),
           rows.some(m => m.availability === 'region-blocked') ? h('p', { className: 'ofm_note' }, t('hint.region')) : null)
       }
-      if (page === 2) return h(Fragment, null,
+      if (page === 3) return h(Fragment, null,
         h('h3', null, t('ann.steps')),
         h('ul', null, list(t, ['ann.s1', 'ann.s2', 'ann.s3', 'ann.s4'])))
-      if (page === 3) return h(Fragment, null,
+      if (page === 4) return h(Fragment, null,
         h('h3', null, t('ann.features')),
         h('ul', null, list(t, ['ann.f1', 'ann.f2', 'ann.f3', 'ann.f4', 'ann.f5'])))
       return h(Fragment, null,
@@ -11144,6 +11493,491 @@ function summarizeClaim(result) {
       const providerLabel = (id) => PROVIDER_REGISTRY.find((d) => d.id === id)?.label ?? id
       return { UsageBadge, providerLabel }
     })()
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── patch E: pill ─────────────────────────────────────────────────────
+    // 「在用模型」胶囊组件。源码来自胶囊仓库（见 patch-capsule-client.mjs 文件头），
+    // 此处已把 ESM 头尾改写成 ModuleLoader 内的普通声明：React / ReactDOM / h
+    // 都在本模块作用域内，无需再导入。
+    // 渠道 id → 展示名（胶囊的上行文案）。
+    const CHANNEL_LABELS = Object.freeze(Object.fromEntries(
+      CHANNEL_PROVIDERS.map(row => [row.id, row.name]),
+    ))
+/**
+ * 「在用模型」实时读数胶囊 —— 挂在输入区最下方（`conversation.composer.dock`）。
+ *
+ * ## 它解决什么
+ *
+ * 路由型 provider（`aggregate` 聚合·跨渠道、`jet-hub-auto` Auto·临期优先·整池）
+ * 在模型选择器里只显示一个**虚拟**名字。用户看不到「这一次到底发给了哪个渠道、
+ * 哪个真实模型」—— 这正是本胶囊要回答的问题。
+ *
+ * ## ⚠️ 与用量徽标（`usage-badge.js`）的分工
+ *
+ * | 组件 | 槽位 | 回答的问题 |
+ * |---|---|---|
+ * | 用量徽标 | `conversation.input.right` | 这个渠道**还剩多少**额度 |
+ * | 本胶囊 | `conversation.composer.dock` | 现在**在用**哪个渠道、哪个模型 |
+ *
+ * 两者都依赖同一个目录快照（当前选中的 provider/model），但语义不同：徽标要的是
+ * 「余额该读谁」，本胶囊要的是「请求发给了谁」。**不要合并**。
+ *
+ * ## ⚠️ 为什么门控放在渲染前而不是宿主侧
+ *
+ * 这里拿不到「宿主记录里有没有历史」的同步值（那是 RPC，异步），所以：
+ * 路由型 provider 在**还没有历史**时显示占位文案（`在用 · 等待首次请求`）而不是
+ * 直接不渲染 —— 用户报障「找不到这个显示」过，一个会自己冒出来的占位比
+ * 「什么都不显示」更容易让人确认功能是活的。
+ *
+ * ## ⚠️ 与徽标同款的两个坑（都已由本文件的写法规避）
+ *
+ * 1. **目录必须惰性解析**（`resolveDirectory()` 是函数）：`directoryFor(sessionId)`
+ *    在槽位 inject 期求值会让桌面版抛 `cannot get property "remote.session"
+ *    without inject`，而那个异常发生在**会话输入区的同步渲染路径**上，会让模型
+ *    选择器整个点不动 —— 远比「胶囊不显示」严重。见 `usage-badge.js` 的详细记录。
+ * 2. **必须自己调 `load()`**：目录 store 初值是 `{ current: null, status: 'idle' }`，
+ *    不 load 就永远拿不到 `current`，胶囊会恒显示「无选中模型」而不渲染。
+ */
+
+
+
+/**
+ * 轮询节奏：5 秒。
+ *
+ * ⚠️ 宿主端点 `router.activeRoute` 是**纯内存读**（零网络、零余额查询），成本可忽略；
+ * 而它决定的是「现在在用谁」—— 用户发完消息后若最多要等 60 秒才更新，观感就是
+ * 「这个显示坏了」。故与徽标那条 `ACTIVE_PROVIDER_POLL_MS` 取同一量级
+ *（两者都是内存读，与 60 秒的**余额**轮询是两回事）。
+ */
+const ACTIVE_ROUTE_POLL_MS = 5_000;
+
+/**
+ * 路由型 provider（模型选择器里显示虚拟名，真实目标只能由宿主记录提供）。
+ *
+ * ⚠️ 与宿主的 `AGGREGATE_PROVIDER` / `AUTO_PROVIDER` **必须逐字一致**。
+ * 写错的表现是胶囊恒显示虚拟名，而不是报错（有单测钉住）。
+ */
+const ROUTER_PROVIDER_IDS = Object.freeze(['aggregate', 'jet-hub-auto']);
+
+/**
+ * 目录解析失败后的重试退避（毫秒）。
+ *
+ * 与用量徽标同一序列、同一理由：桌面版宿主可能在槽位挂载之后才补齐
+ * `remote.session` 注入，解析失败不等于永远不可用。共 4 次、约 4.5 秒。
+ */
+const RESOLVE_RETRY_DELAYS = [300, 700, 1500, 2000];
+
+/** 无历史时的占位文案（路由型 provider）。 */
+const PENDING_LABEL = '等待首次请求';
+
+/** 弹层与视口边缘的最小间距（与官方 stat 弹层的 PANEL_MARGIN 同值）。 */
+const PANEL_MARGIN = 12;
+
+/** 弹层与触发元素之间的间距（与官方 PANEL_GAP 同值）。 */
+const PANEL_GAP = 8;
+
+/**
+ * 未定位时的面板样式：**不可见但仍参与布局**。
+ *
+ * ⚠️ 用 `visibility: hidden` 而**不是** `display: none`：后者会让元素不参与布局，
+ * `getBoundingClientRect()` 量到 0×0 ⇒ 夹紧计算全部按 0 算，面板会跳到屏幕角落。
+ * （与官方 stat 弹层的 MEASURE_STYLE 同一取向。）
+ */
+const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 };
+
+/**
+ * 触发元素锚定的弹层定位（**自己实现**，不引 `@deepseek-ai/dsh-client-ui-primitives`）。
+ *
+ * ## 为什么不复用官方的 `useAnchoredPosition`
+ *
+ * 它在 `@deepseek-ai/dsh-client-ui-primitives` 里，而本插件的
+ * `dsh.client.inject` 只声明了 connection / ui-settings / ui-model-selection
+ * （见 `package.json`）—— 直接 import 一个**未声明**的 client 包会在加载期抛
+ * 「cannot get property … without inject」，那正是本仓库踩过的形态。
+ * 为一条读数去扩 inject 面不划算；弹层只需要「在触发元素上方、贴边夹紧」。
+ *
+ * ⚠️ `open === false` 时返回 `null`（调用方用 `pos ?? MEASURE_STYLE`）。
+ * ⚠️ 测量必须在**渲染后**（`useLayoutEffect`）做，否则拿到的是未布局的 0 尺寸。
+ */
+function useAnchoredPosition(anchorRef, panelRef, open) {
+  const [pos, setPos] = React.useState(null);
+  React.useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return undefined;
+    }
+    /**
+     * ⚠️⚠️ 必须判 `typeof window === 'undefined'`。
+     *
+     * 这个 effect 跑在**渲染提交路径**上，一旦抛错就不是「弹层不显示」而是
+     * 「整个会话输入区崩掉」（与文件头那两个真机事故同一形态）。
+     * 宿主是浏览器时 `window` 必然存在，但本仓库的单测/SSR 夹具没有 ——
+     * 实测在无 DOM 的夹具里直接抛 `ReferenceError: window is not defined`。
+     * ⇒ 没有 window 就整体跳过定位（弹层用 MEASURE_STYLE 保持不可见，
+     * 不会出现「面板停在左上角挡着输入区」的中间态）。
+     */
+    if (typeof window === 'undefined') return undefined;
+    const place = () => {
+      const anchor = anchorRef.current;
+      const panel = panelRef.current;
+      // ⚠️ 面板首帧是 visibility:hidden 但**已布局**（MEASURE_STYLE），
+      //    故这里量得到真实宽高 —— 若用 display:none 会量到 0。
+      if (!anchor || !panel) return;
+      const a = anchor.getBoundingClientRect();
+      const p = panel.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // 水平：与触发元素中心对齐，再夹进视口。
+      let left = a.left + a.width / 2 - p.width / 2;
+      left = Math.max(PANEL_MARGIN, Math.min(left, vw - p.width - PANEL_MARGIN));
+      // 垂直：优先放**上方**（输入区在最底部，下方没有空间）。
+      let top = a.top - p.height - PANEL_GAP;
+      if (top < PANEL_MARGIN) top = Math.min(a.bottom + PANEL_GAP, vh - p.height - PANEL_MARGIN);
+      setPos({ left: `${Math.round(left)}px`, top: `${Math.round(Math.max(PANEL_MARGIN, top))}px` });
+    };
+    place();
+    // ⚠️ 旋转屏幕 / 软键盘弹起都会改变视口，必须重算（手机上尤其常见）。
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, anchorRef, panelRef]);
+  return pos;
+}
+
+/**
+ * 纯函数：把「选中的 provider/model」+「宿主记录的真实路由」拼成**两行**读数。
+ *
+ * ## 为什么是两行（真机实测后改的，2026-10-10）
+ *
+ * 第一版是一行 `在用 · 渠道 · 模型`。真机上它把输入区最下方那一行撑爆了：dock 是
+ * `display:flex` 且**没有 flex-wrap**，四个元素（官方 activity / usage / 本胶囊 /
+ * 右侧的上下文表）共处一行 ⇒ 长度是**相加**的，三枚文字胶囊**全部**被省略号截断
+ * （实测截图：`20 ...` / `74.3...` / `在用 · CodeBuddy (`）。
+ *
+ * 竖排两行后，本胶囊的宽度从「渠道 + 模型」的**和**变成两者的**较大值**，
+ * 约为原来的一半 —— 这是在不删信息的前提下最有效的腾地方方式。
+ *
+ * ## 内容口径（用户 2026-10-10 明确要求：上面供应商、下面模型名）
+ *
+ * | 情形 | 上行 | 下行 |
+ * |---|---|---|
+ * | 路由 provider + 有历史 | **真实**渠道 | **真实**模型 |
+ * | 路由 provider + 无历史 | 选中的虚拟渠道 | `等待首次请求` |
+ * | 非路由 provider | 选中渠道 | 选中模型 |
+ *
+ * ⚠️ 无历史时上行给的是**虚拟**渠道名（`聚合（跨渠道）`）而不是留空：留空会让胶囊
+ * 变成只有一个「等待首次请求」的孤行，用户看不出它在等谁。下行那句占位正是它的注解。
+ *
+ * @param options.provider 目录快照里的当前 provider（可能为空）。
+ * @param options.model 目录快照里的当前 model（虚拟名）。
+ * @param options.route 宿主记录的真实路由（`{provider, model}` 或 null）。
+ * @param options.providerLabel provider id → 展示名（注入的函数）。
+ * @returns `{ top, bottom }`；**无选中模型时返回 `null`**（调用方据此不渲染）。
+ */
+function describeActiveRoute({ provider, model, route, providerLabel }) {
+  // 没有选中模型（新会话尚未选择 / 已寻址的 subagent 会话）→ 不渲染。
+  if (typeof provider !== 'string' || provider.length === 0) return null;
+  const label = typeof providerLabel === 'function' ? providerLabel : (id) => id;
+  if (ROUTER_PROVIDER_IDS.includes(provider)) {
+    const realProvider = route?.provider;
+    const realModel = route?.model;
+    // ⚠️ 两个字段都要是**非空字符串**才算有历史：宿主侧它们同生同灭
+    //    （同一个 record 调用写入），半截数据不该渲染（宁可显示占位）。
+    if (typeof realProvider === 'string' && realProvider.length > 0
+      && typeof realModel === 'string' && realModel.length > 0) {
+      return { top: label(realProvider), bottom: realModel };
+    }
+    return { top: label(provider), bottom: PENDING_LABEL };
+  }
+  // 非路由型：选中的就是真实模型（模型选择器里已显示，这里给出同源的两行读数）。
+  if (typeof model !== 'string' || model.length === 0) return null;
+  return { top: label(provider), bottom: model };
+}
+
+/** 悬停/无障碍用的完整说明（含记录时刻，便于判断读数是否新鲜）。 */
+function describeActiveRouteTitle({ route }) {
+  const at = route?.at;
+  if (typeof at !== 'number' || !Number.isFinite(at)) return '当前实际使用的渠道与模型';
+  const time = new Date(at);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `当前实际使用的渠道与模型（更新于 ${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}）`;
+}
+
+/**
+ * 纯函数：弹层里逐行展示的「当前实际使用」明细。
+ *
+ * ## 为什么要有弹层（用户 2026-10-10 建议）
+ *
+ * 输入区最下方那一行在手机上是**四个元素挤一行**（dock 是 `display:flex`、
+ * 无 `flex-wrap`），本胶囊无论怎么压缩都会占掉官方两枚统计胶囊的宽度。
+ * 把**完整**读数放进按需展开的弹层后，胶囊本体只需两行短文本（渠道 / 模型），
+ * 而「时刻」「虚拟名」这类次要但有用的信息仍有地方可看。
+ *
+ * ⚠️ 这里返回的是**数据**而不是渲染好的节点：文案判据要能被单测直接断言
+ * （本仓库的单测不渲染组件）。渲染由组件负责。
+ *
+ * @returns 若干 `{ label, value }`；**无选中模型时返回空数组**（调用方本就不渲染）。
+ */
+function describeActiveRouteDetails({ provider, model, route, providerLabel }) {
+  if (typeof provider !== 'string' || provider.length === 0) return [];
+  const label = typeof providerLabel === 'function' ? providerLabel : (id) => id;
+  const rows = [];
+  const isRouter = ROUTER_PROVIDER_IDS.includes(provider);
+  const realProvider = route?.provider;
+  const realModel = route?.model;
+  const hasReal = typeof realProvider === 'string' && realProvider.length > 0
+    && typeof realModel === 'string' && realModel.length > 0;
+
+  if (isRouter && hasReal) {
+    rows.push({ label: '渠道', value: label(realProvider) });
+    rows.push({ label: '模型', value: realModel });
+  } else if (isRouter) {
+    rows.push({ label: '渠道', value: PENDING_LABEL });
+    rows.push({ label: '模型', value: PENDING_LABEL });
+  } else {
+    rows.push({ label: '渠道', value: label(provider) });
+    rows.push({ label: '模型', value: typeof model === 'string' && model.length > 0 ? model : '—' });
+  }
+
+  // 路由型才补这两行：直连时「选中的虚拟名」与「渠道」是同一个值，写了是重复。
+  if (isRouter) {
+    rows.push({ label: '选择', value: label(provider) });
+    if (typeof model === 'string' && model.length > 0) rows.push({ label: '虚拟模型', value: model });
+  }
+
+  // 时刻只在新端点提供时才有（旧端点回落路径给的是 null）。
+  const at = route?.at;
+  if (typeof at === 'number' && Number.isFinite(at)) {
+    const time = new Date(at);
+    const pad = (value) => String(value).padStart(2, '0');
+    rows.push({
+      label: '更新于',
+      value: `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`,
+    });
+  }
+  return rows;
+}
+
+/**
+ * 胶囊本体。
+ *
+ * @param props.resolveDirectory 惰性取目录（`{ store, load }`），宿主注入。
+ * @param props.readActiveRoute `(provider) => Promise<{provider, model, at}>`，宿主注入。
+ * @param props.providerLabel provider id → 展示名，宿主注入。
+ */
+function ActiveModelPill(props) {
+  const resolveDirectory = props.resolveDirectory;
+  const readActiveRoute = props.readActiveRoute;
+  const providerLabel = props.providerLabel;
+
+  const [directory, setDirectory] = React.useState(null);
+  // ⚠️ 「已解析就不再重跑」：宿主若每次渲染都重建 inject 返回对象，
+  //    `resolveDirectory` 的函数身份就会变 → effect 反复重启 → 重试计时器被
+  //    无限清除、永远解析不出来（比不重试还糟）。与用量徽标同一处事故、同一修法。
+  const resolvedRef = React.useRef(false);
+  const [route, setRoute] = React.useState(null);
+
+  React.useEffect(() => {
+    if (typeof resolveDirectory !== 'function') return undefined;
+    if (resolvedRef.current) return undefined;
+    let alive = true;
+    const timers = [];
+    let attempt = 0;
+    const tryResolve = () => {
+      if (!alive || resolvedRef.current) return;
+      let resolved = null;
+      try {
+        resolved = resolveDirectory();
+      } catch {
+        // 失败不在此处上报 —— 重试全用尽时统一 warn 一次（避免刷屏）。
+        resolved = null;
+      }
+      if (!alive) return;
+      if (resolved !== null && resolved !== undefined && resolved.store !== undefined) {
+        resolvedRef.current = true;
+        setDirectory(resolved.store);
+        // ⚠️ 必须自己调 load()，见文件头的坑 2。
+        if (typeof resolved.load === 'function') {
+          Promise.resolve(resolved.load()).catch(() => {
+            // 目录 load 失败只让本胶囊降级（不渲染），不影响会话输入区。
+          });
+        }
+        return;
+      }
+      attempt += 1;
+      if (attempt >= RESOLVE_RETRY_DELAYS.length) return;
+      timers.push(setTimeout(tryResolve, RESOLVE_RETRY_DELAYS[attempt - 1]));
+    };
+    tryResolve();
+    return () => {
+      alive = false;
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }, [resolveDirectory]);
+
+  // ⚠️ 三个回调都包 try/catch：`resolveDirectory()` 求值成功**不等于**
+  //    `subscribe` / `getSnapshot` 不抛（惰性 getter 的真正求值可能推迟到订阅时）。
+  //    抛出会打崩宿主渲染树（表现为模型选择器点不动），故只安静降级。
+  const safe = (fn) => () => {
+    try {
+      return directory ? fn(directory) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const state = React.useSyncExternalStore(
+    (onChange) => {
+      if (!directory) return () => {};
+      try {
+        return directory.subscribe(onChange);
+      } catch {
+        return () => {};
+      }
+    },
+    safe((d) => d.getSnapshot()),
+    safe((d) => d.getSnapshot()),
+  );
+
+  const provider = state?.current?.provider;
+  const model = state?.current?.model;
+  const isRouter = typeof provider === 'string' && ROUTER_PROVIDER_IDS.includes(provider);
+
+  /**
+   * 取「本次实际发往的目标」并**周期性重试**。
+   *
+   * ⚠️ 定时器**常驻**、不能「取到值就停」（与徽标同一条教训）：路由层换了候选之后
+   * 宿主记录会变，而只有重新取数才拿得到新值；停了就永远停在第一次那个值上。
+   *
+   * ⚠️ 失败**安静降级**（清空读数 → 显示占位）：这是可选装饰，为它弹错会让
+   * 会话输入区出现无意义的错误（与徽标同一取向）。
+   */
+  React.useEffect(() => {
+    if (!isRouter || typeof readActiveRoute !== 'function') return undefined;
+    let alive = true;
+    let timer = null;
+    const refresh = () => {
+      Promise.resolve()
+        .then(() => readActiveRoute(provider))
+        .then((value) => {
+          if (!alive) return;
+          setRoute(value && typeof value.provider === 'string' ? value : null);
+        })
+        .catch(() => {
+          if (alive) setRoute(null);
+        });
+    };
+    refresh();
+    timer = setInterval(refresh, ACTIVE_ROUTE_POLL_MS);
+    return () => {
+      alive = false;
+      if (timer !== null) clearInterval(timer);
+    };
+    // ⚠️ 依赖 `provider`：切换模型后要立刻重取（不等下一个 5 秒）。
+  }, [isRouter, provider, readActiveRoute]);
+
+  const text = describeActiveRoute({ provider, model, route, providerLabel });
+
+  /**
+   * 弹层开关（点一下胶囊展开完整读数）。
+   *
+   * ⚠️⚠️ **这些 Hook 必须全部排在 `text === null` 的提前返回之前**（React 的
+   * 规则：每次渲染的 Hook 数量与顺序必须一致）。我第一版把 `if (text === null)
+   * return null` 写在它们上面 —— 于是「有选中模型」与「无选中模型」两种渲染的
+   * Hook 数不同，React 会在切换会话时抛
+   * `Rendered more hooks than during the previous render`，
+   * 而那个异常发生在**会话输入区的渲染路径**上 ⇒ 整个输入区白屏。
+   * ⇒ 现在把唯一的提前返回放到文件末尾（所有 Hook 之后）。
+   */
+  const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef(null);
+  const panelRef = React.useRef(null);
+  const pos = useAnchoredPosition(rootRef, panelRef, open);
+
+  // Escape / 点击外部关闭（与官方 stat 弹层同语义；手机上点外部是最自然的关法）。
+  React.useEffect(() => {
+    if (!open) return undefined;
+    // ⚠️ 同 `useAnchoredPosition`：这个 effect 也在渲染提交路径上，无 DOM 的夹具
+    //    里 `document` 未定义会直接抛 ⇒ 打崩整个输入区。故先判存在性。
+    if (typeof document === 'undefined') return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onPointerDown = (event) => {
+      const target = event.target;
+      if (target instanceof Node
+        && rootRef.current?.contains(target) !== true
+        && panelRef.current?.contains(target) !== true) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [open]);
+
+  // ⚠️ 目录或宿主读数一变就收起弹层：否则弹层里会停着一个**过期**的模型名，
+  //    而它看起来与实时读数一样权威 —— 比不显示更误导。
+  React.useEffect(() => {
+    setOpen(false);
+  }, [provider, model, route?.provider, route?.model]);
+
+  const rows = describeActiveRouteDetails({ provider, model, route, providerLabel });
+
+  // ⚠️ **唯一的提前返回，必须在所有 Hook 之后**（见上面那段注释：Hook 顺序）。
+  if (text === null) return null;
+
+  return React.createElement(
+    'span',
+    { ref: rootRef, className: 'dim-jh-routePillRoot', 'data-jet-hub-active-model': true },
+    React.createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'dim-jh-routePill',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': open,
+        'aria-label': describeActiveRouteTitle({ route }),
+        title: describeActiveRouteTitle({ route }),
+        onClick: () => setOpen(!open),
+      },
+      // 两行竖排：上行渠道、下行模型。
+      //
+      // ⚠️ 不渲染「在用」前缀 —— 第一版那个前缀加上「 · 」分隔符在窄屏上占掉
+      // 一大截宽度，而槽位本身（输入区最下方）已足以说明这是「当前」状态。
+      React.createElement('span', { className: 'dim-jh-routePillTop' }, text.top),
+      React.createElement('span', { className: 'dim-jh-routePillBottom' }, text.bottom),
+    ),
+    open && typeof document !== 'undefined' && ReactDOM.createPortal(
+      React.createElement(
+        'div',
+        {
+          ref: panelRef,
+          className: 'dim-jh-routePanel',
+          role: 'dialog',
+          'aria-label': '当前实际使用的渠道与模型',
+          style: pos ?? MEASURE_STYLE,
+        },
+        React.createElement('div', { className: 'dim-jh-routePanelTitle' }, '当前实际使用'),
+        React.createElement(
+          'dl',
+          { className: 'dim-jh-routePanelRows' },
+          ...rows.flatMap((row) => [
+            React.createElement('dt', { key: `${row.label}-k` }, row.label),
+            React.createElement('dd', { key: `${row.label}-v` }, row.value),
+          ]),
+        ),
+      ),
+      document.body,
+    ),
+  );
+}
+
     // ─────────────────────────────────────────────────────────────────────
 
     // ── 补丁 G：老 Jet Hub 的完整设置页 ───────────────────────────────────
@@ -22609,491 +23443,6 @@ function apply(ctx) {
     })()
     // ─────────────────────────────────────────────────────────────────────
 
-    // ── patch E: pill ─────────────────────────────────────────────────────
-    // 「在用模型」胶囊组件。源码来自胶囊仓库（见 patch-capsule-client.mjs 文件头），
-    // 此处已把 ESM 头尾改写成 ModuleLoader 内的普通声明：React / ReactDOM / h
-    // 都在本模块作用域内，无需再导入。
-    // 渠道 id → 展示名（胶囊的上行文案）。
-    const CHANNEL_LABELS = Object.freeze(Object.fromEntries(
-      CHANNEL_PROVIDERS.map(row => [row.id, row.name]),
-    ))
-/**
- * 「在用模型」实时读数胶囊 —— 挂在输入区最下方（`conversation.composer.dock`）。
- *
- * ## 它解决什么
- *
- * 路由型 provider（`aggregate` 聚合·跨渠道、`jet-hub-auto` Auto·临期优先·整池）
- * 在模型选择器里只显示一个**虚拟**名字。用户看不到「这一次到底发给了哪个渠道、
- * 哪个真实模型」—— 这正是本胶囊要回答的问题。
- *
- * ## ⚠️ 与用量徽标（`usage-badge.js`）的分工
- *
- * | 组件 | 槽位 | 回答的问题 |
- * |---|---|---|
- * | 用量徽标 | `conversation.input.right` | 这个渠道**还剩多少**额度 |
- * | 本胶囊 | `conversation.composer.dock` | 现在**在用**哪个渠道、哪个模型 |
- *
- * 两者都依赖同一个目录快照（当前选中的 provider/model），但语义不同：徽标要的是
- * 「余额该读谁」，本胶囊要的是「请求发给了谁」。**不要合并**。
- *
- * ## ⚠️ 为什么门控放在渲染前而不是宿主侧
- *
- * 这里拿不到「宿主记录里有没有历史」的同步值（那是 RPC，异步），所以：
- * 路由型 provider 在**还没有历史**时显示占位文案（`在用 · 等待首次请求`）而不是
- * 直接不渲染 —— 用户报障「找不到这个显示」过，一个会自己冒出来的占位比
- * 「什么都不显示」更容易让人确认功能是活的。
- *
- * ## ⚠️ 与徽标同款的两个坑（都已由本文件的写法规避）
- *
- * 1. **目录必须惰性解析**（`resolveDirectory()` 是函数）：`directoryFor(sessionId)`
- *    在槽位 inject 期求值会让桌面版抛 `cannot get property "remote.session"
- *    without inject`，而那个异常发生在**会话输入区的同步渲染路径**上，会让模型
- *    选择器整个点不动 —— 远比「胶囊不显示」严重。见 `usage-badge.js` 的详细记录。
- * 2. **必须自己调 `load()`**：目录 store 初值是 `{ current: null, status: 'idle' }`，
- *    不 load 就永远拿不到 `current`，胶囊会恒显示「无选中模型」而不渲染。
- */
-
-
-
-/**
- * 轮询节奏：5 秒。
- *
- * ⚠️ 宿主端点 `router.activeRoute` 是**纯内存读**（零网络、零余额查询），成本可忽略；
- * 而它决定的是「现在在用谁」—— 用户发完消息后若最多要等 60 秒才更新，观感就是
- * 「这个显示坏了」。故与徽标那条 `ACTIVE_PROVIDER_POLL_MS` 取同一量级
- *（两者都是内存读，与 60 秒的**余额**轮询是两回事）。
- */
-const ACTIVE_ROUTE_POLL_MS = 5_000;
-
-/**
- * 路由型 provider（模型选择器里显示虚拟名，真实目标只能由宿主记录提供）。
- *
- * ⚠️ 与宿主的 `AGGREGATE_PROVIDER` / `AUTO_PROVIDER` **必须逐字一致**。
- * 写错的表现是胶囊恒显示虚拟名，而不是报错（有单测钉住）。
- */
-const ROUTER_PROVIDER_IDS = Object.freeze(['aggregate', 'jet-hub-auto']);
-
-/**
- * 目录解析失败后的重试退避（毫秒）。
- *
- * 与用量徽标同一序列、同一理由：桌面版宿主可能在槽位挂载之后才补齐
- * `remote.session` 注入，解析失败不等于永远不可用。共 4 次、约 4.5 秒。
- */
-const RESOLVE_RETRY_DELAYS = [300, 700, 1500, 2000];
-
-/** 无历史时的占位文案（路由型 provider）。 */
-const PENDING_LABEL = '等待首次请求';
-
-/** 弹层与视口边缘的最小间距（与官方 stat 弹层的 PANEL_MARGIN 同值）。 */
-const PANEL_MARGIN = 12;
-
-/** 弹层与触发元素之间的间距（与官方 PANEL_GAP 同值）。 */
-const PANEL_GAP = 8;
-
-/**
- * 未定位时的面板样式：**不可见但仍参与布局**。
- *
- * ⚠️ 用 `visibility: hidden` 而**不是** `display: none`：后者会让元素不参与布局，
- * `getBoundingClientRect()` 量到 0×0 ⇒ 夹紧计算全部按 0 算，面板会跳到屏幕角落。
- * （与官方 stat 弹层的 MEASURE_STYLE 同一取向。）
- */
-const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 };
-
-/**
- * 触发元素锚定的弹层定位（**自己实现**，不引 `@deepseek-ai/dsh-client-ui-primitives`）。
- *
- * ## 为什么不复用官方的 `useAnchoredPosition`
- *
- * 它在 `@deepseek-ai/dsh-client-ui-primitives` 里，而本插件的
- * `dsh.client.inject` 只声明了 connection / ui-settings / ui-model-selection
- * （见 `package.json`）—— 直接 import 一个**未声明**的 client 包会在加载期抛
- * 「cannot get property … without inject」，那正是本仓库踩过的形态。
- * 为一条读数去扩 inject 面不划算；弹层只需要「在触发元素上方、贴边夹紧」。
- *
- * ⚠️ `open === false` 时返回 `null`（调用方用 `pos ?? MEASURE_STYLE`）。
- * ⚠️ 测量必须在**渲染后**（`useLayoutEffect`）做，否则拿到的是未布局的 0 尺寸。
- */
-function useAnchoredPosition(anchorRef, panelRef, open) {
-  const [pos, setPos] = React.useState(null);
-  React.useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return undefined;
-    }
-    /**
-     * ⚠️⚠️ 必须判 `typeof window === 'undefined'`。
-     *
-     * 这个 effect 跑在**渲染提交路径**上，一旦抛错就不是「弹层不显示」而是
-     * 「整个会话输入区崩掉」（与文件头那两个真机事故同一形态）。
-     * 宿主是浏览器时 `window` 必然存在，但本仓库的单测/SSR 夹具没有 ——
-     * 实测在无 DOM 的夹具里直接抛 `ReferenceError: window is not defined`。
-     * ⇒ 没有 window 就整体跳过定位（弹层用 MEASURE_STYLE 保持不可见，
-     * 不会出现「面板停在左上角挡着输入区」的中间态）。
-     */
-    if (typeof window === 'undefined') return undefined;
-    const place = () => {
-      const anchor = anchorRef.current;
-      const panel = panelRef.current;
-      // ⚠️ 面板首帧是 visibility:hidden 但**已布局**（MEASURE_STYLE），
-      //    故这里量得到真实宽高 —— 若用 display:none 会量到 0。
-      if (!anchor || !panel) return;
-      const a = anchor.getBoundingClientRect();
-      const p = panel.getBoundingClientRect();
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      // 水平：与触发元素中心对齐，再夹进视口。
-      let left = a.left + a.width / 2 - p.width / 2;
-      left = Math.max(PANEL_MARGIN, Math.min(left, vw - p.width - PANEL_MARGIN));
-      // 垂直：优先放**上方**（输入区在最底部，下方没有空间）。
-      let top = a.top - p.height - PANEL_GAP;
-      if (top < PANEL_MARGIN) top = Math.min(a.bottom + PANEL_GAP, vh - p.height - PANEL_MARGIN);
-      setPos({ left: `${Math.round(left)}px`, top: `${Math.round(Math.max(PANEL_MARGIN, top))}px` });
-    };
-    place();
-    // ⚠️ 旋转屏幕 / 软键盘弹起都会改变视口，必须重算（手机上尤其常见）。
-    window.addEventListener('resize', place);
-    window.addEventListener('scroll', place, true);
-    return () => {
-      window.removeEventListener('resize', place);
-      window.removeEventListener('scroll', place, true);
-    };
-  }, [open, anchorRef, panelRef]);
-  return pos;
-}
-
-/**
- * 纯函数：把「选中的 provider/model」+「宿主记录的真实路由」拼成**两行**读数。
- *
- * ## 为什么是两行（真机实测后改的，2026-10-10）
- *
- * 第一版是一行 `在用 · 渠道 · 模型`。真机上它把输入区最下方那一行撑爆了：dock 是
- * `display:flex` 且**没有 flex-wrap**，四个元素（官方 activity / usage / 本胶囊 /
- * 右侧的上下文表）共处一行 ⇒ 长度是**相加**的，三枚文字胶囊**全部**被省略号截断
- * （实测截图：`20 ...` / `74.3...` / `在用 · CodeBuddy (`）。
- *
- * 竖排两行后，本胶囊的宽度从「渠道 + 模型」的**和**变成两者的**较大值**，
- * 约为原来的一半 —— 这是在不删信息的前提下最有效的腾地方方式。
- *
- * ## 内容口径（用户 2026-10-10 明确要求：上面供应商、下面模型名）
- *
- * | 情形 | 上行 | 下行 |
- * |---|---|---|
- * | 路由 provider + 有历史 | **真实**渠道 | **真实**模型 |
- * | 路由 provider + 无历史 | 选中的虚拟渠道 | `等待首次请求` |
- * | 非路由 provider | 选中渠道 | 选中模型 |
- *
- * ⚠️ 无历史时上行给的是**虚拟**渠道名（`聚合（跨渠道）`）而不是留空：留空会让胶囊
- * 变成只有一个「等待首次请求」的孤行，用户看不出它在等谁。下行那句占位正是它的注解。
- *
- * @param options.provider 目录快照里的当前 provider（可能为空）。
- * @param options.model 目录快照里的当前 model（虚拟名）。
- * @param options.route 宿主记录的真实路由（`{provider, model}` 或 null）。
- * @param options.providerLabel provider id → 展示名（注入的函数）。
- * @returns `{ top, bottom }`；**无选中模型时返回 `null`**（调用方据此不渲染）。
- */
-function describeActiveRoute({ provider, model, route, providerLabel }) {
-  // 没有选中模型（新会话尚未选择 / 已寻址的 subagent 会话）→ 不渲染。
-  if (typeof provider !== 'string' || provider.length === 0) return null;
-  const label = typeof providerLabel === 'function' ? providerLabel : (id) => id;
-  if (ROUTER_PROVIDER_IDS.includes(provider)) {
-    const realProvider = route?.provider;
-    const realModel = route?.model;
-    // ⚠️ 两个字段都要是**非空字符串**才算有历史：宿主侧它们同生同灭
-    //    （同一个 record 调用写入），半截数据不该渲染（宁可显示占位）。
-    if (typeof realProvider === 'string' && realProvider.length > 0
-      && typeof realModel === 'string' && realModel.length > 0) {
-      return { top: label(realProvider), bottom: realModel };
-    }
-    return { top: label(provider), bottom: PENDING_LABEL };
-  }
-  // 非路由型：选中的就是真实模型（模型选择器里已显示，这里给出同源的两行读数）。
-  if (typeof model !== 'string' || model.length === 0) return null;
-  return { top: label(provider), bottom: model };
-}
-
-/** 悬停/无障碍用的完整说明（含记录时刻，便于判断读数是否新鲜）。 */
-function describeActiveRouteTitle({ route }) {
-  const at = route?.at;
-  if (typeof at !== 'number' || !Number.isFinite(at)) return '当前实际使用的渠道与模型';
-  const time = new Date(at);
-  const pad = (value) => String(value).padStart(2, '0');
-  return `当前实际使用的渠道与模型（更新于 ${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}）`;
-}
-
-/**
- * 纯函数：弹层里逐行展示的「当前实际使用」明细。
- *
- * ## 为什么要有弹层（用户 2026-10-10 建议）
- *
- * 输入区最下方那一行在手机上是**四个元素挤一行**（dock 是 `display:flex`、
- * 无 `flex-wrap`），本胶囊无论怎么压缩都会占掉官方两枚统计胶囊的宽度。
- * 把**完整**读数放进按需展开的弹层后，胶囊本体只需两行短文本（渠道 / 模型），
- * 而「时刻」「虚拟名」这类次要但有用的信息仍有地方可看。
- *
- * ⚠️ 这里返回的是**数据**而不是渲染好的节点：文案判据要能被单测直接断言
- * （本仓库的单测不渲染组件）。渲染由组件负责。
- *
- * @returns 若干 `{ label, value }`；**无选中模型时返回空数组**（调用方本就不渲染）。
- */
-function describeActiveRouteDetails({ provider, model, route, providerLabel }) {
-  if (typeof provider !== 'string' || provider.length === 0) return [];
-  const label = typeof providerLabel === 'function' ? providerLabel : (id) => id;
-  const rows = [];
-  const isRouter = ROUTER_PROVIDER_IDS.includes(provider);
-  const realProvider = route?.provider;
-  const realModel = route?.model;
-  const hasReal = typeof realProvider === 'string' && realProvider.length > 0
-    && typeof realModel === 'string' && realModel.length > 0;
-
-  if (isRouter && hasReal) {
-    rows.push({ label: '渠道', value: label(realProvider) });
-    rows.push({ label: '模型', value: realModel });
-  } else if (isRouter) {
-    rows.push({ label: '渠道', value: PENDING_LABEL });
-    rows.push({ label: '模型', value: PENDING_LABEL });
-  } else {
-    rows.push({ label: '渠道', value: label(provider) });
-    rows.push({ label: '模型', value: typeof model === 'string' && model.length > 0 ? model : '—' });
-  }
-
-  // 路由型才补这两行：直连时「选中的虚拟名」与「渠道」是同一个值，写了是重复。
-  if (isRouter) {
-    rows.push({ label: '选择', value: label(provider) });
-    if (typeof model === 'string' && model.length > 0) rows.push({ label: '虚拟模型', value: model });
-  }
-
-  // 时刻只在新端点提供时才有（旧端点回落路径给的是 null）。
-  const at = route?.at;
-  if (typeof at === 'number' && Number.isFinite(at)) {
-    const time = new Date(at);
-    const pad = (value) => String(value).padStart(2, '0');
-    rows.push({
-      label: '更新于',
-      value: `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`,
-    });
-  }
-  return rows;
-}
-
-/**
- * 胶囊本体。
- *
- * @param props.resolveDirectory 惰性取目录（`{ store, load }`），宿主注入。
- * @param props.readActiveRoute `(provider) => Promise<{provider, model, at}>`，宿主注入。
- * @param props.providerLabel provider id → 展示名，宿主注入。
- */
-function ActiveModelPill(props) {
-  const resolveDirectory = props.resolveDirectory;
-  const readActiveRoute = props.readActiveRoute;
-  const providerLabel = props.providerLabel;
-
-  const [directory, setDirectory] = React.useState(null);
-  // ⚠️ 「已解析就不再重跑」：宿主若每次渲染都重建 inject 返回对象，
-  //    `resolveDirectory` 的函数身份就会变 → effect 反复重启 → 重试计时器被
-  //    无限清除、永远解析不出来（比不重试还糟）。与用量徽标同一处事故、同一修法。
-  const resolvedRef = React.useRef(false);
-  const [route, setRoute] = React.useState(null);
-
-  React.useEffect(() => {
-    if (typeof resolveDirectory !== 'function') return undefined;
-    if (resolvedRef.current) return undefined;
-    let alive = true;
-    const timers = [];
-    let attempt = 0;
-    const tryResolve = () => {
-      if (!alive || resolvedRef.current) return;
-      let resolved = null;
-      try {
-        resolved = resolveDirectory();
-      } catch {
-        // 失败不在此处上报 —— 重试全用尽时统一 warn 一次（避免刷屏）。
-        resolved = null;
-      }
-      if (!alive) return;
-      if (resolved !== null && resolved !== undefined && resolved.store !== undefined) {
-        resolvedRef.current = true;
-        setDirectory(resolved.store);
-        // ⚠️ 必须自己调 load()，见文件头的坑 2。
-        if (typeof resolved.load === 'function') {
-          Promise.resolve(resolved.load()).catch(() => {
-            // 目录 load 失败只让本胶囊降级（不渲染），不影响会话输入区。
-          });
-        }
-        return;
-      }
-      attempt += 1;
-      if (attempt >= RESOLVE_RETRY_DELAYS.length) return;
-      timers.push(setTimeout(tryResolve, RESOLVE_RETRY_DELAYS[attempt - 1]));
-    };
-    tryResolve();
-    return () => {
-      alive = false;
-      for (const timer of timers) clearTimeout(timer);
-    };
-  }, [resolveDirectory]);
-
-  // ⚠️ 三个回调都包 try/catch：`resolveDirectory()` 求值成功**不等于**
-  //    `subscribe` / `getSnapshot` 不抛（惰性 getter 的真正求值可能推迟到订阅时）。
-  //    抛出会打崩宿主渲染树（表现为模型选择器点不动），故只安静降级。
-  const safe = (fn) => () => {
-    try {
-      return directory ? fn(directory) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const state = React.useSyncExternalStore(
-    (onChange) => {
-      if (!directory) return () => {};
-      try {
-        return directory.subscribe(onChange);
-      } catch {
-        return () => {};
-      }
-    },
-    safe((d) => d.getSnapshot()),
-    safe((d) => d.getSnapshot()),
-  );
-
-  const provider = state?.current?.provider;
-  const model = state?.current?.model;
-  const isRouter = typeof provider === 'string' && ROUTER_PROVIDER_IDS.includes(provider);
-
-  /**
-   * 取「本次实际发往的目标」并**周期性重试**。
-   *
-   * ⚠️ 定时器**常驻**、不能「取到值就停」（与徽标同一条教训）：路由层换了候选之后
-   * 宿主记录会变，而只有重新取数才拿得到新值；停了就永远停在第一次那个值上。
-   *
-   * ⚠️ 失败**安静降级**（清空读数 → 显示占位）：这是可选装饰，为它弹错会让
-   * 会话输入区出现无意义的错误（与徽标同一取向）。
-   */
-  React.useEffect(() => {
-    if (!isRouter || typeof readActiveRoute !== 'function') return undefined;
-    let alive = true;
-    let timer = null;
-    const refresh = () => {
-      Promise.resolve()
-        .then(() => readActiveRoute(provider))
-        .then((value) => {
-          if (!alive) return;
-          setRoute(value && typeof value.provider === 'string' ? value : null);
-        })
-        .catch(() => {
-          if (alive) setRoute(null);
-        });
-    };
-    refresh();
-    timer = setInterval(refresh, ACTIVE_ROUTE_POLL_MS);
-    return () => {
-      alive = false;
-      if (timer !== null) clearInterval(timer);
-    };
-    // ⚠️ 依赖 `provider`：切换模型后要立刻重取（不等下一个 5 秒）。
-  }, [isRouter, provider, readActiveRoute]);
-
-  const text = describeActiveRoute({ provider, model, route, providerLabel });
-
-  /**
-   * 弹层开关（点一下胶囊展开完整读数）。
-   *
-   * ⚠️⚠️ **这些 Hook 必须全部排在 `text === null` 的提前返回之前**（React 的
-   * 规则：每次渲染的 Hook 数量与顺序必须一致）。我第一版把 `if (text === null)
-   * return null` 写在它们上面 —— 于是「有选中模型」与「无选中模型」两种渲染的
-   * Hook 数不同，React 会在切换会话时抛
-   * `Rendered more hooks than during the previous render`，
-   * 而那个异常发生在**会话输入区的渲染路径**上 ⇒ 整个输入区白屏。
-   * ⇒ 现在把唯一的提前返回放到文件末尾（所有 Hook 之后）。
-   */
-  const [open, setOpen] = React.useState(false);
-  const rootRef = React.useRef(null);
-  const panelRef = React.useRef(null);
-  const pos = useAnchoredPosition(rootRef, panelRef, open);
-
-  // Escape / 点击外部关闭（与官方 stat 弹层同语义；手机上点外部是最自然的关法）。
-  React.useEffect(() => {
-    if (!open) return undefined;
-    // ⚠️ 同 `useAnchoredPosition`：这个 effect 也在渲染提交路径上，无 DOM 的夹具
-    //    里 `document` 未定义会直接抛 ⇒ 打崩整个输入区。故先判存在性。
-    if (typeof document === 'undefined') return undefined;
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    const onPointerDown = (event) => {
-      const target = event.target;
-      if (target instanceof Node
-        && rootRef.current?.contains(target) !== true
-        && panelRef.current?.contains(target) !== true) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      document.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [open]);
-
-  // ⚠️ 目录或宿主读数一变就收起弹层：否则弹层里会停着一个**过期**的模型名，
-  //    而它看起来与实时读数一样权威 —— 比不显示更误导。
-  React.useEffect(() => {
-    setOpen(false);
-  }, [provider, model, route?.provider, route?.model]);
-
-  const rows = describeActiveRouteDetails({ provider, model, route, providerLabel });
-
-  // ⚠️ **唯一的提前返回，必须在所有 Hook 之后**（见上面那段注释：Hook 顺序）。
-  if (text === null) return null;
-
-  return React.createElement(
-    'span',
-    { ref: rootRef, className: 'dim-jh-routePillRoot', 'data-jet-hub-active-model': true },
-    React.createElement(
-      'button',
-      {
-        type: 'button',
-        className: 'dim-jh-routePill',
-        'aria-haspopup': 'dialog',
-        'aria-expanded': open,
-        'aria-label': describeActiveRouteTitle({ route }),
-        title: describeActiveRouteTitle({ route }),
-        onClick: () => setOpen(!open),
-      },
-      // 两行竖排：上行渠道、下行模型。
-      //
-      // ⚠️ 不渲染「在用」前缀 —— 第一版那个前缀加上「 · 」分隔符在窄屏上占掉
-      // 一大截宽度，而槽位本身（输入区最下方）已足以说明这是「当前」状态。
-      React.createElement('span', { className: 'dim-jh-routePillTop' }, text.top),
-      React.createElement('span', { className: 'dim-jh-routePillBottom' }, text.bottom),
-    ),
-    open && typeof document !== 'undefined' && ReactDOM.createPortal(
-      React.createElement(
-        'div',
-        {
-          ref: panelRef,
-          className: 'dim-jh-routePanel',
-          role: 'dialog',
-          'aria-label': '当前实际使用的渠道与模型',
-          style: pos ?? MEASURE_STYLE,
-        },
-        React.createElement('div', { className: 'dim-jh-routePanelTitle' }, '当前实际使用'),
-        React.createElement(
-          'dl',
-          { className: 'dim-jh-routePanelRows' },
-          ...rows.flatMap((row) => [
-            React.createElement('dt', { key: `${row.label}-k` }, row.label),
-            React.createElement('dd', { key: `${row.label}-v` }, row.value),
-          ]),
-        ),
-      ),
-      document.body,
-    ),
-  );
-}
-
-    // ─────────────────────────────────────────────────────────────────────
-
     function apply(ctx) {
       // 补丁 G：挂载老 Jet Hub 的设置页（17 渠道面板 / 聚合 / 备份 / Token 用量 …）。
       OFM_JET_HUB_UI.apply(ctx)
@@ -23375,7 +23724,7 @@ function ActiveModelPill(props) {
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth, PicksPage, RecoCard }
     return module.exports
   },
 })
