@@ -580,6 +580,55 @@ if (bad > 0) { console.error('::error::退役告警未完成（' + bad + ' 处�
 console.log('  ✓ 退役插件残留告警（' + patched + ' 处替换）');
 CAPSULE_RETIRED_WARN
 
+# 2.12) 上游新增的「模型选择器 overlay」步骤：**缺树时跳过而非中断**（2026-10-17）
+#
+# 背景：合并 jwoo 新版后，其 build-assets.py 多了一步
+#   subprocess.run(['node', str(ROOT/'scripts/build-model-picker.mjs')], check=True)
+# 而该脚本按**仓库名**选依赖树（`dsh-phone` → `desktop-runtime/`），我们的 CI 只装
+# `runtime/`（workflow 的「组装运行时资源」步）⇒ 读不到钉版 SDK 的 package.json，
+# 抛 ENOENT、整步失败、APK 不产出（实测：合并后第一次构建就死在这里）。
+#
+# 语义（不是"吞异常"）：该脚本产出
+#   `runtime/overlays/@deepseek-ai/dsh-client-ui-model-selection/lib/client.js`
+# 是一个**上游桌面/开发形态**的模型选择器 UI overlay；手机版构建沿用宿主自带的
+# 模型选择器 —— 这正是**合并前的行为**，故缺树时跳过是等价而非降级。
+# 判据是「钉版 SDK 的 package.json 是否存在」，不看别的。
+#
+# ⚠️ 条件式：**合并前的树没有这一步**（锚点 0 次）⇒ 那时必须**跳过本段**而不是报错，
+#    否则会把合并前的 CI 弄红（双兼容，与 §2.8/§2.9 同一纪律）。
+node - <<'CAPSULE_MODEL_PICKER'
+const fs = require('fs');
+let bad = 0, patched = 0;
+const F = 'scripts/build-assets.py';
+const FROM = "    subprocess.run(['node', str(ROOT/'scripts/build-model-picker.mjs')], check=True)\n";
+const TO = [
+  '    # §2.12（capsule）：上游新增的模型选择器 overlay —— 它需要 desktop-runtime 树里的',
+  '    # 钉版 SDK（0.2.1-alpha.1），而手机版构建只装 runtime/ ⇒ 缺树时**跳过而非中断**',
+  '    # （跳过 = 沿用宿主自带模型选择器，与合并前行为一致；判据只看那个 package.json）。',
+  "    _model_picker_sdk = ROOT / 'desktop-runtime/node_modules/@deepseek-ai/dsh-client-ui-model-selection/package.json'",
+  '    if _model_picker_sdk.is_file():',
+  "        subprocess.run(['node', str(ROOT/'scripts/build-model-picker.mjs')], check=True)",
+  '    else:',
+  "        print('跳过 build-model-picker：本构建无 desktop-runtime 树（手机版沿用宿主模型选择器）')",
+  '',
+].join('\n');
+{
+  const s = fs.readFileSync(F, 'utf8');
+  if (!s.includes(FROM)) {
+    console.log('  · §2.12：本树没有 build-model-picker 步骤（合并前形态），跳过');
+  } else {
+    fs.writeFileSync(F, s.replace(FROM, TO));
+    patched++;
+    console.log('  ✓ build-assets.py：模型选择器步骤已加「缺 desktop-runtime 树则跳过」守卫');
+  }
+}
+if (patched > 0 && !fs.readFileSync(F, 'utf8').includes('跳过 build-model-picker')) {
+  console.error('::error::§2.12 未落地（守卫文本不在产物里）');
+  bad++;
+}
+if (bad > 0) { console.error('::error::§2.12 未完成（' + bad + ' 处）'); process.exit(1); }
+CAPSULE_MODEL_PICKER
+
 # 3) 胶囊样式：完整 override 文件已覆盖（基线 = 上游 0.1.60 + 胶囊样式），
 #    不再使用 git apply 补丁（hunk 行数声明与体不符会被 git 拒绝）。
 
