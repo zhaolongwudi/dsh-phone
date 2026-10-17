@@ -56,6 +56,10 @@ describe('DSML 归一化接线覆盖（防回归）', () => {
       'lobsterai-adapter.ts',
       'minimax-messages.ts',
       'openai-compat.ts',
+      // 2026-10-17 新增：上游 jwoo 那条线带进来的 OrcaTerm 渠道（同步时本守卫「红了一次」，
+      // 正是它该有的行为 —— 逼我们把新出口接上归一化；接线见 capsule 的
+      // overrides/vendor/dsh-codearts-auth/src/orcaterm-adapter.ts）。
+      'orcaterm-adapter.ts',
       'trae-adapter.ts',
       'zcode-anthropic.ts',
     ])
