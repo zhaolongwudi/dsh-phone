@@ -93,17 +93,29 @@ export function resolvePhoneJs() {
 }
 
 /**
- * 本仓库内**完整**引擎树的探针（Issue F-30）。
+ * **完整**引擎树的探针（Issue F-30）。
  *
  * 为什么不用「有 `@deepseek-ai/` 目录」当判据：`vendor/dsh-codearts-auth/node_modules`
  * 里也有 `@deepseek-ai/*`（devDeps 的 dsh-credentials 等），但它**不含 UI 包** ——
  * 认它会把这几个套件打成**假红**。故只认「UI 引擎树」：`dsh-client-ui-slots`
  *（槽位契约/端到端链路）与 `dsh-web-frontend/dist/assets`（静态模块表）。
+ *
+ * ⚠️ 2026-10-17：这**同一套**探针现在也用于**候选路径**（见 `resolveEngineTree`）。
+ *    原先候选只判「有 `node_modules/@deepseek-ai`」，而设备树实测**有 302 个
+ *    @deepseek-ai 包却缺 `dsh-client-ui-slots`** ⇒ 函数返回该树、套件随后
+ *    `require('@deepseek-ai/dsh-client-ui-slots')` **当场崩**（而不是按约定跳过）。
+ *    设备上维护期跑测试因此必红，且报错指向模块缺失、不指向判据。
  */
-const LOCAL_TREE_PROBES = [
+const ENGINE_TREE_PROBES = [
   'node_modules/@deepseek-ai/dsh-client-ui-slots',
   'node_modules/@deepseek-ai/dsh-web-frontend/dist/assets',
 ]
+
+/** 某候选是否**完整**（缺哪项也一并给出，便于诊断）。 */
+function probeCandidate(p) {
+  const missing = ENGINE_TREE_PROBES.filter(rel => !existsSync(join(p, rel)))
+  return { ok: missing.length === 0, missing }
+}
 
 /** 自 HERE 向上、按仓库两种布局（仓库根 / `runtime/`）找**完整**引擎树；找不到返回 null。 */
 function locateLocalEngineTree() {
@@ -111,7 +123,7 @@ function locateLocalEngineTree() {
   for (let i = 0; i < 12; i++) {
     for (const prefix of ['', 'runtime/']) {
       const p = join(d, prefix)
-      if (LOCAL_TREE_PROBES.every(rel => existsSync(join(p, rel)))) return p
+      if (ENGINE_TREE_PROBES.every(rel => existsSync(join(p, rel)))) return p
     }
     const parent = dirname(d)
     if (parent === d) break
@@ -180,11 +192,20 @@ function defaultEngineTreeCandidates() {
  * @returns {string|null} 引擎树根；未找到且未要求硬失败时为 null
  */
 export function resolveEngineTree(candidates = defaultEngineTreeCandidates()) {
-  const found = candidates.find(p => existsSync(join(p, 'node_modules', '@deepseek-ai')))
-  if (found !== undefined) return found
+  // ⚠️ 判据用**完整性探针**，不是「有 @deepseek-ai 目录」—— 后者会把「有引擎但缺 UI 包」
+  //    的树（设备树实测如此：302 个 @deepseek-ai 包但无 dsh-client-ui-slots）认作可用，
+  //    套件随后 require 该包**当场崩**，而不是走「缺树 → 跳过」的既定分支。
+  const rejected = []
+  for (const p of candidates) {
+    const { ok, missing } = probeCandidate(p)
+    if (ok) return p
+    rejected.push(`${p}（缺 ${missing.join('、')}）`)
+  }
   const local = locateLocalEngineTree()
   if (local !== null) return local
-  const reason = `未找到 dsh 引擎树（候选：${candidates.length > 0 ? candidates.join(' / ') : '（未指定）'}，以及本仓库内的 node_modules/ 与 runtime/node_modules/）`
+  const reason = '未找到 dsh 引擎树'
+    + `（候选：${candidates.length > 0 ? rejected.join(' / ') : '（未指定）'}`
+    + '，以及本仓库内的 node_modules/ 与 runtime/node_modules/）'
   if (engineTreeRequired()) {
     throw new Error(`${reason}；DSH_REQUIRE_ENGINE_TREE=1（Issue F-30）：本环境要求在线校验，缺树即失败 —— 请先装 UI 依赖（cd runtime && pnpm install --frozen-lockfile），或用 DSH_TREE 指向引擎树。`)
   }
