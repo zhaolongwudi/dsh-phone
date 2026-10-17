@@ -637,6 +637,7 @@ class MainActivity : Activity() {
                 override fun onPageFinished(view: WebView, url: String) { installJsonFileExport(view) }
                 override fun shouldOverrideUrlLoading(view: WebView,
                     request: WebResourceRequest): Boolean {
+                    if (title == "腾讯云 OrcaTerm" && OrcaTermLogin.openWeChat(this@MainActivity, view, request)) return true
                     // 新弹窗首个请求的 view.url 可能为空，使用创建它的本机页面作为来源。
                     if (ProviderLoginNavigation.shouldOpenWorkBuddyExternally(
                             sourceUrl, request.url.toString(), request.isForMainFrame)) {
@@ -710,6 +711,17 @@ class MainActivity : Activity() {
         }
         if (uri.scheme != "dsh-phone") return false
         if (!local) return true
+        if (uri.host == "orcaterm" && uri.path == "/login") {
+            OrcaTermLogin.start(uri.getQueryParameter("account").orEmpty(),
+                uri.getQueryParameter("url") ?: "https://orcaterm.cloud.tencent.com/terminal",
+                { openLoginWindow("腾讯云 OrcaTerm") },
+                { !destroyed && loginWebView === it },
+                { payload ->
+                    webView.evaluateJavascript("window.__dshOrcaTermLogin && window.__dshOrcaTermLogin(${JSONObject.quote(payload)});", null)
+                    closeLoginWindow()
+                })
+            return true
+        }
         if (uri.host == "browser") {
             val window = uri.getQueryParameter("window").orEmpty()
             if (window.matches(Regex("mcp_[a-f0-9]{40}"))) startActivity(Intent(this, com.dshphone.browser.BrowserActivity::class.java).putExtra("owner", window))
