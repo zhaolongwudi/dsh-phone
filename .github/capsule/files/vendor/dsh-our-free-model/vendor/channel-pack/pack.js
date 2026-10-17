@@ -36932,11 +36932,51 @@ function isContentRejection(body) {
   if (body.length === 0) return false;
   return /"code"\s*:\s*11140/.test(body) || /request illegal/i.test(body) || /安全审核|safety review/i.test(body);
 }
+var CHANNEL_VERIFICATION_MSG_FIELD = /"m(?:sg|essage)"\s*:\s*"[^"]*conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing/iu;
+var CHANNEL_VERIFICATION_BARE = /conversation(?:[\s:_\-\p{Cf}]|\\[nrt])+id(?:[\s:_\-\p{Cf}]|\\[nrt])+missing/iu;
+function isChannelVerificationRejection(body, status) {
+  if (body.length === 0) return false;
+  if (CHANNEL_VERIFICATION_MSG_FIELD.test(body)) return true;
+  if (status !== void 0 && status !== 400 && status !== 403) return false;
+  if (/"m(?:sg|essage)"\s*:/.test(body)) return false;
+  if (/^\s*\{/.test(body) && /"code"\s*:/.test(body)) return false;
+  return CHANNEL_VERIFICATION_BARE.test(body);
+}
 var BUDDY_POLICY_BLOCK_COOLDOWN_MS = 30 * 6e4;
 function contentRejectionError(productId, status, body, rotated) {
   const scope = rotated ? `\u5168\u90E8\u8D26\u53F7\u5747\u88AB\u670D\u52A1\u7AEF\u5B89\u5168\u7B56\u7565\u62E6\u622A\uFF08HTTP ${status}\uFF0C\u5DF2\u9010\u4E2A\u6362\u53F7\u91CD\u8BD5\uFF09` : `\u5F53\u524D\u8D26\u53F7\u88AB\u670D\u52A1\u7AEF\u5B89\u5168\u7B56\u7565\u62E6\u622A\uFF08HTTP ${status}\uFF0C\u6D41\u5185\u9519\u8BEF\u5E27\u4E0B\u53D1\uFF09`;
   return new LlmError4(
     `${productId}: ${scope}\u3002\u8BE5\u62E6\u622A\u6309\u8D26\u53F7\u751F\u6548\uFF08\u540C\u4E00\u8BF7\u6C42\u5728\u5176\u4ED6\u8D26\u53F7\u53EF\u6B63\u5E38\u8FD4\u56DE\uFF09\uFF0C\u8BF7\u5728 Jet Hub \u505C\u7528\u6216\u66F4\u6362\u88AB\u62E6\u8D26\u53F7\uFF1A${errorDetail2(body)}`,
+    "PERMISSION_DENIED",
+    { status }
+  );
+}
+function channelVerificationUpstreamId(body) {
+  try {
+    const data = JSON.parse(body);
+    const inner = typeof data.error === "object" && data.error !== null ? data.error : void 0;
+    const asText2 = (value) => typeof value === "string" || typeof value === "number" ? String(value) : void 0;
+    const code = asText2(data.code) ?? asText2(inner?.code);
+    const msg = asText2(data.msg) ?? asText2(data.message) ?? asText2(inner?.msg) ?? asText2(inner?.message);
+    const requestId = asText2(data.requestId) ?? asText2(inner?.requestId);
+    const parts = [
+      code === void 0 ? void 0 : `code ${code}`,
+      msg === void 0 ? void 0 : `msg ${msg}`,
+      requestId === void 0 ? void 0 : `requestId ${requestId}`
+    ].filter((value) => value !== void 0);
+    if (parts.length > 0) return redactUpstreamActionHints(parts.join(" / "));
+  } catch {
+  }
+  return `\uFF08\u975E JSON \u62A5\u6587\uFF09${redactUpstreamActionHints(body).slice(0, 200)}`;
+}
+function redactUpstreamActionHints(text) {
+  const REDACTED = "\uFF08\u5DF2\u62B9\u53BB\u4E0A\u6E38\u7684\u884C\u52A8\u6307\u5F15\uFF09";
+  return text.replace(/请[^。；\n]{0,12}?(?:重新发送|重新傳送|重新传|重发)/g, REDACTED).replace(/\b(?:please\s+)?(?:re)?send\b[^.\n]{0,20}?(?:\bagain\b|from the official client)/gi, REDACTED);
+}
+function channelVerificationError(productId, status, body, rotated) {
+  const scope = rotated ? `\u5168\u90E8\u8D26\u53F7\u5747\u672A\u901A\u8FC7\u6E20\u9053\u6821\u9A8C\uFF08HTTP ${status}\uFF0C\u5DF2\u9010\u4E2A\u6362\u53F7\u91CD\u8BD5\uFF09` : `\u5F53\u524D\u8D26\u53F7\u672A\u901A\u8FC7\u6E20\u9053\u6821\u9A8C\uFF08HTTP ${status}\uFF0C\u6D41\u5185\u9519\u8BEF\u5E27\u4E0B\u53D1\uFF09`;
+  return new LlmError4(
+    `${productId}: ${scope}\u3002\u8BE5\u62D2\u7EDD\u6309\u8D26\u53F7\u751F\u6548\uFF08\u540C\u4E00\u8BF7\u6C42\u5728\u5176\u4ED6\u8D26\u53F7\u53EF\u6B63\u5E38\u8FD4\u56DE\uFF09\uFF0C\u4E14\u91CD\u53D1\u65E0\u6548 \u2014\u2014 \u8BF7\u5728 Jet Hub \u505C\u7528\u6216\u8C03\u6574\u8BE5\u8D26\u53F7\u7684\u987A\u5E8F\u540E\u91CD\u8BD5\uFF0C\u6216\u6539\u7528\u5176\u5B83 provider\u3002\u4E0A\u6E38\uFF1A${channelVerificationUpstreamId(body)}`,
     "PERMISSION_DENIED",
     { status }
   );
@@ -37756,6 +37796,7 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
     if (!response.ok && (response.status === 401 || response.status === 403)) {
       const rejectedBody = await response.clone().text().catch(() => "");
       const contentRejected = isContentRejection(rejectedBody);
+      const channelRejected = isChannelVerificationRejection(rejectedBody, response.status);
       if (contentRejected) {
         console.warn(
           `[${this.product.id}] \u8D26\u53F7 ${currentAccountId || "(current)"} \u88AB\u5B89\u5168\u7B56\u7565\u62E6\u622A\uFF08HTTP ${response.status}\uFF0Ccode 11140\uFF09\uFF0C\u7EE7\u7EED\u6362\u53F7\uFF1A${errorDetail2(rejectedBody).slice(0, 200)}`
@@ -37789,6 +37830,9 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
       let sawContentRejection = contentRejected;
       let rejectionStatus = contentRejected ? authStatus : 0;
       let rejectionBody = contentRejected ? rejectedBody : "";
+      let sawChannelVerification = channelRejected;
+      let channelVerificationStatus = channelRejected ? authStatus : 0;
+      let channelVerificationBody = channelRejected ? rejectedBody : "";
       if ((response.status === 401 || response.status === 403) && this.options.accountPool !== void 0) {
         for (; ; ) {
           const next = await this.options.accountPool.getAvailableAccount(
@@ -37818,6 +37862,11 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
               options.model
             );
           }
+          if (isChannelVerificationRejection(rotatedBody, response.status)) {
+            sawChannelVerification = true;
+            channelVerificationStatus = response.status;
+            channelVerificationBody = rotatedBody;
+          }
           if (response.status !== 401 && response.status !== 403) break;
         }
       }
@@ -37830,6 +37879,14 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             true
           );
         }
+        if (sawChannelVerification) {
+          throw channelVerificationError(
+            this.product.id,
+            channelVerificationStatus === 0 ? authStatus : channelVerificationStatus,
+            channelVerificationBody.length === 0 ? rejectedBody : channelVerificationBody,
+            true
+          );
+        }
         throw new LlmError4(`${this.product.id}: credential expired and refresh failed`, "AUTH", { status: authStatus });
       }
       if (response.status === 401 || response.status === 403) {
@@ -37839,6 +37896,14 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             this.product.id,
             rejectionStatus === 0 ? authStatus : rejectionStatus,
             rejectionBody.length === 0 ? detail : rejectionBody,
+            true
+          );
+        }
+        if (sawChannelVerification || isChannelVerificationRejection(detail, authStatus)) {
+          throw channelVerificationError(
+            this.product.id,
+            channelVerificationStatus === 0 ? authStatus : channelVerificationStatus,
+            channelVerificationBody.length === 0 ? detail : channelVerificationBody,
             true
           );
         }
@@ -37874,12 +37939,16 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
           );
         }
       }
-      if (this.options.accountPool && isRateLimited(errorText, response.status)) {
+      const channelRejected = isChannelVerificationRejection(errorText, response.status);
+      if (this.options.accountPool && (isRateLimited(errorText, response.status) || channelRejected)) {
         const tried = /* @__PURE__ */ new Set();
         if (currentAccountId) tried.add(currentAccountId);
         let sawContentRejection = false;
         let contentRejectionStatus = 0;
         let contentRejectionBody = "";
+        let sawChannelVerification = channelRejected;
+        let channelVerificationStatus = channelRejected ? response.status : 0;
+        let channelVerificationBody = channelRejected ? errorText : "";
         const rateLimitMarked = /* @__PURE__ */ new Set();
         for (; ; ) {
           if (currentAccountId !== "" && isRateLimited(errorText, response.status) && !rateLimitMarked.has(currentAccountId)) {
@@ -37922,6 +37991,15 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             continue;
           }
           if (response.status === 401 || response.status === 403) continue;
+          if (isChannelVerificationRejection(errorText, response.status)) {
+            sawChannelVerification = true;
+            channelVerificationStatus = response.status;
+            channelVerificationBody = errorText;
+            console.warn(
+              `[${this.product.id}] \u8D26\u53F7 ${currentAccountId || "(current)"} \u672A\u901A\u8FC7\u6E20\u9053\u6821\u9A8C\uFF08HTTP ${response.status}\uFF0Ccode 11128 conversation id missing\uFF09\uFF0C\u7EE7\u7EED\u6362\u53F7\uFF08\u4E0D\u5199\u51B7\u5374\uFF09\uFF1A${errorDetail2(errorText).slice(0, 200)}`
+            );
+            continue;
+          }
           if (!isRateLimited(errorText, response.status)) {
             throw new LlmError4(`${this.product.id}: ${errorDetail2(errorText)}`, httpErrorCode3(response.status, errorText), { status: response.status });
           }
@@ -37931,6 +38009,14 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
             this.product.id,
             contentRejectionStatus || 403,
             contentRejectionBody,
+            true
+          );
+        }
+        if (sawChannelVerification) {
+          throw channelVerificationError(
+            this.product.id,
+            channelVerificationStatus || 400,
+            channelVerificationBody,
             true
           );
         }
@@ -38043,6 +38129,9 @@ var BuddyAdapter = class _BuddyAdapter extends LlmAdapter2 {
               options.model
             );
             throw contentRejectionError(this.product.id, 200, payload, false);
+          }
+          if (data.choices === void 0 && isChannelVerificationRejection(payload, response.status)) {
+            throw channelVerificationError(this.product.id, 200, payload, false);
           }
           if (data.error !== void 0) {
             throw new LlmError4(`${this.product.id}: ${data.error.message ?? "unknown error"}`, "SERVER");
@@ -44194,6 +44283,37 @@ var TtlCache = class {
       return void 0;
     }
     return entry;
+  }
+  /**
+   * ★ 看**过期后**的条目（陈旧兼顶），**不触发加载**。
+   *
+   * ## 为什么要有它（用户 2026-10-16 的要求）
+   *
+   * 「用底层缓存；加载如果得不到新数据，应该读出旧数据，不能直接返回错误
+   *（除非旧数据也没有）」—— {@link peek} 在条目过期那一刻就把 `this.entry`
+   * 丢弃了，于是「上次成功读到的值」在取数失败时**已经取不回来**。
+   *
+   * ## ⚠️ 为什么是**独立方法**而不是给 `peek` 加参数
+   *
+   * `peek()` 是**严格 TTL** 判据，被 `get()` 与多处调用方共用；给它加开关会
+   * 让「这个缓存到底严不严格」变成运行期才确定的事 —— 那正是本仓库红线
+   * 「同一语义两套判据」的形态。⇒ 两条语义各占一个方法名，调用点**写死**。
+   *
+   * ## 语义
+   *
+   * - 有条目（无论新鲜或过期）⇒ 返回它，并附 `stale: true` 标记；
+   * - 一次都没写进过 ⇒ 返回 `undefined`（**没有旧数据可兼顶**，调用方只能报错）；
+   * - ⚠️ **不丢弃**过期条目：兼顶之后取数成功会覆盖它、失败会继续用它，
+   *   两者都不需要「先扔掉再重取」—— 丢弃发生在 `write()` 里。
+   *
+   * ⚠️ **返回值带 `stale` 标记是刻意的**：调用方据此告诉用户「这是 HH:MM 的
+   * 值」，否则用户会把几分钟前的数字当成现状（`balance-cache.ts` 依赖它）。
+   */
+  peekStale() {
+    const entry = this.entry;
+    if (entry === void 0) return void 0;
+    const stale = this.now() - entry.atMs >= entry.ttlMs;
+    return stale ? { ...entry, stale: true } : { ...entry, stale: false };
   }
   /** 写入一个已知值（例如从别处拿到的新配置，避免下一次白加载）。 */
   set(value) {
@@ -51111,8 +51231,8 @@ async function fetchLoomyCreditDetail(credential, product, fetcher = fetch) {
   const permanent = readNumber(result.data?.balance);
   const daily = readNumber(result.data?.dailyBalance);
   const available2 = readNumber(result.data?.availableBalance);
-  if (permanent === void 0) return null;
-  const total = available2 ?? permanent + (daily ?? 0);
+  if (permanent === void 0 && daily === void 0) return null;
+  const total = available2 ?? (permanent ?? 0) + (daily ?? 0);
   return {
     permanent,
     daily: daily ?? 0,
@@ -51141,7 +51261,10 @@ async function fetchLoomyCreditBalance(credential, product, fetcher = fetch) {
   return {
     total: detail.total,
     packages: [
-      makePackage("\u6C38\u4E45\u79EF\u5206", detail.permanent),
+      // ⚠️ `permanent` 可能是 `undefined`（上游没给）；此时**不造一个 0 的包**
+      // —— 造出来会让面板显示「永久积分 0」，而事实是「上游没报这个池」。
+      // 「每日赠送」恒在（缺省按 0），故至少有一个包可渲染。
+      ...detail.permanent === void 0 ? [] : [makePackage("\u6C38\u4E45\u79EF\u5206", detail.permanent)],
       makePackage("\u6BCF\u65E5\u8D60\u9001", detail.daily)
     ],
     // 两池都视为有效额度，没有「已失效」概念。
@@ -53227,8 +53350,32 @@ var LoomyBalanceSelector = class {
     this.cache.set(account.id, { at: now, value });
     return value;
   }
-  /** 真正发请求查一次余额。 */
+  /**
+   * 真正取一次余额。
+   *
+   * ★ 2026-10-16：**先吃共享读数**（面板刚查过的那份），命中即零网络请求。
+   *
+   * ⚠️ **共享读数缺席时照常自己取数**（`undefined` ⇒ 往下走原路径）：
+   *   兼顶**不得**取代真实取数能力，否则「未接线」会变成「该渠道恒不可用」。
+   * ⚠️ **兼顶读数（`stale: true`）按成功处理**，但把失败原因带在 `error` 里
+   *   供诊断（`ok` 仍为 true —— 我们**确实**拿到了可用余额，标成失败会让
+   *   「有今日额度的号」被踢出候选，那正是本 issue 的核心症状）。
+   */
   async fetchBalance(account) {
+    if (this.deps.sharedReading !== void 0) {
+      const shared = await this.deps.sharedReading(account.id, account.credentialRef);
+      if (shared !== void 0 && (shared.daily !== void 0 || shared.permanent !== void 0)) {
+        return {
+          id: account.id,
+          ok: true,
+          dailyBalance: shared.daily,
+          permanentBalance: shared.permanent,
+          // ⚠️ 兼顶读数带 `error`：那是**本次查询失败**的原因（UI 要显示
+          //   「数据来自 HH:MM」），与「这个号不可用」是两件事。
+          ...shared.error === void 0 ? {} : { error: `\u4F59\u989D\u4E3A\u9648\u65E7\u8BFB\u6570\uFF08${shared.error}\uFF09` }
+        };
+      }
+    }
     let credential;
     try {
       credential = await this.deps.resolveCredential(account.credentialRef);
@@ -53294,14 +53441,21 @@ var LoomyBalanceSelector = class {
     return { ok: true, account: picked.account, balance: picked.balance };
   }
   /**
-   * 判定「为什么没有可用账号」：区分**真的用尽**与**查不到**。
+   * 判定「为什么没有可用账号」：**三分档**（issue IKMCOO 缺陷 2）。
    *
-   * 只要有任何一个候选是查询失败，就不能断言"额度都已用尽"——我们对它的余额
-   * 其实一无所知。
+   * - 全员查询失败 ⇒ `all-unknown`（上游整体不可用，**不是**凭据问题）
+   * - 部分查询失败 ⇒ `partial`（其余候选**确实**查到 0 了）
+   * - 无人失败 ⇒ `exhausted`（**唯一**有事实依据说「用尽」的一档）
+   *
+   * ⚠️ 分档判据是「**失败的占比**」，不是「有没有失败」—— 后者会把
+   * 「3 个号全查不到」说成「部分账号」（实测症状逐字相同）。
    */
   noAccountReason(balances) {
-    const errors = balances.filter((b) => !b.ok).map((b) => b.error ?? "\u672A\u77E5\u539F\u56E0");
-    return errors.length > 0 ? { kind: "unknown", errors } : { kind: "exhausted" };
+    const failed = balances.filter((b) => !b.ok);
+    const errors = failed.map((b) => b.error ?? "\u672A\u77E5\u539F\u56E0");
+    if (failed.length === 0) return { kind: "exhausted" };
+    if (failed.length === balances.length) return { kind: "all-unknown", errors };
+    return { kind: "partial", errors };
   }
 };
 
@@ -61690,7 +61844,7 @@ async function loomyExpiry(credential) {
   }
   if (detail === null) return UNUSABLE;
   if (detail.daily > 0) return nextUtc8DayStartMs();
-  return detail.permanent > 0 ? NEVER : UNUSABLE;
+  return detail.permanent !== void 0 && detail.permanent > 0 ? NEVER : UNUSABLE;
 }
 async function accioExpiry(credential) {
   let detail;
@@ -66368,8 +66522,8 @@ async function chatRealSession(credential, product, fetcher, expertId, model = F
         ...minimalHeaders(credential, product),
         Accept: "text/event-stream",
         // ⚠️ 原先这里只有一枚 `X-Conversation-ID: jb-conv-<ts>`，另两枚缺失。
-        // 2026-10-16 起补齐三枚，与主链路形态统一（**理由不是准入必需** ——
-        // 实测三头缺一照样 200，见 `conversationHeaders` 的注释）。
+        // 2026-10-16 起补齐三枚：**对「要求三头」的账号是硬需求**（IKM7SG 实测
+        // 三枚齐全才 200），且与主链路形态统一 —— 见 `conversationHeaders` 的注释。
         ...conversationHeaders(newConversationId()),
         "X-Request-ID": String(Date.now()),
         "X-Expert-Id": expertId,
@@ -69402,27 +69556,38 @@ async function collectCreditBalances(accounts, product, deps) {
     let balance = null;
     let error;
     let extra;
-    try {
-      const resolved = await deps.resolve(credentialRef14(entry.credentialRef));
-      if (resolved === void 0) {
-        error = "\u51ED\u636E\u672A\u914D\u7F6E";
-      } else {
-        const credential = JSON.parse(resolved.value);
-        if (fetchDetailed !== void 0) {
-          const detailed = await fetchDetailed(credential, product);
-          balance = detailed.balance;
-          error = detailed.error;
-          extra = detailed.extra;
-          if (balance === null && error === void 0) error = "\u4F59\u989D\u67E5\u8BE2\u5931\u8D25";
-        } else {
-          balance = await fetchBalance(credential, product);
-          if (balance === null) error = "\u4F59\u989D\u67E5\u8BE2\u5931\u8D25";
+    if (deps.readCachedBalance !== void 0 && entry.id !== void 0) {
+      const cached2 = await deps.readCachedBalance(entry.id, { force: deps.force === true });
+      if (cached2 !== void 0) {
+        balance = cached2.balance;
+        if (cached2.stale) {
+          error = `\u672C\u6B21\u67E5\u8BE2\u5931\u8D25\uFF0C\u663E\u793A\u7684\u662F ${new Date(cached2.at).toLocaleString("zh-CN")} \u7684\u6570\u636E\uFF08${cached2.error ?? "\u4E0A\u6E38\u4E0D\u53EF\u8FBE"}\uFF09`;
         }
       }
-    } catch (caught) {
-      deps.warn?.(`[jet-hub] credits.balances \u8D26\u53F7 ${entry.id} \u5931\u8D25: ${String(caught)}`);
-      error = caught instanceof Error ? caught.message : String(caught);
-      balance = null;
+    }
+    if (balance === null) {
+      try {
+        const resolved = await deps.resolve(credentialRef14(entry.credentialRef));
+        if (resolved === void 0) {
+          error = "\u51ED\u636E\u672A\u914D\u7F6E";
+        } else {
+          const credential = JSON.parse(resolved.value);
+          if (fetchDetailed !== void 0) {
+            const detailed = await fetchDetailed(credential, product);
+            balance = detailed.balance;
+            error = detailed.error;
+            extra = detailed.extra;
+            if (balance === null && error === void 0) error = "\u4F59\u989D\u67E5\u8BE2\u5931\u8D25";
+          } else {
+            balance = await fetchBalance(credential, product);
+            if (balance === null) error = "\u4F59\u989D\u67E5\u8BE2\u5931\u8D25";
+          }
+        }
+      } catch (caught) {
+        deps.warn?.(`[jet-hub] credits.balances \u8D26\u53F7 ${entry.id} \u5931\u8D25: ${String(caught)}`);
+        error = caught instanceof Error ? caught.message : String(caught);
+        balance = null;
+      }
     }
     results.push({
       accountId: entry.id,
@@ -70928,6 +71093,17 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
       //   （「顺序查询避免并发触发风控」「单账号失败不中断」都是实测结论）。
       case "credits.balances": {
         const req = payload;
+        const resolveCredentialForCache = async (accountId) => {
+          const entry = accounts.find((a) => a.id === accountId);
+          if (entry === void 0) return void 0;
+          const resolved = await ctx.credentials.resolve(credentialRef14(entry.credentialRef));
+          if (resolved === void 0) return void 0;
+          try {
+            return JSON.parse(resolved.value);
+          } catch {
+            return void 0;
+          }
+        };
         const requestedIds = Array.isArray(req?.accountIds) ? new Set(req.accountIds.filter((id) => typeof id === "string")) : void 0;
         const allAccounts = await pool.listAccounts(req.provider);
         const accounts = requestedIds === void 0 ? allAccounts : allAccounts.filter((entry) => requestedIds.has(entry.id));
@@ -71068,7 +71244,44 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           // ⚠️ 回写共享读数（规格 §5.7）：`provider` 由本端点提供 —— 
           //    `collectCreditBalances` 自己不知道 provider（它的入参是账号数组）。
           ...balanceCacheOf() === void 0 ? {} : {
-            writeBalance: (accountId, balance) => balanceCacheOf().write(req.provider, accountId, { at: Date.now(), value: balance })
+            writeBalance: (accountId, balance) => balanceCacheOf().write(req.provider, accountId, { at: Date.now(), value: balance }),
+            /**
+             * ★ 载荷的 `force`（面板「刷新积分」按钮，2026-10-16 审计 P1-1）。
+             *
+             * ⚠️ 类型已补进 `RpcCreditsBalancesRequest`（`src/types.ts`），
+             *   故这里**按类型读**而不是 `(payload as {force?: unknown})` 强转 ——
+             *   强转会让「客户端根本没传」这件事在编译期完全看不出来。
+             */
+            force: req.force === true,
+            /**
+             * ★ **先吃共享读数**（2026-10-16，issue IKMCOO 缺陷 1 + 用户
+             * 「打开面板要很久，加载拿不到新数据应该读旧数据」）。
+             *
+             * ⚠️ `readStale` 内部会**真的取数**（命中则零网络），故此处是
+             *    「读一次共享读数（含兼顶）」，不是「只 peek」。
+             * ⚠️ **`force` 必须透传**：面板「刷新」按钮要绕过缓存（含兼顶）
+             *    强制回源 —— 漏传会让「刷新」退化成「读旧值」，用户点了没反应。
+             *    ⚠️ 该载荷此前**没有** `force` 字段（只有 `accountIds`），
+             *    这里按既有可选字段的同款读法解析，不改响应形状。
+             */
+            readCachedBalance: async (accountId, readOptions) => {
+              const forced = readOptions.force === true;
+              const reading = await balanceCacheOf().readStale(
+                req.provider,
+                accountId,
+                // ⚠️ 槽里必须带凭据：`fetchBalanceReading` 靠它发请求
+                //    （`entry.credential === undefined` ⇒ 直接抛「凭据未提供」）。
+                { credential: await resolveCredentialForCache(accountId) },
+                { force: forced }
+              );
+              if (reading.value === void 0) return void 0;
+              return {
+                balance: reading.value,
+                stale: reading.stale,
+                at: reading.at,
+                ...reading.error === void 0 ? {} : { error: reading.error }
+              };
+            }
           },
           warn: (msg) => ctx.logger?.warn?.(msg)
         });
@@ -82111,15 +82324,19 @@ function defaultIsAbort(error) {
 }
 function createBalanceCache(options) {
   const failureTtlMs = options.failureTtlMs ?? 15e3;
+  const staleTtlMs = options.staleTtlMs ?? 9e5;
   const isAbort = options.isAbort ?? defaultIsAbort;
   const now = options.now ?? (() => Date.now());
   const perAccount = /* @__PURE__ */ new Map();
   const slots = /* @__PURE__ */ new Map();
+  const lastSuccess = /* @__PURE__ */ new Map();
   const keyOf = (provider, accountId) => `${provider}\0${accountId}`;
   const fetchReading = async (provider, entry) => {
     const at = now();
     try {
-      return { at, value: await options.fetch(provider, entry) };
+      const value = await options.fetch(provider, entry);
+      lastSuccess.set(keyOf(provider, entry.id), { at, value });
+      return { at, value };
     } catch (error) {
       if (isAbort(error)) throw error;
       return {
@@ -82167,15 +82384,61 @@ function createBalanceCache(options) {
       slots.set(key, { provider, entry: { id: accountId, ...entry } });
       return await cacheOf(key).get({ force: readOptions.force === true });
     },
+    /**
+     * ★ 兼顶读取：成功用新值，失败回落**上一次的成功值**。
+     *
+     * ## ⚠️ 为什么不复用 `readOne` + 外面判 `error`
+     *
+     * 那样做需要调用方自己再查一次「旧值还在不在」，而旧值在 `readOne` 内部
+     * 已经被 `get()` 用 `write()` **覆盖成失败读数**了 ⇒ 旧值在那一刻就丢了。
+     * ⇒ 兼顶必须发生在**写入失败读数之前**，这是本方法存在的全部理由。
+     *
+     * ## ⚠️ 为什么失败读数**仍然写进缓存**
+     *
+     * 缓存里此刻既有失败读数、又有（更旧的）成功读数，两者不能共存于同一个
+     * `entry` —— 故 `readStale` **不**把兼顶结果写回：`TtlCache` 只有一个槽位，
+     * 让失败读数占住它会**毁掉兼顶的能力**（下一轮再来时旧值已经没了）。
+     * ⇒ 代价：紧接着的 `readOne` 会再打一次上游。那正是「兼顶与严格读取不可兼得」
+     *   的诚实登记，不是缺陷。
+     */
+    async readStale(provider, accountId, entry, readOptions = {}) {
+      const key = keyOf(provider, accountId);
+      const cache5 = cacheOf(key);
+      const limit = readOptions.staleTtlMs ?? staleTtlMs;
+      const force = readOptions.force === true;
+      slots.set(key, { provider, entry: { id: accountId, ...entry } });
+      const fresh = await cache5.get({ force });
+      if (fresh.error === void 0) {
+        if (fresh.stale !== true) lastSuccess.set(key, fresh);
+        return { at: fresh.at, value: fresh.value, stale: false };
+      }
+      const previous = lastSuccess.get(key);
+      if (previous?.value === void 0) {
+        cache5.set({ at: fresh.at, value: void 0, error: fresh.error });
+        return { at: fresh.at, value: void 0, error: fresh.error, stale: true };
+      }
+      if (force || now() - previous.at >= limit) {
+        cache5.set({ at: fresh.at, value: void 0, error: fresh.error });
+        return { at: fresh.at, value: void 0, error: fresh.error, stale: true };
+      }
+      return {
+        at: previous.at,
+        value: previous.value,
+        error: fresh.error,
+        stale: true
+      };
+    },
     write(provider, accountId, reading) {
       if (reading.error !== void 0) return;
       cacheOf(keyOf(provider, accountId)).set(reading);
+      lastSuccess.set(keyOf(provider, accountId), reading);
     },
     clear(provider) {
       if (provider === void 0) {
         for (const cache5 of perAccount.values()) cache5.clear();
         perAccount.clear();
         slots.clear();
+        lastSuccess.clear();
         return;
       }
       const prefix = `${provider}\0`;
@@ -82184,6 +82447,7 @@ function createBalanceCache(options) {
         cache5.clear();
         perAccount.delete(key);
         slots.delete(key);
+        lastSuccess.delete(key);
       }
     }
   };
@@ -82718,6 +82982,15 @@ function apply(ctx, config = {}) {
   );
   const service = new CodeArtsAuth(ctx);
   const pool = new AccountPool(ctx);
+  const balanceCache = createBalanceCache({
+    ttlMs: 12e4,
+    failureTtlMs: 15e3,
+    // ⚠️ 中止判据**复用**适配器导出的共享实现（它含 `code: 'ABORTED'` 与 499 报文
+    //    两条腿）—— 不要在装配层再写一份（本仓库已有 4 份同义实现，别再添第五份）。
+    isAbort: (error) => isAbortLike(error),
+    fetch: (provider, entry) => fetchBalanceReading(pool, provider, entry)
+  });
+  registerBalanceCache(balanceCache);
   service.lastCatalogOutcome = { gatewayOk: false, builtinOk: false };
   configureDeadModelStore(ctx);
   const tokenLedgerStore = createTokenLedgerStore(ctx);
@@ -82817,11 +83090,21 @@ function apply(ctx, config = {}) {
     );
   };
   const loomyLockedError = (reason) => {
-    if (reason.kind === "unknown") {
-      return new Error(
-        `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u90E8\u5206\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09\u3002\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u4ECA\u65E5\u989D\u5EA6 \u2014\u2014 \u8BF7\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684 Loomy \u9762\u677F\u68C0\u67E5\u51ED\u636E\u662F\u5426\u5931\u6548\u3002`
+    const details = reason.kind === "exhausted" ? "" : `\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09`;
+    if (reason.kind === "all-unknown") {
+      return new LlmError25(
+        `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C**\u6240\u6709**\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u90FD\u5931\u8D25\u4E86${details}\u3002\u8FD9\u901A\u5E38\u662F\u4E0A\u6E38\u9650\u6D41 / \u98CE\u63A7 / \u7F51\u7EDC\u4E2D\u65AD\uFF0C**\u4E0D\u662F**\u51ED\u636E\u5931\u6548 \u2014\u2014 \u65E0\u9700\u91CD\u65B0\u767B\u5F55\u3002\u53EF\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF1B\u82E5\u6025\u4E8E\u7EE7\u7EED\uFF0C\u53EF\u5728 Jet Hub \u7684 Loomy \u9762\u677F**\u4E34\u65F6\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u4F1A\u6D88\u8017\u6C38\u4E45\u79EF\u5206\uFF09\u3002`,
+        "TRANSPORT"
       );
     }
+    if (reason.kind === "partial") {
+      return new LlmError25(
+        `Loomy\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C**\u90E8\u5206**\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25${details}\u3002\u5176\u4F59\u8D26\u53F7\u7684\u4ECA\u65E5\u989D\u5EA6\u5DF2\u786E\u8BA4\u7528\u5C3D\uFF1B\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u4ECA\u65E5\u989D\u5EA6 \u2014\u2014 \u8BF7\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684 Loomy \u9762\u677F\u6838\u5BF9\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\u3002`,
+        "TRANSPORT"
+      );
+    }
+    const exhaustedOnly = reason;
+    void exhaustedOnly;
     return new Error(
       "Loomy\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u6240\u6709\u8D26\u53F7\u7684\u4ECA\u65E5\u8D60\u9001\u989D\u5EA6\u90FD\u5DF2\u7528\u5C3D\u3002\u8BF7\u5728 Jet Hub \u7684 Loomy \u9762\u677F\u89E3\u9501\u6C38\u4E45\u79EF\u5206\uFF0C\u6216\u7B49\u5F85\u660E\u65E5\u989D\u5EA6\u5237\u65B0\u3002"
     );
@@ -83207,9 +83490,58 @@ function apply(ctx, config = {}) {
       return void 0;
     }
   };
+  const loomyPoolsOf = (balance) => {
+    let daily;
+    let permanent;
+    for (const pkg of balance.packages ?? []) {
+      if (pkg.name.includes("\u6BCF\u65E5")) daily = pkg.remaining;
+      else if (pkg.name.includes("\u6C38\u4E45")) permanent = pkg.remaining;
+    }
+    return {
+      ...daily === void 0 ? {} : { daily },
+      ...permanent === void 0 ? {} : { permanent }
+    };
+  };
+  const readLoomyCredentialFor = async (accountId) => {
+    const entry = pool.listAccountsByProvider(LOOMY.id).find((a) => a.id === accountId);
+    if (entry === void 0) return void 0;
+    return await resolveLoomyCredentialByRef(entry.credentialRef);
+  };
   const loomyBalanceSelector = new LoomyBalanceSelector({
     product: LOOMY,
-    resolveCredential: resolveLoomyCredentialByRef
+    resolveCredential: resolveLoomyCredentialByRef,
+    /**
+     * ★ 吃**共享余额读数**（2026-10-16，issue IKMCOO 缺陷 1）。
+     *
+     * ## 为什么必须接（用户报障的核心矛盾）
+     *
+     * 「面板显示三个账号都有余额，但对话一直报『余额查询失败』」—— 两条路径
+     * 各发各的请求、各存各的缓存，于是**可以同时成立且互相矛盾**。
+     * ⇒ 这里让选号与面板**看同一份读数**，矛盾从根上消失。
+     *
+     * ⚠️ **`LOOMY_CREDIT_DETAIL` 从共享读数里取**：`CreditBalance` 有两池
+     *   （`packages`），而选号器要的是 `permanent` / `daily` 两个数 ——
+     *   由**包名**映射（`provider-credits.ts` 造包时写的就是「永久积分」/
+     *   「每日赠送」）。⚠️ 这层映射**只此一处**，不得在别处再写一份。
+     *
+     * ⚠️ **陈旧读数按成功处理**：兼顶值确实可用（`ok: true`），只是标了
+     *   `error` 让 UI 能显示数据时间。标成失败会把「有今日额度的号」踢出候选 ——
+     *   那正是本 issue 的症状。
+     *
+     * ⚠️ 共享缓存**未注册**时返回 `undefined` ⇒ 选号器照常自己取数（逐字节同旧）。
+     */
+    sharedReading: async (accountId) => {
+      const reading = await balanceCache.readStale(LOOMY.id, accountId, {
+        credential: await readLoomyCredentialFor(accountId)
+      });
+      if (reading.value === void 0) return void 0;
+      return {
+        ...loomyPoolsOf(reading.value),
+        stale: reading.stale,
+        at: reading.at,
+        ...reading.error === void 0 ? {} : { error: reading.error }
+      };
+    }
   });
   const loomyAdapter = registerLoomyLlm(ctx, {
     credentialRef: credentialRef17(LOOMY.defaultCredentialRef),
@@ -84020,15 +84352,6 @@ function apply(ctx, config = {}) {
     if (balance === null) throw new Error("\u4F59\u989D\u67E5\u8BE2\u5931\u8D25");
     return balance;
   }
-  const balanceCache = createBalanceCache({
-    ttlMs: 12e4,
-    failureTtlMs: 15e3,
-    // ⚠️ 中止判据**复用**适配器导出的共享实现（它含 `code: 'ABORTED'` 与 499 报文
-    //    两条腿）—— 不要在装配层再写一份（本仓库已有 4 份同义实现，别再添第五份）。
-    isAbort: (error) => isAbortLike(error),
-    fetch: (provider, entry) => fetchBalanceReading(pool, provider, entry)
-  });
-  registerBalanceCache(balanceCache);
   const sharedExpiryProbe = createExpiryProbe(pool, async (provider) => {
     const models = await ctx.llm.listModels(provider);
     return models[0]?.id;

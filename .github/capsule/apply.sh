@@ -331,6 +331,16 @@ patch('scripts/build-assets.py',
   "'page.html', 'cordis.patch.yml')",
   "'page.html', 'cordis.patch.yml', 'client.js', 'adapter', 'icon.svg')",
   'build-assets.py copy_bundle 白名单加入 client.js / adapter / icon.svg');
+// ⚠️ **顶层 src/ 必须进 copy_bundle 白名单**（2026-10-17 复发事故，1919 / 2013 两个发布都中招）：
+//    ④ 的 NEED 只查 `files/vendor/dsh-our-free-model/src`（仓库导出目录）在不在，而
+//    build-assets.py 的 copy_bundle 靠 entries 白名单决定**部署进 tar 的内容** —— 白名单
+//    不放行 src ⇒ dsh-tree.tar 里的 OFM **恒缺 src**，index.js 顶层 import 一加载就抛
+//    （Cannot find module src/adapter.js）⇒ 装包后 OFM 整体不挂载、模型插件全消失，
+//    且构建、CI 全绿（每次都是真机装包才暴露）。照 noema 的既有写法给 OFM 单独放行。
+patch('scripts/build-assets.py',
+  "    if name == '@zseven-w/dsh-noema':\n        entries += ('src',)",
+  "    if name == '@zseven-w/dsh-noema':\n        entries += ('src',)\n    if name == 'dsh-our-free-model':\n        entries += ('src',)",
+  'build-assets.py copy_bundle 白名单放行 OFM 顶层 src');
 
 // ② 出厂 profile 模板：dependencies + bundles
 //    ⚠️ 锚点**不带尾逗号**：`@zseven-w/dsh-noema` 在 §2.8 ②b 退役之后是 dependencies
@@ -349,6 +359,7 @@ let checked = 0;
 for (const [file, needle, label] of [
   ['scripts/build-assets.py', "'dsh-our-free-model'", 'build-assets.py BUNDLES'],
   ['scripts/build-assets.py', "ROOT / 'vendor/dsh-our-free-model'", 'build-assets.py 部署映射'],
+  ['scripts/build-assets.py', "if name == 'dsh-our-free-model':", 'build-assets.py copy_bundle 放行 OFM 顶层 src'],
   ['home-template/profiles/phone/package.json', '"dsh-our-free-model"', '出厂 profile 模板'],
 ]) {
   checked++;
