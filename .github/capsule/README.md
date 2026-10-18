@@ -3,7 +3,13 @@
 构建时外挂到 `vendor/dsh-codearts-auth` 的**全部自有代码**。起点是「在用模型」
 实时读数胶囊（输入区最下方显示当前这次请求实际发往的渠道与模型），2026-10-11
 起扩展为 Gitee 原作者功能移植的载体（Phase 1–5 + Step A/B + 9.17 上游增量，
-详见仓库 `docs/porting/PORT-STATUS.md` 与 `docs/porting/PORTING-GITEE-HANDOFF.md`（本地工作区另存完整轮次报告于 docs/reports/）。
+详见 `docs/reports/` 的历轮报告（**索引**：`docs/reports/README.md`）。
+
+> ⚠️ **2026-10-19 更正**：早期文档 `docs/porting/PORT-STATUS.md` 与
+> `docs/porting/PORTING-GITEE-HANDOFF.md` **已失效并归档** —— 前者的复跑脚本
+> （`.scratch/port-gitee/nc/*`）已不存在、基线停在 Gitee `5a61117f`；后者的接力对象已改道
+> （Gitee 增量链路现由 OFM 工具线的 `_ofm/update-channelpack.mjs` 接管）。
+> 两份现存于 `docs/history/superseded/`（附取代对照表），**不要再按它们作业**。
 
 ## 为什么这样做
 
@@ -30,8 +36,8 @@ git 仓库（main 分支）
 | 路径 | 说明 |
 |---|---|
 | `files/` | 胶囊/移植**全新增**路径：**12 个** src 模块（active-route、provider-registry/runtime/expiry、zcode-entitlements、zero-output-guard、catalog-broadcast/prewarm、context-window-learn、context-window-store、auto-badge、session-title）+ 客户端组件（active-model-pill、backup-convert、backup-payload 等）+ `active-route` 的 tsc 产物（`lib/` 4 个）+ spec **11 个**（全层 27 个 `.spec.ts` = 本路径 11 + overrides 16） |
-| `overrides/` | **130 个**「上游某版 + 我方改动」覆盖文件（含 `overrides/runtime/` 的 44 个；不含则为 **86 个**）= vendor **76**（`dsh-codearts-auth` 75：src 52 + plugin-src/client 6 + spec 16 + `package.json` 1；`dsh-channel-qq` 1）+ **壳层 4**（`app/src/main/assets/dsh-phone.{js,css}`、`app/src/main/java/com/dshphone/MainActivity.kt`、`app/src/main/AndroidManifest.xml`）+ peer 3 + phone-qq 2 + scripts 1。每个的基线版本见 `docs/porting/PORTING-GITEE-HANDOFF.md` 各轮次记录 |
-| `overrides/runtime/` | **官方引擎适配（2026-10-14 新增）**：3 个版本文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）+ `overlays/@deepseek-ai/`（23 包 40 文件）。上游 `runtime/` 与本仓库**逐字节一致**（属「永不直接改」的上游内容），故引擎升级走这里覆盖。当前基线 **`0.2.1-alpha.2`** |
+| `overrides/` | **130 个**「上游某版 + 我方改动」覆盖文件（含 `overrides/runtime/` 的 44 个；不含则为 **86 个**）= vendor **76**（`dsh-codearts-auth` 75：src 52 + plugin-src/client 6 + spec 16 + `package.json` 1；`dsh-channel-qq` 1）+ **壳层 4**（`app/src/main/assets/dsh-phone.{js,css}`、`app/src/main/java/com/dshphone/MainActivity.kt`、`app/src/main/AndroidManifest.xml`）+ peer 3 + phone-qq 2 + scripts 1。每个的基线版本见 `docs/history/superseded/PORTING-GITEE-HANDOFF.md` 各轮次记录（该文已归档，正文仍是基线记录） |
+| `overrides/runtime/` | **官方引擎适配（2026-10-14 新增）**：3 个版本文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）+ `overlays/@deepseek-ai/`（23 包 40 文件）。上游 `runtime/` 与本仓库**逐字节一致**（属「永不直接改」的上游内容），故引擎升级走这里覆盖。当前基线 **`0.2.1-rc.2`**（⚠️ 2026-10-19 更正：原文写 `alpha.2` 已过期，其后又经 alpha.3/.4/.5/rc.1 到 rc.2） |
 | `apply.sh` | 构建时应用 + 接线自检（自检项缺失即构建失败）+ **2.5 步防撞自检**（files/ 与 overrides/ 同路径即红）+ **UI 接线自检与锚点门禁**（2026-10-12 新增，见下节）+ **runtime 引擎版本自检**（2026-10-14 新增：6 条断言，防「文件铺了但装回旧引擎」的静默退回）；`DISABLED` 空文件 = 一键纯净构建 |
 | `rebuild-vendor.sh` | vendor 重建：vitest **显式名单 27 个 spec** → tsc → esbuild。⚠️ **新增 spec 必须同时登记进该名单，否则静默不跑**；产物一致性另由 `files/scripts/check-capsule-artifacts.mjs` 守（Issue F-68：提交进胶囊的 `lib/active-route.{js,d.ts}` 必须与 `src/active-route.ts` 逐行一致） |
 | `build-apk.yml` | 完整构建 workflow 模板（sync 后由 sync-upstream.yml 恢复到 .github/workflows/） |
@@ -120,12 +126,13 @@ order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-pe
 - 上游**改了**其中某个文件：`overrides` 的旧基线会**静默覆盖**掉上游新改动
   （tsc/测试仍会过——这正是 #15「zcode 增强丢失」事故的形态）。
   ⇒ **每次 sync 后必做基线漂移检查**：**130 个** override 逐个与上游同路径比对
-（⚠️ 既有脚本 `.scratch/port-gitee/drift-check*.mjs` 只扫 `overrides/vendor/`（76 个），
+（⚠️ 既有脚本 `.scratch/port-gitee/drift-check*.mjs` —— 那是**本地工作区素材，不在本仓库** ——
+只扫 `overrides/vendor/`（76 个），
 **不含壳层那 4 个** —— `app/src/main/assets/dsh-phone.{js,css}`、
 `app/src/main/java/com/dshphone/MainActivity.kt`、`app/src/main/AndroidManifest.xml`；
 上游若改了它们，
 需手工比对 jwoo 上游同路径文件，基线见方案 §4 与本源文件头部注释），
-  差异应全部为我方有意改动（脚本范例 `.scratch/port-gitee/drift-check.mjs`）。
+  差异应全部为我方有意改动（脚本范例 `.scratch/port-gitee/drift-check.mjs` —— 同样是**本地素材**）。
   有漂移时按新版上游重定基线：**不要用 `patch` 命令**（toybox 对多 hunk 上下文
   漂移会整份静默跳过），用 node 脚本按精确锚点字符串逐块替换/拼接，
   每步 `grep -c` 核对标记数（流程见 HANDOFF 踩坑 6 与 9.17 环境坑 1）。
@@ -146,4 +153,5 @@ order / 槽名失效」三类静默失效。本仓库 `dsh-phone-qq` 与 `dsh-pe
 
 > 移植引入的其余接线点（Phase 1 注册块、zero-output-guard、备份 merge、
 > catalog-broadcast/prewarm、minimax 换号、探测分派分支等）逐文件记录在
-> `docs/porting/PORTING-GITEE-HANDOFF.md` 9.5–9.17，重做对应 override 前先读该节。
+> `docs/history/superseded/PORTING-GITEE-HANDOFF.md` 9.5–9.17（该文虽已归档，
+> **正文仍是这些接线点最完整的记录**，重做对应 override 前先读该节）。
