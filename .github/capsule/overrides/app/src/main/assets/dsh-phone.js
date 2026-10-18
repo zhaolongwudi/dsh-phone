@@ -274,10 +274,16 @@
       const button = document.createElement('button'), picker = document.createElement('input');
       button.type = 'button'; button.className = 'dsh-phone-feed'; button.textContent = '投喂技能';
       button.title = '选择技能 ZIP、Markdown 或 TXT，自动导入共享技能';
-      button.style.cssText = 'border:0;border-radius:8px;padding:4px 7px;background:#eaf2ff;color:#2563eb;font:12px system-ui;white-space:nowrap';
+      // 2026-10-18 配色/字体收口（用户报障「尺寸·字体·圆角与邻居不搭」的同类遗留）：
+      // 原先写死 `background:#eaf2ff;color:#2563eb;font:12px system-ui` —— 暗色主题下仍是
+      // 浅蓝底深蓝字，且 system-ui 与本层/上游的字体栈不同族。改用 DSH 主题 token
+      // （保留原值作 fallback，与本文件既有写法一致），字号仍锁 12px：输入区工具行
+      // 有 max-width:36px 的收口（见 dsh-phone.css），放大字号会把「上传」顶出布局。
+      // 同批还有：下面 notice 的文字色、ChatGPT 会员提示、dsh-phone.css 的远程徽标。
+      button.style.cssText = 'border:0;border-radius:8px;padding:4px 7px;background:var(--dsw-alias-button-primary-dimmed,#eaf2ff);color:var(--dsw-alias-button-info-fill,#2563eb);font-family:inherit;font-size:12px;white-space:nowrap';
       picker.type = 'file'; picker.className = 'dsh-phone-skill-picker'; picker.accept = '.zip,.md,.txt,application/zip,application/x-zip-compressed,text/plain,text/markdown'; picker.hidden = true;
       const notice = document.createElement('small'); notice.setAttribute('role', 'status');
-      notice.style.cssText = 'display:none;padding:4px 14px;color:#2563eb;overflow-wrap:anywhere';
+      notice.style.cssText = 'display:none;padding:4px 14px;color:var(--dsw-alias-button-info-fill,#2563eb);overflow-wrap:anywhere';
       card.append(notice); tools.append(button, picker);
       const uploadButton = document.createElement('button'), uploadPicker = document.createElement('input');
       uploadButton.type = 'button'; uploadButton.className = 'dsh-phone-upload'; uploadButton.textContent = '上传';
@@ -452,9 +458,9 @@
       if (!usingPlan) { notice?.remove(); return; }
       if (notice) { const target = media.matches ? card.querySelector('.dsh-phone-composer-options') || card : card; if (notice.parentElement !== target) target.append(notice); return; }
       notice = document.createElement('small'); notice.className = 'dsh-phone-chatgpt-plan';
-      notice.style.cssText = 'display:block;padding:4px 14px;color:#626b78';
+      notice.style.cssText = 'display:block;padding:4px 14px;color:var(--dsw-alias-label-secondary,#626b78)';
       const usage = document.createElement('a'); usage.href = 'https://chatgpt.com/settings/usage'; usage.textContent = '管理用量';
-      usage.style.cssText = 'color:#2563eb;margin-left:10px';
+      usage.style.cssText = 'color:var(--dsw-alias-button-info-fill,#2563eb);margin-left:10px';
       notice.append(document.createTextNode('正在使用你的 ChatGPT 会员方案'), usage);
       (media.matches ? card.querySelector('.dsh-phone-composer-options') || card : card).append(notice);
     });

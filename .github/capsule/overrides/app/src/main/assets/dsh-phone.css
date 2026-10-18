@@ -45,8 +45,7 @@
   ._7KE1Ra_menu { box-sizing:border-box !important; left:var(--dsh-phone-model-left,0px) !important; right:auto !important; width:var(--dsh-phone-model-width,260px) !important; min-width:0 !important; max-width:calc(100vw - 24px) !important; max-height:var(--dsh-phone-model-height,55dvh) !important; overflow-x:hidden !important; }
   ._7KE1Ra_groups { min-width:0 !important; overflow-x:hidden !important; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   ._7KE1Ra_option, ._7KE1Ra_cell { width:100% !important; min-width:0 !important; min-height:46px !important; }
-  ._7KE1Ra_modelName, ._7KE1Ra_description { white-space:normal !important; overflow-wrap:anywhere !important; }
-  ._7KE1Ra_groupTitle { overflow-wrap:anywhere; }
+  ._7KE1Ra_modelName { white-space:normal !important; overflow-wrap:anywhere !important; }
   ._7KE1Ra_cellValue { max-width:65%; }
   .dim-jh-badgePop { box-sizing:border-box !important; left:var(--dsh-phone-popover-left,0px) !important; right:auto !important; width:var(--dsh-phone-popover-width,calc(100vw - 24px)) !important; min-width:0 !important; max-width:calc(100vw - 24px) !important; max-height:var(--dsh-phone-popover-height,55dvh) !important; overflow-x:hidden !important; overflow-y:auto !important; overscroll-behavior:contain; }
   /* ⚠️ Issue F-15：插件侧 @media (max-width:720px) 会把徽标读数**整块隐藏**
@@ -254,8 +253,7 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
  [data-composer-seat],.wSkVaW_composerSeat{--dsh-composer-text-max-height:160px}
  .uV2eYG_root{padding-bottom:4px!important}
  [data-composer-card],.uV2eYG_card{gap:4px!important;padding-top:6px!important;border-radius:16px!important;font-size:14px!important;line-height:20px!important}
- .uV2eYG_input,.uV2eYG_mirror,.uV2eYG_backdrop{padding:4px 12px!important}
- .uV2eYG_hero .uV2eYG_mirror{min-height:36px!important}
+ .uV2eYG_input{padding:4px 12px!important}
  .uV2eYG_row{flex-wrap:nowrap!important;gap:4px!important;padding:0 6px 4px!important}
  .uV2eYG_tools{gap:4px!important;flex:none}
  .uV2eYG_trailing{gap:4px!important;flex:1!important;min-width:0!important}
@@ -268,9 +266,24 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
  .dsh-phone-composer-more{position:relative;flex:none}
  .dsh-phone-composer-more>summary{list-style:none;cursor:pointer;display:grid;place-items:center;min-width:28px;min-height:32px;font-size:20px;border-radius:8px;color:var(--dsw-alias-label-secondary,#52627a)}
  .dsh-phone-composer-more>summary::-webkit-details-marker{display:none}
- .dsh-phone-composer-options{position:absolute;bottom:38px;left:var(--dsh-phone-popover-left,0px);z-index:20;box-sizing:border-box;width:var(--dsh-phone-popover-width,min(270px,calc(100vw - 24px)));max-height:var(--dsh-phone-popover-height,55dvh);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid #dce3ee;border-radius:12px;background:var(--dsw-alias-bg-base,#fff);box-shadow:0 6px 24px #0002}
+ .dsh-phone-composer-options{position:absolute;bottom:38px;left:var(--dsh-phone-popover-left,0px);z-index:20;box-sizing:border-box;width:var(--dsh-phone-popover-width,min(270px,calc(100vw - 24px)));max-height:var(--dsh-phone-popover-height,55dvh);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid var(--dsw-alias-border-l2,#dce3ee);border-radius:12px;background:var(--dsw-alias-bg-base,#fff);box-shadow:0 6px 24px #0002}
  .dsh-phone-composer-options:empty{display:none}
  .dsh-phone-chatgpt-plan{display:block!important;padding:8px 0 0!important;font-size:12px;white-space:normal}
- .dsh-peer-badge{position:fixed;top:40px;right:8px;z-index:16;max-width:45vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:8px;background:#eef4ff;color:#2151a4;padding:3px 7px;font:11px system-ui}
+ .dsh-peer-badge{position:fixed;top:40px;right:8px;z-index:16;max-width:45vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:8px;background:var(--dsw-alias-button-primary-dimmed,#eef4ff);color:var(--dsw-alias-button-info-fill,#2151a4);padding:3px 7px;font-family:inherit;font-size:11px}
  body.dsh-peer-remote .wSkVaW_titleRow{padding-right:0}
+}
+
+/* 宽屏（≥768px）：让上游侧栏自带的折叠/展开开关**独占**侧栏开关这一职责。
+   ⚠️ 2026-10-18 用户确认「同一功能两个按钮」：窄屏时本层槽位开关（.dsh-phone-menu-slot）
+   管抽屉；宽屏时 dsh-phone.js 把它代理给上游开关（语义变成「切换侧栏显隐」），
+   而上游侧栏顶部**总是**渲染自己的开关（折叠态是 36px 圆形按钮）⇒ 宽屏下屏幕上
+   同时有两枚做同一件事的按钮。
+   取最小改法：宽屏隐藏本层那枚，由上游开关单独接管（它折叠/展开两态都在，
+   2026-10-13 真机实测可点、有效）。
+   ⚠️ 只隐藏视觉，**不删** dsh-phone.js 里的宽屏代理代码：万一这条隐藏未命中
+   （上游改结构等），代理仍在 ⇒ 那枚按钮至少还是「能用的按钮」，而不是
+   「点了没反应的死按钮」（2026-10-13 报障过的形态）。
+   ⚠️ 本规则必须写在 @media (max-width:767px) 之外（窄屏断点内不需要它）。 */
+@media (min-width:768px){
+ .dsh-phone-menu-slot{display:none!important}
 }

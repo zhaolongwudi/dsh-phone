@@ -126,10 +126,6 @@
       "semantic": "composer.card",
       "pkg": "dsh-client-ui-conversation"
     },
-    ".uV2eYG_hero": {
-      "semantic": "composer.hero",
-      "pkg": "dsh-client-ui-conversation"
-    },
     ".uV2eYG_input": {
       "semantic": "composer.input",
       "pkg": "dsh-client-ui-conversation"
@@ -224,30 +220,6 @@
     }
   },
   "knownDead": {
-    "$comment": "2026-10-12 实测：这 4 个类名在上游 0.2.1-alpha.1 已不存在（同前缀仍活，说明上游重构掉了具体类名），对应 CSS 规则一直静默失效。经查证：backdrop/mirror 在上游源码里只剩 CSS 属性名与注释，描述文本改用 _7KE1Ra_optionCopy 承载，均无同类名替代 ⇒ 这 4 条属可安全删除的死规则。登记在此以免门禁反复报同一批；删除对应 CSS 后应从此表移除。",
-    ".uV2eYG_backdrop": {
-      "rule": "dsh-phone.css 输入区内边距修正链之一",
-      "impact": "无（与 .uV2eYG_input 同组，另两个选择器仍生效，本项从未命中）",
-      "upstream": "dsh-client-ui-conversation",
-      "action": "可删；如需保守可留待下次上游升级时一并清理"
-    },
-    ".uV2eYG_mirror": {
-      "rule": "dsh-phone.css 输入区高度/内边距（hero 态最小高度）",
-      "impact": "无（上游 0.2.1-alpha.1 已无此类名；hero 态高度由 .uV2eYG_hero + .uV2eYG_input 控制）",
-      "upstream": "dsh-client-ui-conversation",
-      "action": "可删"
-    },
-    "._7KE1Ra_description": {
-      "rule": "dsh-phone.css 模型项描述换行",
-      "impact": "无（描述文本改由 _7KE1Ra_optionCopy 承载，本项从未命中）",
-      "upstream": "dsh-client-ui-model-selection",
-      "action": "可删；若后续需要描述换行，改锚 _7KE1Ra_optionCopy"
-    },
-    "._7KE1Ra_groupTitle": {
-      "rule": "dsh-phone.css 分组标题换行",
-      "impact": "无（上游 0.2.1-alpha.1 已无此类名，分组标题由 _7KE1Ra_groups 承载）",
-      "upstream": "dsh-client-ui-model-selection",
-      "action": "可删"
-    }
+    "$comment": "2026-10-18：原有 4 条死规则（输入区内边距链两项、模型项描述换行、分组标题换行）对应的 CSS 规则已删除，本表随之清空（原登记内容见 git 历史与 docs/reports/UI实用性优化审查-20261018.md）。保留空对象的原因：将来若再出现「上游已无此类名、而 dsh-phone.css 仍在用」的情形，按原格式登记在此，以免门禁反复报同一批。"
   }
 }
