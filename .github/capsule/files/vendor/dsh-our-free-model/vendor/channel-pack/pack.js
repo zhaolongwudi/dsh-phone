@@ -30228,6 +30228,9 @@ function sinkAccountToProviderEnd(accounts, accountId) {
   });
   return next;
 }
+function asProxyText(value) {
+  return typeof value === "string" ? value : "";
+}
 var AccountPool = class {
   constructor(ctx) {
     this.ctx = ctx;
@@ -31990,7 +31993,50 @@ var AccountPool = class {
   /** 读取某 opencode 账号的代理（未设置时为空串）。 */
   opencodeProxyFor(accountId) {
     const entry = this.readAccounts().find((a) => a.id === accountId);
-    return entry?.opencodeProxy ?? "";
+    return asProxyText(entry?.opencodeProxy);
+  }
+  /**
+   * 设置/清除某 **gemini** 账号的出口代理（Gitee issue IKLTZ2）。
+   *
+   * ⚠️ **刻意与 `setOpencodeProxy` 分开成两份实现**，理由与字段同款：两者的
+   * **语义不同**（opencode = 分份额度 / Gemini = 能不能连通）。共用一份会让
+   * 「清掉 Gemini 的代理」连带清掉 opencode 的出口配置，且日志/判据也会漂移。
+   *
+   * ⚠️ 空串是合法输入（用户显式清除 → 直连），故**不能**用 `if (!proxy) return`
+   * 早退（与 `setOpencodeProxy` 同款，见其注释）。清除时删键而非写空串。
+   */
+  async setGeminiProxy(accountId, proxy) {
+    const accounts = this.readAccounts();
+    const idx = accounts.findIndex((a) => a.id === accountId);
+    if (idx === -1) {
+      this.ctx.logger?.warn?.(
+        `[jet-hub] setGeminiProxy: \u8D26\u53F7 ${accountId} \u4E0D\u5728\u8D26\u53F7\u5217\u8868\u4E2D`
+      );
+      return;
+    }
+    const next = [...accounts];
+    const entry = { ...next[idx] };
+    if (proxy.trim().length === 0) delete entry.geminiProxy;
+    else entry.geminiProxy = proxy;
+    next[idx] = entry;
+    await this.writeAccounts(next);
+    this.ctx.logger?.info?.(
+      `[jet-hub] \u8D26\u53F7 ${accountId} Gemini \u4EE3\u7406 \u2192 ${proxy.trim().length === 0 ? "\u76F4\u8FDE" : proxy}`
+    );
+  }
+  /**
+   * 读取某 gemini 账号的代理（未设置时为空串 = 直连）。
+   *
+   * ⚠️ **必须过 `asProxyText`**（实测的同族缺陷，独立于 IKLTZ2 审计发现）：
+   * 该字段来自**用户可编辑的备份文件**，而 `sanitizeAccounts` 用 `{...candidate}`
+   * 原样透传、不校验形状 ⇒ 池里可能存在 `"geminiProxy": 12345`。下游
+   * `normalizeProxy` 第一句就是 `input.trim()` ⇒ 非字符串会在那里抛
+   * `TypeError: raw.trim is not a function`，该账号**永久不可用且无自愈**
+   * （症状与「代理配置坏了」同形，日志只有一句 TypeError）。
+   */
+  geminiProxyFor(accountId) {
+    const entry = this.readAccounts().find((a) => a.id === accountId);
+    return asProxyText(entry?.geminiProxy);
   }
   /**
    * 记录 opencode 指纹轮换代次。
@@ -35359,8 +35405,13 @@ var CodeArtsAdapter = class extends LlmAdapter {
                 parsed.modelId,
                 parsed.resetTimeMs
               );
+              rateLimitTried.add(currentAccountId);
             }
-            const next = await this.options.accountPool.getAvailableAccount("codearts", options.model);
+            const next = await this.options.accountPool.getAvailableAccount(
+              "codearts",
+              options.model,
+              rateLimitTried
+            );
             if (next && !rateLimitTried.has(next.entry.id)) {
               rateLimitTried.add(next.entry.id);
               credential = next.credential;
@@ -59734,6 +59785,232 @@ function registerZcodeLlm(ctx, options) {
   return adapter;
 }
 
+// vendor/channel-pack/src/opencode-proxy.js
+var import_undici = __toESM(require_undici(), 1);
+import { connect as netConnect } from "node:net";
+import { URL as URL2 } from "node:url";
+var PROXY_CACHE_LIMIT = 16;
+var cache3 = /* @__PURE__ */ new Map();
+function proxyFetch(input, init, proxy) {
+  if (init instanceof Request) {
+    throw new TypeError("proxyFetch \u4E0D\u63A5\u53D7 Request \u5BF9\u8C61\u4F5C init\uFF1A{ ...init } \u5C55\u5F00\u4F1A\u4E22\u5931 method/body/headers\uFF0C\u5BFC\u81F4\u8BF7\u6C42\u9759\u9ED8\u964D\u7EA7\u4E3A GET\u3002\u8BF7\u4F20\u666E\u901A\u5BF9\u8C61\uFF08\u6216\u5148\u89E3\u6784\u51FA\u5B57\u6BB5\uFF09\u3002");
+  }
+  if (proxy === void 0)
+    return fetch(input, init);
+  return (0, import_undici.fetch)(input, {
+    ...init,
+    dispatcher: buildProxyDispatcher(proxy)
+  });
+}
+function buildProxyDispatcher(proxy) {
+  const existing = cache3.get(proxy.url);
+  if (existing !== void 0)
+    return existing;
+  const created = proxy.kind === "http" ? buildHttpDispatcher(proxy.url) : buildSocksDispatcher(proxy);
+  cache3.delete(proxy.url);
+  cache3.set(proxy.url, created);
+  while (cache3.size > PROXY_CACHE_LIMIT) {
+    const oldest = cache3.keys().next();
+    if (oldest.done === true)
+      break;
+    const victim = cache3.get(oldest.value);
+    cache3.delete(oldest.value);
+    if (victim !== void 0) {
+      void Promise.resolve(victim.close?.()).catch(() => {
+      });
+    }
+  }
+  return created;
+}
+async function closeAllProxyDispatchers() {
+  const all = [...cache3.values()];
+  cache3.clear();
+  await Promise.allSettled(all.map(async (d) => {
+    try {
+      await d.close();
+    } catch {
+    }
+  }));
+}
+function buildHttpDispatcher(url) {
+  return new import_undici.ProxyAgent({
+    uri: url,
+    // ⚠️ `pipelining: 0` 是必需的（见模块头）；`clientFactory` 由 undici 在
+    // 每次建连时调用，用它把默认 Pool 换成禁用复用的 Pool。
+    clientFactory: (origin, opts) => new import_undici.Pool(origin, { ...opts, pipelining: 0 })
+  });
+}
+function buildSocks5Handshake(proxy) {
+  const parsed = new URL2(proxy.url);
+  const wantsAuth = parsed.username.length > 0;
+  return wantsAuth ? new Uint8Array([5, 2, 0, 2]) : new Uint8Array([5, 1, 0]);
+}
+async function openSocks5Tunnel(proxy, host, port) {
+  const parsed = new URL2(proxy.url);
+  const socket = await new Promise((resolve2, reject) => {
+    const s = netConnect({ host: parsed.hostname, port: Number(parsed.port) });
+    s.once("connect", () => resolve2(s));
+    s.once("error", reject);
+  });
+  const fail2 = (error) => {
+    throw error;
+  };
+  const write = (bytes) => new Promise((resolve2, reject) => {
+    socket.write(Buffer.from(bytes), (err) => err ? reject(err) : resolve2());
+  });
+  let leftover = Buffer.alloc(0);
+  let pending2;
+  const detach = () => {
+    socket.off("data", onData);
+    socket.off("error", onError);
+    socket.off("close", onClose);
+  };
+  const fulfill = () => {
+    if (pending2 === void 0 || leftover.length < pending2.n)
+      return;
+    const n = pending2.n;
+    const target = pending2;
+    pending2 = void 0;
+    const value = new Uint8Array(leftover.subarray(0, n));
+    leftover = leftover.subarray(n);
+    detach();
+    target.resolve(value);
+  };
+  const onData = (chunk) => {
+    leftover = leftover.length === 0 ? chunk : Buffer.concat([leftover, chunk]);
+    fulfill();
+  };
+  const onError = (error) => {
+    const target = pending2;
+    pending2 = void 0;
+    detach();
+    target?.reject(error);
+  };
+  const onClose = () => {
+    const target = pending2;
+    pending2 = void 0;
+    detach();
+    target?.reject(new Error("SOCKS5 \u4EE3\u7406\u5728\u63E1\u624B\u5B8C\u6210\u524D\u5173\u95ED\u4E86\u8FDE\u63A5"));
+  };
+  const read = (n) => new Promise((resolve2, reject) => {
+    if (n <= 0) {
+      resolve2(new Uint8Array(0));
+      return;
+    }
+    pending2 = { n, resolve: resolve2, reject };
+    socket.on("data", onData);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+    fulfill();
+  });
+  try {
+    await write(buildSocks5Handshake(proxy));
+    const methodReply = await read(2);
+    const method = methodReply[1];
+    if (method === 2) {
+      const user = Buffer.from(decodeURIComponent(parsed.username), "utf8");
+      const pass = Buffer.from(decodeURIComponent(parsed.password), "utf8");
+      await write(new Uint8Array([1, user.length, ...user, pass.length, ...pass]));
+      const authReply = await read(2);
+      if (authReply[1] !== 0)
+        fail2(new Error("SOCKS5 \u7528\u6237\u540D/\u5BC6\u7801\u8BA4\u8BC1\u5931\u8D25"));
+    } else if (method !== 0) {
+      fail2(new Error(`SOCKS5 \u670D\u52A1\u7AEF\u8981\u6C42\u672A\u77E5\u8BA4\u8BC1\u65B9\u5F0F 0x${(method ?? 0).toString(16)}`));
+    }
+    const target = Buffer.from(host, "utf8");
+    await write(new Uint8Array([
+      5,
+      1,
+      0,
+      3,
+      target.length,
+      ...target,
+      port >>> 8 & 255,
+      port & 255
+    ]));
+    const reply2 = await read(4);
+    if (reply2[1] !== 0) {
+      fail2(new Error(`SOCKS5 CONNECT \u88AB\u62D2\u7EDD\uFF08\u5E94\u7B54\u7801 0x${(reply2[1] ?? 0).toString(16)}\uFF09`));
+    }
+    const atyp = reply2[3];
+    if (atyp === 1)
+      await read(4 + 2);
+    else if (atyp === 4)
+      await read(16 + 2);
+    else if (atyp === 3)
+      await read(1).then((lenByte) => read((lenByte[0] ?? 0) + 2));
+    else
+      fail2(new Error(`SOCKS5 \u5E94\u7B54\u7684\u5730\u5740\u7C7B\u578B 0x${(atyp ?? 0).toString(16)} \u4E0D\u53D7\u652F\u6301`));
+    return socket;
+  } catch (error) {
+    socket.destroy();
+    throw error;
+  }
+}
+function buildSocksDispatcher(proxy) {
+  return new import_undici.Agent({
+    connect: ((opts, callback) => {
+      const host = String(opts.hostname ?? opts.host ?? "");
+      const port = resolveConnectPort(opts);
+      if (host.length === 0) {
+        callback(new Error("SOCKS5 \u4EE3\u7406\uFF1A\u76EE\u6807 host \u4E3A\u7A7A"), void 0);
+        return;
+      }
+      openSocks5Tunnel(proxy, host, port).then((socket) => {
+        callback(null, socket);
+      }).catch((error) => {
+        callback(error, void 0);
+      });
+    })
+  });
+}
+function resolveConnectPort(opts) {
+  const raw = opts.port;
+  const parsed = raw === void 0 || raw === null || String(raw).trim().length === 0 ? Number.NaN : Number(raw);
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535)
+    return parsed;
+  const protocol = String(opts.protocol ?? "").toLowerCase();
+  return protocol.startsWith("https") || protocol.startsWith("wss") ? 443 : 80;
+}
+
+// vendor/channel-pack/src/gemini-proxy.ts
+function createGeminiFetcherResolver(lookup) {
+  return (accountId) => {
+    const raw = accountId === "" ? "" : asProxyText(lookup(accountId));
+    if (raw.trim().length === 0) {
+      return fetch;
+    }
+    const normalized2 = normalizeProxy(raw);
+    if (!normalized2.ok) {
+      throw new Error(`gemini: \u8D26\u53F7 ${accountId} \u7684\u4EE3\u7406\u5730\u5740\u65E0\u6548 \u2014 ${normalized2.reason}`);
+    }
+    const proxy = normalized2.proxy;
+    const send = (input, init) => proxyFetch(input, init ?? {}, proxy);
+    return send;
+  };
+}
+var geminiPoolRef;
+function setGeminiProxyPool(pool) {
+  geminiPoolRef = pool;
+}
+var geminiFetchForAccount = createGeminiFetcherResolver(
+  (accountId) => geminiPoolRef === void 0 ? "" : geminiPoolRef.geminiProxyFor(accountId)
+);
+function geminiNetworkHint(error, aborted) {
+  let current = error;
+  let codes = "";
+  for (let i = 0; i < 8 && current !== null && current !== void 0; i += 1) {
+    const code = current.code;
+    if (typeof code === "string" && !codes.includes(code)) codes += `${code} `;
+    current = current.cause;
+  }
+  const message2 = error instanceof Error ? error.message : String(error);
+  const unreachable = /UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ECONNRESET/i.test(codes);
+  if (!unreachable && !aborted) return void 0;
+  const reason = codes.trim().length > 0 ? `\uFF08${codes.trim()}\uFF09` : "";
+  return `\u8FDE\u4E0D\u4E0A Google${reason}\uFF1AGemini \u5168\u90E8\u7AEF\u70B9\u90FD\u5728\u5899\u5916\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8D70\u7CFB\u7EDF\u4EE3\u7406\u3002\u8BF7\u4E3A\u8BE5\u8D26\u53F7\u8BBE\u7F6E\u51FA\u53E3\u4EE3\u7406\uFF08\u8D26\u53F7\u5361\u7247\u4E0A\u7684\u300C\u4EE3\u7406\u300D\u6309\u94AE\uFF09\uFF0C\u6216\u5728\u542F\u52A8 DSH \u524D\u5BFC\u51FA HTTPS_PROXY\uFF1B\u6D4F\u89C8\u5668\u80FD\u6388\u6743\u662F\u56E0\u4E3A\u6D4F\u89C8\u5668\u8BFB\u7CFB\u7EDF\u4EE3\u7406\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8BFB\u3002`;
+}
+
 // vendor/channel-pack/src/refresh-scheduler.ts
 var MultiAccountRefreshScheduler = class {
   constructor(options) {
@@ -66355,24 +66632,24 @@ var PROVIDER_REGISTRY = Object.freeze([
     //    ⇒ **该入口尚未实现**，客户端只做诚实展示（三类积分桶 + 重置倒计时 +
     //    「删除该账号后重新登录」这条手动路径），不渲染任何点不动的控件。
     credits: { balance: true, dailyCheckin: false },
-    // ⚠️ `rateLimit: false` —— 这里的判据是 registry 自己的落地问法：
-    //    「这个按钮点下去，能不能让用户**少**受限一次？」答否即 false。
-    //    accio 两条都不满足：
-    //    ① 适配器**不写** `modelRateLimits`（`provider-runtime-wiring.spec.ts`
-    //       的 `WRITE_SITE_FILES` 把它登记为空，并由一条用例**验证**它确实无写点）
-    //       ⇒ 账号永远没有标记可清；
-    //    ② `src/index.ts` 的 `probeById` 没有它的条目（该表被守卫锁成**恰好**
-    //       「会写标记的家」）⇒ 点「重测」时 `retestAccount` 走到
-    //       `modelIds.length === 0` 处**提前返回**：零请求、零清除。
-    //    两者叠加 ⇒ 面板级的「重测所有 / 重置所有」与卡片级的两个按钮**全部恒为
-    //    惰性**。那正是本仓库记录过的报障形态（「按钮响应这么快，是不是坏了」）。
-    //    ⚠️ 与 loomy / gemini **理由不同**（它们是真会限流、只是按钮管辖不到）：
-    //    accio 是**根本没有这组按钮的作用对象**。
-    //    ⚠️ 「省略 = true 以免老用户失去按钮」那条理由**不适用于全新 provider**：
-    //    accio 没有存量用户，没有「功能回退」可言。
-    //    ⇒ 将来接上请求级换号 + 冷却（届时必须同时进 `probeById` 与
-    //    `WRITES_RATE_LIMIT_PROVIDERS`）时，**本行要一起改回 true**。
-    rateLimit: false,
+    // ⚠️⚠️ **`rateLimit` 已于 2026-10-18 由 `false` 改回 `true`**（issue IKM3ZV 修复）。
+    //    判据是 registry 自己的落地问法：「这个按钮点下去，能不能让用户**少**受限
+    //    一次？」—— 而**当时**答否，两条都不满足：
+    //    ① 适配器不写 `modelRateLimits` ⇒ 账号永远没有标记可清；
+    //    ② `src/index.ts` 的 `probeById` 没有它的条目 ⇒ 「重测」零请求、零清除。
+    //    接上请求级换号 + 冷却（`accio-adapter.ts` 的 `markCurrentAccount`，
+    //    额度至 UTC+8 当日 24:00 / 限流 1h）后 ① 已不成立，② 同步登记 ⇒ 本行翻转。
+    //
+    // ⚠️⚠️ **这三处必须同改**（本陷阱在本仓库已复发过多次）：
+    //    本行 + `src/index.ts` 的 `probeById` + `tests/helpers/provider-sets.ts`
+    //    的 `WRITES_RATE_LIMIT_PROVIDERS`。漏任一处 ⇒ 标记写进去却永远清不掉
+    //    （用户点「重测」报「没有探测适配器」）。三者由 `provider-runtime-wiring.spec.ts`
+    //    的 probe 域守卫**双向**比对锁死（漏一家 / 多一家都点名变红）。
+    //
+    // ⚠️ 与 loomy / gemini / officeace 各自的 `rateLimit: false` **理由不同**：
+    //    那三家是「真会限流、但按钮管辖不到 / 根本没有作用对象」；accio 现在是
+    //    「真的会写标记，且探测适配器已登记」⇒ 是**实打实可用**的入口。
+    rateLimit: true,
     settingsNamespace: "llm-accio",
     channel: true
   },
@@ -66599,7 +66876,7 @@ function parseGeminiAccountTier(payload) {
   if (tier === void 0) return void 0;
   return { id: tier.id, name: tier.name, label: tierLabel(tier.id, tier.name) };
 }
-var cache3 = /* @__PURE__ */ new Map();
+var cache4 = /* @__PURE__ */ new Map();
 function parseGeminiQuotaWindow(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
   const record3 = raw;
@@ -66669,11 +66946,11 @@ async function fetchGeminiCreditBalance(credential, _product = GEMINI, options =
   if (token === "") return { balance: null, error: GEMINI_UNAUTHORIZED_MESSAGE };
   const now = options.now?.() ?? Date.now();
   if (options.force !== true) {
-    const cached2 = cache3.get(token);
+    const cached2 = cache4.get(token);
     if (cached2 !== void 0 && now - cached2.at < GEMINI_QUOTA_CACHE_TTL_MS) return cached2.result;
   }
   const result = await requestQuota(credential, options.fetcher ?? fetch);
-  cache3.set(token, { at: now, result });
+  cache4.set(token, { at: now, result });
   return result;
 }
 async function requestQuota(credential, fetcher) {
@@ -69189,10 +69466,13 @@ function createProviderCredits(deps = {}) {
      * 面板不渲染那一行（**不是错误**）。
      */
     gemini: {
-      fetchBalanceDetailed: async (credential) => {
+      fetchBalanceDetailed: async (credential, call) => {
+        const accountId = call?.accountId;
+        const creditOptions = deps.geminiFetchFor === void 0 || accountId === void 0 || accountId === "" ? {} : { fetcher: deps.geminiFetchFor(accountId) };
         const { balance, error, tier } = await fetchGeminiCreditBalance(
           credential,
-          GEMINI
+          GEMINI,
+          creditOptions
         );
         const extra = tier === void 0 ? void 0 : { accountTier: { label: tier.label, title: `${tier.name}\uFF08${tier.id}\uFF09` } };
         return {
@@ -69528,28 +69808,13 @@ function hasQoderCampaignRefreshedToday(nowMs = Date.now()) {
 var QODER_CREDITS_TIMEOUT_MS = 15e3;
 var NOT_ACTIVATED_HINT = "\u8BE5\u8D26\u53F7\u5C1A\u672A\u5728 Qoder \u4FA7\u5F00\u901A\u6BCF\u65E5\u9886\u53D6\uFF08\u6BCF\u65E5 100 Credits\uFF09\u3002\u8BF7\u5148\u7528 Qoder \u5B98\u65B9\u5BA2\u6237\u7AEF\u767B\u5F55\u4E00\u6B21\u8BE5\u8D26\u53F7\uFF0C\u5F00\u901A\u540E\u518D\u56DE\u6765\u9886\u53D6\u3002";
 var NOT_REFRESHED_YET_HINT = `\u4ECA\u5929\u7684\u6BCF\u65E5\u6D3B\u52A8\u5C1A\u672A\u5237\u65B0\uFF08\u6BCF\u65E5 ${QODER_CAMPAIGN_REFRESH_HOUR_UTC8}:00\uFF08UTC+8\uFF09\u5237\u65B0\uFF09\uFF0C\u5F53\u524D\u770B\u5230\u7684\u662F\u6628\u5929\u90A3\u4E00\u8F6E\uFF0C\u8BF7\u7A0D\u540E\u518D\u6765\u9886\u53D6\u3002`;
-function isQoderNotActivated(campaigns, usageBody) {
+function isQoderNotActivated(campaigns, machineHeadersPresent = false) {
   if (campaigns === void 0) return false;
+  if (!machineHeadersPresent) return false;
   const hasBenefit = campaigns.campaigns.some((c) => c.actionType === "CLAIM_BENEFIT");
   if (hasBenefit) return false;
-  if (typeof usageBody !== "object" || usageBody === null) return false;
-  const usage = usageBody.qoderUsage;
-  if (typeof usage !== "object" || usage === null) return false;
-  const record3 = usage;
-  return record3.addOnQuota === void 0;
-}
-async function fetchQoderUsageRaw(credential, product, fetcher = fetch) {
-  try {
-    const response = await fetcher(`${product.openApiBase}${QODER_USAGE_PATH}`, {
-      method: "GET",
-      headers: await creditsHeaders(credential, product),
-      signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
-    });
-    if (!response.ok) return void 0;
-    return await response.json();
-  } catch {
-    return void 0;
-  }
+  if (!campaigns.showCampaign || campaigns.campaigns.length === 0) return false;
+  return true;
 }
 async function creditsHeaders(credential, product) {
   return await withQoderMachineHeadersAsync({
@@ -69670,11 +69935,13 @@ function benefitAmount(item) {
   return readNumber10(item.benefit, "amount");
 }
 async function loadCampaigns(credential, product, fetcher) {
+  const headers = await creditsHeaders(credential, product);
+  const machineHeadersPresent = headers["Cosy-MachineToken"] !== void 0 && headers["Cosy-MachineType"] !== void 0;
   let response;
   try {
     response = await fetcher(`${product.openApiBase}${QODER_CAMPAIGNS_PATH}`, {
       method: "GET",
-      headers: await creditsHeaders(credential, product),
+      headers,
       signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
     });
   } catch {
@@ -69687,7 +69954,9 @@ async function loadCampaigns(credential, product, fetcher) {
   } catch {
     return void 0;
   }
-  return parseQoderCampaigns(body);
+  const campaigns = parseQoderCampaigns(body);
+  if (campaigns === void 0) return void 0;
+  return { campaigns, machineHeadersPresent };
 }
 function claimableCampaigns(parsed) {
   return parsed.campaigns.filter(
@@ -69741,10 +70010,11 @@ function describeNonJson(status, text) {
   return `\u670D\u52A1\u7AEF\u8FD4\u56DE\u4E86\u975E JSON \u54CD\u5E94\uFF08HTTP ${status}\uFF09\uFF1A${snippet}`;
 }
 async function claimQoderDailyCheckin(credential, product, fetcher = fetch, nowMs = Date.now()) {
-  const parsed = await loadCampaigns(credential, product, fetcher);
-  if (parsed === void 0) {
+  const loaded = await loadCampaigns(credential, product, fetcher);
+  if (loaded === void 0) {
     return { kind: "failed", code: -1, message: "\u6D3B\u52A8\u5217\u8868\u67E5\u8BE2\u5931\u8D25" };
   }
+  const { campaigns: parsed, machineHeadersPresent } = loaded;
   const refreshed = hasQoderCampaignRefreshedToday(nowMs);
   const stale = refreshed ? void 0 : { coversToday: false };
   const targets = claimableCampaigns(parsed);
@@ -69756,8 +70026,7 @@ async function claimQoderDailyCheckin(credential, product, fetcher = fetch, nowM
       if (!refreshed) return { kind: "inactive", message: NOT_REFRESHED_YET_HINT };
       return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6" };
     }
-    const usage = await fetchQoderUsageRaw(credential, product, fetcher);
-    if (isQoderNotActivated(parsed, usage)) {
+    if (isQoderNotActivated(parsed, machineHeadersPresent)) {
       return { kind: "inactive", message: NOT_ACTIVATED_HINT, actionRequired: true };
     }
     return { kind: "inactive", message: "\u5F53\u524D\u6CA1\u6709\u53EF\u9886\u53D6\u7684\u6D3B\u52A8" };
@@ -70402,196 +70671,6 @@ async function importBackup(credentials, pool, raw, options = {}) {
 // vendor/channel-pack/src/opencode-rpc.ts
 import { credentialRef as credentialRef13 } from "@deepseek-ai/dsh-credentials";
 import { randomBytes as randomBytes13 } from "node:crypto";
-
-// vendor/channel-pack/src/opencode-proxy.js
-var import_undici = __toESM(require_undici(), 1);
-import { connect as netConnect } from "node:net";
-import { URL as URL2 } from "node:url";
-var PROXY_CACHE_LIMIT = 16;
-var cache4 = /* @__PURE__ */ new Map();
-function proxyFetch(input, init, proxy) {
-  if (init instanceof Request) {
-    throw new TypeError("proxyFetch \u4E0D\u63A5\u53D7 Request \u5BF9\u8C61\u4F5C init\uFF1A{ ...init } \u5C55\u5F00\u4F1A\u4E22\u5931 method/body/headers\uFF0C\u5BFC\u81F4\u8BF7\u6C42\u9759\u9ED8\u964D\u7EA7\u4E3A GET\u3002\u8BF7\u4F20\u666E\u901A\u5BF9\u8C61\uFF08\u6216\u5148\u89E3\u6784\u51FA\u5B57\u6BB5\uFF09\u3002");
-  }
-  if (proxy === void 0)
-    return fetch(input, init);
-  return (0, import_undici.fetch)(input, {
-    ...init,
-    dispatcher: buildProxyDispatcher(proxy)
-  });
-}
-function buildProxyDispatcher(proxy) {
-  const existing = cache4.get(proxy.url);
-  if (existing !== void 0)
-    return existing;
-  const created = proxy.kind === "http" ? buildHttpDispatcher(proxy.url) : buildSocksDispatcher(proxy);
-  cache4.delete(proxy.url);
-  cache4.set(proxy.url, created);
-  while (cache4.size > PROXY_CACHE_LIMIT) {
-    const oldest = cache4.keys().next();
-    if (oldest.done === true)
-      break;
-    const victim = cache4.get(oldest.value);
-    cache4.delete(oldest.value);
-    if (victim !== void 0) {
-      void Promise.resolve(victim.close?.()).catch(() => {
-      });
-    }
-  }
-  return created;
-}
-async function closeAllProxyDispatchers() {
-  const all = [...cache4.values()];
-  cache4.clear();
-  await Promise.allSettled(all.map(async (d) => {
-    try {
-      await d.close();
-    } catch {
-    }
-  }));
-}
-function buildHttpDispatcher(url) {
-  return new import_undici.ProxyAgent({
-    uri: url,
-    // ⚠️ `pipelining: 0` 是必需的（见模块头）；`clientFactory` 由 undici 在
-    // 每次建连时调用，用它把默认 Pool 换成禁用复用的 Pool。
-    clientFactory: (origin, opts) => new import_undici.Pool(origin, { ...opts, pipelining: 0 })
-  });
-}
-function buildSocks5Handshake(proxy) {
-  const parsed = new URL2(proxy.url);
-  const wantsAuth = parsed.username.length > 0;
-  return wantsAuth ? new Uint8Array([5, 2, 0, 2]) : new Uint8Array([5, 1, 0]);
-}
-async function openSocks5Tunnel(proxy, host, port) {
-  const parsed = new URL2(proxy.url);
-  const socket = await new Promise((resolve2, reject) => {
-    const s = netConnect({ host: parsed.hostname, port: Number(parsed.port) });
-    s.once("connect", () => resolve2(s));
-    s.once("error", reject);
-  });
-  const fail2 = (error) => {
-    throw error;
-  };
-  const write = (bytes) => new Promise((resolve2, reject) => {
-    socket.write(Buffer.from(bytes), (err) => err ? reject(err) : resolve2());
-  });
-  let leftover = Buffer.alloc(0);
-  let pending2;
-  const detach = () => {
-    socket.off("data", onData);
-    socket.off("error", onError);
-    socket.off("close", onClose);
-  };
-  const fulfill = () => {
-    if (pending2 === void 0 || leftover.length < pending2.n)
-      return;
-    const n = pending2.n;
-    const target = pending2;
-    pending2 = void 0;
-    const value = new Uint8Array(leftover.subarray(0, n));
-    leftover = leftover.subarray(n);
-    detach();
-    target.resolve(value);
-  };
-  const onData = (chunk) => {
-    leftover = leftover.length === 0 ? chunk : Buffer.concat([leftover, chunk]);
-    fulfill();
-  };
-  const onError = (error) => {
-    const target = pending2;
-    pending2 = void 0;
-    detach();
-    target?.reject(error);
-  };
-  const onClose = () => {
-    const target = pending2;
-    pending2 = void 0;
-    detach();
-    target?.reject(new Error("SOCKS5 \u4EE3\u7406\u5728\u63E1\u624B\u5B8C\u6210\u524D\u5173\u95ED\u4E86\u8FDE\u63A5"));
-  };
-  const read = (n) => new Promise((resolve2, reject) => {
-    if (n <= 0) {
-      resolve2(new Uint8Array(0));
-      return;
-    }
-    pending2 = { n, resolve: resolve2, reject };
-    socket.on("data", onData);
-    socket.once("error", onError);
-    socket.once("close", onClose);
-    fulfill();
-  });
-  try {
-    await write(buildSocks5Handshake(proxy));
-    const methodReply = await read(2);
-    const method = methodReply[1];
-    if (method === 2) {
-      const user = Buffer.from(decodeURIComponent(parsed.username), "utf8");
-      const pass = Buffer.from(decodeURIComponent(parsed.password), "utf8");
-      await write(new Uint8Array([1, user.length, ...user, pass.length, ...pass]));
-      const authReply = await read(2);
-      if (authReply[1] !== 0)
-        fail2(new Error("SOCKS5 \u7528\u6237\u540D/\u5BC6\u7801\u8BA4\u8BC1\u5931\u8D25"));
-    } else if (method !== 0) {
-      fail2(new Error(`SOCKS5 \u670D\u52A1\u7AEF\u8981\u6C42\u672A\u77E5\u8BA4\u8BC1\u65B9\u5F0F 0x${(method ?? 0).toString(16)}`));
-    }
-    const target = Buffer.from(host, "utf8");
-    await write(new Uint8Array([
-      5,
-      1,
-      0,
-      3,
-      target.length,
-      ...target,
-      port >>> 8 & 255,
-      port & 255
-    ]));
-    const reply2 = await read(4);
-    if (reply2[1] !== 0) {
-      fail2(new Error(`SOCKS5 CONNECT \u88AB\u62D2\u7EDD\uFF08\u5E94\u7B54\u7801 0x${(reply2[1] ?? 0).toString(16)}\uFF09`));
-    }
-    const atyp = reply2[3];
-    if (atyp === 1)
-      await read(4 + 2);
-    else if (atyp === 4)
-      await read(16 + 2);
-    else if (atyp === 3)
-      await read(1).then((lenByte) => read((lenByte[0] ?? 0) + 2));
-    else
-      fail2(new Error(`SOCKS5 \u5E94\u7B54\u7684\u5730\u5740\u7C7B\u578B 0x${(atyp ?? 0).toString(16)} \u4E0D\u53D7\u652F\u6301`));
-    return socket;
-  } catch (error) {
-    socket.destroy();
-    throw error;
-  }
-}
-function buildSocksDispatcher(proxy) {
-  return new import_undici.Agent({
-    connect: ((opts, callback) => {
-      const host = String(opts.hostname ?? opts.host ?? "");
-      const port = resolveConnectPort(opts);
-      if (host.length === 0) {
-        callback(new Error("SOCKS5 \u4EE3\u7406\uFF1A\u76EE\u6807 host \u4E3A\u7A7A"), void 0);
-        return;
-      }
-      openSocks5Tunnel(proxy, host, port).then((socket) => {
-        callback(null, socket);
-      }).catch((error) => {
-        callback(error, void 0);
-      });
-    })
-  });
-}
-function resolveConnectPort(opts) {
-  const raw = opts.port;
-  const parsed = raw === void 0 || raw === null || String(raw).trim().length === 0 ? Number.NaN : Number(raw);
-  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535)
-    return parsed;
-  const protocol = String(opts.protocol ?? "").toLowerCase();
-  return protocol.startsWith("https") || protocol.startsWith("wss") ? 443 : 80;
-}
-
-// vendor/channel-pack/src/opencode-rpc.ts
 function describeFetchError(error) {
   const parts = [];
   let current = error;
@@ -70726,6 +70805,61 @@ async function handleOpencodeRpc(ctx, pool, method, payload) {
         const next = nextFingerprintGeneration({ projectId: current === 0 ? "anonymous" : String(current), generation: current });
         await pool.updateOpencodeFingerprintGeneration(req.accountId, next.generation);
         return done({ generation: next.generation, projectId: next.projectId });
+      }
+      default:
+        return void 0;
+    }
+  } catch (error) {
+    return fail2(error instanceof Error ? error.message : String(error));
+  }
+}
+
+// vendor/channel-pack/src/gemini-rpc.ts
+var TEST_TIMEOUT_MS2 = 15e3;
+var PROBE_URL = "https://oauth2.googleapis.com/token";
+async function handleGeminiRpc(_ctx, pool, method, payload) {
+  const fail2 = (message2) => ({ ok: false, error: { code: "bad-request", message: message2 } });
+  const done = (value) => ({ ok: true, value });
+  try {
+    switch (method) {
+      case "gemini.setProxy": {
+        const req = payload;
+        if (typeof req?.accountId !== "string" || req.accountId.length === 0) {
+          return fail2("\u7F3A\u5C11 accountId");
+        }
+        const raw = typeof req.proxy === "string" ? req.proxy : "";
+        if (raw.trim().length === 0) {
+          await pool.setGeminiProxy(req.accountId, "");
+          return done({ proxy: "", label: "\u76F4\u8FDE\uFF08\u672C\u673A\u51FA\u53E3\uFF09" });
+        }
+        const normalized2 = normalizeProxy(raw);
+        if (!normalized2.ok) return fail2(normalized2.reason);
+        await pool.setGeminiProxy(req.accountId, normalized2.proxy.url);
+        return done({ proxy: normalized2.proxy.url, label: normalized2.proxy.label });
+      }
+      case "gemini.testProxy": {
+        const req = payload;
+        const normalized2 = normalizeProxy(typeof req?.proxy === "string" ? req.proxy : "");
+        if (!normalized2.ok) return fail2(normalized2.reason);
+        const startedAt = Date.now();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS2);
+        try {
+          const response = await proxyFetch(PROBE_URL, {
+            method: "POST",
+            signal: controller.signal
+          }, normalized2.proxy);
+          return done({
+            status: response.status,
+            latencyMs: Date.now() - startedAt
+          });
+        } catch (error) {
+          return fail2(
+            `\u6D4B\u8BD5\u5931\u8D25\uFF1A${controller.signal.aborted ? "\u8FDE\u63A5\u8D85\u65F6" : describeFetchError(error)}\u3002Gemini \u5168\u90E8\u7AEF\u70B9\u90FD\u5728\u5899\u5916\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8D70\u7CFB\u7EDF\u4EE3\u7406\u3002`
+          );
+        } finally {
+          clearTimeout(timer);
+        }
       }
       default:
         return void 0;
@@ -71809,7 +71943,7 @@ async function collectCreditBalances(accounts, product, deps) {
         } else {
           const credential = JSON.parse(resolved.value);
           if (fetchDetailed !== void 0) {
-            const detailed = await fetchDetailed(credential, product);
+            const detailed = await fetchDetailed(credential, product, entry.id);
             balance = detailed.balance;
             error = detailed.error;
             extra = detailed.extra;
@@ -71964,7 +72098,11 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     //    会让「面板里设了 XFF，但积分行仍然查询失败」—— 而推理/目录路径
     //    直接读池、照常生效 ⇒ 症状只出现在积分，极难对应。
     //    惰性读（用户随时可能改设置），不能固化成字符串。
-    minimaxXff: () => pool.minimaxXff()
+    minimaxXff: () => pool.minimaxXff(),
+    // ⚠️ Gemini 的按账号 fetcher（Gitee issue IKLTZ2）：`credits.balances`
+    // 是**用户点一下就等**的主路径，配了账号代理却不接 ⇒ 积分行恒报
+    // 「配额查询网络失败」，而推理路径却正常 —— 症状割裂、极难对应。
+    geminiFetchFor: (accountId) => geminiFetchForAccount(accountId)
   });
   const onboarding = createProviderOnboarding({
     loomy,
@@ -72516,6 +72654,10 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
       const handled = await handleOpencodeRpc(ctx, pool, method, payload);
       if (handled !== void 0) return handled;
     }
+    if (method.startsWith("gemini.")) {
+      const handled = await handleGeminiRpc(ctx, pool, method, payload);
+      if (handled !== void 0) return handled;
+    }
     if (method.startsWith("modelscope.")) {
       const handled = await handleModelscopeRpc(ctx, pool, method, payload);
       if (handled !== void 0) return handled;
@@ -72889,6 +73031,12 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           });
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } };
         } else if (provider === GEMINI.id) {
+          const existingGeminiProxies = new Set(
+            (await pool.listAccountsByProvider(GEMINI.id)).map((e) => asProxyText(e.geminiProxy)).filter((p) => p.trim() !== "")
+          );
+          const requestedGeminiProxy = typeof req.geminiProxy === "string" ? req.geminiProxy.trim() : "";
+          const inheritedGeminiProxy = existingGeminiProxies.size === 1 ? [...existingGeminiProxies][0] : "";
+          const geminiProxyInput = requestedGeminiProxy !== "" ? requestedGeminiProxy : inheritedGeminiProxy;
           await pool.addAccount({
             id,
             provider: GEMINI.id,
@@ -72898,9 +73046,10 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             refreshable: false,
             createdAt: Date.now()
           });
+          if (geminiProxyInput !== "") await pool.setGeminiProxy(id, geminiProxyInput);
           let geminiStarted;
           try {
-            geminiStarted = await gemini.startLogin();
+            geminiStarted = await gemini.startLogin({ accountId: id });
           } catch (error) {
             void pool.removeAccount(id).catch(() => {
             });
@@ -73778,7 +73927,10 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         const values = await collectCreditBalances(accounts, void 0, {
           resolve: (ref) => ctx.credentials.resolve(ref),
           ...impl.fetchBalanceDetailed === void 0 ? {} : {
-            fetchBalanceDetailed: (credential) => impl.fetchBalanceDetailed(credential, callContext)
+            fetchBalanceDetailed: (credential, _product, accountId) => impl.fetchBalanceDetailed(
+              credential,
+              accountId === void 0 ? callContext : { ...callContext, accountId }
+            )
           },
           ...impl.fetchBalance === void 0 ? {} : { fetchBalance: (credential) => impl.fetchBalance(credential, callContext) },
           // ⚠️ 回写共享读数（规格 §5.7）：`provider` 由本端点提供 —— 
@@ -80148,14 +80300,19 @@ var GeminiAdapter = class extends LlmAdapter12 {
     const sessionLane = this.options.sessionLane ?? GEMINI_SESSION_LANE_INFER;
     const sigStore = this.options.sigStore;
     const pool = this.options.accountPool;
-    let currentAccountId = "";
-    if (pool !== void 0 && credential.access_token !== "") {
+    let currentAccountId = this.options.accountIdOverride ?? "";
+    if (currentAccountId === "" && pool !== void 0 && credential.access_token !== "") {
       currentAccountId = await pool.findAccountIdByCredential(this.product.id, credential.access_token).catch(() => "");
     }
     if (currentAccountId !== "") reportLedgerAccount(this.product.id, currentAccountId);
     const tried = /* @__PURE__ */ new Set();
     if (currentAccountId !== "") tried.add(currentAccountId);
     const projectCache = this.options.projectCache ?? /* @__PURE__ */ new Map();
+    const fetcherForCurrentAccount = () => {
+      if (this.options.fetchImpl !== void 0) return this.options.fetchImpl;
+      if (this.options.fetchFor !== void 0) return this.options.fetchFor(currentAccountId);
+      return fetch;
+    };
     let endpointIdx = 0;
     let endpointSwitched = false;
     let droppedSignatures = false;
@@ -80175,7 +80332,11 @@ var GeminiAdapter = class extends LlmAdapter12 {
           const probe = await resolveGeminiProject({
             credential,
             cache: projectCache,
-            ...this.options.projectFetcher === void 0 ? {} : { fetcher: this.options.projectFetcher },
+            // ⚠️ 项目探测与推理**共用同一个账号出口**（否则探测走代理、推理直连，
+            // 用户会看到「项目号探测失败」这种指向错误的原因）。故这里也走
+            // `fetcherForCurrentAccount()`，但仍尊重显式注入的 `projectFetcher`
+            // —— 测试里「只拦探测、不拦推理」是常见需求。
+            fetcher: this.options.projectFetcher ?? fetcherForCurrentAccount(),
             // ⚠️ 透传调用方信号：否则探测自带的 30s 超时会把更短的调用方超时拖长。
             ...options.signal === void 0 ? {} : { signal: options.signal }
           });
@@ -80228,7 +80389,7 @@ var GeminiAdapter = class extends LlmAdapter12 {
         }
         let response;
         try {
-          response = await fetch(url, {
+          response = await fetcherForCurrentAccount()(url, {
             method: "POST",
             // ⚠️ 流式**刻意不带 `Accept`**（抓包一致，见 `geminiHeaders`）。
             headers: geminiHeaders(credential),
@@ -80237,8 +80398,9 @@ var GeminiAdapter = class extends LlmAdapter12 {
           });
         } catch (error) {
           if (error instanceof LlmError19) throw error;
+          const hint = geminiNetworkHint(error, options.signal?.aborted === true);
           throw new LlmError19(
-            `gemini: \u8BF7\u6C42\u53D1\u9001\u5931\u8D25 \u2014 ${error instanceof Error ? error.message : String(error)}`,
+            `gemini: \u8BF7\u6C42\u53D1\u9001\u5931\u8D25 \u2014 ${error instanceof Error ? error.message : String(error)}` + (hint === void 0 ? "" : `\uFF1B${hint}`),
             "TRANSPORT",
             { cause: error }
           );
@@ -82013,6 +82175,8 @@ function consumeAccioSse(options) {
 
 // vendor/channel-pack/src/accio-adapter.ts
 var ACCIO_SSE_IDLE_TIMEOUT_MS = 12e4;
+var ACCIO_MAX_ROTATE = 8;
+var ACCIO_RATE_LIMIT_COOLDOWN_MS = 36e5;
 var FALLBACK_UTDID = `accio-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 var TOOL_RESULT_IMAGE_TEXT3 = "Attached image(s) from tool result:";
 function displayNameOfAccioModel(model) {
@@ -82160,6 +82324,19 @@ function httpErrorCode6(status) {
   if (status === 400) return "INVALID_REQUEST";
   if (status >= 500) return "SERVER";
   return `HTTP_${status}`;
+}
+function accioFailureClassOf(code) {
+  if (code === "QUOTA_EXCEEDED") return "quota";
+  if (code === "RATE_LIMIT") return "rate";
+  if (code === "AUTH") return "auth";
+  return "other";
+}
+function shouldRotateAccioAccount(code) {
+  return accioFailureClassOf(code) !== "other";
+}
+function recordsAccioRateLimit(code) {
+  const cls = accioFailureClassOf(code);
+  return cls === "quota" || cls === "rate";
 }
 function errorDetail5(body) {
   try {
@@ -82614,16 +82791,17 @@ var AccioAdapter = class extends LlmAdapter14 {
     if (credential === void 0 || credential.access_token === "") {
       throw new LlmError22("accio: no usable credential; log in first", "MISSING_CREDENTIAL");
     }
+    let currentAccountId = "";
     if (this.options.accountPool !== void 0) {
       try {
-        const accountId = await this.options.accountPool.findAccountIdByCredential(
+        currentAccountId = await this.options.accountPool.findAccountIdByCredential(
           this.product.id,
           credential.access_token
         );
-        if (accountId !== "") reportLedgerAccount(this.product.id, accountId);
       } catch {
       }
     }
+    if (currentAccountId !== "") reportLedgerAccount(this.product.id, currentAccountId);
     const titlePlan = planSessionTitleThinking({
       purpose: options.purpose,
       requestedEffort: options.reasoningEffort === void 0 ? void 0 : String(options.reasoningEffort),
@@ -82662,43 +82840,151 @@ var AccioAdapter = class extends LlmAdapter14 {
     else delete body.system_instruction;
     if (options.stop !== void 0 && options.stop.length > 0) body.stop_sequences = options.stop;
     applyAccessToken(body, credential.access_token);
-    let response = await this.send(credential, body, options);
-    if (!response.ok && (response.status === 401 || response.status === 403)) {
-      await this.options.refresh();
+    const tried = /* @__PURE__ */ new Set();
+    if (currentAccountId !== "") tried.add(currentAccountId);
+    const markCurrentAccount = async (failureCode) => {
+      if (this.options.accountPool === void 0) return;
+      if (currentAccountId === "" || !recordsAccioRateLimit(failureCode)) return;
+      try {
+        await this.options.accountPool.updateModelRateLimit(
+          currentAccountId,
+          options.model,
+          accioFailureClassOf(failureCode) === "quota" ? nextUtc8DayStartMs() : Date.now() + ACCIO_RATE_LIMIT_COOLDOWN_MS
+        );
+      } catch {
+        const detail = `accio: \u5199\u5165\u9650\u6D41\u6807\u8BB0\u5931\u8D25\uFF08\u8D26\u53F7 ${currentAccountId} / \u6A21\u578B ${options.model}\uFF09`;
+        if (typeof console !== "undefined") console.warn(detail);
+      }
+    };
+    const sendOnce = async () => {
+      const sent = await this.send(credential, body, options);
+      if (sent.ok || sent.status !== 401 && sent.status !== 403) return sent;
+      try {
+        await this.options.refresh();
+      } catch (error) {
+        console.warn(`accio: \u7EED\u671F\u5931\u8D25\uFF08\u4E0D\u963B\u65AD\u672C\u8F6E\uFF09\uFF1A${errorMessage6(error)}`);
+        return sent;
+      }
       const refreshed = await this.options.resolveCredential(options.model);
-      if (refreshed === void 0 || refreshed.access_token === "") {
-        throw new LlmError22("accio: credential expired and refresh failed", "AUTH", {
-          status: response.status
-        });
+      if (refreshed === void 0 || refreshed.access_token === "") return sent;
+      let nextAccountId = currentAccountId;
+      let reverseLookupOk = false;
+      if (this.options.accountPool !== void 0) {
+        try {
+          const resolved = await this.options.accountPool.findAccountIdByCredential(
+            this.product.id,
+            refreshed.access_token
+          );
+          if (resolved !== "") {
+            nextAccountId = resolved;
+            reverseLookupOk = true;
+          }
+        } catch {
+        }
+      } else {
+        reverseLookupOk = true;
+      }
+      if (reverseLookupOk && nextAccountId !== currentAccountId) {
+        tried.add(nextAccountId);
+        currentAccountId = nextAccountId;
+        reportLedgerAccount(this.product.id, currentAccountId);
+      } else if (!reverseLookupOk) {
+        return sent;
       }
       credential = refreshed;
+      applyAccessToken(body, refreshed.access_token);
+      return await this.send(credential, body, options);
+    };
+    const rotate = async () => {
+      if (this.options.accountPool === void 0) return void 0;
+      let next;
+      try {
+        next = await this.options.accountPool.getAvailableAccount(
+          this.product.id,
+          options.model,
+          tried
+        );
+      } catch (error) {
+        console.warn(`accio: \u4ECE\u8D26\u53F7\u6C60\u53D6\u4E0B\u4E00\u4E2A\u8D26\u53F7\u5931\u8D25\uFF1A${errorMessage6(error)}`);
+        return void 0;
+      }
+      if (next === null || next === void 0 || tried.has(next.entry.id)) return void 0;
+      tried.add(next.entry.id);
+      if (typeof next.credential?.access_token !== "string" || next.credential.access_token === "") return await rotate();
+      credential = next.credential;
+      currentAccountId = next.entry.id;
+      reportLedgerAccount(this.product.id, currentAccountId);
       applyAccessToken(body, credential.access_token);
-      response = await this.send(credential, body, options);
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new LlmError22(`accio: ${errorDetail5(text)}`, httpErrorCode6(response.status), {
-        status: response.status
-      });
-    }
-    if (response.body === null) {
+      return await this.send(credential, body, options);
+    };
+    let response = await sendOnce();
+    if (response.ok && response.body === null) {
       throw new LlmError22("accio: empty model response body", "EMPTY_RESPONSE");
     }
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/event-stream")) {
-      const peek = await response.text().catch(() => "");
+    const assertEventStream = async (target) => {
+      const contentType = target.headers.get("content-type") ?? "";
+      if (contentType.includes("text/event-stream")) return;
+      const peek = await target.text().catch(() => "");
       throw new LlmError22(
         `accio: \u4E0A\u6E38\u672A\u8FD4\u56DE\u4E8B\u4EF6\u6D41\uFF08content-type: ${contentType || "(\u7A7A)"}\uFF09\u2014\u2014\u901A\u5E38\u662F\u88AB\u98CE\u63A7\u62E6\u622A\uFF08\u7F51\u5173\u8FD4\u56DE 200 + HTML \u62E6\u622A\u9875\uFF09\u3002${peek === "" ? "" : ` \u670D\u52A1\u7AEF\u539F\u6587\uFF1A${peek.slice(0, 200)}`}`,
         "SERVER",
-        { status: response.status }
+        { status: target.status }
       );
+    };
+    const consumeOnce = async function* (target) {
+      const body2 = target.body;
+      if (body2 === null) throw new LlmError22("accio: empty model response body", "EMPTY_RESPONSE");
+      const merged = body2.pipeThrough(accioToolCallMergeTransform());
+      yield* consumeAccioSse({
+        body: merged,
+        ...options.signal === void 0 ? {} : { signal: options.signal },
+        idleTimeoutMs: ACCIO_SSE_IDLE_TIMEOUT_MS
+      });
+    };
+    let producedAny = false;
+    for (let round = 0; ; round++) {
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        const code = httpErrorCode6(response.status);
+        if (!shouldRotateAccioAccount(code)) {
+          throw new LlmError22(`accio: ${errorDetail5(text)}`, code, { status: response.status });
+        }
+        await markCurrentAccount(code);
+        if (round >= ACCIO_MAX_ROTATE - 1) {
+          throw new LlmError22(`accio: ${errorDetail5(text)}`, code, { status: response.status });
+        }
+        const rotated = await rotate();
+        if (rotated === void 0) {
+          throw new LlmError22(`accio: ${errorDetail5(text)}`, code, { status: response.status });
+        }
+        response = rotated;
+        continue;
+      }
+      if (response.body === null) {
+        throw new LlmError22("accio: empty model response body", "EMPTY_RESPONSE");
+      }
+      try {
+        await assertEventStream(response);
+        for await (const chunk of consumeOnce(response)) {
+          producedAny = true;
+          yield chunk;
+        }
+        return;
+      } catch (error) {
+        const code = error instanceof LlmError22 ? error.code : "";
+        if (producedAny) {
+          if (!options.signal?.aborted && code !== "") await markCurrentAccount(code);
+          throw error;
+        }
+        if (options.signal?.aborted === true) throw error;
+        if (!shouldRotateAccioAccount(code)) throw error;
+        await markCurrentAccount(code);
+        if (round >= ACCIO_MAX_ROTATE - 1) throw error;
+        const rotated = await rotate();
+        if (rotated === void 0) throw error;
+        response = rotated;
+      }
     }
-    const merged = response.body.pipeThrough(accioToolCallMergeTransform());
-    yield* consumeAccioSse({
-      body: merged,
-      ...options.signal === void 0 ? {} : { signal: options.signal },
-      idleTimeoutMs: ACCIO_SSE_IDLE_TIMEOUT_MS
-    });
   }
   /** 发起一次推理请求；网络失败映射为可重试的 `TRANSPORT`。 */
   async send(credential, body, options) {
@@ -84830,6 +85116,9 @@ async function startGeminiOAuthFlow(options = {}) {
 }
 
 // vendor/channel-pack/src/gemini-auth.ts
+function hintSuffix(hint) {
+  return hint === void 0 ? "" : `\uFF1B${hint}`;
+}
 var GEMINI_EXPIRY_ACCESSORS = {
   expiresAtOf: (credential) => geminiCredentialExpiresAtMs(credential),
   refreshableOf: (credential) => isGeminiRefreshable(credential),
@@ -84867,6 +85156,20 @@ var GeminiAuth = class extends Service14 {
   get fetchImpl() {
     return this.options.fetchImpl ?? fetch;
   }
+  /**
+   * 取某账号的 fetcher（Gitee issue IKLTZ2）。
+   *
+   * ⚠️ **空账号 id = 直连**：`refresh()` 的单凭据兜底路径拿不到账号 id，
+   * 此时不查池（查了也是空）⇒ 退回全局 fetch。
+   *
+   * ⚠️ `fetchImpl`（单测替身）**优先**于 `fetchFor`：否则单测注入的替身会被
+   * 生产接线里的账号解析器顶掉，用例就测不到真正被调用的那条腿了。
+   */
+  fetcherFor(accountId) {
+    if (this.options.fetchImpl !== void 0) return this.options.fetchImpl;
+    if (this.options.fetchFor !== void 0) return this.options.fetchFor(accountId);
+    return fetch;
+  }
   queueFor(refName) {
     let queue = this.refreshQueues.get(refName);
     if (queue === void 0) {
@@ -84889,10 +85192,14 @@ var GeminiAuth = class extends Service14 {
    *
    * ⚠️ 不能在这里阻塞等授权完成 —— 前端 `window.open` 只在
    * transient activation 窗口内有效（见 AGENTS.md「两步式登录」）。
+   *
+   * @param options.accountId **占位账号的 id**（Gitee issue IKLTZ2）：
+   *   换 token 那一次请求必须能走该账号自己的代理，而登录开始时凭据还没落盘、
+   *   只有池里的占位条目认得它。缺省则直连。
    */
-  async startLogin() {
+  async startLogin(options = {}) {
     const started = await startGeminiOAuthFlow({
-      fetcher: this.fetchImpl,
+      fetcher: this.fetcherFor(options.accountId ?? ""),
       ...this.options.callbackPort === void 0 ? {} : { callbackPort: this.options.callbackPort },
       // 身份正常情况下从令牌响应的 `id_token` 解出（零额外请求）；这里的
       // userinfo 只是兜底。**兜底失败必须留日志** —— 2026-10-03 用户报障
@@ -84932,7 +85239,7 @@ var GeminiAuth = class extends Service14 {
     if (!isGeminiRefreshable(credential)) {
       throw new GeminiRefreshTokenExpiredError("\u51ED\u636E\u7F3A\u5C11 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
     }
-    const next = await this.refreshCredential(credential);
+    const next = await this.refreshCredential(credential, "");
     await this.ctx.credentials.set(credentialRef19(this.credentialRefName), JSON.stringify(next));
   }
   /**
@@ -84941,8 +85248,12 @@ var GeminiAuth = class extends Service14 {
    * ⚠️ 只读写传入的 ref，**不碰**默认单凭据 ref。
    * ⚠️ **走共享实现 `refreshAccountWithReconcile`** —— 它保证「凭据仍有效」时
    * 也把池值对账（否则 UI 会永远显示「已过期」）。
+   *
+   * ⚠️ `accountId` **刻意不读 `refName`** 反查账号：账号 id 与 ref 名之间没有
+   * 可逆映射（ref 由 RPC 随机生成），只能由调用方传入。
    */
   async refreshAccountCredential(refName, pool, accountId) {
+    const id = accountId ?? "";
     await this.queueFor(refName).run(async () => {
       const credential = await this.readCredential(refName);
       if (credential === void 0) throw new Error("\u51ED\u636E\u672A\u914D\u7F6E");
@@ -84951,7 +85262,7 @@ var GeminiAuth = class extends Service14 {
       }
       const ref = credentialRef19(refName);
       if (pool === void 0) {
-        const next = await this.refreshCredential(credential);
+        const next = await this.refreshCredential(credential, id);
         await this.ctx.credentials.set(ref, JSON.stringify(next));
         return;
       }
@@ -84959,10 +85270,10 @@ var GeminiAuth = class extends Service14 {
         pool,
         provider: this.product.id,
         tag: `[${this.product.id}]`,
-        accountId: accountId ?? "",
+        accountId: id,
         credential,
         accessors: GEMINI_EXPIRY_ACCESSORS,
-        refresh: (c) => this.refreshCredential(c),
+        refresh: (c) => this.refreshCredential(c, id),
         save: (c) => this.ctx.credentials.set(ref, JSON.stringify(c)),
         warn: (message2) => this.ctx.logger?.warn?.(message2),
         info: (message2) => this.ctx.logger?.info?.(message2)
@@ -84985,6 +85296,7 @@ var GeminiAuth = class extends Service14 {
     for (const entry of accounts) {
       const ref = credentialRef19(entry.credentialRef);
       let credential;
+      let refreshSignal;
       try {
         const resolved = await this.ctx.credentials.resolve(ref);
         if (!resolved) {
@@ -85009,7 +85321,9 @@ var GeminiAuth = class extends Service14 {
           credential,
           accessors: GEMINI_EXPIRY_ACCESSORS,
           current: entry,
-          refresh: (c) => this.refreshCredentialUnderLock(entry.credentialRef, c),
+          refresh: (c) => this.refreshCredentialUnderLock(entry.credentialRef, c, entry.id, (s) => {
+            refreshSignal = s;
+          }),
           save: (c) => this.ctx.credentials.set(ref, JSON.stringify(c)),
           warn: (message2) => this.ctx.logger?.warn?.(message2),
           info: (message2) => this.ctx.logger?.info?.(message2)
@@ -85049,7 +85363,7 @@ var GeminiAuth = class extends Service14 {
           }
         } else {
           this.ctx.logger?.warn?.(
-            `[gemini] \u8D26\u53F7 ${entry.id} \u7EED\u671F\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}`
+            `[gemini] \u8D26\u53F7 ${entry.id} \u7EED\u671F\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}` + hintSuffix(geminiNetworkHint(error, refreshSignal?.aborted === true))
           );
         }
       }
@@ -85091,15 +85405,23 @@ var GeminiAuth = class extends Service14 {
         let credential = parseGeminiCredential(resolved.value);
         if (credential === void 0) continue;
         if (geminiAccountLabel(credential) === void 0) {
-          const info = await fetchGeminiUserInfo(credential.access_token, {
-            fetcher: this.fetchImpl,
-            signal: AbortSignal.timeout(GEMINI_OAUTH_TIMEOUT_MS)
-          });
-          if (info.sub === void 0 && info.email === void 0) continue;
-          credential = { ...credential };
-          if (info.sub !== void 0) credential.sub = info.sub;
-          if (info.email !== void 0) credential.email = info.email;
-          await this.ctx.credentials.set(ref, JSON.stringify(credential));
+          const userInfoSignal = AbortSignal.timeout(GEMINI_OAUTH_TIMEOUT_MS);
+          try {
+            const info = await fetchGeminiUserInfo(credential.access_token, {
+              fetcher: this.fetcherFor(entry.id),
+              signal: userInfoSignal
+            });
+            if (info.sub !== void 0 || info.email !== void 0) {
+              credential = { ...credential };
+              if (info.sub !== void 0) credential.sub = info.sub;
+              if (info.email !== void 0) credential.email = info.email;
+              await this.ctx.credentials.set(ref, JSON.stringify(credential));
+            }
+          } catch (error) {
+            this.ctx.logger?.debug?.(
+              `[gemini] \u8D26\u53F7 ${entry.id} \u8865\u62C9\u8D26\u53F7\u8EAB\u4EFD\u5931\u8D25\uFF08\u6635\u79F0\u5C06\u4FDD\u6301\u539F\u6837\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}` + hintSuffix(geminiNetworkHint(error, userInfoSignal.aborted))
+            );
+          }
         }
         const target = geminiAccountLabel(credential);
         if (target !== void 0 && target !== entry.nickname) {
@@ -85108,7 +85430,7 @@ var GeminiAuth = class extends Service14 {
         }
       } catch (error) {
         this.ctx.logger?.warn?.(
-          `[gemini] \u4FEE\u590D\u8D26\u53F7 ${entry.id} \u7684\u663E\u793A\u540D\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u4F7F\u7528\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+          `[gemini] \u4FEE\u590D\u8D26\u53F7 ${entry.id} \u7684\u663E\u793A\u540D\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u4F7F\u7528\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}` + hintSuffix(geminiNetworkHint(error, false))
         );
       }
     }
@@ -85120,7 +85442,7 @@ var GeminiAuth = class extends Service14 {
    * 队列只保证同一 ref 的续期串行，管不到「另一个进程/另一条路径刚刷完」；
    * 那种情况下再发一次请求会白白消费一次 refresh_token（Google 有重放检测）。
    */
-  async refreshCredentialUnderLock(refName, credential) {
+  async refreshCredentialUnderLock(refName, credential, accountId, onSignal) {
     return await this.queueFor(refName).run(async () => {
       const latest = await this.readCredential(refName) ?? credential;
       if (!this.sameCredential(latest, credential) && !shouldRefreshNow(GEMINI_EXPIRY_ACCESSORS.expiresAtOf(latest))) {
@@ -85129,7 +85451,7 @@ var GeminiAuth = class extends Service14 {
         );
         return latest;
       }
-      return await this.refreshCredential(latest);
+      return await this.refreshCredential(latest, accountId, onSignal);
     });
   }
   /**
@@ -85137,16 +85459,23 @@ var GeminiAuth = class extends Service14 {
    *
    * 抽出来供 `refresh` / `refreshAccountCredential` / `refreshAll` 共用 ——
    * 一旦字段合并逻辑分叉，就会出现「某条路径丢了 sub/email」。
+   *
+   * @param accountId 该凭据所属账号（空串 = 直连，见 `fetcherFor`）。
+   * @param onSignal 拿到本次请求 signal 的回调（IKLTZ2 审计 P2-2：调用方的
+   *   catch 需要区分「我们自己超时了」与「上游报错」—— 前者才是墙外症状，
+   *   而它**不带** `UND_ERR_*` 码，只能靠 `signal.aborted` 判）。
    */
-  async refreshCredential(credential) {
+  async refreshCredential(credential, accountId, onSignal) {
     const refreshToken2 = credential.refresh_token;
     if (!refreshToken2) {
       throw new GeminiRefreshTokenExpiredError("\u51ED\u636E\u7F3A\u5C11 refresh_token\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55");
     }
     try {
+      const signal = AbortSignal.timeout(GEMINI_OAUTH_TIMEOUT_MS);
+      onSignal?.(signal);
       const grant = await refreshGeminiCredential(refreshToken2, {
-        fetcher: this.fetchImpl,
-        signal: AbortSignal.timeout(GEMINI_OAUTH_TIMEOUT_MS)
+        fetcher: this.fetcherFor(accountId),
+        signal
       });
       return credentialFromGeminiGrant(grant, credential);
     } catch (error) {
@@ -87134,14 +87463,28 @@ var probeById = {
   // 会让探测报「项目号探测失败」而不是它真正要报的「账号仍受限」—— 反而掩盖
   // 了用户点「重测」想知道的答案。探测**不写**任何东西（不传 persistProject）。
   gemini: {
-    createProbeAdapter: (ref, credential) => new GeminiAdapter({
+    // ⚠️ **第三个形参 `entry` 不能丢**（IKLTZ2 审计 P1-1，真实缺陷）：
+    // 探测路径**刻意不传 `accountPool`**（`account-probe.ts` 的既定语义：
+    // 只测这一个账号、且不写任何标记）⇒ 适配器内那条「按 access_token 反查
+    // 账号 id」的路**根本不存在** ⇒ 出口解析器拿到空 id、按「直连」处理
+    // ⇒ **该账号的代理被完全绕过**。
+    // 症状与 issue 原话同形：墙外环境下「测试 / 重测」**恒失败**，而这个失败
+    // 与「账号已失效」在 UI 上完全同形 ⇒ 用户会去误删好号。
+    //
+    // ⚠️ 对照 opencode 的 `(ref, credential, entry)`（下方 L649）：它接下了
+    // entry 并把 `entry.opencodeProxy` 喂进槽里，本家原先漏了这一步。
+    createProbeAdapter: (ref, credential, entry) => new GeminiAdapter({
       credentialRef: credentialRef20(ref),
       resolveCredential: async () => credential,
       refresh: async () => {
       },
       sessionLane: GEMINI_SESSION_LANE_SMOKE,
       project: GEMINI_DEFAULT_PROJECT,
-      product: GEMINI
+      product: GEMINI,
+      // ⚠️ **探测必须走该账号的代理**：账号卡片上的「测试 / 重测」按钮打的是
+      // 真实推理端点，而 Gemini 全部端点都在墙外。
+      fetchFor: geminiFetchForAccount,
+      accountIdOverride: entry?.id ?? ""
     })
   },
   // CodeArts → 华为云 HMAC 签名（**它自己的**签名方案，不是「兜底」）。
@@ -87203,6 +87546,24 @@ var probeById = {
       refresh: async () => {
       },
       product: MINIMAX_INTL
+    })
+  },
+  // Accio（阿里）→ 自己的网关端点。
+  //
+  // ⚠️ 它**曾经**不必在这里（issue IKM3ZV 之前：适配器不写 `modelRateLimits`，
+  // `provider-registry.ts` 的 `rateLimit: false` 与 `WRITES_RATE_LIMIT_PROVIDERS`
+  // 都据此把它排除）。2026-10-18 接上请求级换号 + 冷却后它**会写**标记
+  // （额度至 UTC+8 当日 24:00 / 限流 1h）⇒ 必须登记，否则标记写进去却清不掉。
+  //
+  // ⚠️ 刻意**不传** `accountPool`（与 minimax 同一理由）：那会让 `stream()` 的
+  // 反查与轮换在探测路径上复活（探测失败若写回限流标记，会把「重测 A 账号」
+  // 变成污染池的副作用）。也**不传** `fetchRemoteModels` / `readImage`。
+  accio: {
+    createProbeAdapter: (ref, credential) => new AccioAdapter({
+      resolveCredential: async () => credential,
+      refresh: async () => {
+      },
+      product: ACCIO
     })
   },
   // OpenCode Zen。
@@ -88063,7 +88424,11 @@ function apply(ctx, config = {}) {
     accountPool: pool,
     product: MINIMAX_INTL
   });
-  const gemini = new GeminiAuth(ctx, { fetchImpl: network.fetch });
+  setGeminiProxyPool(pool);
+  const gemini = new GeminiAuth(ctx, { fetchFor: (accountId) => {
+    const perAccount = geminiFetchForAccount(accountId);
+    return perAccount === fetch ? network.fetch : perAccount;
+  } });
   const geminiSigStore = createGeminiSigStore(ctx);
   const geminiProjectCache = /* @__PURE__ */ new Map();
   const geminiAdapter = registerGeminiLlm(ctx, {
@@ -88118,6 +88483,8 @@ function apply(ctx, config = {}) {
     // 项目号：缺省**自动探测**（`loadCodeAssist` 的 `cloudaicompanionProject`），
     // 不是恒为 `aicode-consumers`（那只是探测为空时的兜底）。
     projectCache: geminiProjectCache,
+    // ⚠️ **推理主路径的出口**（IKLTZ2）：此前这里只有裸 `fetch`（连 seam 都没有）。
+    fetchFor: geminiFetchForAccount,
     persistProject: async (value) => {
       const available2 = await pool.getAvailableAccount(GEMINI.id, "");
       const ref = available2 ? available2.entry.credentialRef : credentialRef20(GEMINI.defaultCredentialRef);
@@ -88767,7 +89134,8 @@ function apply(ctx, config = {}) {
     const callContext = {
       resolveCredential: (refName) => ctx.credentials.resolve(credentialRef20(refName)),
       warn: (message2) => ctx.logger?.warn?.(message2),
-      accountPool: pool2
+      accountPool: pool2,
+      accountId: entry.id
     };
     if (impl.fetchBalanceDetailed !== void 0) {
       const detailed = await impl.fetchBalanceDetailed(entry.credential, callContext);
@@ -88950,7 +89318,11 @@ function apply(ctx, config = {}) {
     //   积分行仍然查询失败」。本次只改了一处，正是那份注释警告的形态。
     //
     // ⚠️ 惰性读（用户随时可能改设置），不能固化成字符串。
-    minimaxXff: () => pool.minimaxXff()
+    minimaxXff: () => pool.minimaxXff(),
+    // ⚠️ Gemini 的按账号 fetcher（Gitee issue IKLTZ2）：**折算路径**也要走代理，
+    // 否则「面板能刷新、聚合候选却恒折算失败」—— 与上面 minimaxXff 同型陷阱
+    // （这里也正是它第一次被引入的同一个 `createProviderCredits` 调用）。
+    geminiFetchFor: geminiFetchForAccount
   });
   const onboardingTable = createProviderOnboarding({ loomy, raccoon });
   const expiryTable = createProviderExpiry();
