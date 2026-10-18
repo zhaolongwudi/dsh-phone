@@ -34678,6 +34678,7 @@ function isDuplicateRegistrationError(error) {
   return /already declared|already registered|is already (?:a|an) adapter/.test(message2);
 }
 function wrapAdapterWithTokenLedger(providers, adapter) {
+  if (providers[0] === "aggregate") return adapter;
   const provider = providers[0] ?? "";
   const accountingStream = (options, open, accountContext = createTokenLedgerAccountContext()) => {
     const channel = channelOfOptions(options);
@@ -66538,8 +66539,10 @@ var PROVIDER_REGISTRY = Object.freeze([
   },
   {
     id: "opencode",
-    label: "OpenCode",
-    displayName: "OpenCode",
+    // phone-port adapter: opencode-note —— 手机版由 OFM 免费车道接管该渠道，宿主不注册它的适配器
+    // （OFM 挂载时传 disableOpencode: true）。只标注显示名，不动能力字段。
+    label: "OpenCode\uFF08\u5DF2\u7531 OFM \u514D\u8D39\u8F66\u9053\u63A5\u7BA1\uFF09",
+    displayName: "OpenCode\uFF08\u5DF2\u7531 OFM \u514D\u8D39\u8F66\u9053\u63A5\u7BA1\uFF09",
     logoClass: "opencode",
     // ⚠️ `balance: true` 但语义**不是余额**而是「**通道可用性**」：Zen 没有公开的
     //    余额 API（15 个候选路径全 404），故徽标展示我们真正测得到的东西

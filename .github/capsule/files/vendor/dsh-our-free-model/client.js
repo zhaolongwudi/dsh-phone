@@ -3971,7 +3971,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       { id: 'zcode', name: 'ZCode', org: '智谱', accent: '#3B6EF6', note: '浏览器登录（需本机可开浏览器）', login: 'browser' },
       { id: 'gemini', name: 'Gemini', org: 'Google Code Assist', accent: '#4285F4', note: '本地回调 OAuth 免费线', login: 'browser' },
       { id: 'minimaxintl', name: 'MiniMax Code 国际版', org: 'MiniMax', accent: '#E4007F', note: '国际版端点，每日签到', login: 'browser' },
-      { id: 'opencode', name: 'OpenCode', org: '匿名免费线', accent: '#6B7280', note: '无需登录的匿名免费通道，余额位显示通道可用性', login: 'none' },
+      { id: 'opencode', name: 'OpenCode', org: '匿名免费线', accent: '#6B7280', note: '已由 OFM 免费车道接管 —— 本版不注册该渠道的适配器，故模型列表读不出、也无法在此登录或刷新（2026-10-19）', login: 'none' },
       { id: 'officeace', name: 'OfficeAce', org: 'OfficeAce', accent: '#0F9D58', note: '云侧积分余额，订阅页挂载时自动领取每日额度', login: 'browser' },
       { id: 'accio', name: 'Accio', org: '阿里', accent: '#FF6A00', note: '每日 200 积分由登录触发（24h 内有效，不累积）', login: 'browser' },
       { id: 'modelscope', name: 'ModelScope', org: '魔搭', accent: '#6B7280', note: '由渠道包提供', login: 'browser' },
@@ -6972,8 +6972,8 @@ var PROVIDER_REGISTRY = Object.freeze([
   },
   {
     id: "opencode",
-    label: "OpenCode",
-    displayName: "OpenCode",
+    label: "OpenCode（已由 OFM 免费车道接管）",
+    displayName: "OpenCode（已由 OFM 免费车道接管）",
     logoClass: "opencode",
     // ⚠️ `balance: true` 但语义**不是余额**而是「**通道可用性**」：Zen 没有公开的
     //    余额 API（15 个候选路径全 404），故徽标展示我们真正测得到的东西
@@ -13175,8 +13175,8 @@ var PROVIDER_REGISTRY = Object.freeze([
   },
   {
     id: "opencode",
-    label: "OpenCode",
-    displayName: "OpenCode",
+    label: "OpenCode（已由 OFM 免费车道接管）",
+    displayName: "OpenCode（已由 OFM 免费车道接管）",
     logoClass: "opencode",
     // ⚠️ `balance: true` 但语义**不是余额**而是「**通道可用性**」：Zen 没有公开的
     //    余额 API（15 个候选路径全 404），故徽标展示我们真正测得到的东西
