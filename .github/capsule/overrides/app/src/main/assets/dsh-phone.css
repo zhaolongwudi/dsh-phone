@@ -286,4 +286,20 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
    ⚠️ 本规则必须写在 @media (max-width:767px) 之外（窄屏断点内不需要它）。 */
 @media (min-width:768px){
  .dsh-phone-menu-slot{display:none!important}
+ /* IME 弹出（可视高度被压缩）时跟随收缩。发布条件见 dsh-phone.js：宽屏**仅**在
+    `visualViewport.height < innerHeight` 时发布该事实 ⇒ **无键盘时本段整体不命中**，
+    宽屏行为与上游原样一致（PC 浏览器同理）。
+    ⚠️ 为什么需要：原生是给根视图加 IME padding、**不缩 WebView 的布局视口**
+    （MainActivity.kt:436-445 注释明说两种形态都走这条），上游高度链照旧按整屏算
+    ⇒ 不接管的话输入区会被顶到可视区外（用户报障「打字时被挤或看不到」，2026-10-18）。
+    ⚠️ 必须同时给 min-height:0：上游 frame/centerCol 是 grid/flex 链，默认
+    min-height:auto 不肯收缩，只改 height 仍会把输入区顶出去（窄屏段同因，早已加）。
+    ⚠️ 用属性选择器而非无条件规则，是为了让「事实未发布」时**不产生任何影响**。 */
+ html[style*="--dsh-phone-viewport-height"],
+ html[style*="--dsh-phone-viewport-height"] body,
+ html[style*="--dsh-phone-viewport-height"] #root{height:var(--dsh-phone-viewport-height)!important;min-height:0!important}
+ html[style*="--dsh-phone-viewport-height"] [data-dsh-frame],
+ html[style*="--dsh-phone-viewport-height"] .pI_x6G_frame{height:var(--dsh-phone-viewport-height)!important;min-height:0!important;max-height:var(--dsh-phone-viewport-height)!important}
+ html[style*="--dsh-phone-viewport-height"] .pI_x6G_centerCol,
+ html[style*="--dsh-phone-viewport-height"] .wSkVaW_root{min-height:0!important}
 }

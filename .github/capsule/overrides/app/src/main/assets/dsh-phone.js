@@ -153,10 +153,21 @@
     // Some WebViews resize only the visual viewport when an IME opens. Keep
     // the chat frame inside that visible area; native insets handle Android's
     // edge-to-edge window. Ignore pinch zoom so it does not reflow the app.
+    //
+    // ⚠️ 2026-10-18（UI 实用性审查 U-02）：这段原先**只在窄屏**发布该事实，于是宽屏
+    //    （折叠屏展开/平板；本机实测视口 1212×655）在键盘弹出时没有任何消费方 ——
+    //    而原生是给根视图加 IME padding、**不缩 WebView 的布局视口**（MainActivity.kt:436-445
+    //    注释明说两种形态都走这条），上游高度链照旧按整屏算 ⇒ 输入区被顶到可视区外。
+    //    用户报障「打字时被挤或看不到」正是此形态。
+    //    反证已查：上游**完全不处理** visualViewport（全引擎树 0 命中）⇒ 这层只能由本层补。
+    // 发布条件（宽屏刻意收紧）：窄屏照旧「总是发布」（页面高度由本层接管）；
+    //    宽屏**只在可视高度确实被压缩时**发布 ⇒ 无键盘时不发布，宽屏行为与上游原样一致
+    //    （PC 浏览器同理：那里 innerHeight 与 visualViewport.height 相等，不会发布）。
     const viewport = window.visualViewport;
-    const height = viewport && Math.abs(viewport.scale - 1) < 0.05
-      ? Math.min(window.innerHeight, viewport.height) : window.innerHeight;
-    if (media.matches && height > 0) document.documentElement.style.setProperty('--dsh-phone-viewport-height', height + 'px');
+    const zoomOk = viewport && Math.abs(viewport.scale - 1) < 0.05;
+    const height = zoomOk ? Math.min(window.innerHeight, viewport.height) : window.innerHeight;
+    const imeShrunk = zoomOk && viewport.height < window.innerHeight - 1;
+    if (height > 0 && (media.matches || imeShrunk)) document.documentElement.style.setProperty('--dsh-phone-viewport-height', height + 'px');
     else document.documentElement.style.removeProperty('--dsh-phone-viewport-height');
     fitSettingsEmbeds();
     // 框架根：优先读一期发布的 [data-dsh-frame] 事实（adapt 内先跑标记层，此时已就位），
