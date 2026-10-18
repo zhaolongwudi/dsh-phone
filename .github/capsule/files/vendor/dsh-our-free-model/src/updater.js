@@ -546,7 +546,7 @@ export function verifyStaged(stageDir, manifest) {
  * the new release dropped" would delete the pack's readiness records out from
  * under the harness's bundle validation on the first in-app upgrade.
  */
-const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules', 'catalog', 'worker', 'vendor', 'tsconfig.json']
+const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules', 'catalog', 'worker', 'vendor', 'packages', 'tsconfig.json']
 // Actual published runtime assets must participate in backup and rollback,
 // including when an upgrade crosses the 1.x/2.x boundary. Keep vendor source
 // trees protected; package.json is overwritten during installation, so it
@@ -669,8 +669,11 @@ function backupSnapshot(backupDir) {
     || new Set(snapshot.files.map(file => file.path)).size !== snapshot.files.length) {
     throw new Error('invalid rollback receipt')
   }
-  verifySnapshot(backupDir, snapshot)
-  return snapshot
+  // Older development-install receipts also covered standalone products and
+  // compiler caches. Keep those bytes retained, but never restore that tree.
+  const runtimeSnapshot = { files: snapshot.files.filter(file => file.path.split('/')[0] !== 'packages') }
+  verifySnapshot(backupDir, runtimeSnapshot)
+  return runtimeSnapshot
 }
 
 /** Put a backed-up copy back in place (used when a swap or reload fails). */
