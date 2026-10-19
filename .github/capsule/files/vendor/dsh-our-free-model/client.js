@@ -32,6 +32,8 @@ window.__ModuleLoader__.load({
 // ⚠️ sessions / remote / remote.session 是 ctx.modelDirectories.directoryFor()
 //    的内部依赖，缺了会在**输入区渲染路径**上抛错（不只影响徽标）。
 const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions', 'remote', 'remote.session']
+    const SPONSOR_CARD_URL = 'https://beichenapi.com/register?aff=DL49WAC2DQNG'
+
 
     // ── copy ──────────────────────────────────────────────────────────────────
     const DICT = {
@@ -378,6 +380,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'picks.design.tag4': '真实文件导出',
         'free.title': '免费模型',
         'free.sub': '免登录、免 Key、免配置：模型清单跟随上游刷新，可用性由这台机器实测。',
+        'sponsor.bannerTag': '中转站',
+        'sponsor.bannerTitle': '北辰 API 中转站',
+        'sponsor.bannerDescription': 'OFM 官方合作中转站，为用户提供稳定、开放、高性价比的大模型 API 接入服务。支持 Claude、ChatGPT、Grok、Gemini、智谱 GLM、Kimi、DeepSeek 等主流模型，适合在 Codex、Gemini CLI、Claude Code 及其他开发工具中统一配置使用。邀请可获百分之十的返现。',
+        'sponsor.bannerCta': '立即查看',
         'free.tankLabel': '免费车道可用度',
         'free.tankNote': '水位 = 当前可用模型占比（{ok}/{total}）',
         'free.tankEmpty': '尚未探测，水位按已声明模型占位。',
@@ -1063,6 +1069,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'picks.design.tag4': 'Real file export',
         'free.title': 'Free models',
         'free.sub': 'No login, no key, no setup: the roster follows upstream, availability is measured from this machine.',
+        'sponsor.bannerTag': 'Relay',
+        'sponsor.bannerTitle': 'Beichen API relay',
+        'sponsor.bannerDescription': 'OFM’s official relay partner provides stable, open and cost-effective model API access. Claude, ChatGPT, Grok, Gemini, GLM, Kimi and DeepSeek are supported for one consistent setup in Codex, Gemini CLI, Claude Code and other developer tools. Invite others to receive 10% cashback.',
+        'sponsor.bannerCta': 'View now',
         'free.tankLabel': 'Free-lane availability',
         'free.tankNote': 'Water level = share of reachable models ({ok}/{total})',
         'free.tankEmpty': 'Not probed yet; the level stands at the declared roster.',
@@ -1651,6 +1661,21 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_modalbody p{margin:0 0 6px}
 .ofm_modalfoot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 72%,transparent)}
 @media (max-width:720px){.ofm_sec_hint{margin-left:0;width:100%}.ofm_pills{margin-left:0;width:100%}}
+/* ══ 北辰 API 赞助横幅：免费模型页首屏入口，与桌面端保持独立 ═══════ */
+.ofm_sponsor_banner{position:relative;display:grid;grid-template-columns:56px minmax(0,1fr) auto;align-items:center;gap:14px;padding:13px 16px;border:1px solid rgb(121 151 204 / 42%);border-radius:14px;overflow:hidden;background:linear-gradient(115deg,#0b1425 0%,#17253d 54%,#263654 100%);color:#f3f7ff;box-shadow:0 9px 20px rgb(12 24 49 / 20%),inset 0 1px 0 rgb(255 255 255 / 13%)}
+.ofm_sponsor_banner::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.36;background-image:linear-gradient(rgb(126 164 225 / 15%) 1px,transparent 1px),linear-gradient(90deg,rgb(126 164 225 / 15%) 1px,transparent 1px);background-size:32px 32px;mask-image:linear-gradient(90deg,black,transparent 85%)}
+.ofm_sponsor_banner::after{content:"";position:absolute;inset:auto -12% -80% 35%;height:180%;pointer-events:none;background:radial-gradient(ellipse,rgb(96 137 222 / 22%),transparent 68%);transform:rotate(-7deg)}
+.ofm_sponsor_banner>*{position:relative;z-index:1}
+.ofm_sponsor_logo{display:flex;flex-direction:column;align-items:center;justify-content:center;width:56px;height:56px;border-radius:14px;background:#f8fbff;color:#c8470b;box-shadow:0 5px 11px rgb(0 0 0 / 22%),inset 0 0 0 1px rgb(255 255 255 / 80%);transform:rotate(4deg);font-weight:800;letter-spacing:-1px;line-height:1}
+.ofm_sponsor_logo span{font-size:16px}
+.ofm_sponsor_logo small{margin-top:4px;padding-top:3px;border-top:1px solid currentColor;font-size:7px;letter-spacing:1px}
+.ofm_sponsor_bannerbody{min-width:0}
+.ofm_sponsor_kicker{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid rgb(0 194 232 / 55%);border-radius:999px;background:rgb(0 144 186 / 18%);color:#38d9f4;font-size:10px;font-weight:700;letter-spacing:.2px}
+.ofm_sponsor_banner h3{margin:4px 0 3px;color:#f6f8ff;font-size:clamp(17px,2vw,22px);font-weight:780;letter-spacing:-.45px;line-height:1.15}
+.ofm_sponsor_banner p{max-width:75ch;margin:0;color:rgb(220 229 246 / 82%);font-size:10.5px;line-height:1.45}
+.ofm_sponsor_cta{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:92px;padding:8px 12px;border:1px solid rgb(255 255 255 / 72%);border-radius:10px;background:linear-gradient(180deg,#f9fbff,#dfe8f7);box-shadow:0 4px 10px rgb(0 0 0 / 18%),inset 0 1px 0 #fff;color:#253651;font-size:11px;font-weight:750;text-decoration:none;white-space:nowrap;transition:transform .18s var(--ease-instrument),box-shadow .18s ease,filter .18s ease}
+.ofm_sponsor_cta:hover{transform:translateY(-2px);filter:brightness(1.04);box-shadow:0 9px 20px rgb(0 0 0 / 24%),inset 0 1px 0 #fff}
+.ofm_sponsor_cta:active{transform:translateY(0)}
 /* ══ GitHub star 按钮 ══════════════════════════════════════════════════ */
 .ofm_starbtn{position:relative;display:inline-flex;gap:7px;align-items:center;padding:7px 15px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,transparent);background:linear-gradient(140deg,color-mix(in srgb,var(--dsw-alias-state-business-primary) 16%,transparent),transparent 70%);color:var(--dsw-alias-state-business-primary);text-decoration:none;font-weight:650;font-size:12.5px;transition:transform .18s ease,box-shadow .22s ease,color .22s ease,background .22s ease;white-space:nowrap;overflow:hidden}
 .ofm_starbtn svg{transition:transform .5s cubic-bezier(.34,1.56,.64,1)}
@@ -3974,6 +3999,8 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       { id: 'opencode', name: 'OpenCode', org: '匿名免费线', accent: '#6B7280', note: '已由 OFM 免费车道接管 —— 本版不注册该渠道的适配器，故模型列表读不出、也无法在此登录或刷新（2026-10-19）', login: 'none' },
       { id: 'officeace', name: 'OfficeAce', org: 'OfficeAce', accent: '#0F9D58', note: '云侧积分余额，订阅页挂载时自动领取每日额度', login: 'browser' },
       { id: 'accio', name: 'Accio', org: '阿里', accent: '#FF6A00', note: '每日 200 积分由登录触发（24h 内有效，不累积）', login: 'browser' },
+      { id: 'astudio', name: 'AStudio', org: '讯飞', accent: '#6B7280', note: '由渠道包提供', login: 'browser' },
+      { id: 'autoclaw', name: 'AutoClaw', org: '智谱', accent: '#6B7280', note: '由渠道包提供', login: 'browser' },
       { id: 'modelscope', name: 'ModelScope', org: '魔搭', accent: '#6B7280', note: '由渠道包提供', login: 'browser' },
     ]
 
@@ -3996,6 +4023,8 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       opencode: {},
       officeace: {},
       accio: {},
+      astudio: { claim: true },
+      autoclaw: { claim: true },
       modelscope: {},
     }
 
@@ -6198,6 +6227,18 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         page)
     }
 
+    function SponsorBanner({ t }) {
+      return h('aside', { className: 'ofm_sponsor_banner', 'aria-label': t('sponsor.bannerTitle') },
+        h('div', { className: 'ofm_sponsor_logo', 'aria-hidden': 'true' },
+          h('span', null, '北辰'), h('small', null, 'API')),
+        h('div', { className: 'ofm_sponsor_bannerbody' },
+          h('span', { className: 'ofm_sponsor_kicker' }, t('sponsor.bannerTag')),
+          h('h3', null, t('sponsor.bannerTitle')),
+          h('p', null, t('sponsor.bannerDescription'))),
+        h('a', { className: 'ofm_sponsor_cta', href: SPONSOR_CARD_URL, target: '_blank', rel: 'noopener noreferrer' },
+          h('span', null, t('sponsor.bannerCta')), h('span', { 'aria-hidden': 'true' }, '↗')))
+    }
+
     function FreePage(props) {
       const { t, data, counts, summary, stats, eacAuth, eacLogin, busy, catalogBusy, apply, bench, benches, refresh, reprobe } = props
       // The denominator is the free lane's own roster — the only slice the
@@ -6217,6 +6258,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       // and would paint a perfectly usable lane amber.
       const level = ratio >= 0.6 ? 'ok' : ratio >= 0.3 ? 'busy' : 'over'
       return h('div', { className: 'ofm_page' },
+        h(SponsorBanner, { t }),
         h('header', { className: 'ofm_hero ofm_glass' },
           h('div', { className: 'ofm_pagehead' },
             h('div', { className: 'ofm_pagetitle' },
@@ -6268,6 +6310,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
           ?? (poolError !== '' ? poolError : t('pool.reasonUnknown')))
         : ''
       return h('div', { className: 'ofm_page' },
+        h(SponsorBanner, { t }),
         h('header', { className: 'ofm_hero ofm_glass' },
           h('div', { className: 'ofm_pagehead' },
             h('div', { className: 'ofm_pagetitle' },
@@ -22871,7 +22914,7 @@ function apply(ctx) {
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth, PicksPage, RecoCard, DICT, useChannelRpc }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth, PicksPage, RecoCard, DICT, useChannelRpc, Shell, CSS }
     return module.exports
   },
 })
