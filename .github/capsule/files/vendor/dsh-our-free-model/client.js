@@ -32,8 +32,6 @@ window.__ModuleLoader__.load({
 // ⚠️ sessions / remote / remote.session 是 ctx.modelDirectories.directoryFor()
 //    的内部依赖，缺了会在**输入区渲染路径**上抛错（不只影响徽标）。
 const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions', 'remote', 'remote.session']
-    const SPONSOR_CARD_URL = 'https://beichenapi.com/register?aff=DL49WAC2DQNG'
-
 
     // ── copy ──────────────────────────────────────────────────────────────────
     const DICT = {
@@ -64,25 +62,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'tag.thinkingShared': '思考不可关',
         'tag.rung': '默认档上限',
         'tag.rungTitle': '各档位实际发出的输出上限：{ladder}。档位是思考与回答共用的额度，且不会超过上面的最长输出与设置里的单次上限。',
-        'tag.levels': '思考档',
-        'tag.levelsTitle': '该模型自己声明的思考档位，选中后按原值下发到上游的 reasoning_effort 字段；档位之外的取值会被上游拒绝。',
-        'effort.off': '关闭',
-        'effort.minimal': '最小',
-        'effort.low': '低',
-        'effort.medium': '中',
-        'effort.high': '高',
-        'effort.xhigh': '极高',
-        'effort.max': '最大',
         'tag.context': '上下文',
         'tag.output': '最长输出',
         'tag.latency': '首字',
         'tag.eacChannel': 'EAC 渠道 · 协付',
-        'tag.new': 'NEW',
-        'tag.newTitle': '新上线的模型，经 EAC 渠道转发自 OpenCode 免费车道。',
-        'tag.hot': '爆',
-        'tag.hotTitle': '当前最热门的免费模型之一。',
-        'tag.fast': '高速',
-        'tag.fastTitle': '响应快、吞吐高，适合长对话与连续调用。',
         'tag.kiloChannel': 'Kilo 渠道 · 免费池（prompt 可能被上游记录用于改进服务，勿发送敏感内容）',
         'roster.noLane': 'EAC 协付模型在当前运行环境不可用：宿主未提供可识别的桌面 / Web 配置，因此不加载该渠道。',
         'section.models': '模型清单',
@@ -232,15 +215,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'forward.lanAlso': '其它地址：{list}',
         'pref.enabled': '启用免费模型',
         'pref.exposeRegion': '展示地区受限模型',
-        'pref.hideFreeModels': '隐藏匿名与 Kilo 免费模型',
-        'pref.hideEacModels': '隐藏 EAC 模型',
-        'visibility.showModel': '在模型选择器中显示',
-        'visibility.hidden': '已隐藏',
-        'visibility.unlisted': '未公开模型',
-        'visibility.groupHidden': '整组已隐藏，请先关闭上方的整组隐藏开关。',
-        'visibility.hint': '隐藏仅影响模型选择器和网关清单，不影响历史会话；仍可在这里恢复显示。',
-        'routing.capacity': '链路能力交集',
-        'routing.capacityUnavailable': '暂时无法读取链路能力交集，请重试。',
         'pref.interval': '自动探测间隔（分钟）',
         'pref.maxTokens': '单次输出上限（token）',
         'pref.egress': '当前出口',
@@ -250,7 +224,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'bench.result': '首帧 {ttft}ms · 输出 {tps} tok/s · 推理 {reasoning} tok',
         'ann.preamble': '前言',
         'ann.models': '模型清单',
-        'ann.newlane': '新模型上线',
         'ann.steps': '使用步骤',
         'ann.features': '功能介绍',
         'ann.later': '稍后再说',
@@ -258,10 +231,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'ann.openSettings': '打开设置页',
         'ann.p1': '免密：安装即可用，不需要注册、不需要填任何 API Key。',
         'ann.p2': '清单跟随上游：模型集合、上下文长度与能力每次刷新都重新拉取。',
-        'ann.p3': '诚实的能力声明：探测不出来的能力不会显示，思考强度档位是真实生效的输出上限。',
-        'ann.n1': '两个新模型已通过 EAC 渠道上线，由 OpenCode 免费车道转发：DeepSeek V4.1 Flash Free 与 GLM 5.3 Flash Free。',
-        'ann.n2': '它们排在 EAC 模型页最前面，带红色 NEW / 爆 徽标和「高速」标签，一眼就能找到。',
-        'ann.n3': '两个模型都真实支持思考档位（低 / 高 / 最大），DeepSeek 还能关闭思考；档位直接下发到上游，不是提示词。',
+        'ann.p3': '诚实的能力声明：探测不出来的能力不会显示，思考强度档位是真实生效的输出预算上限。',
         'ann.s1': '在输入框的模型选择器里选 “Our Free Model” 分组下的任意模型。',
         'ann.s2': '需要更强推理时点开 Effort 档位；它是真实下发的输出预算，不是提示词。',
         'ann.s3': '想被其它本地工具调用：设置页 → 本地转发 → 启用，把 Base URL 和 Key 填进去。',
@@ -339,51 +309,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'nav.tab.free': '免费模型',
         'nav.tab.eac': 'EAC 模型',
         'nav.tab.channels': '白嫖模型接入',
-        'nav.tab.picks': '推荐项目',
         'star.cta': '点个 Star',
         'star.title': '在 GitHub 上给本仓库点 Star',
-        'picks.title': '推荐项目',
-        'picks.sub': '同一作者的一组开源项目：把 Agent 装进原生桌面、让上百个插件和谐共存、把视频和设计留在这台机器上。用得上，就顺手点个 Star。',
-        'picks.foot': 'Star 是开源项目唯一的「工资条」——它决定作者还能投入多少时间。这里的项目都免费、开源、无广告，点一下就是最实在的支持。',
-        'picks.stars': 'Stars',
-        'picks.forks': 'Forks',
-        'picks.fork': 'Fork',
-        'picks.totalStars': '{c} 个推荐项目共 {n} 个 Star',
-        'picks.updated': '最近更新',
-        'picks.stale': '缓存数据',
-        'picks.liveFailed': '暂时读不到 GitHub 数据，数字稍后自动补上——不影响下面的链接。',
-        'picks.getDesktop': '下载安装',
-        'picks.getPack': '安装说明',
-        'picks.getDesign': '安装说明',
-        'picks.star': '点个 Star',
-        'picks.starHint': '在 GitHub 上打开并点 Star',
-        'picks.desktop.badge': '桌面工作台',
-        'picks.desktop.tagline': '把 Agent 的能力，组织成一张真正能工作的桌面。',
-        'picks.desktop.body': '基于 DeepSeek Harness 的开源桌面工作台：Tauri 原生窗口、随包 Node 运行时，双击即进入工作。项目文件、会话变更、插件目录与皮肤市场都在一处，Windows / Linux / macOS 都有安装包。',
-        'picks.desktop.tag1': 'Tauri 原生窗口',
-        'picks.desktop.tag2': '随包运行时',
-        'picks.desktop.tag3': '文件协作与还原',
-        'picks.desktop.tag4': '插件市场与皮肤',
-        'picks.pack.badge': '插件整合包',
-        'picks.pack.tagline': '揽尽万象：让数百个 DSH 插件和谐共存。',
-        'picks.pack.body': '为 DSH Desktop 提供插件目录、批量安装、更新与移除管理，内置 72 个基线子插件、皮肤预览与 Prompt 合集；固定摘要清单逐字节校验，装出来的环境完整可信。',
-        'picks.pack.tag1': '72 个基线插件',
-        'picks.pack.tag2': '批量安装 / 更新',
-        'picks.pack.tag3': '皮肤预览',
-        'picks.pack.tag4': '摘要校验',
-        'picks.design.badge': '设计工作台',
-        'picks.design.tagline': '在本地把视频和设计做完，不把素材交给别人。',
-        'picks.design.body': 'DeepSeek Harness 的本地视频制作与设计插件：多轨剪辑、模板与设计体系、原生预览画布，成品导出为真实文件。全流程在本机完成，素材与工程留在自己硬盘上。',
-        'picks.design.tag1': '多轨剪辑',
-        'picks.design.tag2': '模板与设计体系',
-        'picks.design.tag3': '原生预览画布',
-        'picks.design.tag4': '真实文件导出',
         'free.title': '免费模型',
         'free.sub': '免登录、免 Key、免配置：模型清单跟随上游刷新，可用性由这台机器实测。',
-        'sponsor.bannerTag': '中转站',
-        'sponsor.bannerTitle': '北辰 API 中转站',
-        'sponsor.bannerDescription': 'OFM 官方合作中转站，为用户提供稳定、开放、高性价比的大模型 API 接入服务。支持 Claude、ChatGPT、Grok、Gemini、智谱 GLM、Kimi、DeepSeek 等主流模型，适合在 Codex、Gemini CLI、Claude Code 及其他开发工具中统一配置使用。邀请可获百分之十的返现。',
-        'sponsor.bannerCta': '立即查看',
         'free.tankLabel': '免费车道可用度',
         'free.tankNote': '水位 = 当前可用模型占比（{ok}/{total}）',
         'free.tankEmpty': '尚未探测，水位按已声明模型占位。',
@@ -400,9 +329,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'chan.meta.accounts': '账号',
         'chan.meta.models': '模型',
         'chan.act.add': '添加账号',
-        'chan.zcode.provider': '登录渠道',
-        'chan.zcode.bigmodel': 'bigmodel.cn',
-        'chan.zcode.zai': 'z.ai 国际版',
         'chan.act.refresh': '续期',
         'chan.act.test': '测试',
         'chan.act.delete': '移除',
@@ -410,11 +336,9 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'chan.fold.accounts': '账号',
         'chan.fold.models': '模型',
         'chan.noAccount': '还没有账号——点「添加账号」开始登录。',
-        'chan.enabled': '已启用',
-        'chan.act.enable': '启用',
-        'chan.act.disable': '停用',
+        'chan.enabled': '启用',
         'chan.expires.never': '长效',
-        'chan.disabled': '已停用',
+        'chan.disabled': '已关闭',
         'chan.login.title': '登录 {name}',
         'chan.login.step1': '在浏览器中完成登录（若没有自动打开，点下面的按钮）。',
         'chan.login.step2': '登录成功后本页会自动完成，无需复制任何东西。',
@@ -431,8 +355,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'chan.credit.today': '今日已领 {credit}',
         'chan.model.free': '免费额度',
         'chan.model.dead': '已下架',
-        'chan.model.hidden': '已隐藏',
-        'chan.model.restore': '恢复显示',
         'chan.model.off': '关闭',
         'chan.model.on': '开启',
         'chan.model.enableAll': '全部开启',
@@ -753,25 +675,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'tag.thinkingShared': 'Thinking always on',
         'tag.rung': 'Default ceiling',
         'tag.rungTitle': 'What each rung actually sends: {ladder}. A rung is one ceiling shared by thinking and the answer, and it never exceeds the max output above or the per-call ceiling in settings.',
-        'tag.levels': 'Thinking levels',
-        'tag.levelsTitle': 'The levels this model declares itself; the selected one is sent as-is in the upstream reasoning_effort field, and a value outside the set is rejected upstream.',
-        'effort.off': 'Off',
-        'effort.minimal': 'Minimal',
-        'effort.low': 'Low',
-        'effort.medium': 'Medium',
-        'effort.high': 'High',
-        'effort.xhigh': 'Extra high',
-        'effort.max': 'Max',
         'tag.context': 'Context',
         'tag.output': 'Max output',
         'tag.latency': 'First token',
         'tag.eacChannel': 'EAC lane · co-paid',
-        'tag.new': 'NEW',
-        'tag.newTitle': 'Just added: relayed to the EAC lane from OpenCode’s free tier.',
-        'tag.hot': '爆',
-        'tag.hotTitle': 'One of the most requested free models right now.',
-        'tag.fast': 'Fast',
-        'tag.fastTitle': 'Quick first token and high throughput — good for long or back-to-back turns.',
         'tag.kiloChannel': 'Kilo channel · free pool (prompts may be logged by the upstream provider — never send sensitive content)',
         'roster.noLane': 'The co-paid EAC models are unavailable in this composition: the host did not present a recognized desktop or web profile, so the lane is not loaded.',
         'section.models': 'Model roster',
@@ -921,15 +828,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'forward.lanAlso': 'Also reachable at {list}',
         'pref.enabled': 'Enable free models',
         'pref.exposeRegion': 'Show region-limited models',
-        'pref.hideFreeModels': 'Hide anonymous and Kilo free models',
-        'pref.hideEacModels': 'Hide EAC models',
-        'visibility.showModel': 'Show in model picker',
-        'visibility.hidden': 'Hidden',
-        'visibility.unlisted': 'Unlisted models',
-        'visibility.groupHidden': 'This group is hidden. Turn off the group switch above first.',
-        'visibility.hint': 'Hiding affects the model picker and gateway listing only. Existing sessions keep working; restore visibility here.',
-        'routing.capacity': 'Chain capability intersection',
-        'routing.capacityUnavailable': 'Cannot load chain capacities right now. Please retry.',
         'pref.interval': 'Auto-probe interval (minutes)',
         'pref.maxTokens': 'Output ceiling per call (tokens)',
         'pref.egress': 'Current egress',
@@ -939,7 +837,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'bench.result': 'first frame {ttft}ms · {tps} tok/s · {reasoning} reasoning tokens',
         'ann.preamble': 'Preamble',
         'ann.models': 'Model roster',
-        'ann.newlane': 'New models',
         'ann.steps': 'How to use',
         'ann.features': 'What it does',
         'ann.later': 'Later',
@@ -948,9 +845,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'ann.p1': 'No credentials: install and use it — no sign-up, no API key to paste.',
         'ann.p2': 'The roster follows upstream: models, context lengths and capabilities are re-fetched on every refresh.',
         'ann.p3': 'Honest capability claims: anything a probe cannot confirm stays hidden, and each effort level is a real output budget.',
-        'ann.n1': 'Two new models are live on the EAC lane, relayed from OpenCode’s free tier: DeepSeek V4.1 Flash Free and GLM 5.3 Flash Free.',
-        'ann.n2': 'They lead the EAC models page, marked with a red NEW / 爆 badge and a “Fast” tag.',
-        'ann.n3': 'Both expose real thinking levels (Low / High / Max), and DeepSeek can also switch thinking off; the level goes to the upstream as-is, not as a prompt hint.',
         'ann.s1': 'Pick any model under the “Our Free Model” group in the composer’s model selector.',
         'ann.s2': 'For harder reasoning, open the Effort menu — it sends a real budget, not a prompt hint.',
         'ann.s3': 'To serve other local tools: Settings → Local forward → enable, then copy the base URL and key.',
@@ -1028,51 +922,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'nav.tab.free': 'Free models',
         'nav.tab.eac': 'EAC models',
         'nav.tab.channels': 'Free channels',
-        'nav.tab.picks': 'Picks',
         'star.cta': 'Star',
         'star.title': 'Star this repository on GitHub',
-        'picks.title': 'Recommended projects',
-        'picks.sub': 'A set of open-source projects by the same author: bringing the agent to a native desktop, keeping hundreds of plugins working together, and keeping video and design work on this machine. If they are useful, a star is the thanks they understand.',
-        'picks.foot': 'A star is the only payslip an open-source project gets — it decides how much more time the author can spend. Every project here is free, open source and ad-free; one click is the most concrete support there is.',
-        'picks.stars': 'Stars',
-        'picks.forks': 'Forks',
-        'picks.fork': 'Fork',
-        'picks.totalStars': '{n} stars across {c} projects',
-        'picks.updated': 'Last push',
-        'picks.stale': 'cached',
-        'picks.liveFailed': 'GitHub numbers are unreachable right now; they will fill in later — the links below are unaffected.',
-        'picks.getDesktop': 'Download',
-        'picks.getPack': 'Install guide',
-        'picks.getDesign': 'Install guide',
-        'picks.star': 'Star it',
-        'picks.starHint': 'Open GitHub and star',
-        'picks.desktop.badge': 'Desktop workbench',
-        'picks.desktop.tagline': 'Agent capability, organized into a desktop that actually works.',
-        'picks.desktop.body': 'An open-source desktop workbench built on DeepSeek Harness: a Tauri native window with Node bundled in, so a double-click lands you in the work. Project files, session changes, a plugin catalog and a skin market in one place — with installers for Windows, Linux and macOS.',
-        'picks.desktop.tag1': 'Tauri native window',
-        'picks.desktop.tag2': 'Bundled runtime',
-        'picks.desktop.tag3': 'File changes & revert',
-        'picks.desktop.tag4': 'Plugin market & skins',
-        'picks.pack.badge': 'Plugin suite',
-        'picks.pack.tagline': 'Embracing all creation: hundreds of DSH plugins, living together.',
-        'picks.pack.body': 'A catalog, batch install, update and removal manager for DSH Desktop, carrying 72 baseline sub-plugins, skin previews and prompt sets; a pinned digest manifest verifies every byte, so an install is complete and trustworthy.',
-        'picks.pack.tag1': '72 baseline plugins',
-        'picks.pack.tag2': 'Batch install / update',
-        'picks.pack.tag3': 'Skin previews',
-        'picks.pack.tag4': 'Digest verification',
-        'picks.design.badge': 'Design workbench',
-        'picks.design.tagline': 'Finish video and design work locally, without handing your footage to anyone.',
-        'picks.design.body': 'A local video-production and design plugin for DeepSeek Harness: multi-track editing, templates and a design system, a native preview canvas, and exports that are real files. The whole pipeline runs on this machine, so footage and projects stay on your own disk.',
-        'picks.design.tag1': 'Multi-track editing',
-        'picks.design.tag2': 'Templates & design system',
-        'picks.design.tag3': 'Native preview canvas',
-        'picks.design.tag4': 'Real file export',
         'free.title': 'Free models',
         'free.sub': 'No login, no key, no setup: the roster follows upstream, availability is measured from this machine.',
-        'sponsor.bannerTag': 'Relay',
-        'sponsor.bannerTitle': 'Beichen API relay',
-        'sponsor.bannerDescription': 'OFM’s official relay partner provides stable, open and cost-effective model API access. Claude, ChatGPT, Grok, Gemini, GLM, Kimi and DeepSeek are supported for one consistent setup in Codex, Gemini CLI, Claude Code and other developer tools. Invite others to receive 10% cashback.',
-        'sponsor.bannerCta': 'View now',
         'free.tankLabel': 'Free-lane availability',
         'free.tankNote': 'Water level = share of reachable models ({ok}/{total})',
         'free.tankEmpty': 'Not probed yet; the level stands at the declared roster.',
@@ -1089,9 +942,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'chan.meta.accounts': 'Accounts',
         'chan.meta.models': 'Models',
         'chan.act.add': 'Add account',
-        'chan.zcode.provider': 'Sign-in route',
-        'chan.zcode.bigmodel': 'bigmodel.cn',
-        'chan.zcode.zai': 'z.ai international',
         'chan.act.refresh': 'Refresh',
         'chan.act.test': 'Test',
         'chan.act.delete': 'Remove',
@@ -1100,8 +950,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'chan.fold.models': 'Models',
         'chan.noAccount': 'No account yet — press “Add account” to sign in.',
         'chan.enabled': 'Enabled',
-        'chan.act.enable': 'Enable',
-        'chan.act.disable': 'Disable',
         'chan.expires.never': 'Long-lived',
         'chan.disabled': 'Disabled',
         'chan.login.title': 'Sign in to {name}',
@@ -1120,8 +968,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         'chan.credit.today': '{credit} claimed today',
         'chan.model.free': 'Free quota',
         'chan.model.dead': 'Retired',
-        'chan.model.hidden': 'Hidden',
-        'chan.model.restore': 'Restore visibility',
         'chan.model.off': 'Hide',
         'chan.model.on': 'Show',
         'chan.model.enableAll': 'Show all',
@@ -1484,12 +1330,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_tags{display:flex;gap:5px;flex-wrap:wrap}
 .ofm_tag{font-size:10.5px;padding:2px 8px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
 .ofm_chantag{font-size:10px;font-weight:650;padding:2px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 50%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 9%,transparent);color:var(--dsw-alias-state-business-primary);white-space:nowrap}
-/* ══ 新品/热门徽标与高速标签（置顶的 opencode 免费模型） ═════════════════ */
-.ofm_newtag{flex:none;font-size:9.5px;font-weight:750;letter-spacing:.4px;padding:2px 7px;border-radius:999px;color:#fff;background:var(--dsw-alias-state-error-primary);box-shadow:0 1px 4px color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);white-space:nowrap;text-transform:uppercase}
-.ofm_hottag{flex:none;font-size:10px;font-weight:700;line-height:1;padding:2px 6px;border-radius:999px;color:#fff;background:var(--dsw-alias-state-error-primary);box-shadow:0 1px 4px color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);white-space:nowrap}
-.ofm_tag.fast{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);font-weight:650}
-.ofm_card.pinned{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 42%,var(--dsw-alias-border-l2));box-shadow:inset 0 1px 0 rgb(255 255 255 / 6%),0 2px 6px color-mix(in srgb,var(--dsw-alias-state-error-primary) 14%,transparent),0 6px 18px color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}
-.ofm_card.pinned:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 62%,var(--dsw-alias-border-l2))}
 .ofm_metrics{display:flex;gap:12px;font-size:11px;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap}
 .ofm_metrics b{color:var(--dsw-alias-label-secondary);font-weight:600;font-variant-numeric:tabular-nums}
 .ofm_note{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5}
@@ -1552,7 +1392,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_input:hover{border-color:color-mix(in srgb,var(--dsw-alias-border-l2) 60%,var(--dsw-alias-label-tertiary))}
 .ofm_input:focus{outline:none;border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-business-primary) 20%,transparent)}
 /* ══ 开关（spring 滑块） ═══════════════════════════════════════════════ */
-.ofm_switch{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;appearance:none;background:transparent;border:0;padding:0;font:inherit;color:inherit}
+.ofm_switch{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
 .ofm_switch i{width:36px;height:20px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);box-shadow:inset 0 1px 3px rgb(0 0 0 / 8%);position:relative;transition:background .2s ease,border-color .2s ease,box-shadow .2s ease;flex:none}
 .ofm_switch:hover i{filter:brightness(1.05)}
 .ofm_switch[aria-checked="true"]:hover i{filter:brightness(1.08)}
@@ -1661,21 +1501,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_modalbody p{margin:0 0 6px}
 .ofm_modalfoot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 72%,transparent)}
 @media (max-width:720px){.ofm_sec_hint{margin-left:0;width:100%}.ofm_pills{margin-left:0;width:100%}}
-/* ══ 北辰 API 赞助横幅：免费模型页首屏入口，与桌面端保持独立 ═══════ */
-.ofm_sponsor_banner{position:relative;display:grid;grid-template-columns:56px minmax(0,1fr) auto;align-items:center;gap:14px;padding:13px 16px;border:1px solid rgb(121 151 204 / 42%);border-radius:14px;overflow:hidden;background:linear-gradient(115deg,#0b1425 0%,#17253d 54%,#263654 100%);color:#f3f7ff;box-shadow:0 9px 20px rgb(12 24 49 / 20%),inset 0 1px 0 rgb(255 255 255 / 13%)}
-.ofm_sponsor_banner::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.36;background-image:linear-gradient(rgb(126 164 225 / 15%) 1px,transparent 1px),linear-gradient(90deg,rgb(126 164 225 / 15%) 1px,transparent 1px);background-size:32px 32px;mask-image:linear-gradient(90deg,black,transparent 85%)}
-.ofm_sponsor_banner::after{content:"";position:absolute;inset:auto -12% -80% 35%;height:180%;pointer-events:none;background:radial-gradient(ellipse,rgb(96 137 222 / 22%),transparent 68%);transform:rotate(-7deg)}
-.ofm_sponsor_banner>*{position:relative;z-index:1}
-.ofm_sponsor_logo{display:flex;flex-direction:column;align-items:center;justify-content:center;width:56px;height:56px;border-radius:14px;background:#f8fbff;color:#c8470b;box-shadow:0 5px 11px rgb(0 0 0 / 22%),inset 0 0 0 1px rgb(255 255 255 / 80%);transform:rotate(4deg);font-weight:800;letter-spacing:-1px;line-height:1}
-.ofm_sponsor_logo span{font-size:16px}
-.ofm_sponsor_logo small{margin-top:4px;padding-top:3px;border-top:1px solid currentColor;font-size:7px;letter-spacing:1px}
-.ofm_sponsor_bannerbody{min-width:0}
-.ofm_sponsor_kicker{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid rgb(0 194 232 / 55%);border-radius:999px;background:rgb(0 144 186 / 18%);color:#38d9f4;font-size:10px;font-weight:700;letter-spacing:.2px}
-.ofm_sponsor_banner h3{margin:4px 0 3px;color:#f6f8ff;font-size:clamp(17px,2vw,22px);font-weight:780;letter-spacing:-.45px;line-height:1.15}
-.ofm_sponsor_banner p{max-width:75ch;margin:0;color:rgb(220 229 246 / 82%);font-size:10.5px;line-height:1.45}
-.ofm_sponsor_cta{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:92px;padding:8px 12px;border:1px solid rgb(255 255 255 / 72%);border-radius:10px;background:linear-gradient(180deg,#f9fbff,#dfe8f7);box-shadow:0 4px 10px rgb(0 0 0 / 18%),inset 0 1px 0 #fff;color:#253651;font-size:11px;font-weight:750;text-decoration:none;white-space:nowrap;transition:transform .18s var(--ease-instrument),box-shadow .18s ease,filter .18s ease}
-.ofm_sponsor_cta:hover{transform:translateY(-2px);filter:brightness(1.04);box-shadow:0 9px 20px rgb(0 0 0 / 24%),inset 0 1px 0 #fff}
-.ofm_sponsor_cta:active{transform:translateY(0)}
 /* ══ GitHub star 按钮 ══════════════════════════════════════════════════ */
 .ofm_starbtn{position:relative;display:inline-flex;gap:7px;align-items:center;padding:7px 15px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,transparent);background:linear-gradient(140deg,color-mix(in srgb,var(--dsw-alias-state-business-primary) 16%,transparent),transparent 70%);color:var(--dsw-alias-state-business-primary);text-decoration:none;font-weight:650;font-size:12.5px;transition:transform .18s ease,box-shadow .22s ease,color .22s ease,background .22s ease;white-space:nowrap;overflow:hidden}
 .ofm_starbtn svg{transition:transform .5s cubic-bezier(.34,1.56,.64,1)}
@@ -2309,54 +2134,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 .ofm_snippet{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;padding:9px 11px;border-radius:10px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);white-space:pre;overflow:auto;max-height:230px}
 @media (max-width:600px){.ofm_duo{grid-template-columns:1fr}.ofm_picklist{grid-template-columns:1fr}.ofm_member{flex-wrap:wrap}}
 @media (prefers-reduced-motion:reduce){.ofm_rise,.ofm_page{animation:none}.ofm_pickrow,.ofm_member,.ofm_meter i,.ofm_card,.ofm_kpi,.ofm_chan{transition:none}.ofm_root .ofm_card:hover,.ofm_pickrow:hover:not(:disabled){transform:none}}
-
-/* ── 推荐项目页：两张「去点 Star」的卡片 ─────────────────────────────────
-   这一页只有一件事要促成——点开仓库、点下 Star。所以卡片比常规模型卡大一档，
-   入场逐张错峰（--i 由调用方给），悬停抬升；主 CTA 是渐变星按钮，带一圈呼吸
-   光环与悬停扫光；数字用 count-up 落地。全部只动 transform/opacity/颜色。
-   动效降级：文件末尾的 reduced-motion 块统一关掉位移与动画。 */
-.ofm_recogrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));gap:14px;align-items:stretch}
-.ofm_recocard{position:relative;display:flex;flex-direction:column;gap:12px;padding:18px;border-radius:18px;border:1px solid var(--dsw-alias-border-l2);background:linear-gradient(168deg,color-mix(in srgb,var(--dsw-alias-bg-layer-3) 86%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-2) 80%,transparent));box-shadow:inset 0 1px 0 rgb(255 255 255 / 7%),0 2px 8px rgb(0 0 0 / 5%),0 14px 34px color-mix(in srgb,var(--dsw-alias-state-business-primary) 6%,transparent);overflow:hidden;animation:ofm-reco-in .5s var(--ease-instrument) backwards;animation-delay:calc(var(--i,0)*90ms);transition:transform .24s var(--ease-instrument),box-shadow .28s ease,border-color .2s ease}
-.ofm_recocard::before{content:"";position:absolute;inset:-45% 45% 50% -35%;pointer-events:none;opacity:0;background:radial-gradient(58% 58% at 32% 32%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 13%,transparent),transparent 72%);transition:opacity .4s ease}
-.ofm_recocard:hover::before{opacity:1}
-.ofm_recocard:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-border-l2));box-shadow:inset 0 1px 0 rgb(255 255 255 / 10%),0 18px 44px color-mix(in srgb,var(--dsw-alias-state-business-primary) 15%,transparent)}
-@keyframes ofm-reco-in{from{opacity:0;transform:translateY(16px) scale(.985)}to{opacity:1;transform:none}}
-.ofm_recotop{display:flex;align-items:center;gap:11px;min-width:0}
-.ofm_recomark{display:flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;border-radius:13px;color:var(--dsw-alias-label-on-accent,#fff);background:linear-gradient(145deg,var(--dsw-alias-state-business-primary),color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-label-primary)));box-shadow:inset 0 1px 0 rgb(255 255 255 / 28%),0 4px 12px color-mix(in srgb,var(--dsw-alias-state-business-primary) 24%,transparent);transition:transform .3s var(--ease-settle)}
-.ofm_recomark svg{width:22px;height:22px;fill:currentColor}
-.ofm_recocard:hover .ofm_recomark{transform:rotate(-4deg) scale(1.06)}
-.ofm_recoid{display:flex;flex-direction:column;gap:2px;min-width:0}
-.ofm_reconame{font-size:15px;font-weight:700;letter-spacing:-.2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ofm_recorepo{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ofm_recobadge{margin-left:auto;flex:none;font-size:10.5px;font-weight:650;padding:3px 10px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 10%,transparent);color:var(--dsw-alias-state-business-primary);white-space:nowrap}
-.ofm_recotagline{margin:0;font-size:13.5px;font-weight:650;line-height:1.5;letter-spacing:-.1px}
-.ofm_recobody{margin:0;flex:1;font-size:12px;line-height:1.75;color:var(--dsw-alias-label-secondary)}
-.ofm_recochips{display:flex;gap:6px;flex-wrap:wrap}
-.ofm_recochip{font-size:10.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 66%,transparent);color:var(--dsw-alias-label-secondary);transition:border-color .16s ease,color .16s ease,transform .16s ease}
-.ofm_recochip:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,var(--dsw-alias-border-l1));color:var(--dsw-alias-label-primary);transform:translateY(-1px)}
-.ofm_recofoot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:auto;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1)}
-.ofm_recofacts{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary)}
-.ofm_recofact{display:flex;align-items:baseline;gap:5px}
-.ofm_recofact b{font-size:13.5px;font-weight:700;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
-.ofm_recoacts{display:flex;gap:8px;align-items:center;margin-left:auto}
-.ofm_recogo{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 58%,transparent);color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap;transition:border-color .16s ease,color .16s ease,transform .16s ease,background .16s ease}
-.ofm_recogo:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 50%,var(--dsw-alias-border-l2));color:var(--dsw-alias-label-primary);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 82%,transparent);transform:translateY(-1px)}
-.ofm_recogo svg{width:12px;height:12px;fill:currentColor;opacity:.7;transition:transform .2s var(--ease-instrument)}
-.ofm_recogo:hover svg{transform:translateX(2px)}
-.ofm_recostar{position:relative;display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;overflow:hidden;font-size:13px;font-weight:700;letter-spacing:.1px;text-decoration:none;white-space:nowrap;color:var(--dsw-alias-label-on-accent,#fff);background:linear-gradient(135deg,var(--dsw-alias-state-business-primary),color-mix(in srgb,var(--dsw-alias-state-business-primary) 58%,var(--dsw-alias-label-primary)));box-shadow:inset 0 1px 0 rgb(255 255 255 / 26%),0 6px 18px color-mix(in srgb,var(--dsw-alias-state-business-primary) 28%,transparent);transition:transform .18s var(--ease-settle),box-shadow .24s var(--ease-instrument),filter .2s ease}
-.ofm_recostar:hover{transform:translateY(-2px) scale(1.02);filter:saturate(1.06);box-shadow:inset 0 1px 0 rgb(255 255 255 / 32%),0 12px 28px color-mix(in srgb,var(--dsw-alias-state-business-primary) 34%,transparent)}
-.ofm_recostar:active{transform:scale(.97)}
-.ofm_recostar svg{width:16px;height:16px;fill:currentColor;transition:transform .5s var(--ease-settle)}
-.ofm_recostar:hover svg{transform:rotate(72deg) scale(1.15)}
-.ofm_recostar::after{content:"";position:absolute;top:0;bottom:0;width:36%;left:-45%;pointer-events:none;background:linear-gradient(100deg,transparent,rgb(255 255 255 / 38%),transparent);transform:skewX(-18deg);transition:left .6s var(--ease-instrument)}
-.ofm_recostar:hover::after{left:115%}
-.ofm_recostarring{position:absolute;inset:0;border-radius:inherit;pointer-events:none;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 62%,transparent);animation:ofm-reco-ring 2.8s var(--ease-instrument) infinite}
-@keyframes ofm-reco-ring{0%{opacity:.6;transform:scale(1)}70%,100%{opacity:0;transform:scale(1.22)}}
-.ofm_recoglow{position:absolute;inset:-50% -12% auto;height:175%;z-index:0;pointer-events:none;background:radial-gradient(42% 52% at 24% 62%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 15%,transparent),transparent 70%),radial-gradient(38% 46% at 78% 38%,color-mix(in srgb,var(--dsw-alias-state-success-primary) 11%,transparent),transparent 72%);filter:blur(10px);animation:ofm-reco-aurora 18s ease-in-out infinite alternate}
-@keyframes ofm-reco-aurora{from{transform:translate3d(-3%,1%,0) scale(1)}to{transform:translate3d(3%,-2%,0) scale(1.08)}}
-.ofm_reconote{margin:0;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}
-@media (max-width:600px){.ofm_recogrid{grid-template-columns:1fr}.ofm_recoacts{width:100%;margin-left:0}}
-@media (prefers-reduced-motion:reduce){.ofm_recocard,.ofm_recostar,.ofm_recogo,.ofm_recochip,.ofm_recomark{animation:none;transition:border-color .12s ease,background .12s ease,box-shadow .12s ease,opacity .12s ease,color .12s ease}.ofm_recocard:hover,.ofm_recostar:hover,.ofm_recostar:active,.ofm_recogo:hover,.ofm_recochip:hover,.ofm_recocard:hover .ofm_recomark{transform:none}.ofm_recostar::after,.ofm_recostarring,.ofm_recoglow{display:none}}
 `
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -2853,46 +2630,25 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
 
     // ── model roster ──────────────────────────────────────────────────────────
     function ModelCard(props) {
-      const { model: m, t, onBench, bench, locked, eacLogin, onVisibility, busy } = props
+      const { model: m, t, onBench, bench, locked, eacLogin } = props
       const stateKey = `state.${m.availability}`
       const dim = m.availability !== 'available'
       const rung = (m.budgets ?? []).find(row => row.isDefault === true)
-      // A model that declares its own thinking levels shows them beside the
-      // ceiling tag, so the card names what the composer's Effort menu offers.
-      // Each id is looked up with a literal call so the dictionary lint can see
-      // the key, and an id with no translation falls back to the id itself.
-      const levelName = id => id === 'disabled' || id === 'none' ? t('effort.off')
-        : id === 'minimal' ? t('effort.minimal')
-          : id === 'low' ? t('effort.low')
-            : id === 'medium' ? t('effort.medium')
-              : id === 'high' ? t('effort.high')
-                : id === 'xhigh' ? t('effort.xhigh')
-                  : id === 'max' ? t('effort.max') : id
-      const levels = Array.isArray(m.efforts) && m.efforts.length > 0
-        ? m.efforts.map(levelName).join(' / ')
-        : undefined
-      return h('article', { className: 'ofm_card' + (dim ? ' dim' : '') + (m.pinned === true ? ' pinned' : '') },
+      return h('article', { className: 'ofm_card' + (dim ? ' dim' : '') },
         h('div', { className: 'ofm_cardhead' },
           m.channel === 'eac' ? h('span', { className: 'ofm_chantag', title: t('tag.eacChannel') }, 'EAC') : null,
           m.channel === 'eac' && locked === true ? h('span', { className: 'ofm_chantag', title: t('eac.lockedTitle') }, '🔒') : null,
           m.channel === 'kilo' ? h('span', { className: 'ofm_chantag', title: t('tag.kiloChannel') }, 'Kilo') : null,
           h('span', { className: 'ofm_cardname', title: m.name }, m.name),
-          m.isNew === true ? h('span', { className: 'ofm_newtag', title: t('tag.newTitle') }, t('tag.new')) : null,
-          m.hot === true ? h('span', { className: 'ofm_hottag', title: t('tag.hotTitle') }, t('tag.hot')) : null,
           h('span', { className: 'ofm_badge ' + m.availability }, t(stateKey))),
-        h('div', { className: 'ofm_id', title: m.id }, m.label ?? m.id),
+        h('div', { className: 'ofm_id', title: m.id }, m.id),
         h('div', { className: 'ofm_tags' },
-          m.hiddenByUser === true ? h('span', { className: 'ofm_tag' }, t('visibility.hidden')) : null,
-          m.fast === true ? h('span', { className: 'ofm_tag fast', title: t('tag.fastTitle') }, t('tag.fast')) : null,
           h('span', { className: 'ofm_tag' }, m.vision ? t('tag.vision') : t('tag.text')),
           m.reasoning ? h('span', { className: 'ofm_tag' }, m.canDisableThinking === false ? t('tag.thinkingShared') : t('tag.thinking')) : null,
           h('span', { className: 'ofm_tag' }, `${t('tag.context')} ${kilo(m.contextWindow)}`),
           h('span', { className: 'ofm_tag' }, `${t('tag.output')} ${kilo(m.maxOutput)}`),
-          rung === undefined ? null
-            : h('span', { className: 'ofm_tag', title: t('tag.rungTitle').replace('{ladder}', m.budgets.map(row => `${row.name} ${kilo(row.tokens)}`).join(' · ')) },
-              `${t('tag.rung')} ${kilo(rung.tokens)}`),
-          levels === undefined ? null
-            : h('span', { className: 'ofm_tag', title: t('tag.levelsTitle') }, `${t('tag.levels')} ${levels}`)),
+          rung === undefined ? null : h('span', { className: 'ofm_tag', title: t('tag.rungTitle').replace('{ladder}', m.budgets.map(row => `${row.name} ${kilo(row.tokens)}`).join(' · ')) },
+            `${t('tag.rung')} ${kilo(rung.tokens)}`)),
         m.channel === 'eac' && locked === true
           ? h(Fragment, null,
             h('p', { className: 'ofm_note' }, t('eac.lockedNote')),
@@ -2907,17 +2663,13 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                 m.ttftMs === undefined || m.ttftMs === 0 ? null : h('span', null, t('tag.latency'), ' ', h('b', null, Math.round(m.ttftMs)), ' ms'),
                 h('span', null, t('pref.probedAt'), ' ', h('b', null, ago(m.probedAt, t.locale)))),
         m.canDisableThinking === false ? h('p', { className: 'ofm_note' }, t('hint.sharedBudget')) : null,
-        onVisibility === undefined ? null : h('div', { className: 'ofm_sec' },
-          h(Switch, { checked: m.hiddenByUser !== true, label: t('visibility.showModel'),
-            disabled: busy || m.hiddenByGroup === true, onChange: () => onVisibility(m) }),
-          m.hiddenByGroup === true ? h('p', { className: 'ofm_note' }, t('visibility.groupHidden')) : null),
         onBench === undefined ? null : h('div', { className: 'ofm_row' },
           h(Button, { disabled: bench?.running === true, onClick: () => onBench(m) }, bench?.running === true ? t('bench.running') : t('bench.run')),
           bench?.result === undefined ? null : h('span', { className: 'ofm_note' }, bench.result)))
     }
 
     function Roster(props) {
-      const { summary, t, onBench, benches = {}, auth, eacLogin, only, onApply, busy } = props
+      const { summary, t, onBench, benches, auth, eacLogin, only } = props
       // `only` splits the same roster across the two model pages: the EAC page
       // shows the co-paid entries, the free page everything else. Filtering
       // here (rather than in each page) keeps one definition of what a route
@@ -2925,17 +2677,8 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       const roster = only === undefined ? summary.catalog
         : only === 'eac' ? summary.catalog.filter(m => m.channel === 'eac')
           : summary.catalog.filter(m => m.channel !== 'eac')
-      // Featured rows lead their group: the pinned flag rides the catalog row, so
-      // the order is the same on the EAC page and in the onboarding roster, and a
-      // row that is not featured keeps its upstream order.
-      const lead = list => [...list].sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0))
-      const available = lead(roster.filter(m => m.route === 'our-free-model'))
-      const limited = lead(roster.filter(m => m.route === 'our-free-model-region'))
-      const unlisted = lead(roster.filter(m => m.route !== 'our-free-model' && m.route !== 'our-free-model-region'))
-      const toggleModel = onApply === undefined ? undefined : model => {
-        const ids = summary.settings.hiddenModelIds ?? []
-        return onApply({ hiddenModelIds: ids.includes(model.id) ? ids.filter(id => id !== model.id) : [...ids, model.id] })
-      }
+      const available = roster.filter(m => m.route === 'our-free-model' || (only === 'eac' && m.channel === 'eac'))
+      const limited = roster.filter(m => m.route === 'our-free-model-region')
       // 只有拿到过明确判定（网关答过 /eac/status）且未授权时才上锁：状态未知
       // 不该显示一把凭空的锁，网关不可达时本地记录仍算已授权。
       const locked = auth !== undefined && auth.available === true && auth.authorized !== true
@@ -2945,7 +2688,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
             hint === undefined ? null : h('span', { className: 'ofm_sec_hint' }, hint)),
           h('div', { className: 'ofm_grid' }, list.map(m => h(ModelCard, {
             key: m.id, model: m, t, onBench, locked: m.channel === 'eac' && locked, eacLogin,
-            onVisibility: toggleModel, busy,
             bench: { running: benches[m.id]?.running === true, ...benches[m.id]?.result === undefined ? {} : { result: benches[m.id].result } },
           }))))
       // The lane closed at the gate is the one "no EAC models" case the page can
@@ -2953,17 +2695,12 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       // the group never renders and nothing else on the page names the reason.
       const laneNote = summary.laneAvailable === false && !summary.catalog.some(m => m.channel === 'eac')
         ? h('p', { className: 'ofm_note' }, t('roster.noLane')) : null
+      // 暂不可用的模型不再单独成组展示（用户要求移除「不在选择器中」区块）：
+      // 它们的状态仍在上方统计芯片与每张卡的徽章里如实可见。
       return h(Fragment, null,
         laneNote,
-        onApply === undefined ? null : h('div', { className: 'ofm_sec' },
-          h('p', { className: 'ofm_note' }, t('visibility.hint')),
-          h(Switch, { checked: summary.settings.hideFreeModels === true, disabled: busy,
-            label: t('pref.hideFreeModels'), onChange: () => onApply({ hideFreeModels: summary.settings.hideFreeModels !== true }) }),
-          h(Switch, { checked: summary.settings.hideEacModels === true, disabled: busy,
-            label: t('pref.hideEacModels'), onChange: () => onApply({ hideEacModels: summary.settings.hideEacModels !== true }) })),
         group(t('state.available'), available),
-        group(t('state.region-blocked'), limited, t('hint.region')),
-        group(t('visibility.unlisted'), unlisted))
+        group(t('state.region-blocked'), limited, t('hint.region')))
     }
 
     // ── dashboard ─────────────────────────────────────────────────────────────
@@ -3062,9 +2799,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       return { active, capacityKnown, pct, rawPct, level }
     }
 
-    /** The GitHub star every call to action on this page carries. */
-    const STAR_GLYPH = 'M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z'
-
     /** The repository every page's star button points at, opened in a new tab. */
     function StarButton(props) {
       const { t, repo = POOL_REPO_URL } = props
@@ -3076,7 +2810,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         rel: 'noreferrer noopener',
         title: `${t('star.title')} · ${repo}`,
       }, h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' },
-        h('path', { d: STAR_GLYPH })),
+        h('path', { d: 'M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z' })),
         label)
     }
     /** Where the pool's capacity number comes from, in one sentence. */
@@ -3205,7 +2939,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         const current = ++attempt.current
         setBusy(true); setNotice('')
         try {
-          const started = await post('/eac/login/start', undefined, 30_000)
+          const started = await post('/eac/login/start', undefined, 20_000)
           if (current !== attempt.current) return
           if (started?.error !== undefined) { setNotice(t('eac.startFailed').replace('{reason}', started.error)); return }
           updatePending({ link: started.link, url: started.url, startedAt: Date.now() })
@@ -3253,7 +2987,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
               h('div', null, t('eac.waiting')),
               h(Button, { kind: 'ghost', disabled: busy, onClick: cancel }, t('eac.cancel')),
               h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 } },
-                h('a', { href: pending.url, target: '_blank', rel: 'noreferrer noopener', className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 0, overflowWrap: 'anywhere' } }, pending.url),
+                h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, wordBreak: 'break-all' } }, pending.url),
                 h(Button, { kind: 'ghost', onClick: () => copy(pending.url, ok => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1600) } }) }, copied ? t('eac.copied') : t('eac.copy')))))
           : null,
         notice !== '' ? h('p', { className: 'ofm_note' }, notice) : null)
@@ -3623,9 +3357,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         h('div', { className: 'ofm_row', style: { gap: 20 } },
           h(Switch, { checked: settings.enabled !== false, label: t('pref.enabled'), onChange: () => onApply({ enabled: !(settings.enabled !== false) }) }),
           h(Switch, { checked: settings.exposeRegionModels !== false, label: t('pref.exposeRegion'), onChange: () => onApply({ exposeRegionModels: !(settings.exposeRegionModels !== false) }) })),
-        h('div', { className: 'ofm_row', style: { gap: 20 } },
-          h(Switch, { checked: settings.hideFreeModels === true, disabled: busy, label: t('pref.hideFreeModels'), onChange: () => onApply({ hideFreeModels: settings.hideFreeModels !== true }) }),
-          h(Switch, { checked: settings.hideEacModels === true, disabled: busy, label: t('pref.hideEacModels'), onChange: () => onApply({ hideEacModels: settings.hideEacModels !== true }) })),
         h('div', { className: 'ofm_row' },
           field(t('pref.interval'), h('input', { className: 'ofm_input', style: { maxWidth: 100 }, value: draft?.probeIntervalMinutes ?? 15, onChange: e => setDraft(c => ({ ...c, probeIntervalMinutes: Number(e.target.value.replace(/\D/g, '')) || 0 })) })),
           field(t('pref.maxTokens'), h('input', { className: 'ofm_input', style: { maxWidth: 120 }, value: draft?.defaultMaxTokens ?? 32768, onChange: e => setDraft(c => ({ ...c, defaultMaxTokens: Number(e.target.value.replace(/\D/g, '')) || 0 })) })),
@@ -3809,153 +3540,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         h(UpgradePanel, { t, settings, onApply, busy }))
     }
 
-    // ── 推荐项目页 ────────────────────────────────────────────────────────────
-    // 这一页只有一个任务：让人点开仓库、点下 Star。所以文案是「说清它解决什么
-    // 问题」，动作是「一眼能看到的星按钮」，数字是宿主 /picks 取回的真实 Star /
-    // Fork / 最近提交——拿不到就整块不显示，绝不用占位数字凑版面（这块页面的
-    // 全部说服力都在数字是真的）。每张卡片的文案按语言直写 t('字面量')，字典
-    // 保持可 grep；各仓库的地址与「第二个动作」在这里各写一份。
-    const RECO_LINKS = {
-      desktop: { repo: 'https://github.com/Ebony-Vinyl/EAC-Desktop', extra: 'https://github.com/Ebony-Vinyl/EAC-Desktop/releases' },
-      pack: { repo: 'https://github.com/Ebony-Vinyl/EAC-Pack', extra: 'https://github.com/Ebony-Vinyl/EAC-Pack#git-安装' },
-      designWorld: { repo: 'https://github.com/Ebony-Vinyl/EAC-design-world', extra: 'https://github.com/Ebony-Vinyl/EAC-design-world#安装' },
-    }
-    const RECO_DESKTOP_MARK = 'M1.4 3.1h13.2a.7.7 0 01.7.7v6a.7.7 0 01-.7.7H1.4a.7.7 0 01-.7-.7v-6a.7.7 0 01.7-.7zM5.6 12h4.8v1.4H5.6z'
-    const RECO_PACK_MARK = 'M8 1.2l6.3 3.2L8 7.6 1.7 4.4 8 1.2zM12.9 7.3l1.4.7L8 11.2 1.7 8l1.4-.7L8 9.8l4.9-2.5zM12.9 10.6l1.4.7L8 14.5 1.7 11.3l1.4-.7L8 13.1l4.9-2.5z'
-    const RECO_DESIGN_MARK = 'M2.6 1.6h7.1l3.7 3.7v7.1a2 2 0 01-2 2H2.6a2 2 0 01-2-2V3.6a2 2 0 012-2zm.9 1.9v7.6h9V6.1h-2.5a1 1 0 01-1-1V3.5H3.5zm8.7 2.1h.6v-1.4l-.6-.6v2zM4.2 7.1h7.6a.7.7 0 010 1.4H4.2a.7.7 0 010-1.4zm0 3h5.2a.7.7 0 010 1.4H4.2a.7.7 0 010-1.4z'
-    const RECO_EXT_MARK = 'M3.75 2A1.75 1.75 0 002 3.75v8.5C2 13.216 2.784 14 3.75 14h8.5A1.75 1.75 0 0014 12.25v-4.5a.75.75 0 00-1.5 0v4.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-8.5a.25.25 0 01.25-.25h4.5a.75.75 0 000-1.5h-4.5zM9.5 2a.75.75 0 000 1.5h2.19L7.22 7.97a.75.75 0 101.06 1.06l4.47-4.47v2.19a.75.75 0 001.5 0v-4a.75.75 0 00-.75-.75h-4z'
-
-    /** 2,034 — a star count is read, not computed, so it keeps its separators. */
-    const grouped = value => String(Math.max(0, Math.round(Number(value) || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-
-    /**
-     * 0 → n in about a second, once per arrival.
-     *
-     * The page's whole argument is that these numbers are real and moving, and a
-     * number that counts up reads as a live reading rather than a printed one.
-     * Reduced motion skips straight to the value — the number is the point, the
-     * motion is not.
-     */
-    function useCountUp(target) {
-      const [value, setValue] = useState(target ?? null)
-      useEffect(() => {
-        if (typeof target !== 'number') return
-        const reduced = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-          && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        if (reduced) { setValue(target); return }
-        const started = Date.now()
-        let raf = 0
-        const tick = () => {
-          const progress = Math.min(1, (Date.now() - started) / 900)
-          setValue(Math.round(target * (1 - Math.pow(1 - progress, 3))))
-          if (progress < 1) raf = requestAnimationFrame(tick)
-        }
-        raf = requestAnimationFrame(tick)
-        return () => cancelAnimationFrame(raf)
-      }, [target])
-      return value
-    }
-
-    function RecoCard(props) {
-      const { t, index, stat, mark, name, repo, badge, tagline, body, chips, repoUrl, extraUrl, extraLabel } = props
-      const stars = stat !== null && typeof stat.stars === 'number' ? stat.stars : null
-      const shown = useCountUp(stars)
-      const forks = stat !== null && typeof stat.forks === 'number' ? stat.forks : null
-      const pushedAt = stat !== null && typeof stat.pushedAt === 'number' ? stat.pushedAt : null
-      const stale = stat !== null && stat.stale === true
-      // One fork is one fork; the label is the only place the page can tell.
-      const forkLabel = forks === 1 ? t('picks.fork') : t('picks.forks')
-      return h('article', { className: 'ofm_recocard', style: { '--i': String(index) } },
-        h('div', { className: 'ofm_recotop' },
-          h('span', { className: 'ofm_recomark', 'aria-hidden': 'true' }, h('svg', { viewBox: '0 0 16 16' }, h('path', { d: mark }))),
-          h('div', { className: 'ofm_recoid' },
-            h('span', { className: 'ofm_reconame' }, name),
-            h('span', { className: 'ofm_recorepo' }, repo)),
-          h('span', { className: 'ofm_recobadge' }, badge)),
-        h('p', { className: 'ofm_recotagline' }, tagline),
-        h('p', { className: 'ofm_recobody' }, body),
-        h('div', { className: 'ofm_recochips' }, chips.map(chip => h('span', { key: chip, className: 'ofm_recochip' }, chip))),
-        h('div', { className: 'ofm_recofoot' },
-          h('div', { className: 'ofm_recofacts' },
-            stars === null ? null : h('span', { className: 'ofm_recofact' },
-              h('b', null, grouped(shown ?? stars)),
-              h('span', null, t('picks.stars')),
-              stale ? h('span', { className: 'ofm_reconote' }, t('picks.stale')) : null),
-            forks === null ? null : h('span', { className: 'ofm_recofact' }, h('b', null, grouped(forks)), h('span', null, forkLabel)),
-            pushedAt === null ? null : h('span', { className: 'ofm_recofact' }, h('b', null, ago(pushedAt, t.locale)), h('span', null, t('picks.updated')))),
-          h('div', { className: 'ofm_recoacts' },
-            h('a', { className: 'ofm_recogo', href: extraUrl, target: '_blank', rel: 'noreferrer noopener' },
-              extraLabel,
-              h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' }, h('path', { d: RECO_EXT_MARK }))),
-            h('a', {
-              className: 'ofm_recostar', href: repoUrl, target: '_blank', rel: 'noreferrer noopener',
-              title: `${t('picks.starHint')} · ${repo}`,
-            },
-              h('span', { className: 'ofm_recostarring', 'aria-hidden': 'true' }),
-              h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' }, h('path', { d: STAR_GLYPH })),
-              t('picks.star')))))
-    }
-
-    function PicksPage(props) {
-      const { t } = props
-      const picks = useAsync(() => api('/picks'), [])
-      const repos = picks.data?.repos ?? []
-      const statOf = id => repos.find(row => row.id === id) ?? null
-      // A cold read gives the host four seconds to reach GitHub, so a slow first
-      // answer can land after the page is already on screen. One delayed re-read
-      // fills the numbers in; the flag makes sure it is one, not a poll.
-      const [retried, setRetried] = useState(false)
-      const numbers = repos.some(row => typeof row.stars === 'number')
-      useEffect(() => {
-        if (retried || numbers || picks.status !== 'ready') return undefined
-        const timer = setTimeout(() => { setRetried(true); picks.reload() }, 6000)
-        return () => clearTimeout(timer)
-      }, [retried, numbers, picks.status, picks.reload])
-      // The project count and star total cover the same successfully read rows.
-      const counted = repos.filter(row => Number.isFinite(row.stars))
-      const total = counted.reduce((sum, row) => sum + row.stars, 0)
-      return h('div', { className: 'ofm_page' },
-        h('header', { className: 'ofm_hero ofm_glass' },
-          h('span', { className: 'ofm_recoglow', 'aria-hidden': 'true' }),
-          h('div', { className: 'ofm_pagehead' },
-            h('div', { className: 'ofm_pagetitle' },
-              h('h2', null, t('picks.title')),
-              h('p', { className: 'ofm_pagesub' }, t('picks.sub'))),
-            h('div', { className: 'ofm_pills' },
-              total > 0 ? h(Pill, { strong: true }, t('picks.totalStars').replace('{n}', grouped(total)).replace('{c}', grouped(counted.length))) : null,
-              h(StarButton, { t })))),
-        h('div', { className: 'ofm_recogrid' },
-          h(RecoCard, {
-            t, index: 0, stat: statOf('eac-desktop'), mark: RECO_DESKTOP_MARK,
-            name: 'EAC-Desktop', repo: 'Ebony-Vinyl/EAC-Desktop',
-            badge: t('picks.desktop.badge'),
-            tagline: t('picks.desktop.tagline'),
-            body: t('picks.desktop.body'),
-            chips: [t('picks.desktop.tag1'), t('picks.desktop.tag2'), t('picks.desktop.tag3'), t('picks.desktop.tag4')],
-            repoUrl: RECO_LINKS.desktop.repo, extraUrl: RECO_LINKS.desktop.extra, extraLabel: t('picks.getDesktop'),
-          }),
-          h(RecoCard, {
-            t, index: 1, stat: statOf('eac-pack'), mark: RECO_PACK_MARK,
-            name: 'EAC-Pack', repo: 'Ebony-Vinyl/EAC-Pack',
-            badge: t('picks.pack.badge'),
-            tagline: t('picks.pack.tagline'),
-            body: t('picks.pack.body'),
-            chips: [t('picks.pack.tag1'), t('picks.pack.tag2'), t('picks.pack.tag3'), t('picks.pack.tag4')],
-            repoUrl: RECO_LINKS.pack.repo, extraUrl: RECO_LINKS.pack.extra, extraLabel: t('picks.getPack'),
-          }),
-          h(RecoCard, {
-            t, index: 2, stat: statOf('eac-design-world'), mark: RECO_DESIGN_MARK,
-            name: 'EAC-design-world', repo: 'Ebony-Vinyl/EAC-design-world',
-            badge: t('picks.design.badge'),
-            tagline: t('picks.design.tagline'),
-            body: t('picks.design.body'),
-            chips: [t('picks.design.tag1'), t('picks.design.tag2'), t('picks.design.tag3'), t('picks.design.tag4')],
-            repoUrl: RECO_LINKS.designWorld.repo, extraUrl: RECO_LINKS.designWorld.extra, extraLabel: t('picks.getDesign'),
-          })),
-        picks.status === 'error' ? h('p', { className: 'ofm_reconote' }, t('picks.liveFailed')) : null,
-        h('p', { className: 'ofm_reconote' }, t('picks.foot')))
-    }
-
     // ── 白嫖模型接入页 ────────────────────────────────────────────────────────
     // Real channel logos carried over from the upstream Channel Pack client (see
     // vendor/channel-pack/NOTICE.md) — the same artwork users know from those
@@ -4038,63 +3622,26 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
      * does not offer it still renders the free and EAC pages, with this one
      * explaining itself instead of breaking.
      */
-    function sameChannelTransport(left, right) {
-      return left === right || (left !== null && right !== null
-        && typeof left === 'object' && typeof right === 'object'
-        && left.connection === right.connection && left.call === right.call)
-    }
-
-    function channelTransport(rpc) {
-      return typeof rpc?.transport === 'function' ? rpc.transport() : rpc
-    }
-
     function useChannelRpc(ctx) {
-      const ctxRef = useRef(ctx)
-      ctxRef.current = ctx
-      const readTransport = useCallback(() => {
-        const current = ctxRef.current
+      return useMemo(() => {
         let connection
-        try { connection = current?.connection } catch { /* service not provided yet */ }
-        if (connection === undefined || connection === null) {
-          try { connection = current?.get?.('connection') } catch { /* service not provided yet */ }
+        try { connection = ctx?.connection } catch { connection = undefined }
+        if (connection === undefined && typeof ctx?.get === 'function') {
+          try { connection = ctx.get('connection') } catch { connection = undefined }
         }
-        try {
-          const call = connection?.rpc?.call
-          return typeof call === 'function' ? { connection, call } : null
-        } catch { return null }
-      }, [])
-      const [transport, setTransport] = useState(readTransport)
-      useEffect(() => {
-        let alive = true
-        const check = () => {
-          if (!alive) return
-          const next = readTransport()
-          setTransport(previous => sameChannelTransport(previous, next) ? previous : next)
+        const rpc = async (method, payload, timeoutMs = 60_000) => {
+          if (connection?.rpc?.call === undefined) throw new Error('no-connection')
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), timeoutMs)
+          try {
+            const result = await connection.rpc.call('/api', 'jet-hub', { method, payload }, controller.signal) /* phone-port patch C：本页读自带渠道包（vendor/channel-pack）的 RPC。它源自 gitee 上游，端点名就是 'jet-hub'。 */
+            if (result?.ok === true) return result.value
+            if (result?.ok === false) throw new Error(result.error?.message ?? result.error?.code ?? 'rpc-failed')
+            return result
+          } finally { clearTimeout(timer) }
         }
-        check()
-        const timer = setInterval(check, 500)
-        return () => { alive = false; clearInterval(timer) }
-      }, [readTransport])
-      // Context wrappers do not invalidate readers; actual transport replacement does.
-      const rpc = useCallback(async (method, payload, timeoutMs = 60_000) => {
-        const latest = readTransport()
-        if (latest === null) throw new Error('no-connection')
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), timeoutMs)
-        try {
-          const result = await latest.call.call(latest.connection.rpc, '/api', 'jet-hub', { method, payload } /* phone-port patch C：本页读自带渠道包（vendor/channel-pack）的 RPC。它源自 gitee 上游，端点名就是 'jet-hub'。 */, controller.signal)
-          if (result?.ok === true) return result.value
-          if (result?.ok === false) throw new Error(result.error?.message ?? result.error?.code ?? 'rpc-failed')
-          return result
-        } finally { clearTimeout(timer) }
-      }, [readTransport, transport])
-      rpc.transport = readTransport
-      return { available: transport !== null, rpc }
-    }
-
-    const ZCODE_PROVIDER_KEY = 'ofm:zcode:login-provider'
-    function closeLoginPopup(popup) {
-      try { if (popup && !popup.closed) popup.close() } catch { /* best effort */ }
+        return { available: connection?.rpc?.call !== undefined, rpc }
+      }, [ctx])
     }
 
     /** Human text for a millisecond timestamp, or the long-lived marker. */
@@ -4122,15 +3669,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       const balanceGeneration = useRef(0)
       const claimPending = useRef(false)
       const creditCapability = CHANNEL_CREDITS[channel.id]
-      const [zcodeProvider, setZcodeProvider] = useState(() => {
-        try { return window.localStorage?.getItem(ZCODE_PROVIDER_KEY) === 'zai' ? 'zai' : 'bigmodel' } catch { return 'bigmodel' }
-      })
-      const loginAttempt = useRef(null)
-      const chooseZcodeProvider = value => {
-        if (value !== 'bigmodel' && value !== 'zai') return
-        setZcodeProvider(value)
-        try { window.localStorage?.setItem(ZCODE_PROVIDER_KEY, value) } catch { /* preference still applies this session */ }
-      }
       const balanceLabel = creditCapability?.unit === 'tokens' ? t('chan.credits.tokens')
         : creditCapability?.unit === 'dollars' ? t('chan.credits.dollars')
           : creditCapability?.quota ? t('chan.credits.quota') : t('chan.credits.left')
@@ -4232,75 +3770,19 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       // the browser flow finishes in the background and `login.poll` sees the
       // credential appear. The placeholder account is real from the first
       // moment, so the card can poll against it.
-      useEffect(() => {
-        if (loginAttempt.current?.cancelled) {
-          loginAttempt.current = null
-          setBusy(value => value === 'add' ? '' : value)
-        }
-        return () => {
-          const attempt = loginAttempt.current
-          if (attempt) { attempt.cancelled = true; closeLoginPopup(attempt.popup) }
-        }
-      }, [channel.id])
-      useEffect(() => {
-        const attempt = loginAttempt.current
-        if (!attempt || sameChannelTransport(attempt.transport, channelTransport(rpc))) return
-        attempt.cancelled = true
-        closeLoginPopup(attempt.popup)
-        loginAttempt.current = null
-        setBusy(value => value === 'add' ? '' : value)
-      }, [rpc])
       const startLogin = async () => {
-        if (loginAttempt.current && !loginAttempt.current.cancelled) return
-        const attempt = { popup: null, cancelled: false, transport: channelTransport(rpc) }
-        const current = () => !attempt.cancelled && sameChannelTransport(attempt.transport, channelTransport(rpc))
-        loginAttempt.current = attempt
         setBusy('add'); setNotice('')
-        // Reserve inside the click; a delayed RPC would lose transient activation.
         try {
-          attempt.popup = window.open('about:blank', '_blank')
-          if (attempt.popup) attempt.popup.opener = null
-        } catch { closeLoginPopup(attempt.popup); attempt.popup = null }
-        try {
-          const value = await rpc('account.create', {
-            provider: channel.id,
-            ...channel.id === 'zcode' ? { zcodeProvider } : {},
-          }, 90_000)
-          if (!current()) { attempt.cancelled = true; closeLoginPopup(attempt.popup); return }
+          const value = await rpc('account.create', { provider: channel.id }, 90_000)
           const accountId = value?.accountId
           const url = value?.loginUrl
           if (typeof accountId !== 'string' || accountId === '') throw new Error('bad-answer')
           if (typeof url === 'string' && url !== '') {
-            const target = new URL(url)
-            if (url.length > 2048 || !['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('bad-login-url')
-            let opened = false
-            try {
-              if (attempt.popup && !attempt.popup.closed) {
-                attempt.popup.location.replace(url)
-                opened = true
-                attempt.popup = null
-              }
-            } catch { /* the host can open it instead */ }
-            closeLoginPopup(attempt.popup); attempt.popup = null
-            if (!opened) {
-              try { opened = (await post('/open-external', { url }, 15_000))?.opened === true } catch { /* manual link remains available */ }
-            }
-            if (!current()) { attempt.cancelled = true; return }
-            if (!opened) {
-              try { window.open(url, '_blank', 'noopener') } catch { /* the modal offers the link too */ }
-            }
-          } else { closeLoginPopup(attempt.popup); attempt.popup = null }
+            try { window.open(url, '_blank', 'noopener') } catch { /* the modal offers the link too */ }
+          }
           setLogin({ accountId, url: typeof url === 'string' ? url : '', startedAt: Date.now() })
           setOpen('accounts')
-        } catch (error) {
-          closeLoginPopup(attempt.popup)
-          if (current()) onError(channel, error)
-        } finally {
-          if (loginAttempt.current === attempt && !attempt.cancelled) {
-            loginAttempt.current = null
-            setBusy('')
-          }
-        }
+        } catch (error) { onError(channel, error) } finally { setBusy('') }
       }
 
       // Poll the placeholder until its credential lands. Ten minutes matches the
@@ -4409,17 +3891,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
               ? creditCapability.quota ? t('chan.credits.loaded').replace('{count}', String((balances ?? []).filter(row => Number.isFinite(row.balance?.total)).length)) : kilo(balancesTotal)
               : balances === undefined ? '…' : '—')) : null),
         h('div', { className: 'ofm_chanacts' },
-          channel.id === 'zcode' ? h('div', { className: 'ofm_seg', role: 'group', 'aria-label': t('chan.zcode.provider') },
-            h('button', {
-              type: 'button', disabled: busy !== '' || !rpc,
-              'aria-pressed': zcodeProvider === 'bigmodel',
-              onClick: () => chooseZcodeProvider('bigmodel'),
-            }, t('chan.zcode.bigmodel')),
-            h('button', {
-              type: 'button', disabled: busy !== '' || !rpc,
-              'aria-pressed': zcodeProvider === 'zai',
-              onClick: () => chooseZcodeProvider('zai'),
-            }, t('chan.zcode.zai'))) : null,
           h('button', { type: 'button', className: 'ofm_btn', disabled: busy !== '' || !rpc, 'aria-busy': busy === 'add' ? 'true' : undefined, onClick: startLogin }, busy === 'add' ? '…' : t('chan.act.add')),
           accountsCount > 0 ? h('button', {
             type: 'button', className: 'ofm_btn ghost', disabled: busy !== '' || !rpc, 'aria-busy': busy === 'refreshAll' ? 'true' : undefined,
@@ -4497,7 +3968,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                         await rpc('account.update', { accountId: row.id, patch: { enabled: row.enabled === false } })
                         onChanged(); await loadAccounts()
                       }),
-                    }, row.enabled === false ? t('chan.act.enable') : t('chan.act.disable')),
+                    }, row.enabled === false ? t('chan.enabled') : t('chan.disabled')),
                     h('button', {
                       type: 'button', className: 'ofm_minibtn danger', disabled: busy !== '' || !rpc,
                       onClick: () => void removeAccount(row.id),
@@ -4528,15 +3999,13 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                 h('span', { className: 'ofm_id', title: model.id }, model.name ?? model.id),
                 model.isFree === true ? h('span', { className: 'ofm_tagpill free' }, t('chan.model.free')) : null,
                 model.dead === true ? h('span', { className: 'ofm_tagpill dead' }, t('chan.model.dead')) : null,
-                model.disabled === true ? h('span', { className: 'ofm_tagpill' }, t('chan.model.hidden')) : null,
                 h('button', {
                   type: 'button', className: 'ofm_minibtn', disabled: busy !== '' || !rpc,
                   onClick: () => accountAction('model:' + model.id, '', async () => {
-                    if (model.dead === true) await rpc('model.clearDead', { provider: channel.id, modelId: model.id })
-                    else await rpc('model.setDisabled', { provider: channel.id, modelId: model.id, disabled: model.disabled !== true })
+                    await rpc('model.setDisabled', { provider: channel.id, modelId: model.id, disabled: model.disabled !== true })
                     await loadModels(); onChanged()
                   }),
-                }, model.dead === true ? t('chan.model.restore') : model.disabled === true ? t('chan.model.on') : t('chan.model.off'))))))) : null)
+                }, model.disabled === true ? t('chan.model.on') : t('chan.model.off'))))))) : null)
 
       const modal = login === null ? null : h('div', { className: 'ofm_scrim' },
         h('div', { className: 'ofm_modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('chan.login.title').replace('{name}', channel.name) },
@@ -4578,41 +4047,22 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       // the failure *reason* when the probes never come back.
       const [ready, setReady] = useState(pack.state === 'ready')
 
-      const statusGeneration = useRef(0)
-      const statusRetry = useRef(null)
-      const statusRequest = useRef(0)
-      const statusApplied = useRef(0)
-      const loadStatus = useCallback(async (attempt = 0, generation = statusGeneration.current) => {
-        if (attempt === 0) { clearTimeout(statusRetry.current); statusRetry.current = null }
+      const loadStatus = useCallback(async (attempt = 0) => {
         if (!available) return
-        const request = ++statusRequest.current
-        const transport = channelTransport(rpc)
-        const current = () => generation === statusGeneration.current && request >= statusApplied.current
-          && sameChannelTransport(transport, channelTransport(rpc))
         try {
           const value = await rpc('provider.status', { providers: CHANNEL_PROVIDERS.map(row => row.id) })
-          if (!current()) return
-          statusApplied.current = request
           setStatuses(value?.statuses ?? {})
           setReady(true)
           setError('')
         } catch (err) {
-          if (!current()) return
           // The pack imports asynchronously on a cold start; retry a bounded
           // few times before believing the failure and surfacing the reason.
-          if (attempt < 4) {
-            clearTimeout(statusRetry.current)
-            statusRetry.current = setTimeout(() => { if (current()) void loadStatus(attempt + 1, generation) }, 4000)
-            return
-          }
+          if (attempt < 4) { setTimeout(() => { void loadStatus(attempt + 1) }, 4000); return }
           setError(String(err?.message ?? err))
         }
       }, [available, rpc])
 
-      useEffect(() => {
-        void loadStatus()
-        return () => { statusGeneration.current++; clearTimeout(statusRetry.current); statusRetry.current = null }
-      }, [loadStatus])
+      useEffect(() => { void loadStatus() }, [loadStatus])
       // A second poll loop, slow: the pack pushes nothing for accounts changed
       // in another window, and a stale count on this page is the kind of quiet
       // wrongness that reads as a bug. Local actions refresh immediately.
@@ -5807,18 +5257,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
           h('span', { className: 'ofm_pickmeta' },
             h('span', { className: 'ofm_id' }, row.id),
             h('span', { className: 'ofm_tag' }, lanes[row.channel] ?? row.channel),
-            row.contextWindow > 0 ? h('span', { className: 'ofm_tag' }, `${t('tag.context')} ${kilo(row.contextWindow)}`) : null,
-            row.maxOutput > 0 ? h('span', { className: 'ofm_tag' }, `${t('tag.output')} ${kilo(row.maxOutput)}`) : null,
             row.vision === true ? h('span', { className: 'ofm_tag' }, t('tag.vision')) : null)))))
-    }
-
-    function ChainCapacity({ capacity, t }) {
-      if (!capacity) return null
-      return h('div', { className: 'ofm_tags', 'aria-label': t('routing.capacity') },
-        h('span', { className: 'ofm_note' }, t('routing.capacity')),
-        h('span', { className: 'ofm_tag' }, `${t('tag.context')} ${kilo(capacity.contextWindow)}`),
-        h('span', { className: 'ofm_tag' }, `${t('tag.output')} ${kilo(capacity.maxOutput)}`),
-        h('span', { className: 'ofm_tag' }, capacity.vision ? t('tag.vision') : t('tag.text')))
     }
 
     /**
@@ -5841,9 +5280,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       const [error, setError] = useState('')
       const byId = new Map(models.map(row => [row.id, row]))
       const lanes = LANE_LABEL(t)
-      const preview = useAsync(() => members.length
-        ? post('/combos/preview', { models: members })
-        : Promise.resolve({ capacity: null }), [members, models])
 
       const move = (index, delta) => setMembers(current => {
         const next = [...current]
@@ -5911,15 +5347,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
             return h('div', { key: `${id}#${index}`, className: 'ofm_member' },
               h('span', { className: 'ofm_id', title: id }, row?.name ?? id),
               h('span', { className: 'ofm_tag' }, lanes[row?.channel] ?? ''),
-              row?.contextWindow > 0 ? h('span', { className: 'ofm_tag' }, `${t('tag.context')} ${kilo(row.contextWindow)}`) : null,
               miniBtn('↑', () => move(index, -1), { disabled: busy || index === 0, title: t('routing.moveUp') }),
               miniBtn('↓', () => move(index, 1), { disabled: busy || index === members.length - 1, title: t('routing.moveDown') }),
               miniBtn(t('routing.removeMember'), () => setMembers(current => current.filter((_, at) => at !== index)), { danger: true, disabled: busy }))
           })),
-        preview.status === 'error'
-          ? h('p', { className: 'ofm_note' }, t('routing.capacityUnavailable'))
-          : preview.status === 'loading' && members.length ? h('p', { className: 'ofm_note' }, t('loading'))
-            : h(ChainCapacity, { capacity: preview.data?.capacity, t }),
         h('div', { className: 'ofm_row' },
           h(Button, { kind: 'ghost', disabled: busy, onClick: () => setPicking(value => !value) }, picking ? t('routing.cancel') : t('routing.addMember'))),
         picking ? h(ModelPicker, { t, models, chosen: members, onPick: id => setMembers(current => [...current, id]) }) : null,
@@ -5942,7 +5373,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
      * broken", and the user is the only one who can tell which one it is.
      */
     function ChainCard(props) {
-      const { t, chain, resolved, missing, lookup, onEdit, onDelete, confirming, index, capacity } = props
+      const { t, chain, resolved, missing, lookup, onEdit, onDelete, confirming, index } = props
       const lanes = LANE_LABEL(t)
       const usable = chain.enabled !== false && resolved.length > 0
       return h('div', { className: 'ofm_card ofm_rise', style: { animationDelay: `${Math.min(index, 8) * 22}ms` } },
@@ -5953,7 +5384,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
           h('span', null, chain.id),
           h('span', null, chain.strategy === 'round-robin' ? t('routing.strategy.roundRobin') : t('routing.strategy.fallback')),
           h('span', null, t('routing.memberCount').replace('{n}', String((chain.models ?? []).length)))),
-        h(ChainCapacity, { capacity, t }),
         h('div', { className: 'ofm_row' },
           h('span', { className: 'ofm_note' }, t('routing.resolved')),
           resolved.length === 0
@@ -6044,7 +5474,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
             chains.length === 0 ? null : h('div', { className: 'ofm_grid' }, chains.map((chain, index) => h(ChainCard, {
               key: chain.id, t, index, chain, lookup,
               resolved: resolvedOf(chain), missing: missingOf(chain),
-              capacity: (panel.data?.usable ?? []).find(row => row.id === chain.id),
               confirming: confirm === chain.id,
               onEdit: () => setEditing({ chain }),
               onDelete: () => { if (confirm === chain.id) void remove(chain.id); else setConfirm(chain.id) },
@@ -6130,7 +5559,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
     // The active page lives in localStorage so a reload — or the hot reload the
     // upgrader triggers — comes back to the page the user was reading.
     const TAB_KEY = 'ofm.tab'
-    const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade', 'picks']
+    const TABS = ['free', 'eac', 'channels', 'aggregate', 'saver', 'routing', 'ledger', 'logs', 'gateway', 'upgrade']
 
     function Shell(props) {
       const { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, setBusy, apply, bench, benches, ctx } = props
@@ -6142,8 +5571,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       })
       const tabRefs = useRef({})
       const [glider, setGlider] = useState({ left: 0, top: 0, width: 0, height: 0 })
-      const [catalogBusy, setCatalogBusy] = useState(false)
-      const catalogPending = useRef(false)
       useEffect(() => {
         try { window.localStorage?.setItem(TAB_KEY, tab) } catch { /* storage unavailable */ }
         const node = tabRefs.current[tab]
@@ -6153,22 +5580,14 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         if (node !== undefined && node !== null) setGlider({ left: node.offsetLeft, top: node.offsetTop, width: node.offsetWidth, height: node.offsetHeight })
       }, [tab, t.locale])
 
-      const runCatalog = async path => {
-        if (catalogPending.current) return
-        catalogPending.current = true
-        setCatalogBusy(true)
-        try {
-          await post(path, undefined, 600_000)
-          summary.reload(); stats.reload()
-        } catch (error) {
-          showToast({ title: t('settings.failed'), body: String(error?.message ?? error), tone: 'warn' })
-        } finally {
-          catalogPending.current = false
-          setCatalogBusy(false)
-        }
+      const refresh = async () => {
+        setBusy(true)
+        try { await post('/refresh', undefined, 600_000); summary.reload(); stats.reload() } finally { setBusy(false) }
       }
-      const refresh = () => runCatalog('/refresh')
-      const reprobe = () => runCatalog('/reprobe')
+      const reprobe = async () => {
+        setBusy(true)
+        try { await post('/reprobe', undefined, 600_000); summary.reload() } finally { setBusy(false) }
+      }
 
       const tabs = [
         ['free', t('nav.tab.free'), counts.available ?? 0],
@@ -6181,7 +5600,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         ['logs', t('nav.tab.logs'), null],
         ['gateway', t('nav.tab.gateway'), null],
         ['upgrade', t('nav.tab.upgrade'), null],
-        ['picks', t('nav.tab.picks'), null],
       ]
       const nav = h('nav', { className: 'ofm_nav' },
         h('span', { className: 'ofm_navbrand' },
@@ -6215,11 +5633,9 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                     ? h(GatewayPage, { t, ctx })
                     : tab === 'upgrade'
                       ? h(UpgradePage, { t, settings: data.settings, onApply: apply, busy })
-                    : tab === 'picks'
-                      ? h(PicksPage, { t })
                     : tab === 'eac'
-                      ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, catalogBusy, apply, bench, benches, refresh, reprobe })
-                      : h(FreePage, { t, data, counts, summary, stats, eacAuth, eacLogin, busy, catalogBusy, apply, bench, benches, refresh, reprobe })
+                      ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
+                      : h(FreePage, { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
 
       return h('div', { className: 'ofm_root ofm_shell' },
         h('div', { className: 'ofm_aurora', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
@@ -6227,20 +5643,8 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         page)
     }
 
-    function SponsorBanner({ t }) {
-      return h('aside', { className: 'ofm_sponsor_banner', 'aria-label': t('sponsor.bannerTitle') },
-        h('div', { className: 'ofm_sponsor_logo', 'aria-hidden': 'true' },
-          h('span', null, '北辰'), h('small', null, 'API')),
-        h('div', { className: 'ofm_sponsor_bannerbody' },
-          h('span', { className: 'ofm_sponsor_kicker' }, t('sponsor.bannerTag')),
-          h('h3', null, t('sponsor.bannerTitle')),
-          h('p', null, t('sponsor.bannerDescription'))),
-        h('a', { className: 'ofm_sponsor_cta', href: SPONSOR_CARD_URL, target: '_blank', rel: 'noopener noreferrer' },
-          h('span', null, t('sponsor.bannerCta')), h('span', { 'aria-hidden': 'true' }, '↗')))
-    }
-
     function FreePage(props) {
-      const { t, data, counts, summary, stats, eacAuth, eacLogin, busy, catalogBusy, apply, bench, benches, refresh, reprobe } = props
+      const { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe } = props
       // The denominator is the free lane's own roster — the only slice the
       // verdicts describe. Dividing by the whole catalog (which also carries
       // the never-probed EAC and Kilo entries) read a 6-of-10 lane as ~17%.
@@ -6258,7 +5662,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
       // and would paint a perfectly usable lane amber.
       const level = ratio >= 0.6 ? 'ok' : ratio >= 0.3 ? 'busy' : 'over'
       return h('div', { className: 'ofm_page' },
-        h(SponsorBanner, { t }),
         h('header', { className: 'ofm_hero ofm_glass' },
           h('div', { className: 'ofm_pagehead' },
             h('div', { className: 'ofm_pagetitle' },
@@ -6287,9 +5690,9 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                   : t('free.tankEmpty')),
                 h('span', { className: 'ofm_note' }, t('meta.description'))),
               h('div', { className: 'ofm_row' },
-                h(Button, { disabled: busy || catalogBusy, onClick: refresh }, catalogBusy || summary.status === 'loading' ? t('probing') : t('refresh')),
-                h(Button, { disabled: busy || catalogBusy, onClick: reprobe }, t('reprobe')))))),
-        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'free', onApply: apply, busy })),
+                h(Button, { disabled: busy, onClick: refresh }, summary.status === 'loading' ? t('probing') : t('refresh')),
+                h(Button, { disabled: busy, onClick: reprobe }, t('reprobe')))))),
+        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'free' })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },
           stats.status === 'ready' && stats.data !== undefined ? h(Dashboard, { stats: stats.data, summary: data, t })
             : h('p', { className: 'ofm_note' }, t('loading'))),
@@ -6300,7 +5703,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
     }
 
     function EacPage(props) {
-      const { t, data, summary, eacAuth, setEacAuth, eacLogin, busy, catalogBusy, apply, bench, benches, refresh, reprobe } = props
+      const { t, data, summary, eacAuth, setEacAuth, eacLogin, busy, bench, benches, refresh, reprobe } = props
       const { pool, poolError } = usePool()
       const reading = pool === undefined || pool === null ? null : poolReading(pool)
       const levelText = reading === null ? '' : reading.level === 'over' ? t('pool.levelOver') : reading.level === 'busy' ? t('pool.levelBusy') : t('pool.levelOk')
@@ -6310,7 +5713,6 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
           ?? (poolError !== '' ? poolError : t('pool.reasonUnknown')))
         : ''
       return h('div', { className: 'ofm_page' },
-        h(SponsorBanner, { t }),
         h('header', { className: 'ofm_hero ofm_glass' },
           h('div', { className: 'ofm_pagehead' },
             h('div', { className: 'ofm_pagetitle' },
@@ -6350,15 +5752,15 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
                   h('span', { className: 'ofm_note' }, `${t('pool.reach')} ${reading.rawPct ?? '—'}%`),
                   h('span', { className: 'ofm_note' }, capacityText(pool, t)))),
               h('div', { className: 'ofm_row' },
-                h(Button, { disabled: busy || catalogBusy, onClick: refresh }, catalogBusy || summary.status === 'loading' ? t('probing') : t('refresh')),
-                h(Button, { disabled: busy || catalogBusy, onClick: reprobe }, t('reprobe')))))),
+                h(Button, { disabled: busy, onClick: refresh }, summary.status === 'loading' ? t('probing') : t('refresh')),
+                h(Button, { disabled: busy, onClick: reprobe }, t('reprobe')))))),
         h(Section, { title: t('section.eac'), hint: t('section.eacHint') }, h(EacAuth, { t, auth: eacAuth, eacLogin })),
-        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'eac', onApply: apply, busy })),
+        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'eac' })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t })))
     }
 
     // ── announcement ──────────────────────────────────────────────────────────
-    const PAGES = ['ann.preamble', 'ann.newlane', 'ann.models', 'ann.steps', 'ann.features', 'ann.updates']
+    const PAGES = ['ann.preamble', 'ann.models', 'ann.steps', 'ann.features', 'ann.updates']
 
     function announcementPortalHost() {
       let host = document.querySelector('[data-ofm-announcement-root]')
@@ -6414,10 +5816,7 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
         h('h3', null, t('ann.preamble')),
         h('p', null, t('ann.pitch')),
         h('ul', null, list(t, ['ann.p1', 'ann.p2', 'ann.p3'])))
-      if (page === 1) return h(Fragment, null,
-        h('h3', null, t('ann.newlane')),
-        h('ul', null, list(t, ['ann.n1', 'ann.n2', 'ann.n3'])))
-      if (page === 2) {
+      if (page === 1) {
         // Advertised models first: this page is the tour a new user reads before
         // they pick anything, and a refused id at the top of it is a bad first
         // impression of a lane that is actually working.
@@ -6430,10 +5829,10 @@ const inject = ['slots', 'locale', 'connection', 'modelDirectories', 'sessions',
             h('span', null, `${t(`state.${m.availability}`)} · ${m.vision ? t('tag.vision') : t('tag.text')} · ${kilo(m.contextWindow)}`)))),
           rows.some(m => m.availability === 'region-blocked') ? h('p', { className: 'ofm_note' }, t('hint.region')) : null)
       }
-      if (page === 3) return h(Fragment, null,
+      if (page === 2) return h(Fragment, null,
         h('h3', null, t('ann.steps')),
         h('ul', null, list(t, ['ann.s1', 'ann.s2', 'ann.s3', 'ann.s4'])))
-      if (page === 4) return h(Fragment, null,
+      if (page === 3) return h(Fragment, null,
         h('h3', null, t('ann.features')),
         h('ul', null, list(t, ['ann.f1', 'ann.f2', 'ann.f3', 'ann.f4', 'ann.f5'])))
       return h(Fragment, null,
@@ -11755,7 +11154,7 @@ function summarizeClaim(result) {
 
     // ── 补丁 G：老 Jet Hub 的完整设置页 ───────────────────────────────────
     // 整体复用上游 Jet Hub 客户端产物（不逐功能重写；理由与边界见 patch-jet-hub-ui.mjs 模块头）。
-    // 源：jet-hub.js  sha256:50ef48b1bacf54d11d3138c664c274016c5d33eac7c285a0f455bb193f2de8a8
+    // 源：jet-hub.js  sha256:2a034588720badc9d4af90e9ec12d7ee4525eac43f4598b768f421a706bb3f6b
     // 换源记录与各版本对应关系见 jet-hub-client/NOTICE.md。
     // 包在 IIFE 里：内部符号不外泄，与 OFM 自己的同名变量互不干扰。
     // ⚠️ 已摘除它自带的用量徽标注册（避免与 OFM 那枚并排显示两枚胶囊）。
@@ -11900,6 +11299,8 @@ var STYLES = `
       声称「样式见本文件」，而本文件**零命中 officeace**（注释失实且无守卫）。
    ⚠️ 本文件的样式整体是一个模板字符串 —— 注释里**不能出现反引号**（会提前终止）。 */
 .dim-jh-providerIcon.officeace { background: transparent; }
+/* AStudio：内联 SVG 自带不透明品牌蓝底 + 白字 A，容器白底与其它内联 SVG 家一致。 */
+.dim-jh-providerIcon.astudio { background: white; }
 /* 聚合 provider：内联 SVG（三渠道汇聚），白底容器中显示清晰。
    ⚠️ 加这一条是必要的 —— 上面每家的 logoClass 都各自声明了背景，
       没有兜底规则，缺了会让聚合的图标容器**没有背景**（与其它行不一致）。 */
@@ -13218,8 +12619,8 @@ var PROVIDER_REGISTRY = Object.freeze([
   },
   {
     id: "opencode",
-    label: "OpenCode（已由 OFM 免费车道接管）",
-    displayName: "OpenCode（已由 OFM 免费车道接管）",
+    label: "OpenCode",
+    displayName: "OpenCode",
     logoClass: "opencode",
     // ⚠️ `balance: true` 但语义**不是余额**而是「**通道可用性**」：Zen 没有公开的
     //    余额 API（15 个候选路径全 404），故徽标展示我们真正测得到的东西
@@ -13312,25 +12713,89 @@ var PROVIDER_REGISTRY = Object.freeze([
     //    ⇒ **该入口尚未实现**，客户端只做诚实展示（三类积分桶 + 重置倒计时 +
     //    「删除该账号后重新登录」这条手动路径），不渲染任何点不动的控件。
     credits: { balance: true, dailyCheckin: false },
-    // ⚠️ `rateLimit: false` —— 这里的判据是 registry 自己的落地问法：
-    //    「这个按钮点下去，能不能让用户**少**受限一次？」答否即 false。
-    //    accio 两条都不满足：
-    //    ① 适配器**不写** `modelRateLimits`（`provider-runtime-wiring.spec.ts`
-    //       的 `WRITE_SITE_FILES` 把它登记为空，并由一条用例**验证**它确实无写点）
-    //       ⇒ 账号永远没有标记可清；
-    //    ② `src/index.ts` 的 `probeById` 没有它的条目（该表被守卫锁成**恰好**
-    //       「会写标记的家」）⇒ 点「重测」时 `retestAccount` 走到
-    //       `modelIds.length === 0` 处**提前返回**：零请求、零清除。
-    //    两者叠加 ⇒ 面板级的「重测所有 / 重置所有」与卡片级的两个按钮**全部恒为
-    //    惰性**。那正是本仓库记录过的报障形态（「按钮响应这么快，是不是坏了」）。
-    //    ⚠️ 与 loomy / gemini **理由不同**（它们是真会限流、只是按钮管辖不到）：
-    //    accio 是**根本没有这组按钮的作用对象**。
-    //    ⚠️ 「省略 = true 以免老用户失去按钮」那条理由**不适用于全新 provider**：
-    //    accio 没有存量用户，没有「功能回退」可言。
-    //    ⇒ 将来接上请求级换号 + 冷却（届时必须同时进 `probeById` 与
-    //    `WRITES_RATE_LIMIT_PROVIDERS`）时，**本行要一起改回 true**。
-    rateLimit: false,
+    // ⚠️⚠️ **`rateLimit` 已于 2026-10-18 由 `false` 改回 `true`**（issue IKM3ZV 修复）。
+    //    判据是 registry 自己的落地问法：「这个按钮点下去，能不能让用户**少**受限
+    //    一次？」—— 而**当时**答否，两条都不满足：
+    //    ① 适配器不写 `modelRateLimits` ⇒ 账号永远没有标记可清；
+    //    ② `src/index.ts` 的 `probeById` 没有它的条目 ⇒ 「重测」零请求、零清除。
+    //    接上请求级换号 + 冷却（`accio-adapter.ts` 的 `markCurrentAccount`，
+    //    额度至 UTC+8 当日 24:00 / 限流 1h）后 ① 已不成立，② 同步登记 ⇒ 本行翻转。
+    //
+    // ⚠️⚠️ **这三处必须同改**（本陷阱在本仓库已复发过多次）：
+    //    本行 + `src/index.ts` 的 `probeById` + `tests/helpers/provider-sets.ts`
+    //    的 `WRITES_RATE_LIMIT_PROVIDERS`。漏任一处 ⇒ 标记写进去却永远清不掉
+    //    （用户点「重测」报「没有探测适配器」）。三者由 `provider-runtime-wiring.spec.ts`
+    //    的 probe 域守卫**双向**比对锁死（漏一家 / 多一家都点名变红）。
+    //
+    // ⚠️ 与 loomy / gemini / officeace 各自的 `rateLimit: false` **理由不同**：
+    //    那三家是「真会限流、但按钮管辖不到 / 根本没有作用对象」；accio 现在是
+    //    「真的会写标记，且探测适配器已登记」⇒ 是**实打实可用**的入口。
+    rateLimit: true,
     settingsNamespace: "llm-accio",
+    channel: true
+  },
+  {
+    id: "astudio",
+    label: "AStudio (讯飞)",
+    displayName: "AStudio",
+    logoClass: "astudio",
+    // AStudio 每日奖励签到对接 client-popups/pending（DAILY_REWARD_DIALOG）与
+    // client-popups/complete 领取流程 ⇒ dailyCheckin 启用为 true。
+    credits: { balance: true, dailyCheckin: true },
+    // ⚠️ rateLimit: false —— 判据同 accio（registry 落地问法「点下去能不能让用户少受限一次？」）：
+    //    astudio-adapter 不写 modelRateLimits，且刻意不进 src/index.ts 的 probeById
+    //    （probeById 被守卫锁成「恰好是会写标记的家」）⇒ 两个按钮恒为惰性。
+    //    将来接上请求级换号+冷却时必须同时改回 true 并进 probeById + WRITES_RATE_LIMIT_PROVIDERS。
+    rateLimit: false,
+    // ⚠️ **`creditPackages: true`**（2026-10-20 用户报障补）：本字段决定**账号名 hover
+    //    是否列出资源包**（`plugin-src/client/credits-capabilities.js` 的
+    //    `supportsCreditPackageList` 直接读它）。缺它 ⇒ 积分行只显示
+    //    「1/4 个资源包有效」而 **hover 看不到每个包与到期时间**，与其它 provider 不一致
+    //    （用户报障原文：「hover 应该能看到没过期的资源包」）。
+    //    依据：`buildAstudioBalance`（`astudio-credits.ts`）**已经**把四个池逐包解析出了
+    //    到期时间（`member` / `buy` / `activity` / `spark` 各自的 `*NextExpireTime`）
+    //    ⇒ 数据本来就齐，此前只是没声明。
+    creditPackages: true,
+    settingsNamespace: "llm-astudio",
+    channel: true
+  },
+  {
+    id: "autoclaw",
+    label: "AutoClaw (智谱)",
+    displayName: "AutoClaw (智谱)",
+    logoClass: "autoclaw",
+    credits: { balance: true, dailyCheckin: true },
+    // ⚠️⚠️ **2026-10-17 审计修正：本渠道「按批次分档」是尽力而为，不是保证**。
+    //
+    // 事实链（三条缺一，结论就反了）：
+    // ① `autoclaw-credits.ts` 用**流水批次包**替换钱包包，逐包带 `deductionEndTime`
+    //    （毫秒，与 officeace / buddy 同单位）—— 钱包接口本身没有任何到期字段；
+    // ② ⚠️ **流水的 `amount` 是「历史发放额」，不是「该批次当前剩余额」** ——
+    //    上游**没有**「该批次已消耗多少」这一腿（对照 `trae-credits.ts` 的
+    //    `remaining = creditsLimit - used`：两腿都在才算得出剩余；本渠道只有发放那一腿）。
+    //    ⇒ 用户**消耗过积分后**，未过期批次之和 ≠ `total_balance`；
+    // ③ 因此下游以「批次和 == `total_balance`」为**守恒安全网**，不守恒即回退钱包包
+    //    （总额与长期数仍正确，只是**没有**临期档）⇒ 临期档只在恰好守恒的那次轮询出现。
+    //
+    // ⇒ 本行是「把 `windowDays` 回传给客户端，使分档行在有批次包时能渲染」的
+    //    **能力开关**，不是数据保证。
+    // ⚠️ 与 `src/aggregate-expiry.ts` 的 `autoclawExpiry` 注释口径一致：
+    //    聚合折算恒为 `NEVER`（钱包包无 `deductionEndTime`），两处不冲突。
+    creditPackages: true,
+    // ⚠️ 与 buddy / officeace 同口径（按到期时间分桶，窗口复用
+    //    `DSH_BUDDY_EXPIRING_WINDOW_DAYS`）。**必须登记**：查表分派只认这个
+    //    标记回传 `windowDays`，漏登记的症状是「胶囊只有合计、没有三档带色行」
+    //    —— 与 officeace 当初（`officeace 必须回传 windowDays`）同一根因。
+    // ⚠️ 「每日红 + 刷新倒计时」**不适用于本渠道**：那套语义
+    //    （`DAILY_POOL_NAMES = ['每日赠送','每日积分']`，**精确相等**匹配，见
+    //    `plugin-src/client/credit-expiry.js`）是 Loomy / Raccoon 那种
+    //    **当日重置池**（未用完随重置作废）；AutoClaw 的每日签到积分是发放进余额、
+    //    按批次各自到期 —— 隐藏池（服务端 `display:false`）已在解析器滤掉，
+    //    流水批次的包名取服务端描述（实测「每日签到」**不等于**「每日积分」）
+    //    ⇒ 两条路径都不再命中那份名单，「每日 0」红字消失。
+    usesExpiryWindow: true,
+    rateLimit: false,
+    settingsNamespace: "llm-autoclaw",
     channel: true
   },
   {
@@ -13649,6 +13114,160 @@ function OpencodeProxyModal({ ctx, accountId, current, onClose }) {
           "p",
           { className: "dim-jh-hint" },
           `出口 IP ${result.exitIp}（${result.country || "未知地区"}）· ${result.latencyMs}ms`
+        ),
+        error && React.createElement("p", { className: "dim-jh-error" }, error)
+      ),
+      React.createElement(
+        "div",
+        { className: "dim-jh-modalActions" },
+        React.createElement("button", {
+          type: "button",
+          className: "dim-jh-btn",
+          disabled: testing || busy || url.trim().length === 0,
+          onClick: test
+        }, testing ? "测试中…" : "测试连接"),
+        // 只有已配置过才显示「清除」：没配过就没有可清除的东西。
+        current ? React.createElement("button", {
+          type: "button",
+          className: "dim-jh-btn",
+          disabled: busy,
+          onClick: () => save("")
+        }, "清除代理") : null,
+        React.createElement("button", {
+          type: "button",
+          className: "dim-jh-btn dim-jh-btnPrimary",
+          disabled: busy || url.trim().length === 0,
+          onClick: () => save(url)
+        }, "保存"),
+        React.createElement("button", { type: "button", className: "dim-jh-btn", onClick: close }, "取消")
+      )
+    )
+  );
+}
+function GeminiProxyModal({ ctx, accountId, current, onClose }) {
+  const [mode, setMode] = React.useState(guessMode(current));
+  const [url, setUrl] = React.useState(current || "");
+  const [busy, setBusy] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [result, setResult] = React.useState(null);
+  const close = () => {
+    if (onClose) onClose();
+  };
+  const save = async (value) => {
+    setBusy(true);
+    setError("");
+    try {
+      await ctx.rpc({ method: "gemini.setProxy", payload: { accountId, proxy: value } });
+      close();
+    } catch (err) {
+      setError(err && err.message ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const test = async () => {
+    setTesting(true);
+    setError("");
+    setResult(null);
+    try {
+      const r = await ctx.rpc({ method: "gemini.testProxy", payload: { proxy: url } });
+      setResult(r);
+    } catch (err) {
+      setError(err && err.message ? err.message : String(err));
+    } finally {
+      setTesting(false);
+    }
+  };
+  const activeHint = (MODES.find((m) => m.id === mode) || {}).hint || "";
+  return React.createElement(
+    "div",
+    {
+      className: "dim-jh-modalOverlay dim-jh-modalOverlay--top",
+      onClick: (e) => {
+        if (e.target === e.currentTarget) close();
+      }
+    },
+    React.createElement(
+      "div",
+      {
+        className: "dim-jh-modal",
+        role: "dialog",
+        "aria-modal": "true",
+        style: { maxWidth: "520px" }
+      },
+      React.createElement(
+        "div",
+        { className: "dim-jh-modalHead" },
+        React.createElement("div", { className: "dim-jh-modalTitle" }, "设置 Gemini 出口代理"),
+        React.createElement(
+          "span",
+          { className: "dim-jh-modalSubtitle" },
+          current ? "当前：已配置" : "当前：直连（本机出口）"
+        )
+      ),
+      // ⚠️ 这段提示是本功能的存在理由，且必须**诚实**：不说清「系统代理不生效」，
+      // 用户会以为自己开着 Clash 系统代理就万事大吉（浏览器能用 ≠ 插件能用）。
+      React.createElement(
+        "p",
+        { className: "dim-jh-modalHint" },
+        "Google 的登录与接口都在墙外。浏览器能打开授权页，是因为浏览器读系统代理；插件进程不读，所以「浏览器授权成功、面板里账号却一直不出现」是同一个原因。设置这里的代理后，该账号的登录、续期、积分与对话都会走它。"
+      ),
+      React.createElement(
+        "div",
+        { className: "dim-jh-modalBody" },
+        React.createElement(
+          "div",
+          { className: "dim-jh-fieldRow" },
+          MODES.map((m) => React.createElement(
+            "label",
+            { key: m.id, className: "dim-jh-radio" },
+            React.createElement("input", {
+              type: "radio",
+              name: "gemini-proxy-mode",
+              checked: mode === m.id,
+              onChange: () => {
+                setMode(m.id);
+                setError("");
+                setResult(null);
+              }
+            }),
+            m.label
+          ))
+        ),
+        React.createElement("p", { className: "dim-jh-hint" }, activeHint),
+        mode === "local" && React.createElement(
+          "div",
+          { className: "dim-jh-presetRow" },
+          LOCAL_PORT_PRESETS.map((p) => React.createElement("button", {
+            key: p.port,
+            type: "button",
+            className: "dim-jh-btn",
+            title: p.hint,
+            onClick: () => {
+              setUrl(p.url);
+              setError("");
+              setResult(null);
+            }
+          }, p.label))
+        ),
+        React.createElement("input", {
+          className: "dim-jh-input",
+          placeholder: mode === "socks5" ? "socks5://user:pass@host:port" : "http://user:pass@host:port",
+          value: url,
+          // ⚠️ 含认证信息时用 password 类型：代理口令不该裸显在屏幕上。
+          type: url.includes("@") ? "password" : "text",
+          onChange: (e) => {
+            setUrl(e.target.value);
+            setResult(null);
+          }
+        }),
+        // ⚠️ **不说「出口 IP」**：这里测的是「能不能连上 Google」，
+        // 回显 HTTP 状态码（400 也是通的，见宿主侧注释）。
+        result && React.createElement(
+          "p",
+          { className: "dim-jh-hint" },
+          `已连通 Google（HTTP ${result.status}）· ${result.latencyMs}ms`
         ),
         error && React.createElement("p", { className: "dim-jh-error" }, error)
       ),
@@ -14186,14 +13805,16 @@ function allModelsDisabled(models) {
 }
 
 // plugin-src/client/new-account.js
-var PROVIDERS_ASKING_OPTIONS = Object.freeze(["zcode", "accio"]);
+var PROVIDERS_ASKING_OPTIONS = Object.freeze(["zcode", "accio", "astudio", "autoclaw"]);
 function newAccountAsksChannel(provider) {
   return PROVIDERS_ASKING_OPTIONS.includes(provider);
 }
-function buildCreateAccountPayload(provider, zcodeProvider, accioRegion) {
-  if (provider !== "zcode" && provider !== "accio") return { provider };
+function buildCreateAccountPayload(provider, zcodeProvider, accioRegion, astudioLoginMethod, autoclawMode) {
+  if (provider !== "zcode" && provider !== "accio" && provider !== "astudio" && provider !== "autoclaw") return { provider };
   if (provider === "zcode") return { provider, zcodeProvider };
-  return { provider, accioRegion };
+  if (provider === "accio") return { provider, accioRegion };
+  if (provider === "astudio") return { provider, astudioLoginMethod: astudioLoginMethod ?? "local" };
+  return { provider, autoclawMode: autoclawMode ?? "local" };
 }
 
 // plugin-src/client/model-bulk.js
@@ -14882,7 +14503,7 @@ function summarizeProviderToggle(enabled, res) {
   parts.push(accounts > 0 ? `已停用 ${accounts} 个账号` : "没有账号需要停用");
   return parts.join("，");
 }
-function sortOpenProvidersByOrder(openProviders, order) {
+function sortOpenProvidersByOrder(openProviders, order, declaredOrder) {
   const list = Array.isArray(openProviders) ? openProviders : [];
   const seq = Array.isArray(order) ? order : [];
   if (seq.length === 0) return list;
@@ -14892,6 +14513,40 @@ function sortOpenProvidersByOrder(openProviders, order) {
     if (typeof id === "string" && id.length > 0 && !rank.has(id)) rank.set(id, index);
   }
   if (rank.size === 0) return list;
+  const declared = Array.isArray(declaredOrder) ? declaredOrder : [];
+  if (declared.length > 0) {
+    const anchorOf = /* @__PURE__ */ new Map();
+    for (let index = 0; index < declared.length; index++) {
+      const id = declared[index];
+      if (typeof id !== "string" || id.length === 0) continue;
+      if (rank.has(id)) continue;
+      let anchor = null;
+      for (let back = index - 1; back >= 0; back--) {
+        const prev = declared[back];
+        if (rank.has(prev) || anchorOf.has(prev)) {
+          anchor = prev;
+          break;
+        }
+      }
+      anchorOf.set(id, anchor);
+    }
+    if (anchorOf.size > 0) {
+      const effective = new Map(rank);
+      for (const [id, anchor] of anchorOf) {
+        const declaredIndex = declared.indexOf(id);
+        const anchorKey = anchor === null ? -1 : effective.get(anchor) ?? -1;
+        effective.set(id, anchorKey + declaredIndex / (declared.length + 1));
+      }
+      return [...list].sort((a, b) => {
+        const ra = effective.get(a?.id);
+        const rb = effective.get(b?.id);
+        if (ra !== void 0 && rb !== void 0) return ra - rb;
+        if (ra !== void 0) return -1;
+        if (rb !== void 0) return 1;
+        return 0;
+      });
+    }
+  }
   return [...list].sort((a, b) => {
     const ra = rank.get(a?.id);
     const rb = rank.get(b?.id);
@@ -15624,6 +15279,8 @@ var GEMINI_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5
 var AGGREGATE_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PGNpcmNsZSBjeD0iNSIgY3k9IjUiIHI9IjIuNiIgZmlsbD0iIzRGOERGNyIvPjxjaXJjbGUgY3g9IjUiIGN5PSIxOSIgcj0iMi42IiBmaWxsPSIjOUI3MkNCIi8+PGNpcmNsZSBjeD0iMTkiIGN5PSIxMiIgcj0iMi42IiBmaWxsPSIjNEY4REY3Ii8+PHBhdGggZD0iTTcgNi4yIDE2LjQgMTFNNyAxNy44IDE2LjQgMTMiIHN0cm9rZT0iIzlCNzJDQiIgc3Ryb2tlLXdpZHRoPSIxLjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgZmlsbD0ibm9uZSIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEuNSIgZmlsbD0iIzlCNzJDQiIvPjwvc3ZnPg==";
 var OFFICEACE_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiB4PSIyIiB5PSIyIiByeD0iNCIgZmlsbD0iI2M3MDAwMCIvPjx0ZXh0IHg9IjEyIiB5PSIxNS41IiBmb250LXNpemU9IjgiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiNmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk9BPC90ZXh0Pjwvc3ZnPg==";
 var ACCIO_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iI0ZGNkEwMCIvPjxwYXRoIGQ9Ik03LjQgMTcuMiAxMSA2LjhoMmwzLjYgMTAuNGgtMi4xbC0uNzItMi4yNEgxMC4ybC0uNzIgMi4yNEg3LjRaIiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTTEwLjc0IDEzLjI2aDIuNTJMMTIgOS41bC0xLjI2IDMuNzZaIiBmaWxsPSIjRkY2QTAwIi8+PC9zdmc+";
+var ASTUDIO_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzFGNkZFQiIvPjxwYXRoIGQ9Ik0xMiA2LjIgMTcuNiAxOC4yaC0yLjJsLTEuMi0yLjlIOS44bC0xLjIgMi45SDYuNHoiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSI5LjIiIHk9IjEyLjYiIHdpZHRoPSI1LjYiIGhlaWdodD0iMS41IiBmaWxsPSIjRkZGRkZGIi8+PC9zdmc+";
+var AUTOCLAW_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0Ij48cmVjdCB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHJ4PSI1IiBmaWxsPSIjNDM2MWVlIi8+PHBhdGggZD0iTTcgOGwzIDNsLTItNG00IDBsMyA0bC0yLTNtNCAwbDMgNWwtMi00IiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+";
 var PROVIDER_ICONS = {
   codearts: CODEARTS_ICON,
   buddy: CODEBUDDY_ICON,
@@ -15645,6 +15302,8 @@ var PROVIDER_ICONS = {
   gemini: GEMINI_ICON,
   officeace: OFFICEACE_ICON,
   accio: ACCIO_ICON,
+  astudio: ASTUDIO_ICON,
+  autoclaw: AUTOCLAW_ICON,
   modelscope: MODELSCOPE_ICON,
   aggregate: AGGREGATE_ICON
 };
@@ -16170,18 +15829,19 @@ function AccountCard({
         className: "dim-jh-btn",
         onClick: () => onToggle(account.id, !account.enabled)
       }, account.enabled ? "停用" : "启用"),
-      // ⚠️ 仅 opencode：出口代理与指纹轮换是该 provider **独有**的账号维度
-      // （其余 provider 没有这两项）。用 props 存在性开关而非
+      // ⚠️ 仅 opencode / gemini：出口代理是该 provider 独有的**账号维度**能力
+      // （其余 provider 没有这一项）。用 props 存在性开关而非
       // `provider === 'opencode'` 硬判断 —— 前者让 AccountCard 无需知道
       // provider 列表，也避免以后新增同类 provider 时漏改。
       // 位置在「停用」之后、「删除」之前：删除按钮带 data-kind='danger'，
       // 是这一行的视觉终点，不能被挤到中间。
       onOpenProxy ? React3.createElement("button", {
         className: "dim-jh-btn",
-        // ⚠️ tooltip 必须解释「不设置会怎样」：看到「代理」按钮很容易
-        // 当成锦上添花，实际不设 = 与其它账号共用同一出口（同一份额度）。
-        title: account.opencodeProxy ? "出口代理：" + account.opencodeProxy + "（点击修改）" : "设置该账号的出口代理；不设置则与其它未设代理的账号共享本机出口 IP",
-        onClick: () => onOpenProxy(account.id, account.opencodeProxy || "")
+        // ⚠️ tooltip 必须解释「不设置会怎样」。两家语义不同，故按
+        // `account.geminiProxy !== undefined` 分流文案：opencode 是
+        // 「共用出口 = 共用额度」，gemini 是「出不去 = 恒连不上」。
+        title: account.opencodeProxy ? "出口代理：" + account.opencodeProxy + "（点击修改）" : account.geminiProxy !== void 0 ? "出口代理：" + (account.geminiProxy || "直连") + "（点击修改）" : "设置该账号的出口代理；" + (account.geminiProxy !== void 0 ? "不设置则直连本机（出不去墙外服务）" : "不设置则与其它未设代理的账号共享本机出口 IP"),
+        onClick: () => onOpenProxy(account.id, account.opencodeProxy || account.geminiProxy || "")
       }, "代理") : null,
       onRotateFingerprint ? React3.createElement("button", {
         className: "dim-jh-btn",
@@ -16708,6 +16368,155 @@ function StatusDot({ ok, title }) {
     title,
     "aria-label": title
   });
+}
+function MinimaxXffPanel({ rpcCall, value, onSaved, onClose }) {
+  const mounted = React3.useRef(true);
+  React3.useEffect(() => () => {
+    mounted.current = false;
+  }, []);
+  const [draft, setDraft] = React3.useState(value ?? "");
+  const [busy, setBusy] = React3.useState(false);
+  const [notice, setNotice] = React3.useState(null);
+  const save = async (override) => {
+    const payloadValue = typeof override === "string" ? override : draft;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await rpcCall("minimax.setXff", { xff: payloadValue });
+      if (!mounted.current) return;
+      const next = typeof res?.xff === "string" ? res.xff : "";
+      setDraft(next);
+      onSaved(next);
+      setNotice(next === "" ? { kind: "ok", text: "已清除：后续请求不附 X-Forwarded-For（将按真实出口 IP 分流）。" } : { kind: "ok", text: `已保存并生效：${next}` });
+    } catch (caught) {
+      if (!mounted.current) return;
+      setDraft(value ?? "");
+      setNotice({
+        kind: "bad",
+        text: (caught instanceof Error ? caught.message : String(caught)) + `（当前生效值未改动：${value === "" ? "未设置" : value}）`
+      });
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  return React3.createElement(
+    "div",
+    {
+      className: "dim-jh-modalOverlay dim-jh-modalOverlay--top",
+      onClick: (event) => {
+        if (event.target === event.currentTarget) onClose();
+      }
+    },
+    React3.createElement(
+      "div",
+      {
+        className: "dim-jh-modal",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-label": "MiniMax 国际站分流设置"
+      },
+      React3.createElement(
+        "div",
+        { className: "dim-jh-modalHead" },
+        React3.createElement(
+          "div",
+          { className: "dim-jh-modalTitle" },
+          React3.createElement("strong", null, "MiniMax 国际站分流设置")
+        ),
+        React3.createElement(
+          "div",
+          { className: "dim-jh-modelPanelActions" },
+          React3.createElement("button", {
+            className: "dim-jh-btn",
+            onClick: onClose
+          }, "关闭")
+        )
+      ),
+      React3.createElement(
+        "div",
+        { className: "dim-jh-modalBody" },
+        // ── 原因说明 ──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-hint" },
+          "MiniMax 国际站的服务器按**出口 IP 所在国家**分流：中国大陆 IP 会被重定向到中国站，从而出现「余额查询失败」「模型不可用」，而凭据本身是好的。"
+        ),
+        // ── 两条出路（先给更正当的那条）──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-hint" },
+          "① 推荐：用代理把出口 IP 改到海外（此时无需本设置）；② 应急：在下面填一个海外 IP，让请求被判为海外来源。"
+        ),
+        // ── 输入 ──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-field" },
+          React3.createElement(
+            "label",
+            { className: "dim-jh-fieldLabel", htmlFor: "dim-jh-minimax-xff" },
+            "X-Forwarded-For（留空 = 不伪造来源）"
+          ),
+          React3.createElement("input", {
+            id: "dim-jh-minimax-xff",
+            className: "dim-jh-input",
+            type: "text",
+            value: draft,
+            spellCheck: false,
+            autoComplete: "off",
+            placeholder: "例如 8.8.8.8（只接受 IPv4 / IPv6）",
+            disabled: busy,
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === "Enter" && !busy) void save();
+            }
+          })
+        ),
+        // ── 结果 / 错误 ──
+        notice !== null ? React3.createElement("div", {
+          className: "dim-jh-hint",
+          style: notice.kind === "bad" ? { color: "var(--dim-danger, #e5534b)" } : void 0
+        }, notice.text) : null,
+        // ── 风险说明（必须显式写出来）──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-hint" },
+          "⚠️ 该值是**声明一个并非本机的来源 IP**，仅在应急时使用；上游若改为不信任该头，本设置会失效（届时仍会如实报错，不会假装成功）。"
+        ),
+        // ── 操作 ──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-modalActions" },
+          React3.createElement("button", {
+            className: "dim-jh-btn",
+            "data-kind": "primary",
+            disabled: busy,
+            onClick: () => void save()
+          }, busy ? "保存中…" : "保存"),
+          /**
+           * ⚠️ 「清除设置」**必须真的落盘**，不能只清输入框。
+           *
+           * 初版写的是 `onClick: () => setDraft('')` —— 只改了本地草稿，
+           * 后端仍是旧值。用户点完看到输入框空了，会以为已经关掉绕过分流，
+           * 而实际请求**仍在带 XFF**（症状：他以为改回了正常行为，其实没有）。
+           * ⇒ 这里直接调后端清空并回读，语义与「保存空值」完全一致。
+           */
+          React3.createElement("button", {
+            className: "dim-jh-btn",
+            disabled: busy || draft === "" && value === "",
+            /**
+             * ⚠️ **不要在这里 `setDraft('')`**（2026-10-17 审计指出的细节）：
+             * `save('')` 成功后会回读 `next` 并 `setDraft(next)`；失败时 catch 会把
+             * draft 回滚到真值 `value`。若这里先清空，一旦失败就会出现
+             * 「输入框空、实际仍带 XFF」的不一致。
+             */
+            onClick: () => {
+              void save("");
+            }
+          }, "清除设置")
+        )
+      )
+    )
+  );
 }
 function ClineQuotaPanel({ rpcCall, onClose }) {
   const mounted = React3.useRef(true);
@@ -17808,6 +17617,8 @@ function ProviderPanel({ provider, rpcCall }) {
   const compensationClaimRef = React3.useRef(false);
   const [zcodeProvider, setZcodeProvider] = React3.useState("bigmodel");
   const [accioRegion, setAccioRegion] = React3.useState("cn");
+  const [astudioLoginMethod, setAstudioLoginMethod] = React3.useState("local");
+  const [autoclawMode, setAutoclawMode] = React3.useState("local");
   const [pendingLogin, setPendingLogin] = React3.useState(void 0);
   const [probeBusy, setProbeBusy] = React3.useState(null);
   const [probeNotice, setProbeNotice] = React3.useState(null);
@@ -17859,6 +17670,8 @@ function ProviderPanel({ provider, rpcCall }) {
   }, [provider, rpcCall]);
   const canLoadCredits = supportsCreditBalance(provider);
   const accioDialog = provider === "accio";
+  const astudioDialog = provider === "astudio";
+  const autoclawDialog = provider === "autoclaw";
   const supportsCredits = supportsDailyCheckin(provider);
   const supportsGrowthTasks = GROWTH_TASK_PROVIDERS.has(provider);
   const canShowSubscriptionQuota = supportsSubscriptionQuota(provider);
@@ -17988,6 +17801,22 @@ function ProviderPanel({ provider, rpcCall }) {
       alive = false;
     };
   }, [canLockPermanent, provider]);
+  React3.useEffect(() => {
+    if (provider !== "minimaxintl") return void 0;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await rpcCall("minimax.getXff", {});
+        if (!alive) return;
+        setMinimaxXff(typeof res?.xff === "string" ? res.xff : "");
+      } catch (caught) {
+        console.error("[jet-hub] load minimax xff failed:", caught);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [provider]);
   const togglePermanentLock = async () => {
     if (!canLockPermanent) return;
     const next = !permanentLocked;
@@ -18040,6 +17869,8 @@ function ProviderPanel({ provider, rpcCall }) {
   };
   const [showModels, setShowModels] = React3.useState(false);
   const [showQuota, setShowQuota] = React3.useState(false);
+  const [minimaxXff, setMinimaxXff] = React3.useState("");
+  const [showMinimaxXff, setShowMinimaxXff] = React3.useState(false);
   const claimCredits = async () => {
     if (!supportsCredits) return;
     if (claimInFlightRef.current) {
@@ -18214,7 +18045,9 @@ function ProviderPanel({ provider, rpcCall }) {
     try {
       const res = await rpcCall(
         "account.create",
-        buildCreateAccountPayload(provider, zcodeProvider, accioRegion)
+        // ⚠ 两个 provider 各占一个位置参数（astudio 第 4 位、autoclaw 第 5 位），
+        //    不可合并成一个 —— 载荷字段不同，合并会静默串台（见 new-account.js）。
+        buildCreateAccountPayload(provider, zcodeProvider, accioRegion, astudioLoginMethod, autoclawMode)
       );
       accountId = res.accountId;
       loginUrl = res.loginUrl;
@@ -18223,6 +18056,11 @@ function ProviderPanel({ provider, rpcCall }) {
         setLoginUrlForManual(null);
         await loadAccounts();
         setProbeNotice({ tone: "ok", text: "已复用本机已有的账号凭据，未新建账号。", details: [] });
+        return;
+      }
+      if (!loginUrl) {
+        await loadAccounts();
+        setProbeNotice({ tone: "ok", text: "已成功导入账号凭据。", details: [] });
         return;
       }
       if (loginUrl) {
@@ -18580,6 +18418,30 @@ function ProviderPanel({ provider, rpcCall }) {
           },
           disabled: creating
         }, creating ? "正在登录…" : "+ 新建账号"),
+        /**
+         * ⚠️ **只给 MiniMax 国际版**（issue IKMEVG）：它的数据面
+         * `agent.minimax.io` 按**出口 IP 国别**把中国大陆来源 307 到中国站，
+         * 于是大陆网络下国际站账号永远拿不到数据面（与 token 有效性无关）。
+         * 这里给一个入口让用户填海外 IP 绕开该分流。
+         *
+         * ⚠️ 其它 provider 一律不渲染（多一个永远无效的按钮只会让用户困惑）。
+         *
+         * ⚠️ **位置必须在「+ 新建账号」之后**（2026-10-17 用户要求
+         * 「minimax国际版的新建账号放在国际站分流之前」）：新建账号是**主操作**，
+         * 分流设置是**排障用的次要入口** —— 次要项排在主操作前面会让用户
+         * 先看到「分流设置」而不是「怎么加账号」。
+         */
+        provider === "minimaxintl" ? React3.createElement("button", {
+          className: "dim-jh-btn",
+          "data-kind": minimaxXff !== "" ? "primary" : void 0,
+          title: `MiniMax 国际站的服务器会按**出口 IP 所在国家**决定把你路由到哪个站：中国大陆 IP 会被 307 重定向到中国站，表现为「余额查询失败 / 模型不可用」。
+
+在此填写一个**海外 IP**（如 8.8.8.8）即可让请求被判为海外来源、留在国际站。
+留空 = 不伪造来源（推荐先用代理改变出口 IP，那是更正当的方式）。
+
+当前：${minimaxXff === "" ? "未设置" : minimaxXff}`,
+          onClick: () => setShowMinimaxXff(true)
+        }, minimaxXff !== "" ? "国际站分流：已绕过" : "国际站分流设置") : null,
         // ★ 预选对话框（用户 2026-10-03：从按钮旁搬到弹窗里）
         //
         // ⚠ 内容按 provider 分支：zcode 问**登录渠道**，accio 问**登录区域**
@@ -18612,14 +18474,16 @@ function ProviderPanel({ provider, rpcCall }) {
             React3.createElement(
               "h3",
               { className: "dim-jh-zcDialogTitle" },
-              accioDialog ? "添加 Accio 账号" : "添加 ZCode 账号"
+              // ⚠ 弹窗服务四个 provider（zcode / accio / astudio / autoclaw），
+              //   各问各的东西：渠道 / 区域 / AStudio 登录方式 / AutoClaw 登录方式。
+              astudioDialog ? "添加 AStudio 账号" : autoclawDialog ? "添加 AutoClaw 账号" : accioDialog ? "添加 Accio 账号" : "添加 ZCode 账号"
             ),
             React3.createElement(
               "p",
               { className: "dim-jh-zcDialogHint" },
-              accioDialog ? "Accio 的登录页按区域分域名，且区域由服务端按账号下发 —— 登录前无法自动判断。请选择该账号所属的区域，否则会打开打不开的登录页。" : "选择登录渠道后才会打开对应的认证页面。两个渠道的授权页与凭据各自独立，"
+              astudioDialog ? "支持导入本机桌面端已登录会话，或在浏览器中打开三合一登录页（支持手机短信/账号密码/微信扫码）。" : autoclawDialog ? "请选择登录方式：可直接读取本机已安装并登录的桌面端凭据，或使用手机短信验证码快速登录。" : accioDialog ? "Accio 的登录页按区域分域名，且区域由服务端按账号下发 —— 登录前无法自动判断。请选择该账号所属的区域，否则会打开打不开的登录页。" : "选择登录渠道后才会打开对应的认证页面。两个渠道的授权页与凭据各自独立，"
             ),
-            accioDialog ? null : React3.createElement(
+            accioDialog || astudioDialog || autoclawDialog ? null : React3.createElement(
               "p",
               { className: "dim-jh-zcDialogHint" },
               "可用 z.ai（国际）登录另一个账号。"
@@ -18627,26 +18491,253 @@ function ProviderPanel({ provider, rpcCall }) {
             React3.createElement(
               "label",
               { className: "dim-jh-zcProvider" },
-              accioDialog ? "登录区域" : "登录渠道",
-              accioDialog ? React3.createElement(
-                "select",
-                {
-                  className: "dim-jh-zcSelect",
-                  value: accioRegion,
-                  onChange: (event) => setAccioRegion(event.target.value)
-                },
-                React3.createElement("option", { value: "cn" }, "中国版（www.accio-ai.com）"),
-                React3.createElement("option", { value: "global" }, "国际版（zh.accio.com）")
-              ) : React3.createElement(
-                "select",
-                {
-                  className: "dim-jh-zcSelect",
-                  value: zcodeProvider,
-                  onChange: (event) => setZcodeProvider(event.target.value)
-                },
-                React3.createElement("option", { value: "bigmodel" }, "BigModel（智谱开放平台，国内）"),
-                React3.createElement("option", { value: "zai" }, "z.ai（chat.z.ai，国际版）")
-              )
+              astudioDialog ? "登录方式" : autoclawDialog ? "登录方式" : accioDialog ? "登录区域" : "登录渠道"
+              // ⚠️⚠️ **原生 `<select>` 已整体删除**（2026-10-17 审计 P2 修复，
+              //    本次合并 astudio 侧时一并采纳 —— astudio 侧原本还留着第四个死 select）。
+              //   原先此处有**四个**各自带 `style:{display:'none'}` 的 `<select>`
+              //   （astudioLoginMethod / autoclawMode / accioRegion / zcodeProvider），
+              //   功能已由下方**单选卡片组**接管（Windows/Electron 下原生下拉经常点不开）。
+              //   ⇒ 那四个是纯**死 DOM**：不可见、其 `onChange` 永不触发，
+              //     却仍渲染出 `<option>` 并把 state 挂在上面 ——
+              //     既是维护陷阱（改 options 会让人误以为生效），
+              //     也是「一份状态两套 UI 判据」这种本仓库红线形态。
+              //   ⚠️ 守卫已同步改写：`tests/unit/new-account-dialog.spec.ts`
+              //     里原先断言 `value: accioRegion` / `onChange: …target.value`
+              //     （原生 select 专属形态）的那几条，现在锁的是**卡片组**的
+              //     `onClick: () => setXxx(opt.value)` —— 否则删掉死 DOM
+              //     会让守卫变成「保护一个不存在的东西」。
+              // ⚠️ **label 自身到此闭合**（2026-10-17 审计 P2 修复）：
+              //   删掉原先那个 `<select>`（第三个子参数）后，`label` 的
+              //   `createElement(` 只剩两个参数 ⇒ 必须补这个右括号，
+              //   否则 esbuild 报 `Expected ")" but found ";"`。
+              //   ⚠️ 这类语法错误**单测查不出来**（本仓库 client 守卫多为
+              //   源码文本断言，不做解析）⇒ 改完本文件**必须**跑
+              //   `pnpm build:client`，见 AGENTS.md 的「单测只读源码文本」那条。
+            ),
+            // 彻底解决 Windows/Electron 下原生 <select> 下拉框经常点不开的恶心 bug：使用 100% 可靠的 DOM 单选卡片组
+            React3.createElement(
+              "div",
+              {
+                style: {
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  margin: "8px 0 16px"
+                }
+              },
+              astudioDialog ? [
+                { value: "local", label: "⚡ 一键导入本机桌面端凭据", desc: "需已在 AStudio 桌面端登录，自动读取本地会话" },
+                { value: "web", label: "🌐 网页三合一快捷登录", desc: "在浏览器载体页中登录，支持手机短信/账号密码/微信扫码，免依赖桌面端" }
+              ].map((opt) => {
+                const active = astudioLoginMethod === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setAstudioLoginMethod(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              }) : accioDialog ? [
+                { value: "cn", label: "🇨🇳 中国版（www.accio-ai.com）", desc: "适用于 Accio 国内站点账号" },
+                { value: "global", label: "🌐 国际版（zh.accio.com）", desc: "适用于 Accio 国际站点账号" }
+              ].map((opt) => {
+                const active = accioRegion === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setAccioRegion(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              }) : autoclawDialog ? [
+                { value: "local", label: "⚡ 一键导入本机桌面端凭据", desc: "需已在 AutoClaw 桌面端登录，自动秒级解密" },
+                { value: "sms", label: "📱 手机验证码快速登录", desc: "免安装桌面端，支持输入任意手机号登录" }
+              ].map((opt) => {
+                const active = autoclawMode === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setAutoclawMode(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              }) : [
+                { value: "bigmodel", label: "🇨🇳 BigModel（智谱开放平台，国内）", desc: "适用于 open.bigmodel.cn 国内平台账号" },
+                { value: "zai", label: "🌐 z.ai（chat.z.ai，国际版）", desc: "适用于 z.ai 国际版账号" }
+              ].map((opt) => {
+                const active = zcodeProvider === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setZcodeProvider(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              })
             ),
             React3.createElement(
               "div",
@@ -18655,14 +18746,20 @@ function ProviderPanel({ provider, rpcCall }) {
                 className: "dim-jh-btn",
                 onClick: () => setPendingLogin(void 0)
               }, "取消"),
-              React3.createElement("button", {
-                className: "dim-jh-btn",
-                "data-kind": "primary",
-                onClick: () => {
-                  setPendingLogin(void 0);
-                  void createAccount();
-                }
-              }, "确定并打开认证页")
+              React3.createElement(
+                "button",
+                {
+                  className: "dim-jh-btn",
+                  "data-kind": "primary",
+                  onClick: () => {
+                    setPendingLogin(void 0);
+                    void createAccount();
+                  }
+                  // ⚠ 两家（astudio / autoclaw）都在「本机导入」档时改成导入语义文案，
+                  //    其余档都是打开认证页。两个 provider 各判各的，不可合并。
+                },
+                astudioDialog && astudioLoginMethod === "local" || autoclawDialog && autoclawMode === "local" ? "确定并导入本地账号" : "确定并打开认证页"
+              )
             )
           )
         )
@@ -18839,8 +18936,16 @@ function ProviderPanel({ provider, rpcCall }) {
           // ⚠️ 仅 opencode：这两个回调只在该 provider 下传，
           // AccountCard 靠「props 存在性」决定是否渲染按钮。
           ...provider === "opencode" ? {
-            onOpenProxy: (id, current) => setProxyModal({ accountId: id, current }),
+            onOpenProxy: (id, current) => setProxyModal({ provider, accountId: id, current }),
             onRotateFingerprint: (id) => void rotateFingerprint(id)
+          } : {},
+          // ⚠️ **Gemini 也要「代理」按钮**（Gitee issue IKLTZ2）：它的全部端点
+          // 都在墙外，而插件进程**不读系统代理** ⇒ 没出口就恒连不上。
+          // ⚠️ 与 opencode **刻意分成两个回调**而不是共用：两者读不同的池字段
+          //（`geminiProxy` / `opencodeProxy`）、调不同的端点前缀、共用会让
+          // 「清掉 Gemini 的代理」连带清掉 opencode 的出口配置。
+          ...provider === "gemini" ? {
+            onOpenProxy: (id, current) => setProxyModal({ provider, accountId: id, current })
           } : {},
           // ⚠️ **本 fork 独有**（modelscope，2026-10-17）：编辑访问令牌。
           // 同样只在该 provider 下传，靠「props 存在性」决定是否渲染按钮。
@@ -18872,6 +18977,13 @@ function ProviderPanel({ provider, rpcCall }) {
         rpcCall,
         onClose: () => setShowQuota(false)
       }) : null,
+      // MiniMax 国际站分流设置弹窗（issue IKMEVG）：覆盖层，独立 state。
+      showMinimaxXff ? React3.createElement(MinimaxXffPanel, {
+        rpcCall,
+        value: minimaxXff,
+        onSaved: (next) => setMinimaxXff(next),
+        onClose: () => setShowMinimaxXff(false)
+      }) : null,
       // 出口代理弹窗（仅 opencode）：覆盖层，与上面两个弹窗各自独立 state，
       // 同时打开也只是叠加，不会互相顶掉。
       //
@@ -18882,7 +18994,7 @@ function ProviderPanel({ provider, rpcCall }) {
       // 不同，React 抛 #310（"Rendered more hooks than during the previous render"），
       // 整个设置页崩成白屏。仓库其它弹窗（ModelListPanel / BackupPanel /
       // ClineQuotaPanel）都是 `createElement` 形式，正是这个原因。
-      proxyModal ? React3.createElement(OpencodeProxyModal, {
+      proxyModal ? React3.createElement(proxyModal.provider === "gemini" ? GeminiProxyModal : OpencodeProxyModal, {
         // ⚠️ 传最小 ctx 门面而不是整个面板：弹窗只需要 rpc，
         // 这样它在单测/复用时不必拖上整个 ProviderPanel 的依赖。
         ctx: { rpc: (payload) => rpcCall(payload.method, payload.payload) },
@@ -20165,7 +20277,7 @@ function GatewayPanel({ status, busy, notice, onToggle, onReload, onClose }) {
     )
   );
 }
-var AGG_WIRED_CHANNEL_LABELS = "buddy / workbuddy / loomy / codearts / zcode / lobsterai / trae / accio / officeace / modelscope";
+var AGG_WIRED_CHANNEL_LABELS = "buddy / workbuddy / loomy / codearts / zcode / lobsterai / trae / accio / officeace / modelscope / autoclaw";
 var AGG_EXPIRY_REPROBE_MS = 2 * 60 * 1e3;
 function AggregatePanel({ rpcCall }) {
   const [models, setModels] = React3.useState(null);
@@ -20868,7 +20980,15 @@ function JetHubPage({ rpcCall }) {
       list.map((p) => renderProviderRow(p))
     );
     return [
-      group(`已打开 (${open.length})`, sortOpenProvidersByOrder(open, providerOrder), "open"),
+      // ⚠️ 第三个实参 = **声明顺序**（注册表全量 id）。传它才能让
+      // `providerOrder` 里缺失的**新增** provider 落回它该在的位置，
+      // 而不是被缀到末尾（真实缺陷，2026-10-17 用户报障
+      // 「minimax 国际版的顺序应该在中国版下面」）。
+      group(
+        `已打开 (${open.length})`,
+        sortOpenProvidersByOrder(open, providerOrder, PROVIDERS.map((p) => p.id)),
+        "open"
+      ),
       group(`已关闭 (${closed.length})`, closed, "closed")
     ];
   };
@@ -22914,7 +23034,7 @@ function apply(ctx) {
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth, PicksPage, RecoCard, DICT, useChannelRpc, Shell, CSS }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth }
     return module.exports
   },
 })

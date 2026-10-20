@@ -40759,7 +40759,7 @@ async function createGlue() {
     }
     return cachedView;
   };
-  const readString10 = (ptr, len) => decoder2.decode(heap().subarray(ptr >>> 0, (ptr >>> 0) + len));
+  const readString11 = (ptr, len) => decoder2.decode(heap().subarray(ptr >>> 0, (ptr >>> 0) + len));
   const objects = new Array(1024).fill(void 0);
   objects.push(void 0, null, true, false);
   let firstFree = objects.length;
@@ -40798,7 +40798,7 @@ async function createGlue() {
       len = v.getInt32(stack + 4, true);
       const isError = v.getInt32(stack + 12, true);
       if (isError) throw takeObject(v.getInt32(stack + 8, true));
-      return readString10(ptr, len);
+      return readString11(ptr, len);
     } catch (error) {
       throw describeWasmFailure(error);
     } finally {
@@ -40850,7 +40850,7 @@ async function createGlue() {
     __wbindgen_object_drop_ref: (a) => takeObject(a),
     __wbindgen_object_clone_ref: (a) => pushObject(heapObject(a)),
     __wbindgen_cast_0000000000000001: (a, e) => pushObject(heap().subarray(a >>> 0, (a >>> 0) + e)),
-    __wbindgen_cast_0000000000000002: (a, e) => pushObject(readString10(a, e)),
+    __wbindgen_cast_0000000000000002: (a, e) => pushObject(readString11(a, e)),
     __wbg_set_08463b1df38a7e29: (a, e, t) => pushObject(heapObject(a).set(heapObject(e), heapObject(t))),
     // ⚠️ 这两个签名**方向相反**：一个写 wasm 内存，一个调 JS 对象。
     // 写反会得到 Rust panic `unreachable`。
@@ -40888,9 +40888,9 @@ async function createGlue() {
     __wbg_static_accessor_SELF_24f78b6d23f286ea: () => globalThis.self === void 0 ? 0 : pushObject(globalThis.self),
     __wbg_static_accessor_WINDOW_59fd959c540fe405: () => globalThis.window === void 0 ? 0 : pushObject(globalThis.window),
     __wbg___wbindgen_throw_81fc77679af83bc6: (p, l) => {
-      throw new Error(readString10(p, l));
+      throw new Error(readString11(p, l));
     },
-    __wbg_Error_2e59b1b37a9a34c3: (p, l) => pushObject(new Error(readString10(p, l))),
+    __wbg_Error_2e59b1b37a9a34c3: (p, l) => pushObject(new Error(readString11(p, l))),
     __wbg___wbindgen_is_object_40c5a80572e8f9d3: (id) => {
       const v = heapObject(id);
       return typeof v === "object" && v !== null;
@@ -40905,7 +40905,7 @@ async function createGlue() {
     exports,
     heap,
     view,
-    readString: readString10,
+    readString: readString11,
     writeString,
     lastLength: () => lastLength,
     heapObject,
@@ -40931,6 +40931,20 @@ async function generateRuntimeAuthFields(user) {
     g.exports.generate_runtime_auth_fields(stack, a, g.lastLength());
   });
   return JSON.parse(raw);
+}
+async function decryptServerResponse(encrypted) {
+  const g = await getGlue();
+  return g.callString((stack) => {
+    const a = g.writeString(encrypted);
+    g.exports.decrypt_server_response(stack, a, g.lastLength());
+  });
+}
+async function decryptServerResponseOrRaw(text) {
+  try {
+    return await decryptServerResponse(text);
+  } catch {
+    return text;
+  }
 }
 var QoderEncryptedInfer = class _QoderEncryptedInfer {
   constructor(g, context, metadata, host) {
@@ -41716,31 +41730,77 @@ var QoderAdapter = class extends LlmAdapter4 {
     this.options = options;
     this.product = options.product ?? QODER;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.fallbackIndex = new Map(
-      (this.product.fallbackModels ?? []).map((model) => [model.id, model])
+    this.catalogGate = new RemoteCatalogGate(
+      options.onCatalogLoaded === void 0 ? {} : { onLoaded: options.onCatalogLoaded }
     );
     this.catalog = createModelCatalog(
       { accountPool: options.accountPool },
       {
         product: this.product,
-        loadCatalog: () => this.catalogEntries(),
+        loadCatalog: () => this.loadCatalogEntries(),
         // ⚠️ 未知 id 保守报 ['text']（宁可少报能力，也不报服务端可能不认的模态）。
         unknownModelInputModalities: () => ["text"],
-        syncCatalog: () => this.catalogEntries()
+        syncCatalog: () => this.syncCatalogEntries(),
+        /**
+         * ★ **强制重拉**（后台 20 分钟刷新器 + 「用户改设置」）。
+         *
+         * ⚠️ 与 `loadCatalog` 的差别：后者自带新鲜度判据 ⇒ 新鲜时**不拉**；
+         * 本回调要的是「无视新鲜度，强制拉一次」。故先清时刻再调同一方法
+         * —— **不另写一份拉取逻辑**（两条路的上游行为才不会分叉）。
+         */
+        refresh: async () => {
+          this.catalogAt = 0;
+          await this.ensureRemoteModels();
+        }
+      }
+    );
+    this.fallbackCatalog = createModelCatalog(
+      { accountPool: options.accountPool },
+      {
+        product: this.product,
+        loadCatalog: () => this.fallbackEntries(),
+        syncCatalog: () => this.fallbackEntries(),
+        unknownModelInputModalities: () => ["text"]
       }
     );
   }
   options;
   product;
   fetchImpl;
-  /** 产品级兜底模型索引（`product.fallbackModels` 的 id → 条目）。 */
-  fallbackIndex;
   /**
    * ⚠️ **2026-10-08 Task 7b：三个方法收敛到共享骨架** `createModelCatalog`。
    * 原先 `listModels` / `resolveModel` / `listAllModels` 各写一遍骨架，
    * 现在只剩 `toCatalogEntry`（本家私有形状 + 静态表判据 + 倍率格式）。
    */
   catalog;
+  /**
+   * **远端**模型目录缓存（成功拉取后保留 20 分钟）。
+   *
+   * ⚠️ 2026-10-20 前本家**恒用编译期兜底表**（一次远端请求都不发），
+   * 上游改价/改免费额度/上下架模型都不会反映 —— 用户报障
+   * 「DeepSeek-Flash 上游已经 0×（免费）了，插件还显示 0.1」。
+   * 现在远端优先、兜底表只作回退（见 `src/qoder-catalog.ts`）。
+   */
+  remoteModels;
+  /**
+   * 上次**成功**读到远端目录的时刻（0 = 从未成功过）。
+   *
+   * ⚠️ 与 `remoteModels` **并存**、不是替代：前者存「有哪些模型」，
+   * 本字段存「何时读到的」（只有前者的目录永不刷新）。
+   */
+  catalogAt = 0;
+  /** 目录加载闸门：并发去重 + 失败/空结果冷却。 */
+  catalogGate;
+  /**
+   * **静态兜底表专用**的第二套骨架（只在 `resolveModel` 的并集回退里用）。
+   *
+   * ⚠️ 存在的唯一理由：`resolveModel` 与 `listModels` 共用 `loadCatalog()`，
+   * 而前者要「远端 ∪ 静态表」、后者要「远端独占」。故把静态表也包成一套
+   * `ModelCatalog`，让**骨架自己的装配逻辑**（裸名/context/reasoning）
+   * 复用到回退路径上，而不是在适配器里重写一遍。
+   * `loadCatalog` / `syncCatalog` 都是同步静态表 ⇒ 零网络。
+   */
+  fallbackCatalog;
   /**
    * 可中止的休眠；信号中止时立即 resolve（不抛错，由调用方检查 signal）。
    *
@@ -41960,16 +42020,51 @@ The request used endpoint ${JSON.stringify(endpoint)}. Expected { pageItems: [{ 
     return { id, name: this.product.displayName };
   }
   /**
+   * 按 id 取**当前**目录条目（远端优先，回退编译期兜底表）。
+   *
+   * ⚠️ **不能用构造期的静态索引**：只存在于远端的模型（如 `fast`）查静态表会得到
+   * 「未知」，而本方法与 `stream()` 都把它当**能力判据**用 —— `accio` 记过同款教训
+   * （把「未知」当「明确不支持」会让能力**静默变窄**：图片被拒、档位消失）。
+   */
+  /**
+   * 按 id 取条目，供**能力/元数据**判据使用：**远端优先，未命中回退编译期兜底表**。
+   *
+   * ## ⚠️⚠️ 为什么必须是「两份目录的并集」，而不是只用远端
+   *
+   * 第一版把它写成 `catalogSource().find(...)`（远端落地后静态表完全不参与），
+   * 被独立审计打穿（缺陷 1，已复现）：**远端目录是「按账号」下发的**，
+   * 一个免费额度号只拿到 2 条；此时静态表里其它 15 条模型会被判成「未知」
+   * ⇒ `inputModalitiesFor` 报 `['text']` ⇒ `stream()` **硬拒图片**
+   * （`UNSUPPORTED_CONTENT`），同时 `resolveModel` 的 name 退化成裸 id、
+   * `context`/`reasoning` 消失、请求体的 `display_name`/`max_input_tokens`/
+   * `is_reasoning` 一并退化。
+   *
+   * | 场景 | 只查远端（第一版） | 并集（现行） |
+   * |---|---|---|
+   * | `dmodel` + 远端大目录 | ✅ | ✅ 远端优先 |
+   * | `dmodel` + 远端只剩 2 条（免费号） | ❌ 硬拒图片 + 元数据退化 | ✅ 回退静态表 |
+   * | `fast`（只在远端有） | ✅ | ✅ 远端命中 |
+   *
+   * ⚠️ **菜单（`listModels`）仍以远端为准** —— 这条并集只作用于
+   * 「能力/元数据判据」，不改变「有哪些模型可选」。本仓同型铁律见
+   * `docs/agent-notes/client-ui.md` 的「判『某个 id 在不在目录里』时两个目录
+   * 来源必须取并集」（Issue IKJW33）：让**能力**判据取并集，让**可选项**保持单一来源。
+   */
+  catalogModel(id) {
+    return this.catalogSource().find((model) => model.id === id) ?? this.product.fallbackModels.find((model) => model.id === id);
+  }
+  /**
    * 模型接受的输入模态。
    *
-   * 按**模型**判定（兜底表的 `supportsImage`），不是按 provider 一刀切。
+   * 按**模型**判定（目录条目的 `supportsImage`），不是按 provider 一刀切。
    * 未声明时**保守报 text**：宁可少报能力（用户改用文本描述），
    * 也不要报一个服务端不认的模态（请求会失败）。
    *
-   * ⚠️ 兜底表是本地估计值，不是远端权威数据 —— 见 `qoder-product.ts` 的说明。
+   * ⚠️ 判据取自 `catalogModel()`（**远端 ∪ 静态表**）—— 只取远端会让
+   * 「按账号收缩的目录」把静态表里已知的模型判成未知（见该方法的表）。
    */
   inputModalitiesFor(model) {
-    return this.fallbackIndex.get(model)?.supportsImage === true ? ["text", "image"] : ["text"];
+    return this.catalogModel(model)?.supportsImage === true ? ["text", "image"] : ["text"];
   }
   /**
    * 完整模型目录（**不应用用户黑名单**），含最终展示名（倍率/免费标记）。
@@ -41985,17 +42080,21 @@ The request used endpoint ${JSON.stringify(endpoint)}. Expected { pageItems: [{ 
    * （以「模型目录。」开头、讲「Qoder 的模型列表端点需要 WASM 签名」）——
    * 它本来是某个已被删掉的方法的文档，删方法时留下了壳。
    * 它与紧邻的本块连在一起看像「同一个方法有两套互相矛盾的文档」。
-   * 已删除；那段内容里仍然有效的部分（恒用产品兜底表、不发网络请求）
-   * 在下面 `toCatalogEntry` 的注释里。
+   * 已删除。
+   *
+   * ⚠️ **那段旧文档里「恒用产品兜底表、不发网络请求」这句已于 2026-10-20 作废**：
+   * 本家现在与其余 12 家同形 —— 远端优先（`src/qoder-catalog.ts`）、
+   * 兜底表只作回退。见 `catalogSource()` 的注释。
    */
   listAllModels() {
     return this.catalog.listAllModels();
   }
   /**
-   * 把本家兜底表条目转成共享骨架的中间结构。
+   * 把本家目录条目（**远端优先**，回退兜底表）转成共享骨架的中间结构。
    *
-   * ⚠️ 本家**恒用本地兜底表**（不发网络请求，见 `listModels` 的说明），
-   * 故 `loadCatalog` 与 `syncCatalog` 取同一份数据。
+   * ⚠️ 远端条目经 `src/qoder-catalog.ts` 归一成与兜底表**同形**的结构后才到这里
+   * ⇒ 倍率/档位/能力三条判据对两条来源**完全同源**（不会出现「远端少了某个
+   * 字段于是倍率不显示」这类分叉）。
    */
   toCatalogEntry(model) {
     const reasoning = this.reasoningForEntry(model);
@@ -42011,7 +42110,17 @@ The request used endpoint ${JSON.stringify(endpoint)}. Expected { pageItems: [{ 
       // 「宁可少报能力，也不要报一个服务端不认的模态」）⇒ 不会是 undefined。
       inputModalities: model.supportsImage === true ? ["text", "image"] : ["text"],
       ...model.contextWindow > 0 ? { contextWindow: model.contextWindow } : {},
-      ...reasoning !== void 0 ? { reasoning } : {}
+      ...reasoning !== void 0 ? { reasoning } : {},
+      /**
+       * ⚠️ **必须透出**（缺陷 2，2026-10-20 审计）：Jet Hub 的「免费额度」分组
+       * **只**认 `model.isFree === true`（`plugin-src/client/model-groups.js`），
+       * 而 `cline-adapter.ts` 的成文约定也是「`isFree` 必须透出」。
+       *
+       * 改造前本家从未写这个键 ⇒ 免费模型**全被归进「按量计费」**；
+       * 改造后解析层（`qoder-catalog.ts`）已产出 `isFree`，但装配层漏了，
+       * 于是端到端仍只到「展示名里带 `· 免费`」为止。
+       */
+      ...model.isFree === true ? { isFree: true } : {}
     };
   }
   /**
@@ -42038,21 +42147,108 @@ The request used endpoint ${JSON.stringify(endpoint)}. Expected { pageItems: [{ 
       ...fallback !== void 0 && efforts.includes(fallback) ? { defaultEffort: ReasoningEffortId4(fallback) } : {}
     };
   }
-  catalogEntries() {
+  /**
+   * 目录来源：**远端优先**，未落地时回退编译期兜底表。
+   *
+   * ⚠️ 回退不是「优化」而是**必需**：纯插件用户（或上游目录接口故障时）
+   * 若目录为空，DSH 的 `buildModelCatalog` 会把该 provider 判成「没有模型」
+   * 而**整个隐藏**（`providerCatalogVisible` 之外的第二层门）。
+   */
+  catalogSource() {
+    return this.remoteModels ?? this.product.fallbackModels;
+  }
+  /** 同步视图（`listAllModels()` 与 `CatalogEntry` 转换共用）。 */
+  syncCatalogEntries() {
+    return this.catalogSource().map((model) => this.toCatalogEntry(model));
+  }
+  /** 编译期兜底表的条目视图（第二套骨架专用；同步、零网络）。 */
+  fallbackEntries() {
     return this.product.fallbackModels.map((model) => this.toCatalogEntry(model));
+  }
+  async loadCatalogEntries() {
+    await this.ensureRemoteModels();
+    return this.syncCatalogEntries();
+  }
+  /**
+   * 懒加载远端模型目录（**每 20 分钟**一次；失败/空结果走闸门冷却）。
+   *
+   * 三条口径与其余 12 家逐字同构：
+   * 1. 入口用 `isCatalogFreshFor`（多一条「用户刚改设置⇒立即失效」的正交腿）；
+   * 2. 并发去重与失败冷却交给 `RemoteCatalogGate`（同一份实现，不自己写判据）；
+   * 3. **只在成功时**记 `catalogAt`（失败也记会让一次网络抖动把 TTL 上界刷掉，
+   *    下一轮要再等满 20 分钟才发现上游没恢复）。
+   */
+  async ensureRemoteModels() {
+    if (this.remoteModels !== void 0 && isCatalogFreshFor(this.product.id, this.catalogAt, this.nowImpl())) {
+      return;
+    }
+    await this.catalogGate.run(async () => {
+      const models = await this.loadRemoteModels();
+      if (models.length === 0) return false;
+      this.remoteModels = [...models];
+      this.catalogAt = this.nowImpl();
+      return true;
+    });
+  }
+  /**
+   * 真发一次远端目录请求（失败返回空数组，由闸门记冷却）。
+   *
+   * ⚠️ **不在这里解析凭据**：取数是接线层注入的 `fetchRemoteModels`
+   *（= `QoderAuth.fetchModels(pool)`），它只做池的**只读**读取。
+   * 理由见 `QoderAdapterOptions.fetchRemoteModels` 的长注释
+   *（走 `resolveCredential` 会把「本次实际使用的账号」改写成目录用的账号）。
+   */
+  async loadRemoteModels() {
+    const fetchRemote = this.options.fetchRemoteModels;
+    if (fetchRemote === void 0) return [];
+    try {
+      return await fetchRemote();
+    } catch (error) {
+      this.options.warn?.(
+        `[qoder] \u6A21\u578B\u76EE\u5F55\u8BFB\u53D6\u5931\u8D25\uFF0C\u9000\u7528\u5185\u7F6E\u515C\u5E95\u8868\uFF1A${errorMessage(error)}`
+      );
+      return [];
+    }
+  }
+  nowImpl() {
+    return this.options.now?.() ?? Date.now();
+  }
+  /**
+   * ★ **后台目录刷新入口**（`src/index.ts` 的 `refreshOf` 调 `adapter.refresh?.()`）。
+   *
+   * ⚠️⚠️ **必须显式转发** `catalog.refresh`：`ModelCatalog` 上的成员**不会**
+   * 自动变成适配器的成员（`dead-model-store.ts` 的 `pruned()` Proxy 只透传
+   * **适配器自己的**成员）。漏转发 ⇒ 刷新器「已武装」却对本家**空转**，
+   * 且**零日志** —— 这条陷阱在 `accio-adapter.ts` 有逐字记录（`be42b25` 踩过）。
+   * ⚠️ 与 `options.refresh`（HTTP 401 后的**凭据**续期）**不是同一件事**，
+   * 两者同名纯属巧合，**不得合并**。
+   */
+  async refresh() {
+    await this.catalog.refresh?.();
   }
   async listModels(_provider) {
     return this.catalog.listModels(_provider);
   }
   /**
-   * 解析模型元信息。
+   * 解析模型元信息（**能力/元数据的并集回退**，见 `catalogModel()` 的表）。
    *
-   * ⚠️ **`reasoning` 是「思考强度」选择器出现在模型菜单里的唯一入口**
-   * （composer 读 `resolveModel().reasoning`）—— 该判据现在由
-   * `toCatalogEntry` 提供（见 `reasoningForEntry`）。
+   * ## ⚠️ 为什么这里要路由到两套目录
+   *
+   * `resolveModel` 与 `listModels` **共用** `loadCatalog()`，但两者的正确口径不同：
+   * - `listModels`（**菜单**）必须**只**给当前账号真能用的模型 ⇒ 远端独占；
+   * - `resolveModel`（**元数据**）必须认识「可能正在被使用、但不在当前账号菜单里」
+   *   的模型（会话开着、目录随账号收缩）⇒ 远端 ∪ 静态表。
+   *
+   * 故：远端目录认识该 id 就照旧走它（新值优先）；不认识而静态表有，就交给
+   * **静态表专用的第二个骨架实例** —— 复用骨架自己的装配逻辑（裸名 / context /
+   * reasoning 三态），**不在这里重写一遍**（那会是同一语义的第二套判据）。
    */
   async resolveModel(provider, model, signal) {
-    return this.catalog.resolveModel(provider, model, signal);
+    await this.ensureRemoteModels();
+    if (this.catalogSource().some((entry) => entry.id === model)) {
+      return this.catalog.resolveModel(provider, model, signal);
+    }
+    return this.fallbackCatalog.resolveModel(provider, model, signal);
   }
   /**
    * 兼容 0.1.1-rc.2：新版 `LlmRuntime.prepareCall()` 会调用
@@ -42112,7 +42308,7 @@ The request used endpoint ${JSON.stringify(endpoint)}. Expected { pageItems: [{ 
     const userText = typeof lastUser?.content === "string" ? lastUser.content : Array.isArray(lastUser?.content) ? lastUser.content.filter((block) => block.type === "text").map((block) => String(block.text ?? "")).join("") : "";
     const history2 = buildQoderHistory(messages);
     const tools = buildQoderTools(options.tools);
-    const fallback = this.fallbackIndex.get(options.model);
+    const fallback = this.catalogModel(options.model);
     const titlePlan = planSessionTitleThinking({
       purpose: options.purpose,
       requestedEffort: options.reasoningEffort === void 0 ? void 0 : String(options.reasoningEffort),
@@ -42400,7 +42596,19 @@ function qoderDisplayName(model, now = /* @__PURE__ */ new Date()) {
 }
 function registerQoderLlm(ctx, options) {
   const product = options.product ?? QODER;
-  const adapter = new QoderAdapter(options);
+  const adapter = new QoderAdapter({
+    ...options,
+    // ⚠️ 两项都**只在调用方没给时**兜底：`onCatalogLoaded` 必须接到广播上
+    //（远端目录异步落地后不广播 ⇒ 模型选择器永久停在冷启动那份兜底表），
+    // `warn` 接 `ctx.logger`（否则「目录读取失败」是一条零日志的静默回退）。
+    onCatalogLoaded: options.onCatalogLoaded ?? (() => {
+      broadcastCatalogChanged(ctx);
+    }),
+    warn: options.warn ?? ((message2) => {
+      ctx.logger?.warn?.(message2);
+    }),
+    product
+  });
   registerAdapterIdempotent(ctx.llm, [product.id], adapter);
   return adapter;
 }
@@ -49419,6 +49627,248 @@ var LobsteraiAuth = class extends Service3 {
 import { Service as Service4 } from "@deepseek-ai/cordis";
 import { credentialRef as credentialRef5 } from "@deepseek-ai/dsh-credentials";
 
+// vendor/channel-pack/src/qoder-catalog.ts
+var QODER_MODEL_LIST_PATH = "/api/v2/model/list?Encode=1";
+var QODER_CATALOG_SCENE = "chat";
+var QODER_CATALOG_TIMEOUT_MS = 15e3;
+var EFFORT_WHITELIST = /* @__PURE__ */ new Set([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+]);
+var EFFORT_ALIASES = /* @__PURE__ */ new Map([
+  ["disabled", "none"],
+  ["off", "none"]
+]);
+function readString3(source, key) {
+  if (typeof source !== "object" || source === null) return void 0;
+  const value = source[key];
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function asRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function readNumber(source, key) {
+  if (typeof source !== "object" || source === null) return void 0;
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : void 0;
+  }
+  return void 0;
+}
+function normalizeEffort(raw) {
+  const key = raw.trim().toLowerCase();
+  const aliased = EFFORT_ALIASES.get(key) ?? key;
+  return EFFORT_WHITELIST.has(aliased) ? aliased : void 0;
+}
+function parseEfforts(value) {
+  const dedupe = (raw) => {
+    const out = [];
+    const seen2 = /* @__PURE__ */ new Set();
+    for (const item of raw) {
+      if (typeof item !== "string") continue;
+      const key = normalizeEffort(item);
+      if (key === void 0 || seen2.has(key)) continue;
+      seen2.add(key);
+      out.push(key);
+    }
+    return out;
+  };
+  if (Array.isArray(value)) return { efforts: dedupe(value) };
+  if (typeof value === "string") return { efforts: dedupe(value.split(/[,\s]+/)) };
+  const record3 = asRecord3(value);
+  if (record3 === void 0) return { efforts: [] };
+  const efforts = [];
+  const seen = /* @__PURE__ */ new Set();
+  let defaultEffort;
+  for (const [rawKey2, rawValue] of Object.entries(record3)) {
+    const key = normalizeEffort(rawKey2);
+    if (key === void 0 || seen.has(key)) continue;
+    seen.add(key);
+    efforts.push(key);
+    const flag = asRecord3(rawValue);
+    if (flag?.is_default === true || flag?.isDefault === true) defaultEffort = key;
+  }
+  return defaultEffort === void 0 ? { efforts } : { efforts, defaultEffort };
+}
+function effortsFromEntry(entry) {
+  const top = parseEfforts(entry.efforts);
+  if (top.efforts.length > 0) return top;
+  for (const blockKey of ["thinking_config", "thinkingConfig"]) {
+    const block = asRecord3(entry[blockKey]);
+    if (block === void 0) continue;
+    const direct = parseEfforts(block.efforts);
+    if (direct.efforts.length > 0) return direct;
+    for (const enabledKey of ["enabled", "enabledConfig"]) {
+      const enabled = asRecord3(block[enabledKey]);
+      if (enabled === void 0) continue;
+      const nested = parseEfforts(enabled.efforts);
+      if (nested.efforts.length > 0) return nested;
+    }
+  }
+  return { efforts: [] };
+}
+function hasDisabledBranch(block) {
+  if (block === void 0) return false;
+  return block.disabled !== void 0 && block.disabled !== null && block.disabled !== false;
+}
+function parseThinking(entry) {
+  let ownDisabled = false;
+  for (const blockKey of ["thinking_config", "thinkingConfig"]) {
+    if (hasDisabledBranch(asRecord3(entry[blockKey]))) ownDisabled = true;
+  }
+  let parsed = effortsFromEntry(entry);
+  let sourceDisabled = ownDisabled;
+  if (parsed.efforts.length === 0 && !ownDisabled) {
+    const alt = asRecord3(entry.available_reasoning_effort ?? entry.availableReasoningEffort);
+    if (alt !== void 0) {
+      parsed = effortsFromEntry({ thinking_config: alt });
+      if (hasDisabledBranch(alt)) sourceDisabled = true;
+    }
+  }
+  let supportsDisable = sourceDisabled;
+  if (entry.supports_disabled === true || entry.supportsDisabled === true) supportsDisable = true;
+  if (parsed.defaultEffort === void 0) {
+    const top = entry.default_effort ?? entry.defaultEffort;
+    if (typeof top === "string") parsed = { ...parsed, defaultEffort: normalizeEffort(top) };
+  }
+  return { ...parsed, supportsDisable };
+}
+function parseContextWindow(entry) {
+  const maxOf = (values) => {
+    let max = 0;
+    for (const value of values) {
+      const token = typeof value === "object" && value !== null ? readNumber(value, "token_count") : typeof value === "number" ? value : void 0;
+      if (token !== void 0 && token > max) max = token;
+    }
+    return max;
+  };
+  const config = entry.context_config;
+  if (typeof config === "object" && config !== null && !Array.isArray(config)) {
+    const max = maxOf(Object.values(config));
+    if (max > 0) return max;
+  }
+  const windows = entry.available_context_windows ?? entry.availableContextWindows;
+  if (Array.isArray(windows)) {
+    const max = maxOf(windows);
+    if (max > 0) return max;
+  }
+  return 0;
+}
+function parsePromotion(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+  const record3 = raw;
+  const discountFactor = readNumber(record3, "discount_factor");
+  const beforePromotionPriceFactor = readNumber(record3, "before_promotion_price_factor");
+  const windowStart = readString3(record3, "window_start");
+  const windowEnd = readString3(record3, "window_end");
+  if (discountFactor === void 0 && beforePromotionPriceFactor === void 0 && windowStart === void 0 && windowEnd === void 0) {
+    return void 0;
+  }
+  const badgeZh = readString3(record3.badge, "zh");
+  return {
+    active: record3.active === true,
+    ...discountFactor === void 0 ? {} : { discountFactor },
+    ...beforePromotionPriceFactor === void 0 ? {} : { beforePromotionPriceFactor },
+    ...windowStart === void 0 ? {} : { windowStart },
+    ...windowEnd === void 0 ? {} : { windowEnd },
+    ...badgeZh === void 0 ? {} : { badgeZh }
+  };
+}
+function qoderRemoteModelToFallback(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+  const entry = raw;
+  if (entry.enable === false) return void 0;
+  const id = readString3(entry, "key") ?? readString3(entry, "model_key");
+  const name2 = readString3(entry, "display_name");
+  if (id === void 0 || name2 === void 0) return void 0;
+  const priceFactor = readNumber(entry, "price_factor");
+  const originalPriceFactor = readNumber(entry, "original_price_factor");
+  const promotion = parsePromotion(entry.promotion);
+  const thinking = parseThinking(entry);
+  return {
+    id,
+    name: name2,
+    contextWindow: parseContextWindow(entry),
+    supportsImage: entry.is_vl === true,
+    // ⚠️ 这是**请求体 `model_config.is_reasoning` 的透传值**，不是「支持思考」的开关
+    //    —— CN `dfmodel` 实测 `is_reasoning=false` 但思考与档位都正常（档位来自
+    //    `thinking_config`）。完整论证见 `QoderFallbackModel.supportsThinking`。
+    supportsThinking: entry.is_reasoning === true,
+    ...entry.is_free === true ? { isFree: true } : {},
+    ...priceFactor === void 0 ? {} : { priceFactor },
+    ...originalPriceFactor === void 0 ? {} : { originalPriceFactor },
+    ...promotion === void 0 ? {} : { promotion },
+    ...thinking.efforts.length === 0 ? {} : { efforts: thinking.efforts },
+    ...thinking.defaultEffort === void 0 ? {} : { defaultEffort: thinking.defaultEffort },
+    ...thinking.supportsDisable ? { supportsDisable: true } : {}
+  };
+}
+function parseQoderRemoteModels(body, scene = QODER_CATALOG_SCENE) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return void 0;
+  const list = body[scene];
+  if (!Array.isArray(list)) return void 0;
+  const models = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of list) {
+    const model = qoderRemoteModelToFallback(raw);
+    if (model === void 0 || seen.has(model.id)) continue;
+    seen.add(model.id);
+    models.push(model);
+  }
+  return models;
+}
+async function fetchQoderRemoteModels(credential, product, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  const uid = credential.uid;
+  if (uid === void 0 || uid.length === 0 || credential.machine_id.length === 0) {
+    throw new Error("\u51ED\u636E\u7F3A uid / machine_id\uFF0C\u65E0\u6CD5\u7B7E\u540D\u6A21\u578B\u76EE\u5F55\u8BF7\u6C42\uFF08\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7\uFF09");
+  }
+  let client;
+  try {
+    client = await QoderEncryptedInfer.create({
+      user: { uid, securityOauthToken: credential.security_oauth_token ?? credential.access_token },
+      machineId: credential.machine_id,
+      metadata: { ...product.clientMetadata },
+      host: product.encryptedInferBase
+    });
+    const request3 = client.prepareRequest(
+      product.encryptedInferBase,
+      QODER_MODEL_LIST_PATH,
+      "GET",
+      "auth"
+    );
+    const response = await fetcher(request3.url, {
+      method: "GET",
+      headers: request3.headers,
+      signal: AbortSignal.timeout(options.timeoutMs ?? QODER_CATALOG_TIMEOUT_MS)
+    });
+    if (!response.ok) {
+      const snippet = await response.text().catch(() => "");
+      throw new Error(
+        `\u6A21\u578B\u76EE\u5F55\u8BF7\u6C42\u5931\u8D25\uFF08HTTP ${response.status}\uFF09${snippet.length === 0 ? "" : `\uFF1A${snippet.trim().slice(0, 200)}`}`
+      );
+    }
+    const plain = await decryptServerResponseOrRaw(await response.text());
+    const models = parseQoderRemoteModels(JSON.parse(plain));
+    if (models === void 0) throw new Error("\u6A21\u578B\u76EE\u5F55\u54CD\u5E94\u5F62\u72B6\u975E\u6CD5\uFF08\u65E0 chat \u573A\u666F\u6570\u7EC4\uFF09");
+    if (models.length === 0) throw new Error("\u6A21\u578B\u76EE\u5F55\u54CD\u5E94\u4E3A\u7A7A");
+    return models;
+  } catch (error) {
+    throw describeWasmFailure(error);
+  } finally {
+    try {
+      client?.dispose();
+    } catch {
+    }
+  }
+}
+
 // vendor/channel-pack/src/qoder-oauth.ts
 function sleep2(ms, signal) {
   return new Promise((resolve2, reject) => {
@@ -49853,7 +50303,59 @@ var QoderAuth = class extends Service4 {
       }
     }
   }
-  /** 移除已存储的凭据并停止任何待处理的刷新。 */
+  /**
+   * 拉取**远端模型目录**（`/api/v2/model/list?Encode=1`）。
+   *
+   * ## 为什么由 auth 服务做，而不是让适配器自己解析凭据
+   *
+   * 适配器手上的取凭据入口是 `resolveCredential`，而它**有副作用**：
+   * 选中账号时会 `reportAccount(id)`（`index.ts` 的接线把它写成
+   * `activeQoderAccountId.set(...)`，用于额度报错时标记「本次实际使用的账号」）。
+   * 目录请求是**周期性**的（20 分钟刷新器 + 冷启动预热 + 每次列模型），
+   * 若走同一条路，它会在聊天请求选号之后把那个 Map **改写成目录用的账号**
+   * ⇒ 额度标记可能落到**无辜账号**上（`index.ts` 那段注释逐字警告过这个后果）。
+   *
+   * 故照其余 11 家的形态：目录取数只做**池的只读读取**
+   * （`getAvailableAccount`，不写任何账），池空时回退本实例的默认 ref。
+   *
+   * ## 语义
+   *
+   * - 失败 / 未登录 / 形状不符一律返回 **`[]`**，由调用方回退编译期兜底表
+   *   （与 `AccioAuth.fetchModels` / `TraeAuth.fetchModels` 同语义）；
+   * - 「没有凭据」**不打日志**（未登录用户每次列模型都会走到这里）；
+   * - 真正的失败（HTTP 非 2xx / 网络异常 / WASM trap）必须留痕 ——
+   *   否则「倍率不更新」这个症状没有任何可查的证据。
+   *
+   * ⚠️ **整段（含取凭据）都必须在 `try` 内**（缺陷，2026-10-20 对抗审计）：
+   * 原先只有「拉目录」被 `try` 罩住，而 `pool.getAvailableAccount` 的 `await`
+   * 在它**外面** —— 池读一旦 reject（存储损坏 / 并发写坏档），rejection 会
+   * **直接抛穿 `fetchModels`**，绕开「失败即回退兜底表」这条契约，把一次目录
+   * 读取失败升级成 `listModels` 抛错（DSH 侧表现为 provider 报错）。
+   * 变异验证：删掉那一行 `.catch(() => null)` 后 111 条用例**全绿** ⇒ 这条腿
+   * 当时**零守卫**；现已补「池读 reject」用例并把整段收进 `try`。
+   */
+  async fetchModels(pool) {
+    try {
+      let credential;
+      if (pool !== void 0) {
+        const available2 = await pool.getAvailableAccount(this.product.id, "").catch(() => null);
+        if (available2 !== null) credential = available2.credential;
+      }
+      credential ??= await this.resolveStoredCredential();
+      if (credential === void 0) return [];
+      return await fetchQoderRemoteModels(credential, this.product, {
+        ...this.options.fetcher === void 0 ? {} : { fetcher: this.options.fetcher }
+      });
+    } catch (error) {
+      this.ctx.logger?.warn?.(
+        `[${this.product.id}] \u8FDC\u7AEF\u6A21\u578B\u76EE\u5F55\u8BFB\u53D6\u5931\u8D25\uFF0C\u6A21\u578B\u5217\u8868\u5C06\u9000\u7528\u5185\u7F6E\u515C\u5E95\u8868\uFF1A` + (error instanceof Error ? error.message : String(error))
+      );
+      return [];
+    }
+  }
+  /**
+   * 移除已存储的凭据并停止任何待处理的刷新。
+   */
   async logout() {
     this.active = false;
     this.scheduler.stop();
@@ -52092,7 +52594,7 @@ async function tryRequestLoomy(credential, product, path4, init, fetcher) {
   }
   return { ok: true, data: envelope.data };
 }
-function readNumber(value) {
+function readNumber2(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : void 0;
 }
@@ -52105,17 +52607,17 @@ async function fetchLoomyCreditDetail(credential, product, fetcher = fetch) {
     fetcher
   );
   if (!result.ok) return null;
-  const permanent = readNumber(result.data?.balance);
-  const daily = readNumber(result.data?.dailyBalance);
-  const available2 = readNumber(result.data?.availableBalance);
+  const permanent = readNumber2(result.data?.balance);
+  const daily = readNumber2(result.data?.dailyBalance);
+  const available2 = readNumber2(result.data?.availableBalance);
   if (permanent === void 0 && daily === void 0) return null;
   const total = available2 ?? (permanent ?? 0) + (daily ?? 0);
   return {
     permanent,
     daily: daily ?? 0,
     total,
-    dailyQuota: readNumber(result.data?.dailyQuota),
-    dailyConsumed: readNumber(result.data?.dailyConsumed),
+    dailyQuota: readNumber2(result.data?.dailyQuota),
+    dailyConsumed: readNumber2(result.data?.dailyConsumed),
     dailyCycleDate: typeof result.data?.dailyCycleDate === "string" ? result.data.dailyCycleDate : void 0
   };
 }
@@ -52159,8 +52661,8 @@ async function claimLoomyDailyQuota(credential, product, fetcher = fetch) {
   if (!result.ok) {
     return { kind: "failed", code: -1, message: result.message };
   }
-  const dailyQuota = readNumber(result.data?.dailyQuota);
-  const dailyBalance = readNumber(result.data?.dailyBalance);
+  const dailyQuota = readNumber2(result.data?.dailyQuota);
+  const dailyBalance = readNumber2(result.data?.dailyBalance);
   const alreadyProcessed = result.data?.alreadyProcessed === true;
   if (alreadyProcessed) {
     return {
@@ -52168,7 +52670,7 @@ async function claimLoomyDailyQuota(credential, product, fetcher = fetch) {
       message: dailyQuota === void 0 ? "\u4ECA\u65E5\u989D\u5EA6\u5DF2\u521D\u59CB\u5316" : `\u4ECA\u65E5\u989D\u5EA6\u5DF2\u521D\u59CB\u5316\uFF08\u6BCF\u65E5 ${dailyBalance ?? 0}/${dailyQuota}\uFF09`
     };
   }
-  const dailyConsumed = readNumber(result.data?.dailyConsumed);
+  const dailyConsumed = readNumber2(result.data?.dailyConsumed);
   const granted = dailyQuota !== void 0 && dailyConsumed !== void 0 ? Math.max(0, dailyQuota - dailyConsumed) : dailyQuota ?? 0;
   return { kind: "claimed", credit: granted, streakDays: 0, isStreakDay: false };
 }
@@ -52660,7 +53162,7 @@ function parseEnvelope(payload, status) {
   const data = typeof record3.data === "object" && record3.data !== null && !Array.isArray(record3.data) ? record3.data : void 0;
   return { ok: code === 0, code, message: message2, data };
 }
-function readNumber2(value) {
+function readNumber3(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 async function requestJson(url, credential, product, init, fetcher) {
@@ -52707,13 +53209,13 @@ async function fetchRaccoonCreditBalance(product, credential, fetcher = fetch) {
     fetcher
   );
   if (!envelope.ok || envelope.data === void 0) return null;
-  const available2 = readNumber2(envelope.data.available_points);
+  const available2 = readNumber3(envelope.data.available_points);
   if (available2 === void 0) return null;
   const packages = [];
-  const reward = readNumber2(envelope.data.reward_points);
-  const daily = readNumber2(envelope.data.daily_points);
-  const topup = readNumber2(envelope.data.topup_points);
-  const monthly = readNumber2(envelope.data.monthly_points);
+  const reward = readNumber3(envelope.data.reward_points);
+  const daily = readNumber3(envelope.data.daily_points);
+  const topup = readNumber3(envelope.data.topup_points);
+  const monthly = readNumber3(envelope.data.monthly_points);
   if (reward !== void 0) packages.push(makePackage2("\u5956\u52B1\u79EF\u5206", reward));
   if (daily !== void 0) packages.push(makePackage2("\u6BCF\u65E5\u79EF\u5206", daily));
   if (monthly !== void 0 && monthly > 0) packages.push(makePackage2("\u4F1A\u5458\u79EF\u5206", monthly));
@@ -52747,7 +53249,7 @@ async function claimRaccoonLoginReward(product, credential, fetcher = fetch) {
     };
   }
   const popup = typeof envelope.data.popup === "object" && envelope.data.popup !== null ? envelope.data.popup : void 0;
-  const points = readNumber2(popup?.points) ?? RACCOON_LOGIN_REWARD_POINTS;
+  const points = readNumber3(popup?.points) ?? RACCOON_LOGIN_REWARD_POINTS;
   return { kind: "claimed", credit: points, streakDays: 0, isStreakDay: false };
 }
 async function fetchRaccoonOnboardingStatus(product, credential, fetcher = fetch) {
@@ -52770,7 +53272,7 @@ async function fetchRaccoonOnboardingStatus(product, credential, fetcher = fetch
     if (item.biz_type !== "reward_grant") continue;
     if (item.event_name !== RACCOON_LOGIN_REWARD_EVENT_NAME) continue;
     claimed = true;
-    const billPoints = readNumber2(item.points);
+    const billPoints = readNumber3(item.points);
     if (billPoints !== void 0 && billPoints > 0) points = billPoints;
     break;
   }
@@ -60694,11 +61196,11 @@ function checkinHeaders(credential, product) {
 function readBool(source, key) {
   return source[key] === true;
 }
-function readNumber3(source, key) {
+function readNumber4(source, key) {
   const value = source[key];
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
-function readString3(source, key) {
+function readString4(source, key) {
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
@@ -60748,15 +61250,15 @@ async function fetchCheckinStatus(credential, product, fetcher = fetch) {
   return {
     active: readBool(record3, "active"),
     todayCheckedIn: readBool(record3, "today_checked_in"),
-    streakDays: readNumber3(record3, "streak_days"),
-    dailyCredit: readNumber3(record3, "daily_credit"),
-    todayCredit: readNumber3(record3, "today_credit"),
+    streakDays: readNumber4(record3, "streak_days"),
+    dailyCredit: readNumber4(record3, "daily_credit"),
+    todayCredit: readNumber4(record3, "today_credit"),
     isStreakDay: readBool(record3, "is_streak_day"),
-    totalCredits: readNumber3(record3, "total_credits"),
+    totalCredits: readNumber4(record3, "total_credits"),
     checkinDates: readStringArray(record3, "checkin_dates"),
-    activityName: readString3(record3, "activity_name"),
-    themeName: readString3(record3, "theme_name"),
-    endTime: readString3(record3, "end_time")
+    activityName: readString4(record3, "activity_name"),
+    themeName: readString4(record3, "theme_name"),
+    endTime: readString4(record3, "end_time")
   };
 }
 async function claimDailyCheckin(credential, product, fetcher = fetch) {
@@ -60766,7 +61268,7 @@ async function claimDailyCheckin(credential, product, fetcher = fetch) {
   }
   const body = result.body;
   const code = typeof body.code === "number" ? body.code : -1;
-  const message2 = readString3(body, "msg");
+  const message2 = readString4(body, "msg");
   if (code === CODE_ALREADY_CLAIMED || code === CODE_ALREADY_CLAIMED_ALT) {
     return { kind: "already-claimed", message: message2.length > 0 ? message2 : "\u4ECA\u5929\u5DF2\u7B7E\u5230" };
   }
@@ -60781,11 +61283,11 @@ async function claimDailyCheckin(credential, product, fetcher = fetch) {
     return { kind: "failed", code, message: "\u9886\u53D6\u54CD\u5E94\u7F3A\u5C11 data \u5B57\u6BB5" };
   }
   const record3 = data;
-  const delayed = readString3(record3, "message");
+  const delayed = readString4(record3, "message");
   return {
     kind: "claimed",
-    credit: readNumber3(record3, "credit"),
-    streakDays: readNumber3(record3, "streak_days"),
+    credit: readNumber4(record3, "credit"),
+    streakDays: readNumber4(record3, "streak_days"),
     isStreakDay: readBool(record3, "is_streak_day"),
     ...delayed.length > 0 ? { delayedMessage: delayed } : {}
   };
@@ -60797,15 +61299,15 @@ function readPreciseNumber(source, baseKey) {
     if (Number.isFinite(parsed)) return parsed;
   }
   if (typeof precise === "number" && Number.isFinite(precise)) return precise;
-  return readNumber3(source, baseKey);
+  return readNumber4(source, baseKey);
 }
 var PACKAGE_STATUS_EXPIRED = 3;
 function parseCreditPackage(entry) {
-  const name2 = readString3(entry, "PackageName") || readString3(entry, "SubProductName") || readString3(entry, "PackageCode");
-  const unit = readString3(entry, "CapacityUnit") || readString3(entry, "OriginUnit");
+  const name2 = readString4(entry, "PackageName") || readString4(entry, "SubProductName") || readString4(entry, "PackageCode");
+  const unit = readString4(entry, "CapacityUnit") || readString4(entry, "OriginUnit");
   const status = entry.Status;
-  const expiredTime = readString3(entry, "ExpiredTime");
-  const deductionEndTime = readNumber3(entry, "DeductionEndTime");
+  const expiredTime = readString4(entry, "ExpiredTime");
+  const deductionEndTime = readNumber4(entry, "DeductionEndTime");
   const expiredAt = expiredTime.length > 0 ? Date.parse(expiredTime.replace(" ", "T")) : Number.NaN;
   const active = status !== PACKAGE_STATUS_EXPIRED && !(Number.isFinite(expiredAt) && Date.now() >= expiredAt) && !(deductionEndTime > 0 && Date.now() >= deductionEndTime);
   return {
@@ -60815,8 +61317,8 @@ function parseCreditPackage(entry) {
     total: readPreciseNumber(entry, "CycleCapacitySize"),
     used: readPreciseNumber(entry, "CycleCapacityUsed"),
     active,
-    cycleStartTime: readString3(entry, "CycleStartTime"),
-    cycleEndTime: readString3(entry, "CycleEndTime"),
+    cycleStartTime: readString4(entry, "CycleStartTime"),
+    cycleEndTime: readString4(entry, "CycleEndTime"),
     expiredTime,
     ...deductionEndTime > 0 ? { deductionEndTime } : {}
   };
@@ -60925,7 +61427,7 @@ function readBool2(source, key) {
   if (typeof value === "string") return value.trim().toLowerCase() === "true";
   return false;
 }
-function readNumber4(source, key) {
+function readNumber5(source, key) {
   const value = source[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim().length > 0) {
@@ -60934,7 +61436,7 @@ function readNumber4(source, key) {
   }
   return 0;
 }
-function readString4(source, key) {
+function readString5(source, key) {
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
@@ -60953,7 +61455,7 @@ function unwrapSnapEnvelope(raw) {
   const hasCode = typeof code === "number";
   if (hasCode) {
     if (code !== 0) {
-      const message2 = readString4(raw, "message") || readString4(raw, "msg");
+      const message2 = readString5(raw, "message") || readString5(raw, "msg");
       return { ok: false, code, message: message2.length > 0 ? message2 : `\u4E1A\u52A1\u7801 ${code}` };
     }
     const data = raw.data;
@@ -61013,13 +61515,13 @@ function parseCreditBalance(metrics) {
   for (const item of metrics) {
     if (typeof item !== "object" || item === null) continue;
     const record3 = item;
-    const name2 = readString4(record3, "name");
+    const name2 = readString5(record3, "name");
     const label = CREDIT_METRIC_LABELS[name2];
     if (label === void 0) continue;
     sawAnyCreditMetric = true;
-    const amount = readNumber4(record3, "package_credit_amount");
-    const used = readNumber4(record3, "package_credit_used");
-    const remain = readNumber4(record3, "package_credit_remain");
+    const amount = readNumber5(record3, "package_credit_amount");
+    const used = readNumber5(record3, "package_credit_used");
+    const remain = readNumber5(record3, "package_credit_remain");
     if (name2 === TOTAL_CREDIT_METRIC) totalRemain = remain;
     if (amount <= 0 && remain <= 0) continue;
     packages.push({
@@ -61048,16 +61550,16 @@ async function fetchCodeArtsAccountInfoDetailed(credential, fetcher = fetch) {
   if (!result.ok) return { ok: false, message: result.message };
   const data = result.data;
   const pkg = readRecord(data, "package");
-  const packageNameCn = readString4(pkg, "package_name_cn");
-  const packageNameEn = readString4(pkg, "package_name_en");
+  const packageNameCn = readString5(pkg, "package_name_cn");
+  const packageNameEn = readString5(pkg, "package_name_en");
   return {
     ok: true,
     info: {
       isCreditPackage: readBool2(pkg, "is_credit_package"),
       isTokenPackage: readBool2(pkg, "is_token_package"),
-      specCode: readString4(pkg, "spec_code"),
+      specCode: readString5(pkg, "spec_code"),
       packageName: packageNameCn.length > 0 ? packageNameCn : packageNameEn,
-      packageStatus: readString4(pkg, "status"),
+      packageStatus: readString5(pkg, "status"),
       credit: parseCreditBalance(data.metrics)
     }
   };
@@ -61066,13 +61568,13 @@ function parseActivity(item) {
   return {
     // 用 readIdentifier 而非 readString：实测 campaignId 是**数字** 1。
     campaignId: readIdentifier(item, "campaignId"),
-    type: readString4(item, "type"),
-    title: readString4(item, "title"),
+    type: readString5(item, "type"),
+    title: readString5(item, "title"),
     claimable: readBool2(item, "claimable"),
-    status: readString4(item, "status"),
+    status: readString5(item, "status"),
     // 可领积分数：实测字段名是 `benefitAmount`（值 1000）。
     // 保留另两个候选名作兼容回退，取不到才为 0。
-    amount: readNumber4(item, "benefitAmount") || readNumber4(item, "amount") || readNumber4(item, "creditAmount")
+    amount: readNumber5(item, "benefitAmount") || readNumber5(item, "amount") || readNumber5(item, "creditAmount")
   };
 }
 async function fetchCodeArtsOpsActivitiesDetailed(credential, fetcher = fetch) {
@@ -61135,7 +61637,7 @@ async function claimCodeArtsDailyCheckin(credential, fetcher = fetch) {
       fetcher
     );
   }
-  const claimCredit = readNumber4(claimResult.data, "benefitAmount") || readNumber4(claimResult.data, "credit") || readNumber4(claimResult.data, "credits") || readNumber4(claimResult.data, "creditAmount") || readNumber4(claimResult.data, "amount");
+  const claimCredit = readNumber5(claimResult.data, "benefitAmount") || readNumber5(claimResult.data, "credit") || readNumber5(claimResult.data, "credits") || readNumber5(claimResult.data, "creditAmount") || readNumber5(claimResult.data, "amount");
   return {
     kind: "claimed",
     credit: claimCredit > 0 ? claimCredit : activity.amount,
@@ -61261,7 +61763,7 @@ function parseNumericField(source, key) {
   }
   return void 0;
 }
-function readNumber5(source, key) {
+function readNumber6(source, key) {
   return parseNumericField(source, key) ?? 0;
 }
 function readActions(source, key) {
@@ -61290,7 +61792,7 @@ async function fetchLobsteraiActivitySlot(credential, product, clientVersion, fe
   return {
     slotState: typeof envelope.data.slotState === "string" ? envelope.data.slotState : "",
     activityCode,
-    configRevision: readNumber5(activity, "configRevision")
+    configRevision: readNumber6(activity, "configRevision")
   };
 }
 async function fetchLobsteraiActivityContext(credential, product, slot2, fetcher = fetch) {
@@ -61369,7 +61871,7 @@ async function fetchLobsteraiCreditBalance(credential, product, fetcher = fetch)
     for (const item of items) {
       if (typeof item !== "object" || item === null) continue;
       const record3 = item;
-      const remaining = readNumber5(record3, "creditsRemaining");
+      const remaining = readNumber6(record3, "creditsRemaining");
       const type = typeof record3.type === "string" ? record3.type : "";
       const label = typeof record3.label === "string" ? record3.label : "";
       const expiresAt = typeof record3.expiresAt === "string" ? record3.expiresAt : "";
@@ -61449,11 +61951,11 @@ function classifyTraeCheckinError(httpStatus, code) {
   }
   return { type: "Unknown", cooldownSecs: 0 };
 }
-function readNumber6(source, key) {
+function readNumber7(source, key) {
   const value = source[key];
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
-function readString5(source, key) {
+function readString6(source, key) {
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
@@ -61504,11 +62006,11 @@ async function fetchTraeCheckinStatus(credential, _product, fetcher = fetch) {
   return {
     active: body.enable === true,
     todayCheckedIn: body.checked_in === true,
-    streakDays: readNumber6(body, "streak_days") || 0,
-    dailyCredit: readNumber6(body, "credits") || 0,
+    streakDays: readNumber7(body, "streak_days") || 0,
+    dailyCredit: readNumber7(body, "credits") || 0,
     todayCredit: 0,
     isStreakDay: false,
-    totalCredits: readNumber6(body, "total_credits") || 0,
+    totalCredits: readNumber7(body, "total_credits") || 0,
     checkinDates: [],
     activityName: "",
     themeName: "",
@@ -61545,12 +62047,12 @@ async function claimTraeDailyCheckin(credential, product, fetcher = fetch, gener
     return {
       kind: "failed",
       code: 9074,
-      message: readString5(body, "message") || readString5(body, "msg") || "\u7B7E\u5230\u4EBA\u6570\u8FC7\u591A\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5",
+      message: readString6(body, "message") || readString6(body, "msg") || "\u7B7E\u5230\u4EBA\u6570\u8FC7\u591A\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5",
       errorType: "BusinessError",
       cooldownSecs: 300
     };
   }
-  const msg = readString5(body, "message") || readString5(body, "msg") || "";
+  const msg = readString6(body, "message") || readString6(body, "msg") || "";
   if (code === 0) {
     const status = await fetchTraeCheckinStatus(credential, product, fetcher);
     return {
@@ -61591,16 +62093,16 @@ async function fetchTraeCreditBalance(credential, _product, fetcher = fetch) {
     if (typeof base !== "object" || base === null) continue;
     const quota = base.quota;
     if (typeof quota !== "object" || quota === null) continue;
-    const creditsLimit = readNumber6(quota, "credits_limit");
+    const creditsLimit = readNumber7(quota, "credits_limit");
     if (creditsLimit <= 0) continue;
     const usage = entry.usage;
-    const used = typeof usage === "object" && usage !== null ? readNumber6(usage, "credits_amount") : 0;
-    const expireSec = readNumber6(entry, "expire_time");
+    const used = typeof usage === "object" && usage !== null ? readNumber7(usage, "credits_amount") : 0;
+    const expireSec = readNumber7(entry, "expire_time");
     const deductionEndMs = expireSec > 0 ? expireSec * 1e3 : void 0;
     const pkg = {
       // ⚠️ 包名用 `display_desc`（实测"每月登录赠送"/"签到奖励"/"免费"），
       // 不是 `base.name` —— 后者实测为 undefined，旧代码全部回退成了"资源包"。
-      name: readString5(base, "display_desc") || readString5(entry, "display_desc") || "\u8D44\u6E90\u5305",
+      name: readString6(base, "display_desc") || readString6(entry, "display_desc") || "\u8D44\u6E90\u5305",
       unit: "credits",
       remaining: creditsLimit - used,
       total: creditsLimit,
@@ -62563,6 +63065,954 @@ async function claimAutoclawDailyQuota(credential, options) {
   }
 }
 
+// vendor/channel-pack/src/astudio-product.ts
+import { homedir as homedir5 } from "node:os";
+import { join as join7 } from "node:path";
+var ASTUDIO_CHAT_PATH = "/chat/completions";
+var ASTUDIO_CATALOG_PATH = "/api/v1/model-manager/models";
+var ASTUDIO_API_KEY_CONFIG_PATH = "/bot/models/configs";
+var ASTUDIO_SESSION_FILE_ENV = "DSH_ASTUDIO_SESSION_FILE";
+var ASTUDIO_SESSION_DEAD_CODES = Object.freeze(/* @__PURE__ */ new Set([1002, 1005, 8e4]));
+var ASTUDIO_FALLBACK_MODELS = Object.freeze([
+  {
+    id: "xopglm52",
+    name: "GLM-5.2",
+    contextWindow: 1e6,
+    maxTokens: 128e3,
+    efforts: ["none", "high", "max"],
+    defaultEffort: "high",
+    supportsImage: false
+  },
+  {
+    id: "astronclaw-auto",
+    name: "Auto",
+    contextWindow: 1e6,
+    maxTokens: 384e3,
+    efforts: ["none", "high"],
+    defaultEffort: "high",
+    supportsImage: false
+  },
+  {
+    id: "xopdsv4flash0731in",
+    name: "DeepSeek-V4-Flash",
+    contextWindow: 1e6,
+    maxTokens: 384e3,
+    efforts: ["none", "high", "max"],
+    defaultEffort: "high",
+    supportsImage: false
+  },
+  {
+    id: "xopdeepseekv4pro0813",
+    name: "DeepSeek-V4-Pro",
+    contextWindow: 1e6,
+    maxTokens: 384e3,
+    efforts: ["none", "high", "max"],
+    defaultEffort: "high",
+    supportsImage: false
+  },
+  {
+    id: "spark-x2.5",
+    name: "Spark-X2.5",
+    contextWindow: 262144,
+    maxTokens: 256e3,
+    efforts: ["none", "high"],
+    defaultEffort: "high",
+    supportsImage: false
+  },
+  {
+    id: "spark-x2.6-preview",
+    name: "Spark-X2.6-Preview",
+    contextWindow: 262144,
+    maxTokens: 256e3,
+    efforts: ["none", "high"],
+    defaultEffort: "high",
+    supportsImage: false
+  }
+]);
+function defaultAstudioSessionFilePath(env = process.env) {
+  const localAppData = (env["LOCALAPPDATA"] ?? "").trim();
+  const base = localAppData.length > 0 ? localAppData : join7(homedir5(), "AppData", "Local");
+  return join7(base, "Programs", "AStudio Data", "userdata", "astron-session.json");
+}
+var ASTUDIO = {
+  id: "astudio",
+  // ⚠️ 与客户端 `PROVIDERS` 里的 label 逐字一致（rail 宽度算式依赖它）。
+  displayName: "AStudio",
+  maasBaseUrl: "https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1",
+  chatPath: ASTUDIO_CHAT_PATH,
+  catalogBaseUrl: "https://astronstudio-api-volces-prod.xf-yun.com",
+  catalogPath: ASTUDIO_CATALOG_PATH,
+  authBaseUrl: "https://agent.xfyun.cn/xingchen-studio",
+  apiKeyConfigPath: ASTUDIO_API_KEY_CONFIG_PATH,
+  defaultCredentialRef: "ASTUDIO_ACCESS_TOKEN",
+  clientType: "21",
+  studioVersion: "3.5.2",
+  requestTimeoutMs: 3e4,
+  chatHeaderTimeoutMs: 6e4,
+  // ⚠️ **必须 ≥300s**：长上下文模型的两次 SSE 字节之间实测可静默 >45s，
+  // 而官方内核自己用的就是 `stream_idle_timeout_ms=300000`。120s 会把一次
+  // 正常但慢的长思考**掐成** `TIMEOUT`（且 harness 会重试 ⇒ 双倍计费）。
+  chunkTimeoutMs: 3e5,
+  fallbackModels: ASTUDIO_FALLBACK_MODELS
+};
+
+// vendor/channel-pack/src/astudio.ts
+import { createHash as createHash7 } from "node:crypto";
+function astudioCredentialFromSessionFile(session) {
+  if (session === void 0 || session === null) return void 0;
+  const accessToken = typeof session.modelBearerToken === "string" ? session.modelBearerToken.trim() : "";
+  if (accessToken.length === 0) return void 0;
+  const accountId = typeof session.accountId === "string" ? session.accountId : "";
+  return {
+    access_token: accessToken,
+    ...accountId.length > 0 ? { account_id: accountId } : {},
+    ...typeof session.uid === "string" && session.uid.length > 0 ? { uid: session.uid } : {},
+    nickname: typeof session.mobile === "string" && session.mobile.length > 0 ? session.mobile : accountId,
+    ...typeof session.ssoSessionId === "string" ? { sso_session_id: session.ssoSessionId } : {},
+    ...typeof session.token === "string" ? { token: session.token } : {},
+    ...typeof session.loginMethod === "string" ? { login_method: session.loginMethod } : {},
+    ...typeof session.loggedInAt === "string" ? { logged_in_at: session.loggedInAt } : {},
+    source: "session-file"
+  };
+}
+function astudioCredentialFingerprint(accessToken) {
+  if (accessToken.length === 0) return "";
+  return createHash7("sha256").update(accessToken).digest("hex").slice(0, 8);
+}
+function isAstudioRefreshable(credential) {
+  return credential !== void 0 && typeof credential.access_token === "string" && credential.access_token.length > 0;
+}
+function astudioDisplayNickname(credential, fallbackId) {
+  const nickname = typeof credential?.nickname === "string" ? credential.nickname.trim() : "";
+  if (nickname.length === 0) return fallbackId;
+  return maskLobsteraiPhoneTail(nickname);
+}
+function astudioCookieHeader(credential) {
+  const credRecord = credential;
+  const ssoId = credential.sso_session_id ?? (typeof credRecord.ssoSessionId === "string" ? credRecord.ssoSessionId : void 0);
+  const accId = credential.account_id ?? (typeof credRecord.accountId === "string" ? credRecord.accountId : void 0);
+  const tok = credential.token ?? (typeof credRecord.token === "string" ? credRecord.token : void 0);
+  const pairs = [
+    ["ssoSessionId", ssoId],
+    ["sso_sessionid", ssoId],
+    ["account_id", accId],
+    ["token", tok ?? ssoId]
+  ];
+  return pairs.filter((entry) => typeof entry[1] === "string" && entry[1].length > 0).map(([key, value]) => `${key}=${value}`).join("; ");
+}
+function astudioChatHeaders(credential, product, accept = "application/json") {
+  return {
+    Authorization: `Bearer ${credential.access_token}`,
+    Accept: accept,
+    "Content-Type": "application/json",
+    ...credential.account_id !== void 0 && credential.account_id.length > 0 ? { "X-Account-Id": credential.account_id } : {},
+    clientType: product.clientType,
+    studioVersion: product.studioVersion
+  };
+}
+function astudioControlHeaders(credential, product) {
+  const cookie = astudioCookieHeader(credential);
+  return {
+    Accept: "application/json",
+    ...cookie.length > 0 ? { Cookie: cookie } : {},
+    clientType: product.clientType,
+    studioVersion: product.studioVersion
+  };
+}
+function astudioReadString(source, key) {
+  const value = source[key];
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+function astudioReadNumber(source, key) {
+  const value = source[key];
+  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= 1e15 ? value : void 0;
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && Math.abs(parsed) <= 1e15) return parsed;
+  }
+  return void 0;
+}
+function parseAstudioEnvelope(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, code: -1, message: "\u54CD\u5E94\u4E0D\u662F JSON \u5BF9\u8C61", sessionDead: false };
+  }
+  const record3 = body;
+  const rawCode = astudioReadNumber(record3, "code");
+  const message2 = astudioReadString(record3, "message") || astudioReadString(record3, "desc");
+  if (rawCode !== void 0 && rawCode !== 0) {
+    return {
+      ok: false,
+      code: rawCode,
+      message: message2.length > 0 ? message2 : `code=${rawCode}`,
+      sessionDead: ASTUDIO_SESSION_DEAD_CODES.has(rawCode)
+    };
+  }
+  const data = record3.data;
+  if (data === null || data === void 0) {
+    return {
+      ok: false,
+      code: rawCode ?? 0,
+      message: message2.length > 0 ? message2 : "data \u4E3A\u7A7A\uFF08\u4F1A\u8BDD\u53EF\u80FD\u5DF2\u5931\u6548\uFF09",
+      // `code:0` + 空 `data` 在读 `bot/models/configs` 时等价于「账号下没有可用模型
+      // 凭据」⇒ 属终态（实测客户端在此抛 AuthoritativeModelCredentialError）。
+      sessionDead: true
+    };
+  }
+  if (Array.isArray(data)) {
+    if (data.length === 0) {
+      return {
+        ok: false,
+        code: rawCode ?? 0,
+        message: message2.length > 0 ? message2 : "data \u4E3A\u7A7A\u6570\u7EC4\uFF08\u4F1A\u8BDD\u53EF\u80FD\u5DF2\u5931\u6548\uFF09",
+        sessionDead: true
+      };
+    }
+    return { ok: true, data: {}, rows: data };
+  }
+  if (typeof data !== "object") {
+    return {
+      ok: false,
+      code: rawCode ?? 0,
+      message: message2.length > 0 ? message2 : "data \u4E0D\u662F\u5BF9\u8C61\u6216\u6570\u7EC4",
+      sessionDead: true
+    };
+  }
+  return { ok: true, data };
+}
+function isAstudioSessionDeadError(code, message2 = "") {
+  if (ASTUDIO_SESSION_DEAD_CODES.has(code)) return true;
+  return /未登录|重新登录|会话(已)?(过期|失效)|登录(状态)?失效|not\s+logged\s*in|login\s+required/i.test(message2);
+}
+function astudioAuthRetryPlan(params) {
+  if (params.status !== 401) return "none";
+  if (params.refreshFailed) return "terminal";
+  if (params.attemptedRefresh) return "terminal";
+  return "refresh-and-retry";
+}
+var ASTUDIO_WIRE_CODES = /* @__PURE__ */ new Map([
+  ["model_not_found", "model-not-found"],
+  ["invalid_api_key", "auth"],
+  ["apikey_not_found", "auth"],
+  ["insufficient_quota", "quota"],
+  ["quota_exceeded", "quota"],
+  ["rate_limit_exceeded", "rate-limit"],
+  ["context_length_exceeded", "context-window"]
+]);
+function astudioOpenAiErrorFields(body) {
+  if (body.trim().length === 0) return void 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return void 0;
+  }
+  if (typeof parsed !== "object" || parsed === null) return void 0;
+  const error = parsed.error;
+  if (typeof error !== "object" || error === null) return void 0;
+  const record3 = error;
+  return {
+    code: typeof record3.code === "string" ? record3.code : typeof record3.code === "number" ? String(record3.code) : "",
+    message: typeof record3.message === "string" ? record3.message : "",
+    type: typeof record3.type === "string" ? record3.type : ""
+  };
+}
+function classifyAstudioError(status, body, options = {}) {
+  if (options.transport === true) {
+    return { kind: "transport", llmCode: "NETWORK", message: `astudio: \u7F51\u7EDC\u5931\u8D25 \u2014 ${body.slice(0, 200)}` };
+  }
+  if (options.timeout === true) {
+    return { kind: "timeout", llmCode: "TIMEOUT", message: "astudio: \u7B49\u5F85\u4E0A\u6E38\u54CD\u5E94\u8D85\u65F6" };
+  }
+  const fields = astudioOpenAiErrorFields(body);
+  const fromWire = fields === void 0 ? void 0 : ASTUDIO_WIRE_CODES.get(fields.code) ?? ASTUDIO_WIRE_CODES.get(fields.type);
+  const detail = fields !== void 0 && fields.message.length > 0 ? fields.message : body.slice(0, 200);
+  if (fromWire !== void 0) return describeAstudioError(fromWire, status, detail);
+  if (status === 401 || status === 403) return describeAstudioError("auth", status, detail);
+  if (status === 402) return describeAstudioError("quota", status, detail);
+  if (status === 429) return describeAstudioError("rate-limit", status, detail);
+  if (status === 400 || status === 404 || status === 405 || status === 422) {
+    return describeAstudioError("bad-request", status, detail);
+  }
+  if (status >= 500) return describeAstudioError("server", status, detail);
+  return describeAstudioError("unknown", status, detail);
+}
+function describeAstudioError(kind, status, detail) {
+  const suffix = `\uFF08HTTP ${status}\uFF09${detail}`;
+  switch (kind) {
+    case "auth":
+      return { kind, llmCode: "AUTH", message: `astudio: \u51ED\u636E\u672A\u88AB\u4E0A\u6E38\u63A5\u53D7\uFF0C\u5C06\u91CD\u53D6\u4E00\u6B21\uFF1B\u4ECD\u5931\u8D25\u8BF7\u5728 AStudio \u5BA2\u6237\u7AEF\u91CD\u65B0\u767B\u5F55${suffix}` };
+    case "model-not-found":
+      return { kind, llmCode: "PERMISSION_DENIED", message: `astudio: \u4E0A\u6E38\u6CA1\u6709\u8BE5\u6A21\u578B\u7684\u63A8\u7406\u8DEF\u7531\u3002\u5E38\u89C1\u539F\u56E0\u662F\u628A acode \u5185\u6838\u7684\u5185\u90E8\u522B\u540D\uFF08builtin/<base64>\uFF09\u5F53\u6210 model \u53D1\u4E86\u4E0A\u6765 \u2014\u2014 \u4E0A\u6E38\u53EA\u8BA4\u88F8 slug${suffix}` };
+    case "quota":
+      return { kind, llmCode: "QUOTA_EXCEEDED", message: `astudio: \u8D26\u53F7\u989D\u5EA6\u4E0D\u8DB3${suffix}` };
+    case "rate-limit":
+      return { kind, llmCode: "RATE_LIMITED", message: `astudio: \u4E0A\u6E38\u9650\u6D41${suffix}` };
+    case "context-window":
+      return { kind, llmCode: "CONTEXT_WINDOW_EXCEEDED", message: `astudio: \u4E0A\u4E0B\u6587\u8D85\u51FA\u6A21\u578B\u7A97\u53E3${suffix}` };
+    case "bad-request":
+      return { kind, llmCode: "INVALID_REQUEST", message: `astudio: \u8BF7\u6C42\u88AB\u4E0A\u6E38\u62D2\u7EDD${suffix}` };
+    case "server":
+      return { kind, llmCode: "SERVER", message: `astudio: \u4E0A\u6E38\u6545\u969C${suffix}` };
+    case "timeout":
+      return { kind, llmCode: "TIMEOUT", message: "astudio: \u7B49\u5F85\u4E0A\u6E38\u54CD\u5E94\u8D85\u65F6" };
+    case "transport":
+      return { kind, llmCode: "NETWORK", message: `astudio: \u7F51\u7EDC\u5931\u8D25${suffix}` };
+    case "unknown":
+    default:
+      return { kind: "unknown", llmCode: "SERVER", message: `astudio: \u8BF7\u6C42\u5931\u8D25${suffix}` };
+  }
+}
+function astudioBareSlugOf(slug) {
+  if (!slug.startsWith("builtin/")) return slug;
+  const encoded = slug.slice("builtin/".length);
+  try {
+    const decoded = Buffer.from(encoded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    if (decoded.length > 0 && decoded !== encoded && !decoded.includes("\0") && !decoded.includes("/")) {
+      return decoded;
+    }
+  } catch {
+  }
+  return slug;
+}
+function parseAstudioCatalog(body) {
+  const envelope = parseAstudioEnvelope(body);
+  if (!envelope.ok) throw new Error(`astudio: \u6A21\u578B\u76EE\u5F55\u5931\u8D25 \u2014 ${envelope.message}`);
+  const models = envelope.data.models;
+  if (!Array.isArray(models)) throw new Error("astudio: \u6A21\u578B\u76EE\u5F55\u7F3A\u5C11 models \u6570\u7EC4");
+  const byId = /* @__PURE__ */ new Map();
+  for (const item of models) {
+    if (typeof item !== "object" || item === null) continue;
+    const record3 = item;
+    const rawSlug = astudioReadString(record3, "slug");
+    if (rawSlug.length === 0) continue;
+    const id = astudioBareSlugOf(rawSlug);
+    const visibility = astudioReadString(record3, "visibility") || "list";
+    const effortList = Array.isArray(record3.supported_reasoning_levels) ? record3.supported_reasoning_levels.map((level) => typeof level === "object" && level !== null ? astudioReadString(level, "effort") : "").filter((effort) => effort.length > 0) : [];
+    const modalities = Array.isArray(record3.input_modalities) ? record3.input_modalities.filter((m) => typeof m === "string") : void 0;
+    const entry = {
+      id,
+      name: astudioReadString(record3, "display_name") || id,
+      ...astudioReadString(record3, "description").length > 0 ? { description: astudioReadString(record3, "description") } : {},
+      ...astudioReadNumber(record3, "context_window") !== void 0 ? { contextWindow: astudioReadNumber(record3, "context_window") } : {},
+      ...astudioReadNumber(record3, "max_output_tokens") !== void 0 ? { maxTokens: astudioReadNumber(record3, "max_output_tokens") } : {},
+      ...effortList.length > 0 ? { efforts: effortList } : {},
+      ...astudioReadString(record3, "default_reasoning_level").length > 0 ? { defaultEffort: astudioReadString(record3, "default_reasoning_level") } : {},
+      visibility,
+      ...modalities !== void 0 && modalities.length > 0 ? { inputModalities: modalities } : {},
+      raw: record3
+    };
+    const existing = byId.get(id);
+    if (existing === void 0 || existing.visibility === "hide" && entry.visibility !== "hide") {
+      byId.set(id, entry);
+    }
+  }
+  return [...byId.values()];
+}
+function astudioReasoningOf(model) {
+  const declared = model.efforts ?? [];
+  const fallback = model.defaultEffort;
+  if (declared.length > 0) {
+    return {
+      efforts: declared.map((effort) => ({ id: effort, name: effort })),
+      ...fallback !== void 0 && declared.includes(fallback) ? { defaultEffort: fallback } : {}
+    };
+  }
+  if (fallback !== void 0 && fallback.length > 0) {
+    return { efforts: [{ id: fallback, name: fallback }], defaultEffort: fallback };
+  }
+  return void 0;
+}
+function astudioStreamErrorCode(frame) {
+  if (typeof frame !== "object" || frame === null) return void 0;
+  const record3 = frame;
+  if (record3.error !== void 0 && record3.error !== null) {
+    const error = record3.error;
+    if (typeof error === "object" && error !== null) {
+      const code2 = error.code;
+      if (typeof code2 === "number" && Number.isFinite(code2) && code2 !== 0) return code2;
+      return -1;
+    }
+    return -1;
+  }
+  const code = astudioReadNumber(record3, "code");
+  if (code !== void 0 && code !== 0) return code;
+  return void 0;
+}
+function astudioStreamErrorMessage(frame) {
+  if (typeof frame !== "object" || frame === null) return String(frame).slice(0, 200);
+  const record3 = frame;
+  const error = record3.error;
+  if (typeof error === "object" && error !== null) {
+    const e = error;
+    const message3 = typeof e.message === "string" ? e.message : "";
+    const type = typeof e.type === "string" ? e.type : "";
+    const code = typeof e.code === "string" || typeof e.code === "number" ? String(e.code) : "";
+    const joined = [code.length > 0 ? code : "", type.length > 0 && type !== code ? type : "", message3].filter((part) => part.length > 0).join(" / ");
+    if (joined.length > 0) return joined;
+  }
+  const message2 = astudioReadString(record3, "message") || astudioReadString(record3, "desc");
+  if (message2.length > 0) return message2;
+  try {
+    return JSON.stringify(record3).slice(0, 200);
+  } catch {
+    return "unparsable error frame";
+  }
+}
+function astudioIncrementalDelta(previous, incoming) {
+  if (incoming.length === 0) return "";
+  if (previous.length === 0) return incoming;
+  if (incoming === previous) return "";
+  if (incoming.startsWith(previous)) return incoming.slice(previous.length);
+  if (previous.startsWith(incoming)) return "";
+  return incoming;
+}
+function astudioRewriteSsePayload(payload, state) {
+  if (payload.length === 0) return { payload, changed: false };
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return { payload, changed: false };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { payload, changed: false };
+  }
+  const record3 = parsed;
+  const choices = record3.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return { payload, changed: false };
+  let changed = false;
+  for (let index = 0; index < choices.length; index++) {
+    const choice = choices[index];
+    if (typeof choice !== "object" || choice === null) continue;
+    const delta = choice.delta;
+    if (typeof delta !== "object" || delta === null) continue;
+    const deltaRecord = delta;
+    const id = typeof record3.id === "string" && record3.id.length > 0 ? record3.id : `anon:${index}`;
+    if (typeof deltaRecord.content === "string") {
+      const key = `${id}:c:${index}`;
+      const before = state.get(key)?.sent ?? "";
+      const after = astudioIncrementalDelta(before, deltaRecord.content);
+      if (after !== deltaRecord.content) {
+        deltaRecord.content = after;
+        changed = true;
+      }
+      state.set(key, { sent: before + after });
+    }
+    if (typeof deltaRecord.reasoning_content === "string") {
+      const key = `${id}:r:${index}`;
+      const before = state.get(key)?.sent ?? "";
+      const after = astudioIncrementalDelta(before, deltaRecord.reasoning_content);
+      if (after !== deltaRecord.reasoning_content) {
+        deltaRecord.reasoning_content = after;
+        changed = true;
+      }
+      state.set(key, { sent: before + after });
+    }
+    if (Array.isArray(deltaRecord.tool_calls)) {
+      for (const call of deltaRecord.tool_calls) {
+        if (typeof call !== "object" || call === null) continue;
+        const callRecord = call;
+        const fn = callRecord.function;
+        if (typeof fn !== "object" || fn === null) continue;
+        const fnRecord = fn;
+        if (typeof fnRecord.arguments !== "string") continue;
+        const slot2 = typeof callRecord.index === "number" ? callRecord.index : 0;
+        const key = `${id}:t:${index}:${slot2}`;
+        const before = state.get(key)?.sent ?? "";
+        const after = astudioIncrementalDelta(before, fnRecord.arguments);
+        if (after !== fnRecord.arguments) {
+          fnRecord.arguments = after;
+          changed = true;
+        }
+        state.set(key, { sent: before + after });
+      }
+    }
+  }
+  if (!changed) return { payload, changed: false };
+  if (isAllEmptyDelta(record3)) return { payload: null, changed: true };
+  try {
+    return { payload: JSON.stringify(record3), changed: true };
+  } catch {
+    return { payload, changed: false };
+  }
+}
+function isAllEmptyDelta(record3) {
+  const choices = record3.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return false;
+  let sawDelta = false;
+  for (const choice of choices) {
+    if (typeof choice !== "object" || choice === null) return false;
+    const entry = choice;
+    if (typeof entry.finish_reason === "string") return false;
+    const delta = entry.delta;
+    if (typeof delta !== "object" || delta === null) return false;
+    const d = delta;
+    const keys = Object.keys(d).filter((key) => key !== "role");
+    if (keys.length === 0) continue;
+    for (const key of keys) {
+      const value = d[key];
+      if (typeof value === "string") {
+        if (value.length > 0) return false;
+        sawDelta = true;
+        continue;
+      }
+      return false;
+    }
+  }
+  return sawDelta;
+}
+function astudioWrapIncremental(response) {
+  if (response.body === null || response.body === void 0) return response;
+  const state = /* @__PURE__ */ new Map();
+  const decoder2 = new TextDecoder();
+  const encoder2 = new TextEncoder();
+  let buffer = "";
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      buffer += decoder2.decode(chunk, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line2 = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        controller.enqueue(encoder2.encode(rewriteLine(line2, state) + "\n"));
+        newline = buffer.indexOf("\n");
+      }
+    },
+    flush(controller) {
+      const rest = buffer.trim();
+      if (rest.length > 0) controller.enqueue(encoder2.encode(`${rewriteLine(rest, state)}
+`));
+    }
+  });
+  const headers = new Headers(response.headers);
+  if (!headers.has("content-type")) headers.set("Content-Type", "text/event-stream");
+  return new Response(response.body.pipeThrough(transform), {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+function rewriteLine(line2, state) {
+  const trimmed = line2.endsWith("\r") ? line2.slice(0, -1) : line2;
+  if (!trimmed.startsWith("data:")) return line2;
+  const payload = trimmed.slice("data:".length).trim();
+  if (payload.length === 0 || payload === "[DONE]") return line2;
+  const rewritten = astudioRewriteSsePayload(payload, state);
+  if (rewritten.payload === null) return "";
+  if (!rewritten.changed) return line2;
+  return `data: ${rewritten.payload}`;
+}
+function astudioEffortForRequest(requested, declared) {
+  if (requested === void 0) return {};
+  const effort = requested.trim();
+  if (effort.length === 0) return {};
+  const set = declared ?? [];
+  if (set.includes(effort)) return { effort };
+  return {
+    dropped: effort,
+    reason: set.length === 0 ? "\u4E0A\u6E38\u76EE\u5F55\u672A\u5BF9\u8BE5\u6A21\u578B\u58F0\u660E\u4EFB\u4F55\u601D\u8003\u6863\u4F4D" : `\u8BE5\u6A21\u578B\u53EA\u58F0\u660E ${set.join("/")}`
+  };
+}
+function buildAstudioChatRequest(input) {
+  const messages = [];
+  if (typeof input.system === "string" && input.system.length > 0) {
+    messages.push({ role: "system", content: input.system });
+  }
+  for (const message2 of input.messages) {
+    if (typeof message2 !== "object" || message2 === null) continue;
+    messages.push(message2);
+  }
+  const body = {
+    model: astudioBareSlugOf(input.model),
+    messages,
+    stream: input.stream
+  };
+  if (input.stream === true) body.stream_options = { include_usage: true };
+  if (typeof input.user === "string" && input.user.length > 0) body.user = input.user;
+  if (input.tools !== void 0 && input.tools.length > 0) body.tools = input.tools;
+  if (input.temperature !== void 0) body.temperature = input.temperature;
+  if (input.maxTokens !== void 0) body.max_tokens = input.maxTokens;
+  if (input.stop !== void 0 && input.stop.length > 0) body.stop = input.stop;
+  if (typeof input.reasoningEffort === "string" && input.reasoningEffort.length > 0) {
+    body.reasoning_effort = input.reasoningEffort;
+  }
+  return body;
+}
+function astudioCatalogToFallback(model) {
+  const modalities = model.inputModalities ?? [];
+  return {
+    id: model.id,
+    name: model.name,
+    contextWindow: model.contextWindow ?? 0,
+    ...model.maxTokens !== void 0 ? { maxTokens: model.maxTokens } : {},
+    ...model.efforts !== void 0 && model.efforts.length > 0 ? { efforts: model.efforts } : {},
+    ...model.defaultEffort !== void 0 ? { defaultEffort: model.defaultEffort } : {},
+    supportsImage: modalities.includes("image")
+  };
+}
+function astudioVisibleModels(models) {
+  return models.filter((model) => model.visibility !== "hide" && model.id.length > 0);
+}
+
+// vendor/channel-pack/src/astudio-credits.ts
+var ASTUDIO_POINTS_BALANCE_PATH = "/points/balance";
+var ASTUDIO_CREDIT_UNIT = "credit";
+var ASTUDIO_CREDITS_TIMEOUT_MS = 8e3;
+function readAstudioInt(source, key) {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : void 0;
+}
+function readAstudioLocalTime(source, key) {
+  const value = source[key];
+  return typeof value === "string" ? value : "";
+}
+function failDetail(error) {
+  return { balance: null, error };
+}
+function buildAstudioBalance(data) {
+  const total = readAstudioInt(data, "totalBalance");
+  if (total === void 0) return null;
+  const totalAmount = readAstudioInt(data, "totalAmount");
+  const packages = [];
+  const used = totalAmount !== void 0 ? Math.max(0, totalAmount - total) : 0;
+  const pushPool = (name2, totalKey, balanceKey, expireKey) => {
+    const remaining = readAstudioInt(data, balanceKey);
+    if (remaining === void 0) return;
+    const poolTotal = readAstudioInt(data, totalKey) ?? remaining;
+    const expiredTime = readAstudioLocalTime(data, expireKey);
+    packages.push({
+      name: name2,
+      unit: ASTUDIO_CREDIT_UNIT,
+      remaining,
+      total: poolTotal,
+      used: Math.max(0, poolTotal - remaining),
+      active: remaining > 0,
+      // 上游不给周期概念（额度按来源发放、按活动到期），起止留空而不是编造。
+      cycleStartTime: "",
+      cycleEndTime: "",
+      // ⚠️ `*NextExpireTime` **不在官方 Schema 内**（Effect.Struct 会裁未知字段），
+      // 且是**不带时区的本地时间串** ⇒ 原样透出、不 Date.parse、不做数学比较。
+      expiredTime
+    });
+  };
+  pushPool("\u4F1A\u5458\u79EF\u5206", "memberTotal", "memberBalance", "memberNextExpireTime");
+  pushPool("\u8D2D\u4E70\u79EF\u5206", "buyTotal", "buyBalance", "buyNextExpireTime");
+  pushPool("\u8D60\u9001\u79EF\u5206", "activityTotal", "activityBalance", "activityNextExpireTime");
+  const sparkBalance = readAstudioInt(data, "sparkTotalBalance");
+  if (sparkBalance !== void 0) {
+    const sparkTotal = readAstudioInt(data, "sparkTotalAmount") ?? sparkBalance;
+    packages.push({
+      name: "\u661F\u706B\u79EF\u5206\uFF08\u72EC\u7ACB\u6C60\uFF0C\u4E0D\u53C2\u4E0E\u4E3B\u6C60\u5408\u8BA1\uFF09",
+      unit: ASTUDIO_CREDIT_UNIT,
+      remaining: sparkBalance,
+      total: sparkTotal,
+      used: Math.max(0, sparkTotal - sparkBalance),
+      active: sparkBalance > 0,
+      cycleStartTime: "",
+      cycleEndTime: "",
+      expiredTime: readAstudioLocalTime(data, "sparkNextExpireTime")
+    });
+  }
+  if (packages.length === 0) {
+    packages.push({
+      name: "\u53EF\u7528\u79EF\u5206",
+      unit: ASTUDIO_CREDIT_UNIT,
+      remaining: total,
+      total: totalAmount ?? total,
+      used,
+      active: total > 0,
+      cycleStartTime: "",
+      cycleEndTime: "",
+      expiredTime: ""
+    });
+  }
+  return { total, packages, expiredTotal: 0 };
+}
+async function fetchAstudioBalanceDetailed(credential, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  const product = options.product ?? ASTUDIO;
+  const timeoutMs = options.timeoutMs ?? ASTUDIO_CREDITS_TIMEOUT_MS;
+  const baseUrl = (product.authBaseUrl ?? "").replace(/\/+$/, "");
+  if (baseUrl.length === 0) return failDetail("\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08\u672A\u914D\u7F6E\u8D26\u53F7\u540E\u7AEF\u5730\u5740\uFF09");
+  const raw = credential;
+  if (raw === null || raw === void 0 || typeof raw !== "object") {
+    return failDetail("\u672A\u767B\u5F55 AStudio\uFF08\u8D26\u53F7\u51ED\u636E\u7F3A\u5931\u6216\u8BFB\u4E0D\u5230\uFF09\uFF0C\u8BF7\u5220\u9664\u8BE5\u8D26\u53F7\u540E\u91CD\u65B0\u767B\u5F55");
+  }
+  const cookie = astudioCookieHeader(credential);
+  if (cookie.length === 0) {
+    return failDetail("\u672A\u767B\u5F55 AStudio\uFF08\u7F3A\u5C11\u767B\u5F55\u4F1A\u8BDD Cookie\uFF09\uFF0C\u8BF7\u5728 AStudio \u5BA2\u6237\u7AEF\u91CD\u65B0\u767B\u5F55");
+  }
+  let response;
+  let text;
+  try {
+    response = await fetcher(`${baseUrl}${ASTUDIO_POINTS_BALANCE_PATH}`, {
+      method: "GET",
+      headers: { Accept: "application/json", Cookie: cookie },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    text = await response.text();
+  } catch (error) {
+    return failDetail(`\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!response.ok) {
+    return failDetail(`\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08HTTP ${String(response.status)}\uFF09`);
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return failDetail("\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09");
+  }
+  const envelope = parseAstudioEnvelope(body);
+  if (!envelope.ok) {
+    if (isAstudioSessionDeadError(envelope.code, envelope.message)) {
+      return failDetail("AStudio \u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u9700\u5728 AStudio \u5BA2\u6237\u7AEF\u4EBA\u5DE5\u91CD\u65B0\u767B\u5F55\uFF08\u5FAE\u4FE1\u626B\u7801\uFF09");
+    }
+    return failDetail(`\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A${envelope.message}`);
+  }
+  const balance = buildAstudioBalance(envelope.data);
+  if (balance === null) {
+    return failDetail("\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A\u54CD\u5E94\u672A\u5305\u542B\u4F59\u989D\u5B57\u6BB5");
+  }
+  return { balance };
+}
+var ASTUDIO_CLIENT_POPUPS_PENDING_PATH = "/client-popups/pending";
+var ASTUDIO_CLIENT_POPUPS_COMPLETE_PATH = "/client-popups/complete";
+var ASTUDIO_POPUP_TYPE_DAILY_REWARD = "DAILY_REWARD_DIALOG";
+var ASTUDIO_POPUP_TYPE_NEW_USER = "NEW_USER_DIALOG";
+function astudioPopupTypeOf(record3) {
+  return String(record3.componentType ?? record3.type ?? "");
+}
+function extractRecordPayload(record3) {
+  if (typeof record3.payload === "object" && record3.payload !== null) {
+    return record3.payload;
+  }
+  if (typeof record3.content === "object" && record3.content !== null) {
+    return record3.content;
+  }
+  if (typeof record3.content === "string") {
+    try {
+      const parsed = JSON.parse(record3.content);
+      if (typeof parsed === "object" && parsed !== null) {
+        return parsed;
+      }
+    } catch {
+    }
+  }
+  return void 0;
+}
+function parseAstudioPopupPoints(payload) {
+  if (typeof payload === "number" && Number.isFinite(payload) && payload >= 0) {
+    return Math.floor(payload);
+  }
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed2 = JSON.parse(trimmed);
+        const pts = parseAstudioPopupPoints(parsed2);
+        if (pts > 0) return pts;
+      } catch {
+      }
+    }
+    const parsed = parseInt(trimmed, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  }
+  if (typeof payload === "object" && payload !== null) {
+    const record3 = payload;
+    if ("points" in record3) {
+      return parseAstudioPopupPoints(record3.points);
+    }
+    if ("credit" in record3) {
+      return parseAstudioPopupPoints(record3.credit);
+    }
+    if ("rewardPoints" in record3) {
+      return parseAstudioPopupPoints(record3.rewardPoints);
+    }
+    if ("reward_points" in record3) {
+      return parseAstudioPopupPoints(record3.reward_points);
+    }
+  }
+  return 0;
+}
+function extractAstudioClaimablePopups(data) {
+  if (!Array.isArray(data)) return [];
+  const result = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  for (const item of data) {
+    if (typeof item !== "object" || item === null) continue;
+    const record3 = item;
+    const type = astudioPopupTypeOf(record3);
+    if (type === ASTUDIO_POPUP_TYPE_DAILY_REWARD || type === ASTUDIO_POPUP_TYPE_NEW_USER) {
+      const rawId = record3.popupId;
+      const popupId = typeof rawId === "number" ? rawId : parseInt(String(rawId), 10);
+      if (Number.isFinite(popupId) && !seenIds.has(popupId)) {
+        seenIds.add(popupId);
+        result.push({
+          popupId,
+          instanceKey: typeof record3.instanceKey === "string" ? record3.instanceKey : "",
+          type,
+          payload: extractRecordPayload(record3)
+        });
+      }
+    }
+  }
+  return result;
+}
+async function claimAstudioDailyReward(credential, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  const timeoutMs = options.timeoutMs ?? ASTUDIO_CREDITS_TIMEOUT_MS;
+  const product = options.product ?? ASTUDIO;
+  const baseUrl = (product.authBaseUrl ?? "").replace(/\/+$/, "");
+  const cookie = astudioCookieHeader(credential);
+  if (cookie.length === 0) {
+    return {
+      kind: "failed",
+      code: 8e4,
+      message: "\u672A\u767B\u5F55 AStudio\uFF08\u7F3A\u5C11\u767B\u5F55\u4F1A\u8BDD Cookie\uFF09\uFF0C\u8BF7\u5728 AStudio \u5BA2\u6237\u7AEF\u91CD\u65B0\u767B\u5F55"
+    };
+  }
+  let pendingResponse;
+  let pendingText;
+  try {
+    pendingResponse = await fetcher(`${baseUrl}${ASTUDIO_CLIENT_POPUPS_PENDING_PATH}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Cookie: cookie,
+        clientType: product.clientType,
+        studioVersion: product.studioVersion
+      },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    pendingText = await pendingResponse.text();
+  } catch (error) {
+    return {
+      kind: "failed",
+      code: -1,
+      message: `\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+  if (!pendingResponse.ok) {
+    return {
+      kind: "failed",
+      code: pendingResponse.status,
+      message: `\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF08HTTP ${pendingResponse.status}\uFF09`
+    };
+  }
+  let pendingBody;
+  try {
+    pendingBody = JSON.parse(pendingText);
+  } catch {
+    return {
+      kind: "failed",
+      code: -1,
+      message: "\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09"
+    };
+  }
+  const pendingRecord = typeof pendingBody === "object" && pendingBody !== null ? pendingBody : {};
+  const pendingCode = typeof pendingRecord.code === "number" ? pendingRecord.code : parseInt(String(pendingRecord.code ?? ""), 10);
+  const pendingMsg = typeof pendingRecord.message === "string" ? pendingRecord.message : String(pendingRecord.desc ?? "");
+  if (pendingCode === 8e4 || isAstudioSessionDeadError(pendingCode, pendingMsg)) {
+    return {
+      kind: "failed",
+      code: 8e4,
+      message: "AStudio \u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u9700\u5728 AStudio \u5BA2\u6237\u7AEF\u4EBA\u5DE5\u91CD\u65B0\u767B\u5F55\uFF08\u5FAE\u4FE1\u626B\u7801\uFF09"
+    };
+  }
+  if (Number.isFinite(pendingCode) && pendingCode !== 0) {
+    return {
+      kind: "failed",
+      code: pendingCode,
+      message: `\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF1A${pendingMsg || `code=${pendingCode}`}`
+    };
+  }
+  const popups = extractAstudioClaimablePopups(pendingRecord.data);
+  if (popups.length === 0) {
+    return {
+      kind: "already-claimed",
+      message: "\u4ECA\u5929\u5DF2\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u5956\u52B1\u53CA\u798F\u5229\u793C\u5305"
+    };
+  }
+  let totalCredit = 0;
+  for (const popup of popups) {
+    let completeResponse;
+    let completeText;
+    try {
+      completeResponse = await fetcher(`${baseUrl}${ASTUDIO_CLIENT_POPUPS_COMPLETE_PATH}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Cookie: cookie,
+          clientType: product.clientType,
+          studioVersion: product.studioVersion
+        },
+        body: JSON.stringify({
+          popupId: popup.popupId,
+          instanceKey: popup.instanceKey
+        }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      completeText = await completeResponse.text();
+    } catch (error) {
+      return {
+        kind: "failed",
+        code: -1,
+        message: `\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+    if (!completeResponse.ok) {
+      return {
+        kind: "failed",
+        code: completeResponse.status,
+        message: `\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF08HTTP ${completeResponse.status}\uFF09`
+      };
+    }
+    let completeBody;
+    try {
+      completeBody = JSON.parse(completeText);
+    } catch {
+      return {
+        kind: "failed",
+        code: -1,
+        message: "\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09"
+      };
+    }
+    const completeRecord = typeof completeBody === "object" && completeBody !== null ? completeBody : {};
+    const completeCode = typeof completeRecord.code === "number" ? completeRecord.code : parseInt(String(completeRecord.code ?? ""), 10);
+    const completeMsg = typeof completeRecord.message === "string" ? completeRecord.message : String(completeRecord.desc ?? "");
+    if (completeCode === 8e4 || isAstudioSessionDeadError(completeCode, completeMsg)) {
+      return {
+        kind: "failed",
+        code: 8e4,
+        message: "AStudio \u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u9700\u5728 AStudio \u5BA2\u6237\u7AEF\u4EBA\u5DE5\u91CD\u65B0\u767B\u5F55\uFF08\u5FAE\u4FE1\u626B\u7801\uFF09"
+      };
+    }
+    if (Number.isFinite(completeCode) && completeCode !== 0) {
+      return {
+        kind: "failed",
+        code: completeCode,
+        message: `\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF1A${completeMsg || `code=${completeCode}`}`
+      };
+    }
+    const creditFromComplete = parseAstudioPopupPoints(completeRecord.data);
+    const creditFromPayload = parseAstudioPopupPoints(popup.payload);
+    const credit = creditFromComplete > 0 ? creditFromComplete : creditFromPayload;
+    totalCredit += credit;
+  }
+  return {
+    kind: "claimed",
+    credit: totalCredit,
+    streakDays: 1,
+    isStreakDay: false,
+    unit: "credit"
+  };
+}
+var claimDaily = claimAstudioDailyReward;
+
 // vendor/channel-pack/src/accio-product.ts
 var ACCIO_TOKEN_EXCHANGE_PATH = "/api/oauth/token";
 var ACCIO_REFRESH_PATH = "/api/auth/refresh_token";
@@ -62626,7 +64076,7 @@ function accioAccessToken(credential) {
 function readRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
 }
-function readString6(source, key) {
+function readString7(source, key) {
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
@@ -62636,7 +64086,7 @@ function readScalarString(source, key) {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
 }
-function readNumber7(source, key) {
+function readNumber8(source, key) {
   const value = source[key];
   if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
   if (typeof value === "string" && value.trim() !== "") {
@@ -62723,13 +64173,13 @@ function accioCreditBuckets(subscription) {
   for (const bucket of ACCIO_CREDIT_BUCKETS) {
     const value = readRecord2(entitlement[bucket.key]);
     if (value === void 0) continue;
-    const remaining = readNumber7(value, "remaining");
+    const remaining = readNumber8(value, "remaining");
     if (remaining === void 0) continue;
     rows.push({
       key: bucket.key,
       label: bucket.label,
-      total: readNumber7(value, "total") ?? 0,
-      used: readNumber7(value, "used") ?? 0,
+      total: readNumber8(value, "total") ?? 0,
+      used: readNumber8(value, "used") ?? 0,
       remaining
     });
   }
@@ -62747,11 +64197,11 @@ async function fetchAccioUserInfo(credential, options = {}) {
   if (!envelope.ok || envelope.data === void 0) return void 0;
   const data = envelope.data;
   return {
-    userId: readString6(data, "userId"),
-    userName: readString6(data, "userName"),
-    routeRegion: readString6(data, "routeRegion"),
-    userLevel: readString6(data, "userLevel"),
-    maskedMobile: readString6(data, "maskedMobile")
+    userId: readString7(data, "userId"),
+    userName: readString7(data, "userName"),
+    routeRegion: readString7(data, "routeRegion"),
+    userLevel: readString7(data, "userLevel"),
+    maskedMobile: readString7(data, "maskedMobile")
   };
 }
 async function fetchAccioQuota(credential, options = {}) {
@@ -62765,8 +64215,8 @@ async function fetchAccioQuota(credential, options = {}) {
   });
   if (!envelope.ok || envelope.data === void 0) return void 0;
   const data = envelope.data;
-  const usagePercent = readNumber7(data, "usagePercent");
-  const refreshCountdownSeconds = readNumber7(data, "refreshCountdownSeconds");
+  const usagePercent = readNumber8(data, "usagePercent");
+  const refreshCountdownSeconds = readNumber8(data, "refreshCountdownSeconds");
   return {
     ...usagePercent === void 0 ? {} : { usagePercent },
     ...refreshCountdownSeconds === void 0 ? {} : { refreshCountdownSeconds }
@@ -62815,7 +64265,7 @@ async function fetchAccioBalanceDetailed(credential, options = {}) {
   }
   const data = subscription.data;
   const buckets = accioCreditBuckets(data);
-  const topRemaining = readNumber7(data, "remaining");
+  const topRemaining = readNumber8(data, "remaining");
   if (buckets.length === 0 && topRemaining === void 0) {
     return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A\u54CD\u5E94\u672A\u5305\u542B\u4F59\u989D\u5B57\u6BB5" };
   }
@@ -62871,7 +64321,7 @@ __export(officeace_auth_exports, {
   refreshStoredCredential: () => refreshStoredCredential,
   startLogin: () => startLogin
 });
-import { createHash as createHash7, createHmac as createHmac2, randomBytes as randomBytes9, webcrypto } from "node:crypto";
+import { createHash as createHash8, createHmac as createHmac2, randomBytes as randomBytes9, webcrypto } from "node:crypto";
 import { execFile, execFileSync as execFileSync2 } from "node:child_process";
 import * as fs from "node:fs";
 import * as https from "node:https";
@@ -63005,7 +64455,7 @@ async function startLogin() {
     throw new Error("\u534E\u4E3A\u4E91\u672A\u8FD4\u56DE state");
   }
   const codeVerifier = b64(randomBytes9(32));
-  const codeChallenge = createHash7("sha256").update(codeVerifier).digest("base64url");
+  const codeChallenge = createHash8("sha256").update(codeVerifier).digest("base64url");
   const { privateJwk, publicJwk } = await generateDpopKeyPair2();
   const params = new URLSearchParams({
     client_id: CLIENT_ID2,
@@ -63056,9 +64506,9 @@ function signHuaweiRequest(method, url, headers, bodyText, accessKey, secretKey)
   let canonicalHeaders = "";
   for (const h of signedHeaders) canonicalHeaders += `${h}:${lower[h]}
 `;
-  const bodyHash = method === "PUT" || method === "PATCH" || method === "POST" ? createHash7("sha256").update(bodyText).digest("hex") : createHash7("sha256").update("").digest("hex");
+  const bodyHash = method === "PUT" || method === "PATCH" || method === "POST" ? createHash8("sha256").update(bodyText).digest("hex") : createHash8("sha256").update("").digest("hex");
   const canonicalRequest = [method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders.join(";"), bodyHash].join("\n");
-  const stringToSign = ["SDK-HMAC-SHA256", xdate, createHash7("sha256").update(canonicalRequest).digest("hex")].join("\n");
+  const stringToSign = ["SDK-HMAC-SHA256", xdate, createHash8("sha256").update(canonicalRequest).digest("hex")].join("\n");
   const sig2 = createHmac2("sha256", secretKey).update(stringToSign).digest("hex");
   return {
     ...headers,
@@ -63469,7 +64919,7 @@ async function signAndRequest(url, credential, method, body, statusOut, errorBod
   let canonicalHeaders = "";
   for (const h of signedHeaders) canonicalHeaders += `${h}:${lower[h]}
 `;
-  const payloadHash = createHash7("sha256").update(body ?? "", "utf8").digest("hex");
+  const payloadHash = createHash8("sha256").update(body ?? "", "utf8").digest("hex");
   const canonicalRequest = [
     method,
     canonicalUri,
@@ -63479,7 +64929,7 @@ async function signAndRequest(url, credential, method, body, statusOut, errorBod
     payloadHash
   ].join("\n");
   const scope = `${xdate.slice(0, 8)}/${region}/${service}`;
-  const stringToSign = ["V11-HMAC-SHA256", xdate, scope, createHash7("sha256").update(canonicalRequest).digest("hex")].join("\n");
+  const stringToSign = ["V11-HMAC-SHA256", xdate, scope, createHash8("sha256").update(canonicalRequest).digest("hex")].join("\n");
   const u1 = createHmac2("sha256", credential.access).update(credential.secret).digest();
   const derivedKey = createHmac2("sha256", u1).update(Buffer.concat([Buffer.from(scope, "utf8"), Buffer.from([1])])).digest().subarray(0, 32).toString("hex");
   const signature = createHmac2("sha256", Buffer.from(derivedKey, "utf8")).update(stringToSign).digest("hex");
@@ -63779,7 +65229,7 @@ async function readFromOfficeAceRedis() {
 var REDIS_CRED_TARGET = "OfficeClaw/redis/password";
 
 // vendor/channel-pack/src/officeace-credential-health.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 var DSH_OFFICEACE_BREAKER_MINUTES = "DSH_OFFICEACE_BREAKER_MINUTES";
 var OFFICEACE_BREAKER_DEFAULT_MINUTES = 10;
 var OFFICEACE_BREAKER_THRESHOLD = 2;
@@ -63797,7 +65247,7 @@ function officeaceCredentialFingerprint(credential) {
   const key = typeof credential?.modelAppKey === "string" ? credential.modelAppKey : "";
   const secret = typeof credential?.modelAppSecret === "string" ? credential.modelAppSecret : "";
   if (key.length === 0 || secret.length === 0) return "";
-  return createHash8("sha256").update(`${key}\0${secret}`).digest("hex").slice(0, 16);
+  return createHash9("sha256").update(`${key}\0${secret}`).digest("hex").slice(0, 16);
 }
 var rejections = /* @__PURE__ */ new Map();
 function noteOfficeaceRejection(credential, body = "", now = Date.now(), env = process.env) {
@@ -63924,7 +65374,11 @@ var WIRED_EXPIRY_PROVIDERS = Object.freeze([
   //    ⚠️ 三处必须同改：本表 + `provider-expiry.ts` 的 `createProviderExpiry()`
   //    + 折算原语（后两者的一致性由 `expiry-runtime-parity.spec.ts` 真跑
   //    `apply()` 锁一致）。
-  "autoclaw"
+  "autoclaw",
+  // phone-port adapter: astudio-wired —— 本 fork 2026-10-20 接入（与 modelscope / autoclaw 同格：
+  //    有 active 余额即 NEVER、烧光即 UNUSABLE）。上游刻意不接（豁免说明见
+  //    aggregate-adapter.ts）；本 fork 推翻该决定以满足「astudio 参与聚合临期轮换」。
+  "astudio"
 ]);
 var EXPIRY_CACHE_TTL_MS = 6e4;
 function createExpiryProbe(pool, firstModelIdOf, options = {}) {
@@ -64119,6 +65573,15 @@ async function autoclawExpiry(credential, product, cached2) {
     cached2,
     async () => {
       const result = await fetchAutoclawBalanceDetailed(credential, { product });
+      return result.balance;
+    }
+  ));
+}
+async function astudioExpiry(credential, product, cached2) {
+  return sharedPackageExpiry(() => fetchBalanceWithCache(
+    cached2,
+    async () => {
+      const result = await fetchAstudioBalanceDetailed(credential, { product });
       return result.balance;
     }
   ));
@@ -65681,6 +67144,9 @@ var AGGREGATE_AUTO_MODEL = "auto";
 var AGGREGATE_TTL_MS = 6e4;
 var AGGREGATE_CATALOG_TTL_MS = 6e4;
 var AGGREGATE_BACKGROUND_REFRESH_TIMEOUT_MS = 6e4;
+var AGGREGATE_CAPABILITY_TIMEOUT_MS = 3e3;
+var AGGREGATE_CAPABILITY_FAILURE_TTL_MS = 3e4;
+var AGGREGATE_CONTEXT_WINDOW_DEGRADED_TTL_MS = 3e4;
 var AGGREGATE_COLD_CONTEXT_WINDOW = 131072;
 var AGGREGATE_FALLBACK_CONTEXT_WINDOW = 2e5;
 var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
@@ -65775,18 +67241,72 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
    * 失败时 `capabilityOf` 返回保守默认值（无档位 / 不支持图片 / 无窗口）。
    * 把「这一次没问出来」缓存 60 秒会把**瞬时**故障固化成单向门 —— 那正是
    * 本仓库反复修过的缺陷形态（见 `AGENTS.md` 的「`refreshable` 单向门」）。
-   * ⇒ 失败不写缓存，下一次调用照常重试；上游恢复后自动生效。
+   * ⇒ 失败不写本缓存；**失败记录进 {@link capabilityFailureCache}，只有 30 秒**，
+   * 见那里的注释（完全不缓存会让持续故障的候选每轮都被重试一遍）。
    *
    * ⚠️ 与目录同生命周期：{@link refreshCatalog} 重建目录时清空 —— 目录变了，
    *    「哪些候选存在」就变了，缓存必须跟着失效。
    */
   capabilityCache = /* @__PURE__ */ new Map();
   /**
+   * **失败**的能力解析记录（`provider\0realId` → 失败时刻）。
+   *
+   * ## ⚠️⚠️ 为什么需要它（用户报障 2026-10-20 实测）
+   *
+   * 只有 {@link capabilityCache}（只存成功）时，候选池里**任何一个**持续故障的
+   * 渠道都会让每一轮请求都重新等它超时：
+   *
+   * ```
+   * 第1次 prepareCall = 16015 ms   第2次 = 8001 ms   第3次 = 8009 ms
+   * contextWindowCache 命中? ★否 —— 永不记忆化
+   * ```
+   *
+   * 而 `buildModelCatalog` 对目录里**每个虚拟模型**各调一次 `resolveModelInfo`
+   * ⇒ 坏候选的代价被乘以虚拟模型数（实测 1/5/10 个 = 508/2551/5102 ms）。
+   *
+   * ## 与「不得缓存失败」的关系
+   *
+   * 本表**不是**把失败当成成功缓存：命中时返回的仍是 `resolved: false` 的保守值，
+   * 且 TTL 只有 {@link AGGREGATE_CAPABILITY_FAILURE_TTL_MS}（30 秒，目录 TTL 的一半）。
+   * 它解决的是「同一轮内反复问同一个坏候选」，不是「永远不再问」。
+   *
+   * ⚠️ **解析成功时立刻 `delete` 该键**：上游恢复后不必等 TTL 到期。
+   * ⚠️ **中止（`isAbortLike`）不写本表**：中止不是「候选坏了」，写进去会让用户
+   *    取消一次请求后，该候选在 30 秒内被当成故障候选（真实缺陷形态，见
+   *    `capabilityOf` 的 catch 分支注释）。
+   * ⚠️ 与目录同生命周期：{@link refreshCatalog} 重建目录时一并清空。
+   */
+  capabilityFailureCache = /* @__PURE__ */ new Map();
+  /**
+   * **在飞**的能力解析（`provider\0realId` → 该次解析的 Promise）。
+   *
+   * ## ⚠️⚠️ 为什么必须有它（2026-10-20 独立审计实测的重复扇出）
+   *
+   * {@link capabilityCache} 只在 `await` **之后**才写 ⇒ 同一拍的重复询问全部穿透：
+   *
+   * - 宿主 `buildModelCatalog` 对**每个虚拟模型**并行调 `resolveModelInfo`，而一个
+   *   候选常常**同时**挂在多个虚拟模型下（同一个 realId 在多渠道归一成一个键）；
+   * - `auto` 的池与具名模型的候选表**重叠**。
+   *
+   * 实测（18 渠道 × 40 模型、41 个虚拟模型并行）：**738** 次 `resolveModelInfo`
+   * 调用、单候选最多被重复解析 **2** 次；改前（无封顶、无在飞合并）峰值 720。
+   *
+   * ⇒ 本表把「同一个候选的并发询问」合并成**一次**底层解析（`Promise` 共享）。
+   * ⚠️ **不得缓存失败的 Promise**：`finally` 里无条件删（成功/失败都删），否则
+   * 一次失败会像「失败短缓存」那样被固化 —— 那只由
+   * {@link capabilityFailureCache} 按 30 秒显式控制。
+   * ⚠️ 与目录同生命周期：{@link refreshCatalog} 一并清空（`Map.clear()` 只丢引用，
+   * 已在飞的 Promise 仍会跑完并各自写 `capabilityCache`，无害）。
+   */
+  capabilityInFlight = /* @__PURE__ */ new Map();
+  /**
    * 每个虚拟模型（含 `auto`）的**窗口声明值**缓存。
    *
    * ⚠️ 判决结果是「候选集的最大值」，是个**纯函数**（同一份目录 + 同一份能力缓存
    * 必然得到同一个值）⇒ 记忆化不改变语义，只是避免每次 `resolveModel` 都重算。
    * ⚠️ 同样在 {@link refreshCatalog} 里清空（目录变了 ⇒ 候选集变了 ⇒ 最大值可能变）。
+   * ⚠️ 值是 {@link ContextWindowEntry} 而不是裸 `number`：**退化判决**（有候选没解析
+   * 成功）的 TTL 必须比正常判决短得多，见那里的注释。
    */
   contextWindowCache = /* @__PURE__ */ new Map();
   providerInfo(provider) {
@@ -66140,6 +67660,8 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
     this.catalogAt = now;
     this.capabilityCache.clear();
     this.contextWindowCache.clear();
+    this.capabilityFailureCache.clear();
+    this.capabilityInFlight.clear();
     this.maintainProviderClosedState(previousIds);
     if (changed) this.onCatalogLanded();
     return this.catalog;
@@ -66316,7 +67838,13 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
     //    但候选层被那道闸门剔掉 ⇒ **用户要的「轮换列表里要有 accio」并没有实现**，
     //    且症状静默（无报错、无日志）。现两处都补齐。
     "accio",
-    "autoclaw"
+    "autoclaw",
+    // phone-port adapter: astudio-aggregate —— 本 fork 2026-10-20 **推翻**上游下面这条豁免（用户要求
+    //    astudio 参与聚合临期轮换）。前提是该风险已被折算层挡住：会话终态（HTTP 200 +
+    //    code=80000）时余额探针拿不到 totalBalance ⇒ 折算给 UNUSABLE ⇒ **不会被选中**。
+    //    ⚠️ 三处必须同补（本数组 + WIRED_EXPIRY_PROVIDERS + provider-expiry 表），
+    //    只补一处是无效接线、症状静默。
+    "astudio"
     // ⚠️ astudio 有意**不进** AGGREGATE_CHANNELS（2026-10-16 定案，沿用先前取证结论）：
     //    本家的模型目录来自上游动态 catalog，额度与失效语义（HTTP 200 + 业务 code 80000
     //    归「需人工重新登录」终态）与聚合渠道不同；且上方注释已实证「只加本数组而不补
@@ -66945,11 +68473,14 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
     signal?.throwIfAborted();
     const ranked = rankCandidates(pool, this.manualRankOf(model));
     const limit = maxAttemptsFor(this.catalog);
-    const targets = [];
-    for (const candidate of ranked.slice(0, limit)) {
-      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal);
-      targets.push({ ...candidate, efforts: capability.efforts, imageCapable: capability.imageCapable });
-    }
+    const picked = ranked.slice(0, limit);
+    const capabilities = await Promise.all(
+      picked.map((candidate) => this.capabilityOf(candidate.provider, candidate.realId, signal))
+    );
+    const targets = picked.map((candidate, index) => {
+      const capability = capabilities[index];
+      return { ...candidate, efforts: capability.efforts, imageCapable: capability.imageCapable };
+    });
     if (targets.length > 0) this.choiceCache.set(cacheKey, { at: now, targets });
     return targets;
   }
@@ -67033,13 +68564,41 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
    * 理由见 {@link DispatchTarget.imageCapable} 与 {@link AGGREGATE_FALLBACK_CONTEXT_WINDOW}。
    *
    * ⚠️ **成功的解析结果进 {@link capabilityCache}**（见那里的长注释：失败**不**缓存）。
+   *
+   * ⚠️⚠️ **每次解析都有独立预算**（{@link AGGREGATE_CAPABILITY_TIMEOUT_MS}，默认 3 秒）。
+   * 没有它时，候选池里一个在 DNS/TCP 层挂住的渠道（实测 `autoclaw` 的目录端点
+   * ETIMEDOUT 21.6 秒，它自己的 8 秒 `AbortController` 管不到）会让**每一轮**请求
+   * 都白等一次；`buildModelCatalog` 又会把它乘以虚拟模型数。见常量处的实测数据。
    */
   async capabilityOf(provider, realId, signal) {
     const key = `${provider}\0${realId}`;
     const cached2 = this.capabilityCache.get(key);
     if (cached2 !== void 0) return cached2;
+    const now = this.options.now?.() ?? Date.now();
+    const failedAt = this.capabilityFailureCache.get(key);
+    if (failedAt !== void 0) {
+      const ttl = this.options.capabilityFailureTtlMs ?? AGGREGATE_CAPABILITY_FAILURE_TTL_MS;
+      if (now - failedAt < ttl) return { efforts: [], imageCapable: false, resolved: false };
+      this.capabilityFailureCache.delete(key);
+    }
+    const inFlight = this.capabilityInFlight.get(key);
+    if (inFlight !== void 0) return await inFlight;
+    const task = this.resolveCapability(provider, realId, key, now, signal);
+    this.capabilityInFlight.set(key, task);
     try {
-      const info = await this.ctx.llm.resolveModelInfo(provider, realId, signal);
+      return await task;
+    } finally {
+      if (this.capabilityInFlight.get(key) === task) this.capabilityInFlight.delete(key);
+    }
+  }
+  /**
+   * {@link capabilityOf} 的**单次**解析体（在飞合并的实际执行部分）。
+   *
+   * ⚠️ 抽出来是为了让「在飞合并」只包一层：`capabilityOf` 负责查两张缓存 + 登记/清除在飞表，本方法只做「问一次 + 折算」。
+   */
+  async resolveCapability(provider, realId, key, now, signal) {
+    try {
+      const info = await this.resolveWithBudget(provider, realId, signal);
       const efforts = (info.reasoning?.efforts ?? []).map((effort) => String(effort.id)).filter((id) => id.length > 0);
       const capability = {
         efforts,
@@ -67048,11 +68607,65 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
         ...info.context === void 0 ? {} : { contextWindow: info.context.contextWindow }
       };
       this.capabilityCache.set(key, capability);
+      this.capabilityFailureCache.delete(key);
       return capability;
     } catch (error) {
       signal?.throwIfAborted();
       if (isAbortLike(error, signal)) throw error;
+      this.capabilityFailureCache.set(key, now);
       return { efforts: [], imageCapable: false, resolved: false };
+    }
+  }
+  /**
+   * 带**独立预算**的 `resolveModelInfo`。
+   *
+   * ## ⚠️ 为什么不能用 `AbortSignal.timeout` 单独了事
+   *
+   * 超时后必须**区分**「预算用尽」与「调用方中止」：前者按「这个候选暂时问不出来」
+   * 处理（保守回落 + 记失败短缓存），后者必须原样抛出 `AbortError`（否则用户取消
+   * 后整轮还在跑）。故这里自己造一个 `controller`，超时时抛一个**名字可辨识**的
+   * 哨兵错误，由 {@link capabilityOf} 的 catch 分支按 `isAbortLike` 区分。
+   *
+   * ⚠️ 与 {@link withBackgroundDeadline} 同一口径：**放弃等待 ≠ 取消**。
+   * `resolveModelInfo` 会透传 `signal` 给各适配器，故这里额外把预算信号
+   * `AbortSignal.any([signal, budget])` 传下去 —— 预算到期时底层请求能被打断的
+   * 部分会被打断；打不断的（DNS 解析、TCP 建连）由我们这边**不再等**兜住。
+   *
+   * ⚠️ 定时器必须 `unref()`（与 `withBackgroundDeadline` 同约定）：宿主常驻进程里
+   * 一个 pending 的 3 秒定时器不该拖住退出。
+   */
+  async resolveWithBudget(provider, realId, signal) {
+    const budgetMs = this.options.capabilityTimeoutMs ?? AGGREGATE_CAPABILITY_TIMEOUT_MS;
+    if (budgetMs <= 0) return this.ctx.llm.resolveModelInfo(provider, realId, signal);
+    const controller = new AbortController();
+    const composed = signal === void 0 ? controller.signal : AbortSignal.any([signal, controller.signal]);
+    let timedOut = false;
+    let timer;
+    const deadlineError = () => {
+      const error = new Error(
+        `aggregate: \u5019\u9009 ${provider}/${realId} \u7684\u80FD\u529B\u89E3\u6790\u8D85\u8FC7 ${budgetMs}ms\uFF08\u653E\u5F03\u7B49\u5F85\uFF0C\u4E0D\u53D6\u6D88\u7528\u6237\u8BF7\u6C42\uFF09`
+      );
+      error.name = CAPABILITY_DEADLINE_NAME;
+      return error;
+    };
+    const budget = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(deadlineError());
+        controller.abort();
+      }, budgetMs);
+      timer.unref?.();
+    });
+    try {
+      const pending2 = this.ctx.llm.resolveModelInfo(provider, realId, composed);
+      void pending2.catch(() => {
+      });
+      return await Promise.race([pending2, budget]);
+    } catch (error) {
+      if (timedOut) throw deadlineError();
+      throw error;
+    } finally {
+      if (timer !== void 0) clearTimeout(timer);
     }
   }
   /**
@@ -67081,36 +68694,72 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
    * ⚠️ **取不到窗口的候选也进入循环**：它不拉低结果，但要为它解析一次能力 ——
    * 解析结果会进缓存，供同一候选在派发路径上复用。
    *
-   * ## ⚠️⚠️ 只有当**每一个候选都解析成功**时才记忆化结果
+   * ## ⚠️⚠️ 退化判决也记忆化，但只活 30 秒（2026-10-20 用户报障后改）
    *
-   * 这是本条实现里最容易写错的一处（本用例第一版就写错了，被自己写的用例抓住）。
-   * 若把「某候选解析失败 ⇒ 用兜底值」的结果也写进 `contextWindowCache`，那么：
+   * 原实现是「只有**每一个**候选都解析成功时才记忆化」。那条判据的**动机是对的**
+   * （不能把瞬时故障固化成持续状态 —— `AGENTS.md` 的「`refreshable` 单向门」），
+   * 但**手段过强**：候选池里只要有一个渠道持续故障，本方法就**永不**写缓存，
+   * 于是每一轮请求、每一次 `buildModelCatalog` 都要把全部候选重新解析一遍。
    *
-   * 1. 目录服务抖动一次 ⇒ 该虚拟模型在 60 秒（目录 TTL）内恒声明兜底值，
-   *    **即使上游早已恢复**；
-   * 2. 更糟的是失效时机也错位 —— 缓存键是虚拟模型，与「哪个候选失败了」无关，
-   *    于是**一个**候选的瞬时故障会污染整个虚拟模型的声明值。
+   * 实测（`aggregate/deepseek-v4-1-flash`，候选 13 家，其中 `autoclaw` 的目录端点
+   * 在 DNS/TCP 层 ETIMEDOUT 21.6 秒）：
    *
-   * 这正是 `AGENTS.md` 记录的「`refreshable` 单向门」同型缺陷：把一次瞬时失败
-   * 固化成持续状态。⇒ 失败时**返回值照给**（调用方需要立即拿到一个可用值），
-   * 但**不写缓存**，下一次调用会重新尝试解析。
+   * ```
+   * 第1次 prepareCall = 16015 ms   第2次 = 8001 ms   第3次 = 8009 ms
+   * contextWindowCache 命中? ★否 —— 永不记忆化
+   * ```
+   *
+   * 用户侧的观感是「每次发消息先白等 60 多秒」，而同模型直连 `workbuddy` 只有 0.8 秒。
+   *
+   * ⇒ 现行口径：**退化判决照样写缓存**，但打上 `degraded` 标记，有效期只有
+   * {@link AGGREGATE_CONTEXT_WINDOW_DEGRADED_TTL_MS}（30 秒，目录 TTL 的一半）。
+   * 这样既不再每轮重试坏候选，又能在上游恢复后最迟 30 秒自动纠正 ——
+   * 「不固化瞬时故障」这条**约束**仍然成立，只是把「永不缓存」换成了「缓存很短」。
+   * ⚠️⚠️ **退化期间声明的窗口方向是「可能偏大」，不是「偏保守」**（2026-10-20
+   * 对抗审计实测证伪）：
+   *
+   * | 情形 | 声明值 | 与真实窗口比 | 后果 |
+   * |---|---|---|---|
+   * | 有候选解析成功 | 已成功那部分的最大值 | **≤** 真实最大值 | 保守（提前压缩） |
+   * | **全部候选都失败** | `AGGREGATE_FALLBACK_CONTEXT_WINDOW`（200_000） | 可能 **>** 真实值 | **偏大** ⇒ 压缩阈值推后 ⇒ 上游 `CONTEXT_WINDOW_EXCEEDED` |
+   *
+   * 实测：唯一候选真实窗口 131_072（128K）而解析失败 ⇒ 声明 **200_000**（大 52%）。
+   * 同文件的**冷帧**常量 `AGGREGATE_COLD_CONTEXT_WINDOW`=131_072 才是真保守 ⇒
+   * 两个「保守兜底」方向相反（该取值是**既有行为**，master 上同样是 200_000，
+   * 不是本 PR 引入；本 PR 引入的只是那句写错方向的注释）。
+   *
+   * ⚠️ 完整判决（全部候选都解析成功）的有效期跟目录 TTL 走，因为它由
+   * {@link refreshCatalog} 重建目录时统一清空兜住。
    *
    * @param modelKey - 虚拟模型 id（含 `auto`），仅用于记忆化。
    * @param candidates - 该虚拟模型的候选表（`auto` 传全池候选）。
    */
   async contextWindowFor(modelKey, candidates, signal) {
+    const now = this.options.now?.() ?? Date.now();
     const remembered = this.contextWindowCache.get(modelKey);
-    if (remembered !== void 0) return remembered;
+    if (remembered !== void 0) {
+      const ttl = remembered.degraded ? this.options.contextWindowDegradedTtlMs ?? AGGREGATE_CONTEXT_WINDOW_DEGRADED_TTL_MS : this.options.catalogTtlMs ?? AGGREGATE_CATALOG_TTL_MS;
+      if (now - remembered.at < ttl) return remembered.window;
+      this.contextWindowCache.delete(modelKey);
+    }
+    const keyOf = (candidate) => `${candidate.provider}\0${candidate.realId}`;
+    const unique = /* @__PURE__ */ new Map();
+    for (const candidate of candidates) {
+      if (!unique.has(keyOf(candidate))) unique.set(keyOf(candidate), candidate);
+    }
+    const picked = [...unique.values()].slice(0, maxAttemptsFor(this.catalog));
+    const capabilities = await Promise.all(
+      picked.map((candidate) => this.capabilityOf(candidate.provider, candidate.realId, signal))
+    );
     let widest;
     let allResolved = true;
-    for (const candidate of candidates) {
-      const capability = await this.capabilityOf(candidate.provider, candidate.realId, signal);
+    for (const capability of capabilities) {
       if (!capability.resolved) allResolved = false;
       const window = capability.contextWindow;
       if (window !== void 0 && (widest === void 0 || window > widest)) widest = window;
     }
     const resolved = widest ?? AGGREGATE_FALLBACK_CONTEXT_WINDOW;
-    if (allResolved) this.contextWindowCache.set(modelKey, resolved);
+    this.contextWindowCache.set(modelKey, { window: resolved, at: now, degraded: !allResolved });
     return resolved;
   }
   /**
@@ -67318,6 +68967,7 @@ function abortError() {
   return error;
 }
 var BACKGROUND_DEADLINE_NAME = "AggregateCatalogDeadline";
+var CAPABILITY_DEADLINE_NAME = "AggregateCapabilityDeadline";
 function isBackgroundDeadlineError(error) {
   return error !== null && typeof error === "object" && error.name === BACKGROUND_DEADLINE_NAME;
 }
@@ -68003,7 +69653,7 @@ import { Service as Service10 } from "@deepseek-ai/cordis";
 import { credentialRef as credentialRef11 } from "@deepseek-ai/dsh-credentials";
 
 // vendor/channel-pack/src/accio.ts
-import { createHash as createHash9, randomBytes as randomBytes11, randomUUID as randomUUID11 } from "node:crypto";
+import { createHash as createHash10, randomBytes as randomBytes11, randomUUID as randomUUID11 } from "node:crypto";
 function accioExpiresAtMs(raw) {
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n) || n <= 0) return void 0;
@@ -68024,10 +69674,10 @@ function accioRequestId() {
   return `req-${Date.now()}-${randomUUID11().slice(0, 8)}`;
 }
 function accioSgK(requestId) {
-  return createHash9("md5").update(requestId, "utf8").digest("hex");
+  return createHash10("md5").update(requestId, "utf8").digest("hex");
 }
 function accioMessageId(requestId) {
-  return createHash9("md5").update(`${requestId}:${randomBytes11(16).toString("hex")}`, "utf8").digest("hex");
+  return createHash10("md5").update(`${requestId}:${randomBytes11(16).toString("hex")}`, "utf8").digest("hex");
 }
 function accioToSnake(value) {
   if (Array.isArray(value)) return value.map((v) => accioToSnake(v));
@@ -68103,11 +69753,11 @@ function accioHeaders(options) {
 }
 
 // vendor/channel-pack/src/accio-oauth.ts
-import { createHash as createHash10, randomBytes as randomBytes12 } from "node:crypto";
+import { createHash as createHash11, randomBytes as randomBytes12 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
 function createAccioPkcePair() {
   const verifier = randomBytes12(48).toString("base64url");
-  const challenge = createHash10("sha256").update(verifier).digest("base64url");
+  const challenge = createHash11("sha256").update(verifier).digest("base64url");
   return { verifier, challenge };
 }
 function createAccioState() {
@@ -68845,603 +70495,10 @@ var AccioAuth = class extends Service10 {
   }
 };
 
-// vendor/channel-pack/src/astudio-product.ts
-import { homedir as homedir6 } from "node:os";
-import { join as join8 } from "node:path";
-var ASTUDIO_CHAT_PATH = "/chat/completions";
-var ASTUDIO_CATALOG_PATH = "/api/v1/model-manager/models";
-var ASTUDIO_API_KEY_CONFIG_PATH = "/bot/models/configs";
-var ASTUDIO_SESSION_FILE_ENV = "DSH_ASTUDIO_SESSION_FILE";
-var ASTUDIO_SESSION_DEAD_CODES = Object.freeze(/* @__PURE__ */ new Set([1002, 1005, 8e4]));
-var ASTUDIO_FALLBACK_MODELS = Object.freeze([
-  {
-    id: "xopglm52",
-    name: "GLM-5.2",
-    contextWindow: 1e6,
-    maxTokens: 128e3,
-    efforts: ["none", "high", "max"],
-    defaultEffort: "high",
-    supportsImage: false
-  },
-  {
-    id: "astronclaw-auto",
-    name: "Auto",
-    contextWindow: 1e6,
-    maxTokens: 384e3,
-    efforts: ["none", "high"],
-    defaultEffort: "high",
-    supportsImage: false
-  },
-  {
-    id: "xopdsv4flash0731in",
-    name: "DeepSeek-V4-Flash",
-    contextWindow: 1e6,
-    maxTokens: 384e3,
-    efforts: ["none", "high", "max"],
-    defaultEffort: "high",
-    supportsImage: false
-  },
-  {
-    id: "xopdeepseekv4pro0813",
-    name: "DeepSeek-V4-Pro",
-    contextWindow: 1e6,
-    maxTokens: 384e3,
-    efforts: ["none", "high", "max"],
-    defaultEffort: "high",
-    supportsImage: false
-  },
-  {
-    id: "spark-x2.5",
-    name: "Spark-X2.5",
-    contextWindow: 262144,
-    maxTokens: 256e3,
-    efforts: ["none", "high"],
-    defaultEffort: "high",
-    supportsImage: false
-  },
-  {
-    id: "spark-x2.6-preview",
-    name: "Spark-X2.6-Preview",
-    contextWindow: 262144,
-    maxTokens: 256e3,
-    efforts: ["none", "high"],
-    defaultEffort: "high",
-    supportsImage: false
-  }
-]);
-function defaultAstudioSessionFilePath(env = process.env) {
-  const localAppData = (env["LOCALAPPDATA"] ?? "").trim();
-  const base = localAppData.length > 0 ? localAppData : join8(homedir6(), "AppData", "Local");
-  return join8(base, "Programs", "AStudio Data", "userdata", "astron-session.json");
-}
-var ASTUDIO = {
-  id: "astudio",
-  // ⚠️ 与客户端 `PROVIDERS` 里的 label 逐字一致（rail 宽度算式依赖它）。
-  displayName: "AStudio",
-  maasBaseUrl: "https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1",
-  chatPath: ASTUDIO_CHAT_PATH,
-  catalogBaseUrl: "https://astronstudio-api-volces-prod.xf-yun.com",
-  catalogPath: ASTUDIO_CATALOG_PATH,
-  authBaseUrl: "https://agent.xfyun.cn/xingchen-studio",
-  apiKeyConfigPath: ASTUDIO_API_KEY_CONFIG_PATH,
-  defaultCredentialRef: "ASTUDIO_ACCESS_TOKEN",
-  clientType: "21",
-  studioVersion: "3.5.2",
-  requestTimeoutMs: 3e4,
-  chatHeaderTimeoutMs: 6e4,
-  // ⚠️ **必须 ≥300s**：长上下文模型的两次 SSE 字节之间实测可静默 >45s，
-  // 而官方内核自己用的就是 `stream_idle_timeout_ms=300000`。120s 会把一次
-  // 正常但慢的长思考**掐成** `TIMEOUT`（且 harness 会重试 ⇒ 双倍计费）。
-  chunkTimeoutMs: 3e5,
-  fallbackModels: ASTUDIO_FALLBACK_MODELS
-};
-
 // vendor/channel-pack/src/astudio-oauth.ts
 import { randomBytes as randomBytes13 } from "node:crypto";
 import { createServer as createServer8 } from "node:http";
 import { Buffer as Buffer2 } from "node:buffer";
-
-// vendor/channel-pack/src/astudio.ts
-import { createHash as createHash11 } from "node:crypto";
-function astudioCredentialFromSessionFile(session) {
-  if (session === void 0 || session === null) return void 0;
-  const accessToken = typeof session.modelBearerToken === "string" ? session.modelBearerToken.trim() : "";
-  if (accessToken.length === 0) return void 0;
-  const accountId = typeof session.accountId === "string" ? session.accountId : "";
-  return {
-    access_token: accessToken,
-    ...accountId.length > 0 ? { account_id: accountId } : {},
-    ...typeof session.uid === "string" && session.uid.length > 0 ? { uid: session.uid } : {},
-    nickname: typeof session.mobile === "string" && session.mobile.length > 0 ? session.mobile : accountId,
-    ...typeof session.ssoSessionId === "string" ? { sso_session_id: session.ssoSessionId } : {},
-    ...typeof session.token === "string" ? { token: session.token } : {},
-    ...typeof session.loginMethod === "string" ? { login_method: session.loginMethod } : {},
-    ...typeof session.loggedInAt === "string" ? { logged_in_at: session.loggedInAt } : {},
-    source: "session-file"
-  };
-}
-function astudioCredentialFingerprint(accessToken) {
-  if (accessToken.length === 0) return "";
-  return createHash11("sha256").update(accessToken).digest("hex").slice(0, 8);
-}
-function isAstudioRefreshable(credential) {
-  return credential !== void 0 && typeof credential.access_token === "string" && credential.access_token.length > 0;
-}
-function astudioDisplayNickname(credential, fallbackId) {
-  const nickname = typeof credential?.nickname === "string" ? credential.nickname.trim() : "";
-  if (nickname.length === 0) return fallbackId;
-  return maskLobsteraiPhoneTail(nickname);
-}
-function astudioCookieHeader(credential) {
-  const credRecord = credential;
-  const ssoId = credential.sso_session_id ?? (typeof credRecord.ssoSessionId === "string" ? credRecord.ssoSessionId : void 0);
-  const accId = credential.account_id ?? (typeof credRecord.accountId === "string" ? credRecord.accountId : void 0);
-  const tok = credential.token ?? (typeof credRecord.token === "string" ? credRecord.token : void 0);
-  const pairs = [
-    ["ssoSessionId", ssoId],
-    ["sso_sessionid", ssoId],
-    ["account_id", accId],
-    ["token", tok ?? ssoId]
-  ];
-  return pairs.filter((entry) => typeof entry[1] === "string" && entry[1].length > 0).map(([key, value]) => `${key}=${value}`).join("; ");
-}
-function astudioChatHeaders(credential, product, accept = "application/json") {
-  return {
-    Authorization: `Bearer ${credential.access_token}`,
-    Accept: accept,
-    "Content-Type": "application/json",
-    ...credential.account_id !== void 0 && credential.account_id.length > 0 ? { "X-Account-Id": credential.account_id } : {},
-    clientType: product.clientType,
-    studioVersion: product.studioVersion
-  };
-}
-function astudioControlHeaders(credential, product) {
-  const cookie = astudioCookieHeader(credential);
-  return {
-    Accept: "application/json",
-    ...cookie.length > 0 ? { Cookie: cookie } : {},
-    clientType: product.clientType,
-    studioVersion: product.studioVersion
-  };
-}
-function astudioReadString(source, key) {
-  const value = source[key];
-  if (typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return "";
-}
-function astudioReadNumber(source, key) {
-  const value = source[key];
-  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= 1e15 ? value : void 0;
-  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim())) {
-    const parsed = Number(value.trim());
-    if (Number.isFinite(parsed) && Math.abs(parsed) <= 1e15) return parsed;
-  }
-  return void 0;
-}
-function parseAstudioEnvelope(body) {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return { ok: false, code: -1, message: "\u54CD\u5E94\u4E0D\u662F JSON \u5BF9\u8C61", sessionDead: false };
-  }
-  const record3 = body;
-  const rawCode = astudioReadNumber(record3, "code");
-  const message2 = astudioReadString(record3, "message") || astudioReadString(record3, "desc");
-  if (rawCode !== void 0 && rawCode !== 0) {
-    return {
-      ok: false,
-      code: rawCode,
-      message: message2.length > 0 ? message2 : `code=${rawCode}`,
-      sessionDead: ASTUDIO_SESSION_DEAD_CODES.has(rawCode)
-    };
-  }
-  const data = record3.data;
-  if (data === null || data === void 0) {
-    return {
-      ok: false,
-      code: rawCode ?? 0,
-      message: message2.length > 0 ? message2 : "data \u4E3A\u7A7A\uFF08\u4F1A\u8BDD\u53EF\u80FD\u5DF2\u5931\u6548\uFF09",
-      // `code:0` + 空 `data` 在读 `bot/models/configs` 时等价于「账号下没有可用模型
-      // 凭据」⇒ 属终态（实测客户端在此抛 AuthoritativeModelCredentialError）。
-      sessionDead: true
-    };
-  }
-  if (Array.isArray(data)) {
-    if (data.length === 0) {
-      return {
-        ok: false,
-        code: rawCode ?? 0,
-        message: message2.length > 0 ? message2 : "data \u4E3A\u7A7A\u6570\u7EC4\uFF08\u4F1A\u8BDD\u53EF\u80FD\u5DF2\u5931\u6548\uFF09",
-        sessionDead: true
-      };
-    }
-    return { ok: true, data: {}, rows: data };
-  }
-  if (typeof data !== "object") {
-    return {
-      ok: false,
-      code: rawCode ?? 0,
-      message: message2.length > 0 ? message2 : "data \u4E0D\u662F\u5BF9\u8C61\u6216\u6570\u7EC4",
-      sessionDead: true
-    };
-  }
-  return { ok: true, data };
-}
-function isAstudioSessionDeadError(code, message2 = "") {
-  if (ASTUDIO_SESSION_DEAD_CODES.has(code)) return true;
-  return /未登录|重新登录|会话(已)?(过期|失效)|登录(状态)?失效|not\s+logged\s*in|login\s+required/i.test(message2);
-}
-function astudioAuthRetryPlan(params) {
-  if (params.status !== 401) return "none";
-  if (params.refreshFailed) return "terminal";
-  if (params.attemptedRefresh) return "terminal";
-  return "refresh-and-retry";
-}
-var ASTUDIO_WIRE_CODES = /* @__PURE__ */ new Map([
-  ["model_not_found", "model-not-found"],
-  ["invalid_api_key", "auth"],
-  ["apikey_not_found", "auth"],
-  ["insufficient_quota", "quota"],
-  ["quota_exceeded", "quota"],
-  ["rate_limit_exceeded", "rate-limit"],
-  ["context_length_exceeded", "context-window"]
-]);
-function astudioOpenAiErrorFields(body) {
-  if (body.trim().length === 0) return void 0;
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return void 0;
-  }
-  if (typeof parsed !== "object" || parsed === null) return void 0;
-  const error = parsed.error;
-  if (typeof error !== "object" || error === null) return void 0;
-  const record3 = error;
-  return {
-    code: typeof record3.code === "string" ? record3.code : typeof record3.code === "number" ? String(record3.code) : "",
-    message: typeof record3.message === "string" ? record3.message : "",
-    type: typeof record3.type === "string" ? record3.type : ""
-  };
-}
-function classifyAstudioError(status, body, options = {}) {
-  if (options.transport === true) {
-    return { kind: "transport", llmCode: "NETWORK", message: `astudio: \u7F51\u7EDC\u5931\u8D25 \u2014 ${body.slice(0, 200)}` };
-  }
-  if (options.timeout === true) {
-    return { kind: "timeout", llmCode: "TIMEOUT", message: "astudio: \u7B49\u5F85\u4E0A\u6E38\u54CD\u5E94\u8D85\u65F6" };
-  }
-  const fields = astudioOpenAiErrorFields(body);
-  const fromWire = fields === void 0 ? void 0 : ASTUDIO_WIRE_CODES.get(fields.code) ?? ASTUDIO_WIRE_CODES.get(fields.type);
-  const detail = fields !== void 0 && fields.message.length > 0 ? fields.message : body.slice(0, 200);
-  if (fromWire !== void 0) return describeAstudioError(fromWire, status, detail);
-  if (status === 401 || status === 403) return describeAstudioError("auth", status, detail);
-  if (status === 402) return describeAstudioError("quota", status, detail);
-  if (status === 429) return describeAstudioError("rate-limit", status, detail);
-  if (status === 400 || status === 404 || status === 405 || status === 422) {
-    return describeAstudioError("bad-request", status, detail);
-  }
-  if (status >= 500) return describeAstudioError("server", status, detail);
-  return describeAstudioError("unknown", status, detail);
-}
-function describeAstudioError(kind, status, detail) {
-  const suffix = `\uFF08HTTP ${status}\uFF09${detail}`;
-  switch (kind) {
-    case "auth":
-      return { kind, llmCode: "AUTH", message: `astudio: \u51ED\u636E\u672A\u88AB\u4E0A\u6E38\u63A5\u53D7\uFF0C\u5C06\u91CD\u53D6\u4E00\u6B21\uFF1B\u4ECD\u5931\u8D25\u8BF7\u5728 AStudio \u5BA2\u6237\u7AEF\u91CD\u65B0\u767B\u5F55${suffix}` };
-    case "model-not-found":
-      return { kind, llmCode: "PERMISSION_DENIED", message: `astudio: \u4E0A\u6E38\u6CA1\u6709\u8BE5\u6A21\u578B\u7684\u63A8\u7406\u8DEF\u7531\u3002\u5E38\u89C1\u539F\u56E0\u662F\u628A acode \u5185\u6838\u7684\u5185\u90E8\u522B\u540D\uFF08builtin/<base64>\uFF09\u5F53\u6210 model \u53D1\u4E86\u4E0A\u6765 \u2014\u2014 \u4E0A\u6E38\u53EA\u8BA4\u88F8 slug${suffix}` };
-    case "quota":
-      return { kind, llmCode: "QUOTA_EXCEEDED", message: `astudio: \u8D26\u53F7\u989D\u5EA6\u4E0D\u8DB3${suffix}` };
-    case "rate-limit":
-      return { kind, llmCode: "RATE_LIMITED", message: `astudio: \u4E0A\u6E38\u9650\u6D41${suffix}` };
-    case "context-window":
-      return { kind, llmCode: "CONTEXT_WINDOW_EXCEEDED", message: `astudio: \u4E0A\u4E0B\u6587\u8D85\u51FA\u6A21\u578B\u7A97\u53E3${suffix}` };
-    case "bad-request":
-      return { kind, llmCode: "INVALID_REQUEST", message: `astudio: \u8BF7\u6C42\u88AB\u4E0A\u6E38\u62D2\u7EDD${suffix}` };
-    case "server":
-      return { kind, llmCode: "SERVER", message: `astudio: \u4E0A\u6E38\u6545\u969C${suffix}` };
-    case "timeout":
-      return { kind, llmCode: "TIMEOUT", message: "astudio: \u7B49\u5F85\u4E0A\u6E38\u54CD\u5E94\u8D85\u65F6" };
-    case "transport":
-      return { kind, llmCode: "NETWORK", message: `astudio: \u7F51\u7EDC\u5931\u8D25${suffix}` };
-    case "unknown":
-    default:
-      return { kind: "unknown", llmCode: "SERVER", message: `astudio: \u8BF7\u6C42\u5931\u8D25${suffix}` };
-  }
-}
-function astudioBareSlugOf(slug) {
-  if (!slug.startsWith("builtin/")) return slug;
-  const encoded = slug.slice("builtin/".length);
-  try {
-    const decoded = Buffer.from(encoded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    if (decoded.length > 0 && decoded !== encoded && !decoded.includes("\0") && !decoded.includes("/")) {
-      return decoded;
-    }
-  } catch {
-  }
-  return slug;
-}
-function parseAstudioCatalog(body) {
-  const envelope = parseAstudioEnvelope(body);
-  if (!envelope.ok) throw new Error(`astudio: \u6A21\u578B\u76EE\u5F55\u5931\u8D25 \u2014 ${envelope.message}`);
-  const models = envelope.data.models;
-  if (!Array.isArray(models)) throw new Error("astudio: \u6A21\u578B\u76EE\u5F55\u7F3A\u5C11 models \u6570\u7EC4");
-  const byId = /* @__PURE__ */ new Map();
-  for (const item of models) {
-    if (typeof item !== "object" || item === null) continue;
-    const record3 = item;
-    const rawSlug = astudioReadString(record3, "slug");
-    if (rawSlug.length === 0) continue;
-    const id = astudioBareSlugOf(rawSlug);
-    const visibility = astudioReadString(record3, "visibility") || "list";
-    const effortList = Array.isArray(record3.supported_reasoning_levels) ? record3.supported_reasoning_levels.map((level) => typeof level === "object" && level !== null ? astudioReadString(level, "effort") : "").filter((effort) => effort.length > 0) : [];
-    const modalities = Array.isArray(record3.input_modalities) ? record3.input_modalities.filter((m) => typeof m === "string") : void 0;
-    const entry = {
-      id,
-      name: astudioReadString(record3, "display_name") || id,
-      ...astudioReadString(record3, "description").length > 0 ? { description: astudioReadString(record3, "description") } : {},
-      ...astudioReadNumber(record3, "context_window") !== void 0 ? { contextWindow: astudioReadNumber(record3, "context_window") } : {},
-      ...astudioReadNumber(record3, "max_output_tokens") !== void 0 ? { maxTokens: astudioReadNumber(record3, "max_output_tokens") } : {},
-      ...effortList.length > 0 ? { efforts: effortList } : {},
-      ...astudioReadString(record3, "default_reasoning_level").length > 0 ? { defaultEffort: astudioReadString(record3, "default_reasoning_level") } : {},
-      visibility,
-      ...modalities !== void 0 && modalities.length > 0 ? { inputModalities: modalities } : {},
-      raw: record3
-    };
-    const existing = byId.get(id);
-    if (existing === void 0 || existing.visibility === "hide" && entry.visibility !== "hide") {
-      byId.set(id, entry);
-    }
-  }
-  return [...byId.values()];
-}
-function astudioReasoningOf(model) {
-  const declared = model.efforts ?? [];
-  const fallback = model.defaultEffort;
-  if (declared.length > 0) {
-    return {
-      efforts: declared.map((effort) => ({ id: effort, name: effort })),
-      ...fallback !== void 0 && declared.includes(fallback) ? { defaultEffort: fallback } : {}
-    };
-  }
-  if (fallback !== void 0 && fallback.length > 0) {
-    return { efforts: [{ id: fallback, name: fallback }], defaultEffort: fallback };
-  }
-  return void 0;
-}
-function astudioStreamErrorCode(frame) {
-  if (typeof frame !== "object" || frame === null) return void 0;
-  const record3 = frame;
-  if (record3.error !== void 0 && record3.error !== null) {
-    const error = record3.error;
-    if (typeof error === "object" && error !== null) {
-      const code2 = error.code;
-      if (typeof code2 === "number" && Number.isFinite(code2) && code2 !== 0) return code2;
-      return -1;
-    }
-    return -1;
-  }
-  const code = astudioReadNumber(record3, "code");
-  if (code !== void 0 && code !== 0) return code;
-  return void 0;
-}
-function astudioStreamErrorMessage(frame) {
-  if (typeof frame !== "object" || frame === null) return String(frame).slice(0, 200);
-  const record3 = frame;
-  const error = record3.error;
-  if (typeof error === "object" && error !== null) {
-    const e = error;
-    const message3 = typeof e.message === "string" ? e.message : "";
-    const type = typeof e.type === "string" ? e.type : "";
-    const code = typeof e.code === "string" || typeof e.code === "number" ? String(e.code) : "";
-    const joined = [code.length > 0 ? code : "", type.length > 0 && type !== code ? type : "", message3].filter((part) => part.length > 0).join(" / ");
-    if (joined.length > 0) return joined;
-  }
-  const message2 = astudioReadString(record3, "message") || astudioReadString(record3, "desc");
-  if (message2.length > 0) return message2;
-  try {
-    return JSON.stringify(record3).slice(0, 200);
-  } catch {
-    return "unparsable error frame";
-  }
-}
-function astudioIncrementalDelta(previous, incoming) {
-  if (incoming.length === 0) return "";
-  if (previous.length === 0) return incoming;
-  if (incoming === previous) return "";
-  if (incoming.startsWith(previous)) return incoming.slice(previous.length);
-  if (previous.startsWith(incoming)) return "";
-  return incoming;
-}
-function astudioRewriteSsePayload(payload, state) {
-  if (payload.length === 0) return { payload, changed: false };
-  let parsed;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return { payload, changed: false };
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { payload, changed: false };
-  }
-  const record3 = parsed;
-  const choices = record3.choices;
-  if (!Array.isArray(choices) || choices.length === 0) return { payload, changed: false };
-  let changed = false;
-  for (let index = 0; index < choices.length; index++) {
-    const choice = choices[index];
-    if (typeof choice !== "object" || choice === null) continue;
-    const delta = choice.delta;
-    if (typeof delta !== "object" || delta === null) continue;
-    const deltaRecord = delta;
-    const id = typeof record3.id === "string" && record3.id.length > 0 ? record3.id : `anon:${index}`;
-    if (typeof deltaRecord.content === "string") {
-      const key = `${id}:c:${index}`;
-      const before = state.get(key)?.sent ?? "";
-      const after = astudioIncrementalDelta(before, deltaRecord.content);
-      if (after !== deltaRecord.content) {
-        deltaRecord.content = after;
-        changed = true;
-      }
-      state.set(key, { sent: before + after });
-    }
-    if (typeof deltaRecord.reasoning_content === "string") {
-      const key = `${id}:r:${index}`;
-      const before = state.get(key)?.sent ?? "";
-      const after = astudioIncrementalDelta(before, deltaRecord.reasoning_content);
-      if (after !== deltaRecord.reasoning_content) {
-        deltaRecord.reasoning_content = after;
-        changed = true;
-      }
-      state.set(key, { sent: before + after });
-    }
-    if (Array.isArray(deltaRecord.tool_calls)) {
-      for (const call of deltaRecord.tool_calls) {
-        if (typeof call !== "object" || call === null) continue;
-        const callRecord = call;
-        const fn = callRecord.function;
-        if (typeof fn !== "object" || fn === null) continue;
-        const fnRecord = fn;
-        if (typeof fnRecord.arguments !== "string") continue;
-        const slot2 = typeof callRecord.index === "number" ? callRecord.index : 0;
-        const key = `${id}:t:${index}:${slot2}`;
-        const before = state.get(key)?.sent ?? "";
-        const after = astudioIncrementalDelta(before, fnRecord.arguments);
-        if (after !== fnRecord.arguments) {
-          fnRecord.arguments = after;
-          changed = true;
-        }
-        state.set(key, { sent: before + after });
-      }
-    }
-  }
-  if (!changed) return { payload, changed: false };
-  if (isAllEmptyDelta(record3)) return { payload: null, changed: true };
-  try {
-    return { payload: JSON.stringify(record3), changed: true };
-  } catch {
-    return { payload, changed: false };
-  }
-}
-function isAllEmptyDelta(record3) {
-  const choices = record3.choices;
-  if (!Array.isArray(choices) || choices.length === 0) return false;
-  let sawDelta = false;
-  for (const choice of choices) {
-    if (typeof choice !== "object" || choice === null) return false;
-    const entry = choice;
-    if (typeof entry.finish_reason === "string") return false;
-    const delta = entry.delta;
-    if (typeof delta !== "object" || delta === null) return false;
-    const d = delta;
-    const keys = Object.keys(d).filter((key) => key !== "role");
-    if (keys.length === 0) continue;
-    for (const key of keys) {
-      const value = d[key];
-      if (typeof value === "string") {
-        if (value.length > 0) return false;
-        sawDelta = true;
-        continue;
-      }
-      return false;
-    }
-  }
-  return sawDelta;
-}
-function astudioWrapIncremental(response) {
-  if (response.body === null || response.body === void 0) return response;
-  const state = /* @__PURE__ */ new Map();
-  const decoder2 = new TextDecoder();
-  const encoder2 = new TextEncoder();
-  let buffer = "";
-  const transform = new TransformStream({
-    transform(chunk, controller) {
-      buffer += decoder2.decode(chunk, { stream: true });
-      let newline = buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line2 = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        controller.enqueue(encoder2.encode(rewriteLine(line2, state) + "\n"));
-        newline = buffer.indexOf("\n");
-      }
-    },
-    flush(controller) {
-      const rest = buffer.trim();
-      if (rest.length > 0) controller.enqueue(encoder2.encode(`${rewriteLine(rest, state)}
-`));
-    }
-  });
-  const headers = new Headers(response.headers);
-  if (!headers.has("content-type")) headers.set("Content-Type", "text/event-stream");
-  return new Response(response.body.pipeThrough(transform), {
-    status: response.status,
-    statusText: response.statusText,
-    headers
-  });
-}
-function rewriteLine(line2, state) {
-  const trimmed = line2.endsWith("\r") ? line2.slice(0, -1) : line2;
-  if (!trimmed.startsWith("data:")) return line2;
-  const payload = trimmed.slice("data:".length).trim();
-  if (payload.length === 0 || payload === "[DONE]") return line2;
-  const rewritten = astudioRewriteSsePayload(payload, state);
-  if (rewritten.payload === null) return "";
-  if (!rewritten.changed) return line2;
-  return `data: ${rewritten.payload}`;
-}
-function astudioEffortForRequest(requested, declared) {
-  if (requested === void 0) return {};
-  const effort = requested.trim();
-  if (effort.length === 0) return {};
-  const set = declared ?? [];
-  if (set.includes(effort)) return { effort };
-  return {
-    dropped: effort,
-    reason: set.length === 0 ? "\u4E0A\u6E38\u76EE\u5F55\u672A\u5BF9\u8BE5\u6A21\u578B\u58F0\u660E\u4EFB\u4F55\u601D\u8003\u6863\u4F4D" : `\u8BE5\u6A21\u578B\u53EA\u58F0\u660E ${set.join("/")}`
-  };
-}
-function buildAstudioChatRequest(input) {
-  const messages = [];
-  if (typeof input.system === "string" && input.system.length > 0) {
-    messages.push({ role: "system", content: input.system });
-  }
-  for (const message2 of input.messages) {
-    if (typeof message2 !== "object" || message2 === null) continue;
-    messages.push(message2);
-  }
-  const body = {
-    model: astudioBareSlugOf(input.model),
-    messages,
-    stream: input.stream
-  };
-  if (input.stream === true) body.stream_options = { include_usage: true };
-  if (typeof input.user === "string" && input.user.length > 0) body.user = input.user;
-  if (input.tools !== void 0 && input.tools.length > 0) body.tools = input.tools;
-  if (input.temperature !== void 0) body.temperature = input.temperature;
-  if (input.maxTokens !== void 0) body.max_tokens = input.maxTokens;
-  if (input.stop !== void 0 && input.stop.length > 0) body.stop = input.stop;
-  if (typeof input.reasoningEffort === "string" && input.reasoningEffort.length > 0) {
-    body.reasoning_effort = input.reasoningEffort;
-  }
-  return body;
-}
-function astudioCatalogToFallback(model) {
-  const modalities = model.inputModalities ?? [];
-  return {
-    id: model.id,
-    name: model.name,
-    contextWindow: model.contextWindow ?? 0,
-    ...model.maxTokens !== void 0 ? { maxTokens: model.maxTokens } : {},
-    ...model.efforts !== void 0 && model.efforts.length > 0 ? { efforts: model.efforts } : {},
-    ...model.defaultEffort !== void 0 ? { defaultEffort: model.defaultEffort } : {},
-    supportsImage: modalities.includes("image")
-  };
-}
-function astudioVisibleModels(models) {
-  return models.filter((model) => model.visibility !== "hide" && model.id.length > 0);
-}
-
-// vendor/channel-pack/src/astudio-oauth.ts
 var ASTUDIO_SSO_BASE_URL = "https://sso.xfyun.cn";
 var ASTUDIO_SSO_QRCODE_PATH = "/SSOService/wx/scanlogin/qrcode";
 var ASTUDIO_SSO_UIDS_PATH = "/SSOService/wx/scanlogin/uids";
@@ -71550,7 +72607,7 @@ function descriptorOf(id) {
 // vendor/channel-pack/src/cline-credits.ts
 var CLINE_CREDITS_TIMEOUT_MS = 3e4;
 var CLINE_BALANCE_SCALE = 1e5;
-function readNumber8(source, key) {
+function readNumber9(source, key) {
   const value = source[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim().length > 0) {
@@ -71585,7 +72642,7 @@ function parseClineBalanceResponse(value) {
   }
   const data = typeof record3.data === "object" && record3.data !== null && !Array.isArray(record3.data) ? record3.data : void 0;
   if (data === void 0) return { error: "\u54CD\u5E94\u7F3A\u5C11 data \u5B57\u6BB5" };
-  const rawBalance = readNumber8(data, "balance");
+  const rawBalance = readNumber9(data, "balance");
   if (rawBalance === void 0) return { error: "\u54CD\u5E94\u7F3A\u5C11 balance \u5B57\u6BB5" };
   return { rawBalance };
 }
@@ -72101,363 +73158,6 @@ async function fetchMinimaxCreditBalanceDetailed(credential, fetcher = fetch, pr
   return { balance: { total: roundCredits(total), packages: [], expiredTotal: 0 } };
 }
 
-// vendor/channel-pack/src/astudio-credits.ts
-var ASTUDIO_POINTS_BALANCE_PATH = "/points/balance";
-var ASTUDIO_CREDIT_UNIT = "credit";
-var ASTUDIO_CREDITS_TIMEOUT_MS = 8e3;
-function readAstudioInt(source, key) {
-  const value = source[key];
-  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : void 0;
-}
-function readAstudioLocalTime(source, key) {
-  const value = source[key];
-  return typeof value === "string" ? value : "";
-}
-function failDetail(error) {
-  return { balance: null, error };
-}
-function buildAstudioBalance(data) {
-  const total = readAstudioInt(data, "totalBalance");
-  if (total === void 0) return null;
-  const totalAmount = readAstudioInt(data, "totalAmount");
-  const packages = [];
-  const used = totalAmount !== void 0 ? Math.max(0, totalAmount - total) : 0;
-  const pushPool = (name2, totalKey, balanceKey, expireKey) => {
-    const remaining = readAstudioInt(data, balanceKey);
-    if (remaining === void 0) return;
-    const poolTotal = readAstudioInt(data, totalKey) ?? remaining;
-    const expiredTime = readAstudioLocalTime(data, expireKey);
-    packages.push({
-      name: name2,
-      unit: ASTUDIO_CREDIT_UNIT,
-      remaining,
-      total: poolTotal,
-      used: Math.max(0, poolTotal - remaining),
-      active: remaining > 0,
-      // 上游不给周期概念（额度按来源发放、按活动到期），起止留空而不是编造。
-      cycleStartTime: "",
-      cycleEndTime: "",
-      // ⚠️ `*NextExpireTime` **不在官方 Schema 内**（Effect.Struct 会裁未知字段），
-      // 且是**不带时区的本地时间串** ⇒ 原样透出、不 Date.parse、不做数学比较。
-      expiredTime
-    });
-  };
-  pushPool("\u4F1A\u5458\u79EF\u5206", "memberTotal", "memberBalance", "memberNextExpireTime");
-  pushPool("\u8D2D\u4E70\u79EF\u5206", "buyTotal", "buyBalance", "buyNextExpireTime");
-  pushPool("\u8D60\u9001\u79EF\u5206", "activityTotal", "activityBalance", "activityNextExpireTime");
-  const sparkBalance = readAstudioInt(data, "sparkTotalBalance");
-  if (sparkBalance !== void 0) {
-    const sparkTotal = readAstudioInt(data, "sparkTotalAmount") ?? sparkBalance;
-    packages.push({
-      name: "\u661F\u706B\u79EF\u5206\uFF08\u72EC\u7ACB\u6C60\uFF0C\u4E0D\u53C2\u4E0E\u4E3B\u6C60\u5408\u8BA1\uFF09",
-      unit: ASTUDIO_CREDIT_UNIT,
-      remaining: sparkBalance,
-      total: sparkTotal,
-      used: Math.max(0, sparkTotal - sparkBalance),
-      active: sparkBalance > 0,
-      cycleStartTime: "",
-      cycleEndTime: "",
-      expiredTime: readAstudioLocalTime(data, "sparkNextExpireTime")
-    });
-  }
-  if (packages.length === 0) {
-    packages.push({
-      name: "\u53EF\u7528\u79EF\u5206",
-      unit: ASTUDIO_CREDIT_UNIT,
-      remaining: total,
-      total: totalAmount ?? total,
-      used,
-      active: total > 0,
-      cycleStartTime: "",
-      cycleEndTime: "",
-      expiredTime: ""
-    });
-  }
-  return { total, packages, expiredTotal: 0 };
-}
-async function fetchAstudioBalanceDetailed(credential, options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  const product = options.product ?? ASTUDIO;
-  const timeoutMs = options.timeoutMs ?? ASTUDIO_CREDITS_TIMEOUT_MS;
-  const baseUrl = (product.authBaseUrl ?? "").replace(/\/+$/, "");
-  if (baseUrl.length === 0) return failDetail("\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08\u672A\u914D\u7F6E\u8D26\u53F7\u540E\u7AEF\u5730\u5740\uFF09");
-  const raw = credential;
-  if (raw === null || raw === void 0 || typeof raw !== "object") {
-    return failDetail("\u672A\u767B\u5F55 AStudio\uFF08\u8D26\u53F7\u51ED\u636E\u7F3A\u5931\u6216\u8BFB\u4E0D\u5230\uFF09\uFF0C\u8BF7\u5220\u9664\u8BE5\u8D26\u53F7\u540E\u91CD\u65B0\u767B\u5F55");
-  }
-  const cookie = astudioCookieHeader(credential);
-  if (cookie.length === 0) {
-    return failDetail("\u672A\u767B\u5F55 AStudio\uFF08\u7F3A\u5C11\u767B\u5F55\u4F1A\u8BDD Cookie\uFF09\uFF0C\u8BF7\u5728 AStudio \u5BA2\u6237\u7AEF\u91CD\u65B0\u767B\u5F55");
-  }
-  let response;
-  let text;
-  try {
-    response = await fetcher(`${baseUrl}${ASTUDIO_POINTS_BALANCE_PATH}`, {
-      method: "GET",
-      headers: { Accept: "application/json", Cookie: cookie },
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    text = await response.text();
-  } catch (error) {
-    return failDetail(`\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!response.ok) {
-    return failDetail(`\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08HTTP ${String(response.status)}\uFF09`);
-  }
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return failDetail("\u989D\u5EA6\u670D\u52A1\u4E0D\u53EF\u7528\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09");
-  }
-  const envelope = parseAstudioEnvelope(body);
-  if (!envelope.ok) {
-    if (isAstudioSessionDeadError(envelope.code, envelope.message)) {
-      return failDetail("AStudio \u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u9700\u5728 AStudio \u5BA2\u6237\u7AEF\u4EBA\u5DE5\u91CD\u65B0\u767B\u5F55\uFF08\u5FAE\u4FE1\u626B\u7801\uFF09");
-    }
-    return failDetail(`\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A${envelope.message}`);
-  }
-  const balance = buildAstudioBalance(envelope.data);
-  if (balance === null) {
-    return failDetail("\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A\u54CD\u5E94\u672A\u5305\u542B\u4F59\u989D\u5B57\u6BB5");
-  }
-  return { balance };
-}
-var ASTUDIO_CLIENT_POPUPS_PENDING_PATH = "/client-popups/pending";
-var ASTUDIO_CLIENT_POPUPS_COMPLETE_PATH = "/client-popups/complete";
-var ASTUDIO_POPUP_TYPE_DAILY_REWARD = "DAILY_REWARD_DIALOG";
-var ASTUDIO_POPUP_TYPE_NEW_USER = "NEW_USER_DIALOG";
-function astudioPopupTypeOf(record3) {
-  return String(record3.componentType ?? record3.type ?? "");
-}
-function extractRecordPayload(record3) {
-  if (typeof record3.payload === "object" && record3.payload !== null) {
-    return record3.payload;
-  }
-  if (typeof record3.content === "object" && record3.content !== null) {
-    return record3.content;
-  }
-  if (typeof record3.content === "string") {
-    try {
-      const parsed = JSON.parse(record3.content);
-      if (typeof parsed === "object" && parsed !== null) {
-        return parsed;
-      }
-    } catch {
-    }
-  }
-  return void 0;
-}
-function parseAstudioPopupPoints(payload) {
-  if (typeof payload === "number" && Number.isFinite(payload) && payload >= 0) {
-    return Math.floor(payload);
-  }
-  if (typeof payload === "string") {
-    const trimmed = payload.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      try {
-        const parsed2 = JSON.parse(trimmed);
-        const pts = parseAstudioPopupPoints(parsed2);
-        if (pts > 0) return pts;
-      } catch {
-      }
-    }
-    const parsed = parseInt(trimmed, 10);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-  }
-  if (typeof payload === "object" && payload !== null) {
-    const record3 = payload;
-    if ("points" in record3) {
-      return parseAstudioPopupPoints(record3.points);
-    }
-    if ("credit" in record3) {
-      return parseAstudioPopupPoints(record3.credit);
-    }
-    if ("rewardPoints" in record3) {
-      return parseAstudioPopupPoints(record3.rewardPoints);
-    }
-    if ("reward_points" in record3) {
-      return parseAstudioPopupPoints(record3.reward_points);
-    }
-  }
-  return 0;
-}
-function extractAstudioClaimablePopups(data) {
-  if (!Array.isArray(data)) return [];
-  const result = [];
-  const seenIds = /* @__PURE__ */ new Set();
-  for (const item of data) {
-    if (typeof item !== "object" || item === null) continue;
-    const record3 = item;
-    const type = astudioPopupTypeOf(record3);
-    if (type === ASTUDIO_POPUP_TYPE_DAILY_REWARD || type === ASTUDIO_POPUP_TYPE_NEW_USER) {
-      const rawId = record3.popupId;
-      const popupId = typeof rawId === "number" ? rawId : parseInt(String(rawId), 10);
-      if (Number.isFinite(popupId) && !seenIds.has(popupId)) {
-        seenIds.add(popupId);
-        result.push({
-          popupId,
-          instanceKey: typeof record3.instanceKey === "string" ? record3.instanceKey : "",
-          type,
-          payload: extractRecordPayload(record3)
-        });
-      }
-    }
-  }
-  return result;
-}
-async function claimAstudioDailyReward(credential, options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  const timeoutMs = options.timeoutMs ?? ASTUDIO_CREDITS_TIMEOUT_MS;
-  const product = options.product ?? ASTUDIO;
-  const baseUrl = (product.authBaseUrl ?? "").replace(/\/+$/, "");
-  const cookie = astudioCookieHeader(credential);
-  if (cookie.length === 0) {
-    return {
-      kind: "failed",
-      code: 8e4,
-      message: "\u672A\u767B\u5F55 AStudio\uFF08\u7F3A\u5C11\u767B\u5F55\u4F1A\u8BDD Cookie\uFF09\uFF0C\u8BF7\u5728 AStudio \u5BA2\u6237\u7AEF\u91CD\u65B0\u767B\u5F55"
-    };
-  }
-  let pendingResponse;
-  let pendingText;
-  try {
-    pendingResponse = await fetcher(`${baseUrl}${ASTUDIO_CLIENT_POPUPS_PENDING_PATH}`, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Cookie: cookie,
-        clientType: product.clientType,
-        studioVersion: product.studioVersion
-      },
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    pendingText = await pendingResponse.text();
-  } catch (error) {
-    return {
-      kind: "failed",
-      code: -1,
-      message: `\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
-    };
-  }
-  if (!pendingResponse.ok) {
-    return {
-      kind: "failed",
-      code: pendingResponse.status,
-      message: `\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF08HTTP ${pendingResponse.status}\uFF09`
-    };
-  }
-  let pendingBody;
-  try {
-    pendingBody = JSON.parse(pendingText);
-  } catch {
-    return {
-      kind: "failed",
-      code: -1,
-      message: "\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09"
-    };
-  }
-  const pendingRecord = typeof pendingBody === "object" && pendingBody !== null ? pendingBody : {};
-  const pendingCode = typeof pendingRecord.code === "number" ? pendingRecord.code : parseInt(String(pendingRecord.code ?? ""), 10);
-  const pendingMsg = typeof pendingRecord.message === "string" ? pendingRecord.message : String(pendingRecord.desc ?? "");
-  if (pendingCode === 8e4 || isAstudioSessionDeadError(pendingCode, pendingMsg)) {
-    return {
-      kind: "failed",
-      code: 8e4,
-      message: "AStudio \u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u9700\u5728 AStudio \u5BA2\u6237\u7AEF\u4EBA\u5DE5\u91CD\u65B0\u767B\u5F55\uFF08\u5FAE\u4FE1\u626B\u7801\uFF09"
-    };
-  }
-  if (Number.isFinite(pendingCode) && pendingCode !== 0) {
-    return {
-      kind: "failed",
-      code: pendingCode,
-      message: `\u6BCF\u65E5\u7B7E\u5230\u67E5\u8BE2\u5931\u8D25\uFF1A${pendingMsg || `code=${pendingCode}`}`
-    };
-  }
-  const popups = extractAstudioClaimablePopups(pendingRecord.data);
-  if (popups.length === 0) {
-    return {
-      kind: "already-claimed",
-      message: "\u4ECA\u5929\u5DF2\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u5956\u52B1\u53CA\u798F\u5229\u793C\u5305"
-    };
-  }
-  let totalCredit = 0;
-  for (const popup of popups) {
-    let completeResponse;
-    let completeText;
-    try {
-      completeResponse = await fetcher(`${baseUrl}${ASTUDIO_CLIENT_POPUPS_COMPLETE_PATH}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Cookie: cookie,
-          clientType: product.clientType,
-          studioVersion: product.studioVersion
-        },
-        body: JSON.stringify({
-          popupId: popup.popupId,
-          instanceKey: popup.instanceKey
-        }),
-        signal: AbortSignal.timeout(timeoutMs)
-      });
-      completeText = await completeResponse.text();
-    } catch (error) {
-      return {
-        kind: "failed",
-        code: -1,
-        message: `\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-    if (!completeResponse.ok) {
-      return {
-        kind: "failed",
-        code: completeResponse.status,
-        message: `\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF08HTTP ${completeResponse.status}\uFF09`
-      };
-    }
-    let completeBody;
-    try {
-      completeBody = JSON.parse(completeText);
-    } catch {
-      return {
-        kind: "failed",
-        code: -1,
-        message: "\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09"
-      };
-    }
-    const completeRecord = typeof completeBody === "object" && completeBody !== null ? completeBody : {};
-    const completeCode = typeof completeRecord.code === "number" ? completeRecord.code : parseInt(String(completeRecord.code ?? ""), 10);
-    const completeMsg = typeof completeRecord.message === "string" ? completeRecord.message : String(completeRecord.desc ?? "");
-    if (completeCode === 8e4 || isAstudioSessionDeadError(completeCode, completeMsg)) {
-      return {
-        kind: "failed",
-        code: 8e4,
-        message: "AStudio \u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u9700\u5728 AStudio \u5BA2\u6237\u7AEF\u4EBA\u5DE5\u91CD\u65B0\u767B\u5F55\uFF08\u5FAE\u4FE1\u626B\u7801\uFF09"
-      };
-    }
-    if (Number.isFinite(completeCode) && completeCode !== 0) {
-      return {
-        kind: "failed",
-        code: completeCode,
-        message: `\u9886\u53D6\u6BCF\u65E5\u7B7E\u5230\u53CA\u798F\u5229\u793C\u5305\u5931\u8D25\uFF1A${completeMsg || `code=${completeCode}`}`
-      };
-    }
-    const creditFromComplete = parseAstudioPopupPoints(completeRecord.data);
-    const creditFromPayload = parseAstudioPopupPoints(popup.payload);
-    const credit = creditFromComplete > 0 ? creditFromComplete : creditFromPayload;
-    totalCredit += credit;
-  }
-  return {
-    kind: "claimed",
-    credit: totalCredit,
-    streakDays: 1,
-    isStreakDay: false,
-    unit: "credit"
-  };
-}
-var claimDaily = claimAstudioDailyReward;
-
 // vendor/channel-pack/src/buddy-growth.ts
 import { createHash as createHash12 } from "node:crypto";
 var BUDDY_APP_ID = "cb_y5Dy46tPQGGWtueMxXbe";
@@ -72560,14 +73260,14 @@ function conversationHeaders(conversationId) {
 function newConversationId() {
   return crypto.randomUUID().replace(/-/g, "");
 }
-function readString7(source, key) {
+function readString8(source, key) {
   if (typeof source !== "object" || source === null) {
     return "";
   }
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
-function readNumber9(source, key) {
+function readNumber10(source, key) {
   if (typeof source !== "object" || source === null) {
     return 0;
   }
@@ -72665,7 +73365,7 @@ function classifyGrowthWrite(result) {
   }
   const body = result.body;
   const code = typeof body.code === "number" ? body.code : -1;
-  const message2 = readString7(body, "msg");
+  const message2 = readString8(body, "msg");
   if (code === 0) {
     const data = typeof body.data === "object" && body.data !== null ? body.data : {};
     return { state: "success", data };
@@ -72709,16 +73409,16 @@ async function fetchGrowthTaskCodes(credential, product, fetcher = fetch, option
       if (typeof task !== "object" || task === null) {
         continue;
       }
-      const taskCode = readString7(task, "task_code") || readString7(task, "code");
+      const taskCode = readString8(task, "task_code") || readString8(task, "code");
       if (!AUTOMATABLE_TASK_CODES.has(taskCode)) {
         continue;
       }
       const progress = task.progress ?? {};
-      const acceptStatus = readString7(task, "accept_status");
+      const acceptStatus = readString8(task, "accept_status");
       if (acceptStatus !== "") {
         progressByCode[taskCode] = {
-          current: readNumber9(progress, "current"),
-          target: readNumber9(progress, "target") || 1
+          current: readNumber10(progress, "current"),
+          target: readNumber10(progress, "target") || 1
         };
         if (includeInProgress) {
           if (acceptStatus === "not_accepted" || acceptStatus === "in_progress" || acceptStatus === "accepted") {
@@ -72732,7 +73432,7 @@ async function fetchGrowthTaskCodes(credential, product, fetcher = fetch, option
         }
         continue;
       }
-      const status = readString7(task, "status");
+      const status = readString8(task, "status");
       progressByCode[taskCode] = { current: status === "available" ? 0 : 1, target: 1 };
       if (status === "available") {
         pending2.push(taskCode);
@@ -73429,7 +74129,7 @@ async function fetchMarketExpertList(credential, product, fetcher = fetch, exper
       return {
         ok: false,
         experts: [],
-        message: `\u4E13\u5BB6\u5E02\u573A\u67E5\u8BE2\u5931\u8D25\uFF1A${readString7(envelope, "msg")}`
+        message: `\u4E13\u5BB6\u5E02\u573A\u67E5\u8BE2\u5931\u8D25\uFF1A${readString8(envelope, "msg")}`
       };
     }
     const data = typeof envelope.data === "object" && envelope.data !== null ? envelope.data : envelope;
@@ -73476,7 +74176,7 @@ async function listAllGrowthTaskCodes(credential, product, fetcher) {
       continue;
     }
     for (const task of tasksOf(result)) {
-      const code = readString7(task, "task_code") || readString7(task, "code");
+      const code = readString8(task, "task_code") || readString8(task, "code");
       if (code.length > 0) {
         codes.add(code);
       }
@@ -73540,7 +74240,7 @@ async function claimGrowthTaskReward(credential, product, fetcher = fetch, taskC
     }
     const code = typeof payload.code === "number" ? payload.code : void 0;
     if (code !== 0) {
-      const reason = readString7(payload, "msg");
+      const reason = readString8(payload, "msg");
       return {
         ok: false,
         claimed: false,
@@ -73549,7 +74249,7 @@ async function claimGrowthTaskReward(credential, product, fetcher = fetch, taskC
       };
     }
     const data = typeof payload.data === "object" && payload.data !== null ? payload.data : {};
-    const credit = readNumber9(data, "credit");
+    const credit = readNumber10(data, "credit");
     if (data["already_claimed"] === true) {
       return {
         ok: true,
@@ -73558,7 +74258,7 @@ async function claimGrowthTaskReward(credential, product, fetcher = fetch, taskC
         message: `${taskCode} \u5956\u52B1\u5DF2\u9886\u53D6\u8FC7\uFF08\u5E42\u7B49\uFF0C\u65E0\u65B0\u589E\u79EF\u5206\uFF09`
       };
     }
-    const energy = readNumber9(data, "energy");
+    const energy = readNumber10(data, "energy");
     return {
       ok: true,
       claimed: true,
@@ -75233,7 +75933,7 @@ async function creditsHeaders(credential, product) {
     "User-Agent": "Qoder"
   });
 }
-function readNumber10(source, key) {
+function readNumber11(source, key) {
   if (typeof source !== "object" || source === null) return void 0;
   const value = source[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -75243,16 +75943,16 @@ function readNumber10(source, key) {
   }
   return void 0;
 }
-function readString8(source, key) {
+function readString9(source, key) {
   if (typeof source !== "object" || source === null) return void 0;
   const value = source[key];
   return typeof value === "string" && value.length > 0 ? value : void 0;
 }
 var QODER_PLAN_PACKAGE = "\u5957\u9910\u989D\u5EA6";
 function toPackage(name2, quota, options = {}) {
-  const total = readNumber10(quota, "total");
-  const used = readNumber10(quota, "used");
-  const remainingRaw = readNumber10(quota, "remaining");
+  const total = readNumber11(quota, "total");
+  const used = readNumber11(quota, "used");
+  const remainingRaw = readNumber11(quota, "remaining");
   if (total === void 0 && used === void 0 && remainingRaw === void 0) return void 0;
   const totalValue = Math.max(0, total ?? 0);
   const usedValue = Math.max(0, used ?? 0);
@@ -75260,7 +75960,7 @@ function toPackage(name2, quota, options = {}) {
   const expMs = options.expiredTime && options.expiredTime.length > 0 ? Date.parse(options.expiredTime.replace(" ", "T")) : Number.NaN;
   return {
     name: name2,
-    unit: readString8(quota, "unit") ?? "credits",
+    unit: readString9(quota, "unit") ?? "credits",
     remaining,
     total: totalValue,
     used: usedValue,
@@ -75303,9 +76003,9 @@ async function fetchQoderCreditBalance(credential, product, fetcher = fetch) {
   if (Array.isArray(dedicated)) {
     for (const item of dedicated) {
       const pkg = toPackage(
-        readString8(item, "name") ?? readString8(item, "id") ?? "\u4E13\u7528\u8D44\u6E90\u5305",
+        readString9(item, "name") ?? readString9(item, "id") ?? "\u4E13\u7528\u8D44\u6E90\u5305",
         item,
-        { expiredTime: readString8(item, "expiresAt") ?? readString8(item, "expires_at") ?? "" }
+        { expiredTime: readString9(item, "expiresAt") ?? readString9(item, "expires_at") ?? "" }
       );
       if (pkg !== void 0) packages.push(pkg);
     }
@@ -75321,13 +76021,13 @@ function parseQoderCampaigns(body) {
   const campaigns = [];
   if (Array.isArray(raw)) {
     for (const item of raw) {
-      const id = readString8(item, "campaignId");
+      const id = readString9(item, "campaignId");
       if (id === void 0) continue;
       campaigns.push({
         campaignId: id,
-        ...readString8(item, "campaignKey") !== void 0 ? { campaignKey: readString8(item, "campaignKey") } : {},
-        ...readString8(item, "actionType") !== void 0 ? { actionType: readString8(item, "actionType") } : {},
-        ...readString8(item, "claimStatus") !== void 0 ? { claimStatus: readString8(item, "claimStatus") } : {},
+        ...readString9(item, "campaignKey") !== void 0 ? { campaignKey: readString9(item, "campaignKey") } : {},
+        ...readString9(item, "actionType") !== void 0 ? { actionType: readString9(item, "actionType") } : {},
+        ...readString9(item, "claimStatus") !== void 0 ? { claimStatus: readString9(item, "claimStatus") } : {},
         ...benefitAmount(item) !== void 0 ? { amount: benefitAmount(item) } : {}
       });
     }
@@ -75340,7 +76040,7 @@ function parseQoderCampaigns(body) {
 }
 function benefitAmount(item) {
   if (typeof item !== "object" || item === null) return void 0;
-  return readNumber10(item.benefit, "amount");
+  return readNumber11(item.benefit, "amount");
 }
 async function loadCampaigns(credential, product, fetcher) {
   const headers = await creditsHeaders(credential, product);
@@ -75375,7 +76075,7 @@ function parseClaimResult(body) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return {};
   const root = body;
   return {
-    ...readString8(root, "status") !== void 0 ? { status: readString8(root, "status") } : {},
+    ...readString9(root, "status") !== void 0 ? { status: readString9(root, "status") } : {},
     ...typeof root.replayed === "boolean" ? { replayed: root.replayed } : {},
     ...benefitAmount(root) !== void 0 ? { amount: benefitAmount(root) } : {}
   };
@@ -75454,7 +76154,7 @@ async function claimQoderDailyCheckin(credential, product, fetcher = fetch, nowM
 // vendor/channel-pack/src/cline-quota.ts
 var CLINE_QUOTA_TIMEOUT_MS = 3e4;
 var CLINE_USAGE_LIMITS_PATH = "/api/v1/users/me/plan/usage-limits";
-function readNumber11(source, key) {
+function readNumber12(source, key) {
   const value = source[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim().length > 0) {
@@ -75463,7 +76163,7 @@ function readNumber11(source, key) {
   }
   return void 0;
 }
-function readString9(source, key) {
+function readString10(source, key) {
   const value = source[key];
   if (typeof value !== "string") return void 0;
   const trimmed = value.trim();
@@ -75507,15 +76207,15 @@ function parseClineUsageLimits(value) {
   for (const item of raw) {
     if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
     const entry = item;
-    const type = readString9(entry, "type");
+    const type = readString10(entry, "type");
     if (type === void 0) continue;
     windows.push({
       type,
-      percentUsed: readNumber11(entry, "percentUsed") ?? 0,
+      percentUsed: readNumber12(entry, "percentUsed") ?? 0,
       // ⚠️ `resetsAt` 是 ISO 字符串。若网关某天回数字时间戳，也不要在这里
       // 猜单位（秒/毫秒），原样转成字符串交由展示层判定 —— 猜错会显示
       // 1970 年或 5 万年后的时间，比不显示更难排查。
-      resetsAt: readString9(entry, "resetsAt") ?? ""
+      resetsAt: readString10(entry, "resetsAt") ?? ""
     });
   }
   return { windows, error: serverError === "" ? void 0 : serverError };
@@ -83020,7 +83720,7 @@ function installWebNative(ctx, adapters, isEnabled) {
 async function runNative(exec, adapter) {
   const model = exec.agent?.session.requestHeader()?.config?.model;
   const credential = await adapter.resolveCredentialFor(model);
-  const args = asRecord3(exec.arguments) ?? {};
+  const args = asRecord4(exec.arguments) ?? {};
   return await nativeSearch(args, adapter, credential, exec.signal);
 }
 async function nativeSearch(args, adapter, credential, signal) {
@@ -83089,7 +83789,7 @@ function readQueries(value) {
   }
   return out;
 }
-function asRecord3(value) {
+function asRecord4(value) {
   return typeof value === "object" && value !== null ? value : void 0;
 }
 
@@ -91857,6 +92557,16 @@ function createProviderExpiry() {
         AUTOCLAW,
         context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
       )
+    },
+    // phone-port adapter: astudio-table-entry —— AStudio（讯飞，2026-10-20 本 fork 接入）：
+    //    与 modelscope / autoclaw **同格**（有余额即 NEVER、烧光即 UNUSABLE）。
+    //    ⚠️ 三处同改（本表 + WIRED_EXPIRY_PROVIDERS + 折算原语），漏任一处症状静默。
+    astudio: {
+      credentialExpiry: (c, context) => astudioExpiry(
+        c,
+        ASTUDIO,
+        context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
+      )
     }
   };
 }
@@ -92758,6 +93468,11 @@ function apply(ctx, config = {}) {
     readImageRequest: makeReadImageRequest(ctx),
     accountPool: pool,
     product: QODER,
+    // 远端模型目录（2026-10-20）：**由 auth 服务取数**，只做池的只读读取。
+    // ⚠️ 刻意**不**走 `resolveCredential` —— 它选中账号时会 reportAccount，
+    //    而目录请求是周期性的（20 分钟刷新器），会把「本次实际使用的账号」
+    //    改写成目录用的账号 ⇒ 额度标记落到无辜账号上（见 `QoderAdapterOptions.fetchRemoteModels`）。
+    fetchRemoteModels: () => qoder.fetchModels(pool),
     // 额度受限时标记「本次实际使用的账号」（理由见 `activeQoderAccountId` 注释）。
     currentAccountId: () => activeQoderAccountId.get(QODER.id)
   });
@@ -92804,6 +93519,8 @@ function apply(ctx, config = {}) {
     readImageRequest: makeReadImageRequest(ctx),
     accountPool: pool,
     product: QODER_CN,
+    // 远端模型目录：同国际版（两站共用同一套实现，差异只在产品配置）。
+    fetchRemoteModels: () => qoderCn.fetchModels(pool),
     // 额度受限时用它标记「当前账号」（见 `QoderAdapter.switchAccountOnQuota`）。
     // ⚠️ 取「**本次实际使用**的账号」而非池里默认那一个：池的默认账号可能与之
     // 不同（例如本账号被限流、池已切到别的账号），标错就会让标记落在无辜账号上。
