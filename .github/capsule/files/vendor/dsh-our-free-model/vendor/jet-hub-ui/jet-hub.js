@@ -141,6 +141,8 @@ var STYLES = `
       声称「样式见本文件」，而本文件**零命中 officeace**（注释失实且无守卫）。
    ⚠️ 本文件的样式整体是一个模板字符串 —— 注释里**不能出现反引号**（会提前终止）。 */
 .dim-jh-providerIcon.officeace { background: transparent; }
+/* AStudio：内联 SVG 自带不透明品牌蓝底 + 白字 A，容器白底与其它内联 SVG 家一致。 */
+.dim-jh-providerIcon.astudio { background: white; }
 /* 聚合 provider：内联 SVG（三渠道汇聚），白底容器中显示清晰。
    ⚠️ 加这一条是必要的 —— 上面每家的 logoClass 都各自声明了背景，
       没有兜底规则，缺了会让聚合的图标容器**没有背景**（与其它行不一致）。 */
@@ -1238,6 +1240,118 @@ var STYLES = `
    ⚠️ 本文件整体是模板字符串：注释里**绝不能出现反引号**（会提前闭合，
    esbuild 的报错会指向注释行、看起来像 CSS 写错）。本条注释就曾踩过。 */
 
+/* ── 窄屏（手机 / 远程访问，max-width 720px）──
+   POC（2026-10-17）：本插件此前**只有弹窗内部**有 3 处 media 查询，主布局
+   .dim-jh-layout 是写死的左右两栏且 .dim-jh-rail 固定 228px —— 手机宽度约
+   400px 时右面板只剩约 76px 可用，于是面板被压成一条窄缝、操作按钮被裁断、
+   中文提示逐字竖排。
+   修法：窄屏下改为**上下两段** —— 左栏降级为顶部横向可滑动的标签条，
+   右面板获得整宽。**只新增本块，不改任何既有规则**（故 228px 那条断言不受影响）。
+   ⚠️ **范围限定**（2026-10-20 审计订正）：本块只解决**本插件 settings 面板
+   自身**的两栏布局问题。装了「把 DSH Web 包成手机 App」的外壳插件（如
+   dsh-mobile）时，外壳接管的是**页面级**布局（替换宿主 root 槽位），本插件
+   面板会以 drawer / surface 的形态呈现 —— 那种场景下的整体观感不由本块决定。
+   故原描述里「解决手机端界面割裂」这个全局宣称已收窄。
+   ⚠️ 本文件是模板字符串，本注释内不得出现反引号。 */
+@media (max-width: 720px) {
+  .dim-jh-layout { flex-direction: column; }
+  .dim-jh-rail {
+    width: auto; flex: none;
+    display: flex; flex-direction: row; align-items: stretch;
+    gap: 8px; padding: 8px 10px;
+    overflow-x: auto; overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--dsw-alias-border-default, #e5e5e5);
+  }
+  /* 分组外壳在横向条里不再需要：display: contents 让 provider 按钮
+     直接参与父级 flex，避免每个分组各占一整行。 */
+  .dim-jh-railGroup { display: contents; }
+  .dim-jh-railGroupTitle { display: none; }
+  .dim-jh-providerRow { flex: none; }
+  .dim-jh-provider { width: auto; min-height: 40px; padding: 6px 10px; }
+  .dim-jh-panel { padding: 14px 12px; }
+}
+
+/* ── 窄屏：用量浮层（聊天输入区那枚徽标展开的面板）──
+   POC（2026-10-17，报障「对话框的这里 ui 也需要适配」，附窄屏截图）。
+   ⚠️ 2026-10-20 审计整改：本块的**根因描述与 z-index 论证都被推翻重写**，
+   下面每一段都标了「已订正」。原描述保留在末尾的「历史」段里供追溯。
+
+   ## 已订正 ①：真正的失效机制不是「左边缘被裁」
+   原描述说窄屏下浮层左边缘越出视口 89px。按宿主**真实** composer 布局复刻
+   PRE-PR 形态实测：徽标在 .uV2eYG_trailing 里（该行有 margin-left: auto）
+   ⇒ 徽标靠**右**（VW=492 时 L=334 R=468），浮层向左展开 220px 得
+   popL=248 ⇒ **完全没有越界**。原描述里 badge=134~151（靠左）在宿主布局中
+   不成立。⇒ 本块的真实收益是「浮层改为视口锚定、不再跟着徽标跑，且更宽」，
+   不是「修裁切」。
+
+   ## 已订正 ②：真正需要 CSS 兜底的是**旧内核的 containing block 偏差**
+   宿主 composer 工具行 .uV2eYG_row 带 container-type: inline-size，而徽标
+   是它的后代。实测两引擎行为不同：
+     - Chromium 154：inline-size containment 只含 inline 轴，**不**创建 fixed
+       的 containing block ⇒ fixed 仍按视口锚定（符合规范）；
+     - Edge 122：把它当 layout containment ⇒ fixed 改为**相对该祖先**定位
+       ⇒ left/right/bottom 全变成「相对 composer 行」的坐标，浮层跟着 composer
+       跑、宽度被压缩（实测 popLeft 24→124、width 476→344）。
+   ⇒ 只靠 CSS 无法在旧内核上做视口锚定，故窄屏浮层改由 usage-badge.js
+   **portal 到 document.body**（body 之上无 containment 祖先，两引擎都按视口
+   锚定）。本块仍保留全部承重声明作**兜底**：内联样式一旦被改坏，这里还能挡住。
+
+   ## 已订正 ③：bottom 必须用宿主的 composer 高度变量，不能硬编码
+   宿主用 ResizeObserver 把真实 composer 高度写进 --dsh-composer-height
+   （dsh-client-ui-conversation 的 ConversationContent），其 CSS fallback 是
+   **152px**（宿主三处都写 var(--dsh-composer-height,152px)）。
+   原实现硬编码 88px —— 实测 composer=152px 时浮层**压住输入区 64px**，并
+   **盖住「用量」徽标按钮**（命中测试点到的不是按钮，是浮层内的 DIV）
+   ⇒ 用户点不到。改用变量后 gap=0、徽标可点（两引擎、多档 composer 高度均实测）。
+   ⚠️ 该变量能被浮层继承：CSS 变量沿 **DOM 祖先链**继承，与定位方式无关；
+   portal 到 body 后 body 仍在 scroller 的**兄弟**位置？—— 不是，body 是共同祖先，
+   故变量照样继承得到（已实测 popover 侧 getComputedStyle 读到 152px/220px）。
+
+   ## 已订正 ④：z-index 的区间是 (1101, 3000)，不是 (250, 1000)
+   原论证的下限 250 只考虑了**外部外壳**（dsh-mobile），漏了**宿主自己**：
+     - 宿主 79 处 z-index 里有 **6 处 1100**（chat 的 bRhRbq_panel、
+       conversation 的 JObwrW_panel【composer 里的 ContextMeter，与徽标同一行】、
+       model-selection 的 _7KE1Ra_menu【与徽标同一行的模型选择菜单】、
+       plugin-manager、schedule ×2）；
+     - 另有 **3 处全屏 overlay**：attachment 1000、settings-general 1000、
+       settings-account 1001（还有 onboarding 900）。
+   浮层若取 300，上述任一出现就把浮层整块盖住。
+   原上限 1000 的锚点 .dim-jh-loginOverlay 是**死规则**：全仓 className 用法
+   0 命中、git 历史从未渲染过（只剩一条 CSS + 注释）；且它与浮层**不在同一
+   stacking context**（分属 settings 页树与 composer 树，两树中间的
+   .dim-jh-page/.dim-jh-layout/.dim-jh-rail/.dim-jh-panel 全无 z-index）
+   ⇒ z-index 本就不可比。
+   ⇒ 改为按**真正同族**的 .dim-jh-modalOverlay(3000) 定上限，按宿主最高
+   overlay(1001) 与 ContextMeter(1100) 定下限 ⇒ 取 **1200**（(1101, 3000) 内）。
+   另注：dsh-mobile 的 [data-shell-overlay] 恰好是 z-index:300（带 !important），
+   原取值与它**完全相等** ⇒ 同层级时后出现的 DOM 胜出，不可预测；1200 也消除了这点。
+
+   ⚠️ 本注释内**不得出现反引号**：本文件整体是模板字符串，反引号会提前闭合它
+   （AGENTS.md 红线；本文件的 usage-badge-client.spec.ts 有专条用例逐块扫描注释）。
+
+   ## 历史（已推翻，勿据此改回）
+   原描述：根因是「VW=492 badge=134~151 pop=-89~151 L_OVER=true」；取 300 的
+   理由是「下限 > 250 压过 dsh-mobile details、上限 < 1000 因为
+   .dim-jh-loginOverlay 是 1000」；bottom 硬编码 88px。上述三处均已订正。 */
+@media (max-width: 720px) {
+  .dim-jh-badgePop {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: auto !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--dsh-composer-height, 152px)) !important;
+    width: auto !important;
+    max-width: none !important;
+    /* ⚠️ 100dvh 而不是 100vh：移动端地址栏收放会让 100vh 与真实可视高度脱节。
+       外加 max(120px, ...) 下限 —— 原写法在 vh<=140 时算出 0 或负值，实测
+       vh=120 时 max-height 被压成 0px（浮层完全不可见却仍占位）、
+       vh=60 时整块飞出屏幕上方。 */
+    max-height: max(120px, calc(100dvh - 160px)) !important;
+    z-index: 1200 !important;
+  }
+}
+
 `;
 var PLUGIN_ID = "dsh-providers-hub";
 var STYLE_TAG_ID = PLUGIN_ID + "/jet-hub.css";
@@ -1553,25 +1667,138 @@ var PROVIDER_REGISTRY = Object.freeze([
     //    ⇒ **该入口尚未实现**，客户端只做诚实展示（三类积分桶 + 重置倒计时 +
     //    「删除该账号后重新登录」这条手动路径），不渲染任何点不动的控件。
     credits: { balance: true, dailyCheckin: false },
-    // ⚠️ `rateLimit: false` —— 这里的判据是 registry 自己的落地问法：
-    //    「这个按钮点下去，能不能让用户**少**受限一次？」答否即 false。
-    //    accio 两条都不满足：
-    //    ① 适配器**不写** `modelRateLimits`（`provider-runtime-wiring.spec.ts`
-    //       的 `WRITE_SITE_FILES` 把它登记为空，并由一条用例**验证**它确实无写点）
-    //       ⇒ 账号永远没有标记可清；
-    //    ② `src/index.ts` 的 `probeById` 没有它的条目（该表被守卫锁成**恰好**
-    //       「会写标记的家」）⇒ 点「重测」时 `retestAccount` 走到
-    //       `modelIds.length === 0` 处**提前返回**：零请求、零清除。
-    //    两者叠加 ⇒ 面板级的「重测所有 / 重置所有」与卡片级的两个按钮**全部恒为
-    //    惰性**。那正是本仓库记录过的报障形态（「按钮响应这么快，是不是坏了」）。
-    //    ⚠️ 与 loomy / gemini **理由不同**（它们是真会限流、只是按钮管辖不到）：
-    //    accio 是**根本没有这组按钮的作用对象**。
-    //    ⚠️ 「省略 = true 以免老用户失去按钮」那条理由**不适用于全新 provider**：
-    //    accio 没有存量用户，没有「功能回退」可言。
-    //    ⇒ 将来接上请求级换号 + 冷却（届时必须同时进 `probeById` 与
-    //    `WRITES_RATE_LIMIT_PROVIDERS`）时，**本行要一起改回 true**。
-    rateLimit: false,
+    // ⚠️⚠️ **`rateLimit` 已于 2026-10-18 由 `false` 改回 `true`**（issue IKM3ZV 修复）。
+    //    判据是 registry 自己的落地问法：「这个按钮点下去，能不能让用户**少**受限
+    //    一次？」—— 而**当时**答否，两条都不满足：
+    //    ① 适配器不写 `modelRateLimits` ⇒ 账号永远没有标记可清；
+    //    ② `src/index.ts` 的 `probeById` 没有它的条目 ⇒ 「重测」零请求、零清除。
+    //    接上请求级换号 + 冷却（`accio-adapter.ts` 的 `markCurrentAccount`，
+    //    额度至 UTC+8 当日 24:00 / 限流 1h）后 ① 已不成立，② 同步登记 ⇒ 本行翻转。
+    //
+    // ⚠️⚠️ **这三处必须同改**（本陷阱在本仓库已复发过多次）：
+    //    本行 + `src/index.ts` 的 `probeById` + `tests/helpers/provider-sets.ts`
+    //    的 `WRITES_RATE_LIMIT_PROVIDERS`。漏任一处 ⇒ 标记写进去却永远清不掉
+    //    （用户点「重测」报「没有探测适配器」）。三者由 `provider-runtime-wiring.spec.ts`
+    //    的 probe 域守卫**双向**比对锁死（漏一家 / 多一家都点名变红）。
+    //
+    // ⚠️ 与 loomy / gemini / officeace 各自的 `rateLimit: false` **理由不同**：
+    //    那三家是「真会限流、但按钮管辖不到 / 根本没有作用对象」；accio 现在是
+    //    「真的会写标记，且探测适配器已登记」⇒ 是**实打实可用**的入口。
+    rateLimit: true,
     settingsNamespace: "llm-accio",
+    channel: true
+  },
+  {
+    id: "astudio",
+    label: "AStudio (讯飞)",
+    displayName: "AStudio",
+    logoClass: "astudio",
+    // AStudio 每日奖励签到对接 client-popups/pending（DAILY_REWARD_DIALOG）与
+    // client-popups/complete 领取流程 ⇒ dailyCheckin 启用为 true。
+    credits: { balance: true, dailyCheckin: true },
+    // ⚠️ rateLimit: false —— 判据同 accio（registry 落地问法「点下去能不能让用户少受限一次？」）：
+    //    astudio-adapter 不写 modelRateLimits，且刻意不进 src/index.ts 的 probeById
+    //    （probeById 被守卫锁成「恰好是会写标记的家」）⇒ 两个按钮恒为惰性。
+    //    将来接上请求级换号+冷却时必须同时改回 true 并进 probeById + WRITES_RATE_LIMIT_PROVIDERS。
+    rateLimit: false,
+    // ⚠️ **`creditPackages: true`**（2026-10-20 用户报障补）：本字段决定**账号名 hover
+    //    是否列出资源包**（`plugin-src/client/credits-capabilities.js` 的
+    //    `supportsCreditPackageList` 直接读它）。缺它 ⇒ 积分行只显示
+    //    「1/4 个资源包有效」而 **hover 看不到每个包与到期时间**，与其它 provider 不一致
+    //    （用户报障原文：「hover 应该能看到没过期的资源包」）。
+    //    依据：`buildAstudioBalance`（`astudio-credits.ts`）**已经**把四个池逐包解析出了
+    //    到期时间（`member` / `buy` / `activity` / `spark` 各自的 `*NextExpireTime`）
+    //    ⇒ 数据本来就齐，此前只是没声明。
+    creditPackages: true,
+    settingsNamespace: "llm-astudio",
+    channel: true
+  },
+  {
+    id: "autoclaw",
+    label: "AutoClaw (智谱)",
+    displayName: "AutoClaw (智谱)",
+    logoClass: "autoclaw",
+    credits: { balance: true, dailyCheckin: true },
+    // ⚠️⚠️ **2026-10-17 审计修正：本渠道「按批次分档」是尽力而为，不是保证**。
+    //
+    // 事实链（三条缺一，结论就反了）：
+    // ① `autoclaw-credits.ts` 用**流水批次包**替换钱包包，逐包带 `deductionEndTime`
+    //    （毫秒，与 officeace / buddy 同单位）—— 钱包接口本身没有任何到期字段；
+    // ② ⚠️ **流水的 `amount` 是「历史发放额」，不是「该批次当前剩余额」** ——
+    //    上游**没有**「该批次已消耗多少」这一腿（对照 `trae-credits.ts` 的
+    //    `remaining = creditsLimit - used`：两腿都在才算得出剩余；本渠道只有发放那一腿）。
+    //    ⇒ 用户**消耗过积分后**，未过期批次之和 ≠ `total_balance`；
+    // ③ 因此下游以「批次和 == `total_balance`」为**守恒安全网**，不守恒即回退钱包包
+    //    （总额与长期数仍正确，只是**没有**临期档）⇒ 临期档只在恰好守恒的那次轮询出现。
+    //
+    // ⇒ 本行是「把 `windowDays` 回传给客户端，使分档行在有批次包时能渲染」的
+    //    **能力开关**，不是数据保证。
+    // ⚠️ 与 `src/aggregate-expiry.ts` 的 `autoclawExpiry` 注释口径一致：
+    //    聚合折算恒为 `NEVER`（钱包包无 `deductionEndTime`），两处不冲突。
+    creditPackages: true,
+    // ⚠️ 与 buddy / officeace 同口径（按到期时间分桶，窗口复用
+    //    `DSH_BUDDY_EXPIRING_WINDOW_DAYS`）。**必须登记**：查表分派只认这个
+    //    标记回传 `windowDays`，漏登记的症状是「胶囊只有合计、没有三档带色行」
+    //    —— 与 officeace 当初（`officeace 必须回传 windowDays`）同一根因。
+    // ⚠️ 「每日红 + 刷新倒计时」**不适用于本渠道**：那套语义
+    //    （`DAILY_POOL_NAMES = ['每日赠送','每日积分']`，**精确相等**匹配，见
+    //    `plugin-src/client/credit-expiry.js`）是 Loomy / Raccoon 那种
+    //    **当日重置池**（未用完随重置作废）；AutoClaw 的每日签到积分是发放进余额、
+    //    按批次各自到期 —— 隐藏池（服务端 `display:false`）已在解析器滤掉，
+    //    流水批次的包名取服务端描述（实测「每日签到」**不等于**「每日积分」）
+    //    ⇒ 两条路径都不再命中那份名单，「每日 0」红字消失。
+    usesExpiryWindow: true,
+    rateLimit: false,
+    settingsNamespace: "llm-autoclaw",
+    channel: true
+  },
+  {
+    /**
+     * **AutoClaw 国际版**（`autoglm-api.autoglm.ai`）。
+     *
+     * ⚠️⚠️ **为什么是独立 provider 而不是 autoclaw 的站点参数**
+     *    （判据与 `minimaxintl` 完全同款，见 `src/minimax-product.ts` 文件头）：
+     *
+     * | 判据 | 国内 | 国际 |
+     * |---|---|---|
+     * | 账号体系 | 手机号 / `7c54a9ac…`（UUID） | 邮箱 / `2c99dc99…` |
+     * | API 主机 | `autoglm-acceleration-api.zhipuai.cn` | `autoglm-api.autoglm.ai` |
+     * | 登录方式 | 短信验证码 | **Z.ai OAuth** |
+     *
+     *    实测佐证（2026-10-20）：拿国内 token 打国际基址，
+     *    `wallets` / `user-profile` 一律 `410000 用户未登录`、
+     *    推理 `401 Invalid token` ⇒ 用户体系**物理隔离**。
+     *
+     * ⚠️ **实现零复制**：`AutoclawAuth` / `registerAutoclawLlm` / 积分与批次逻辑
+     *    全部复用国内版那一套，只有 `AUTOCLAW_INTL` 配置不同
+     *    （与 `minimaxintl` 同纪律：复制会让同类缺陷修两遍）。
+     *
+     * ⚠️ **当前登录尚未接入**：Z.ai OAuth 的 `state.nh` 来源未知
+     *    （`client_id` 与 `state.dh = SHA256(deviceId)` 已逆向确认）。
+     *    在打通之前本渠道只能手工注入 token 使用。
+     */
+    id: "autoclawintl",
+    label: "AutoClaw (国际版)",
+    displayName: "AutoClaw (国际版)",
+    logoClass: "autoclaw",
+    credits: { balance: true, dailyCheckin: true },
+    /**
+     * ⚠️ **必须与国内版同格**（2026-10-20 审计 P1 补）。
+     *
+     * 漏它的后果是**用户可见**的：国际版账号卡片 hover 看不到资源包明细
+     * （与 astudio 2026-10-20 那次用户报障同型）。两家共用同一份
+     * `autoclaw-credits.ts`，批次包同样带 `deductionEndTime` ⇒ 能力应当一致。
+     *
+     * ⚠️⚠️ 这个字段曾经**漏了却全绿**：`provider-registry.spec.ts` 把它写成
+     *    **手写名单快照**，于是「漏项」被固化成了期望值 —— 补上它反而变红
+     *    （审计实测：`expected [...(10)] to deeply equal [ Array(9) ]`）。
+     *    ⇒ 同一次整改把那条断言改成**从能力事实派生**（见该 spec 的注释）。
+     */
+    creditPackages: true,
+    // 分档 / 临期逻辑与国内同源（同一份 `autoclaw-credits.ts`）。
+    usesExpiryWindow: true,
+    rateLimit: false,
+    settingsNamespace: "llm-autoclawintl",
     channel: true
   },
   {
@@ -1890,6 +2117,160 @@ function OpencodeProxyModal({ ctx, accountId, current, onClose }) {
           "p",
           { className: "dim-jh-hint" },
           `出口 IP ${result.exitIp}（${result.country || "未知地区"}）· ${result.latencyMs}ms`
+        ),
+        error && React.createElement("p", { className: "dim-jh-error" }, error)
+      ),
+      React.createElement(
+        "div",
+        { className: "dim-jh-modalActions" },
+        React.createElement("button", {
+          type: "button",
+          className: "dim-jh-btn",
+          disabled: testing || busy || url.trim().length === 0,
+          onClick: test
+        }, testing ? "测试中…" : "测试连接"),
+        // 只有已配置过才显示「清除」：没配过就没有可清除的东西。
+        current ? React.createElement("button", {
+          type: "button",
+          className: "dim-jh-btn",
+          disabled: busy,
+          onClick: () => save("")
+        }, "清除代理") : null,
+        React.createElement("button", {
+          type: "button",
+          className: "dim-jh-btn dim-jh-btnPrimary",
+          disabled: busy || url.trim().length === 0,
+          onClick: () => save(url)
+        }, "保存"),
+        React.createElement("button", { type: "button", className: "dim-jh-btn", onClick: close }, "取消")
+      )
+    )
+  );
+}
+function GeminiProxyModal({ ctx, accountId, current, onClose }) {
+  const [mode, setMode] = React.useState(guessMode(current));
+  const [url, setUrl] = React.useState(current || "");
+  const [busy, setBusy] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [result, setResult] = React.useState(null);
+  const close = () => {
+    if (onClose) onClose();
+  };
+  const save = async (value) => {
+    setBusy(true);
+    setError("");
+    try {
+      await ctx.rpc({ method: "gemini.setProxy", payload: { accountId, proxy: value } });
+      close();
+    } catch (err) {
+      setError(err && err.message ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const test = async () => {
+    setTesting(true);
+    setError("");
+    setResult(null);
+    try {
+      const r = await ctx.rpc({ method: "gemini.testProxy", payload: { proxy: url } });
+      setResult(r);
+    } catch (err) {
+      setError(err && err.message ? err.message : String(err));
+    } finally {
+      setTesting(false);
+    }
+  };
+  const activeHint = (MODES.find((m) => m.id === mode) || {}).hint || "";
+  return React.createElement(
+    "div",
+    {
+      className: "dim-jh-modalOverlay dim-jh-modalOverlay--top",
+      onClick: (e) => {
+        if (e.target === e.currentTarget) close();
+      }
+    },
+    React.createElement(
+      "div",
+      {
+        className: "dim-jh-modal",
+        role: "dialog",
+        "aria-modal": "true",
+        style: { maxWidth: "520px" }
+      },
+      React.createElement(
+        "div",
+        { className: "dim-jh-modalHead" },
+        React.createElement("div", { className: "dim-jh-modalTitle" }, "设置 Gemini 出口代理"),
+        React.createElement(
+          "span",
+          { className: "dim-jh-modalSubtitle" },
+          current ? "当前：已配置" : "当前：直连（本机出口）"
+        )
+      ),
+      // ⚠️ 这段提示是本功能的存在理由，且必须**诚实**：不说清「系统代理不生效」，
+      // 用户会以为自己开着 Clash 系统代理就万事大吉（浏览器能用 ≠ 插件能用）。
+      React.createElement(
+        "p",
+        { className: "dim-jh-modalHint" },
+        "Google 的登录与接口都在墙外。浏览器能打开授权页，是因为浏览器读系统代理；插件进程不读，所以「浏览器授权成功、面板里账号却一直不出现」是同一个原因。设置这里的代理后，该账号的登录、续期、积分与对话都会走它。"
+      ),
+      React.createElement(
+        "div",
+        { className: "dim-jh-modalBody" },
+        React.createElement(
+          "div",
+          { className: "dim-jh-fieldRow" },
+          MODES.map((m) => React.createElement(
+            "label",
+            { key: m.id, className: "dim-jh-radio" },
+            React.createElement("input", {
+              type: "radio",
+              name: "gemini-proxy-mode",
+              checked: mode === m.id,
+              onChange: () => {
+                setMode(m.id);
+                setError("");
+                setResult(null);
+              }
+            }),
+            m.label
+          ))
+        ),
+        React.createElement("p", { className: "dim-jh-hint" }, activeHint),
+        mode === "local" && React.createElement(
+          "div",
+          { className: "dim-jh-presetRow" },
+          LOCAL_PORT_PRESETS.map((p) => React.createElement("button", {
+            key: p.port,
+            type: "button",
+            className: "dim-jh-btn",
+            title: p.hint,
+            onClick: () => {
+              setUrl(p.url);
+              setError("");
+              setResult(null);
+            }
+          }, p.label))
+        ),
+        React.createElement("input", {
+          className: "dim-jh-input",
+          placeholder: mode === "socks5" ? "socks5://user:pass@host:port" : "http://user:pass@host:port",
+          value: url,
+          // ⚠️ 含认证信息时用 password 类型：代理口令不该裸显在屏幕上。
+          type: url.includes("@") ? "password" : "text",
+          onChange: (e) => {
+            setUrl(e.target.value);
+            setResult(null);
+          }
+        }),
+        // ⚠️ **不说「出口 IP」**：这里测的是「能不能连上 Google」，
+        // 回显 HTTP 状态码（400 也是通的，见宿主侧注释）。
+        result && React.createElement(
+          "p",
+          { className: "dim-jh-hint" },
+          `已连通 Google（HTTP ${result.status}）· ${result.latencyMs}ms`
         ),
         error && React.createElement("p", { className: "dim-jh-error" }, error)
       ),
@@ -2253,6 +2634,7 @@ function splitCreditsByExpiry(packages, windowDays, now) {
   let longTerm = 0;
   let permanent = 0;
   let earliestExpiringAt = null;
+  let earliestExpiringAmount = 0;
   for (const pkg of packages) {
     if (!pkg || pkg.active !== true) continue;
     const remaining = Number(pkg.remaining);
@@ -2265,12 +2647,17 @@ function splitCreditsByExpiry(packages, windowDays, now) {
     }
     if (end - at < windowMs) {
       expiring += remaining;
-      if (end > at && (earliestExpiringAt === null || end < earliestExpiringAt)) earliestExpiringAt = end;
+      if (end > at && (earliestExpiringAt === null || end < earliestExpiringAt)) {
+        earliestExpiringAt = end;
+        earliestExpiringAmount = remaining;
+      } else if (end > at && end === earliestExpiringAt) {
+        earliestExpiringAmount += remaining;
+      }
     } else {
       longTerm += remaining;
     }
   }
-  return { expiring, longTerm, permanent, earliestExpiringAt };
+  return { expiring, longTerm, permanent, earliestExpiringAt, earliestExpiringAmount };
 }
 function expiryBucketLabel(pkg, windowDays, now) {
   const days = normalizeWindowDays2(windowDays);
@@ -2301,9 +2688,10 @@ function expirySplitParts(split, format, now) {
   if (expiring !== null) {
     const at = split.earliestExpiringAt;
     const countdown = typeof at === "number" && Number.isFinite(at) && at > 0 ? expiryCountdown(at, now) : "";
+    const shown = Number.isFinite(split.earliestExpiringAmount) && split.earliestExpiringAmount > 0 ? split.earliestExpiringAmount : expiring;
     parts.push({
       key: "expiring",
-      text: `临期 ${expiring}`,
+      text: `临期 ${format(shown)}`,
       tone: "error",
       ...countdown.length > 0 ? { countdown } : {}
     });
@@ -2427,14 +2815,18 @@ function allModelsDisabled(models) {
 }
 
 // plugin-src/client/new-account.js
-var PROVIDERS_ASKING_OPTIONS = Object.freeze(["zcode", "accio"]);
+var PROVIDERS_ASKING_OPTIONS = Object.freeze(["zcode", "accio", "astudio", "autoclaw", "autoclawintl"]);
 function newAccountAsksChannel(provider) {
   return PROVIDERS_ASKING_OPTIONS.includes(provider);
 }
-function buildCreateAccountPayload(provider, zcodeProvider, accioRegion) {
-  if (provider !== "zcode" && provider !== "accio") return { provider };
+function buildCreateAccountPayload(provider, zcodeProvider, accioRegion, astudioLoginMethod, autoclawMode) {
+  if (provider !== "zcode" && provider !== "accio" && provider !== "astudio" && provider !== "autoclaw" && provider !== "autoclawintl") {
+    return { provider };
+  }
   if (provider === "zcode") return { provider, zcodeProvider };
-  return { provider, accioRegion };
+  if (provider === "accio") return { provider, accioRegion };
+  if (provider === "astudio") return { provider, astudioLoginMethod: astudioLoginMethod ?? "local" };
+  return { provider, autoclawMode: autoclawMode ?? "local" };
 }
 
 // plugin-src/client/model-bulk.js
@@ -3100,6 +3492,7 @@ function providerSwitchState(status) {
     return { checked: true, disabled: true, reason: "状态尚未读取" };
   }
   const total = typeof status.models?.total === "number" ? status.models.total : 0;
+  if (status.closed === true) return { checked: false, disabled: false, reason: null };
   if (total <= 0) {
     return {
       checked: true,
@@ -3107,7 +3500,7 @@ function providerSwitchState(status) {
       reason: "该供应商没有可关闭的模型"
     };
   }
-  return { checked: status.closed !== true, disabled: false, reason: null };
+  return { checked: true, disabled: false, reason: null };
 }
 function summarizeProviderToggle(enabled, res) {
   const models = typeof res?.models === "number" ? res.models : 0;
@@ -3123,7 +3516,7 @@ function summarizeProviderToggle(enabled, res) {
   parts.push(accounts > 0 ? `已停用 ${accounts} 个账号` : "没有账号需要停用");
   return parts.join("，");
 }
-function sortOpenProvidersByOrder(openProviders, order) {
+function sortOpenProvidersByOrder(openProviders, order, declaredOrder) {
   const list = Array.isArray(openProviders) ? openProviders : [];
   const seq = Array.isArray(order) ? order : [];
   if (seq.length === 0) return list;
@@ -3133,6 +3526,40 @@ function sortOpenProvidersByOrder(openProviders, order) {
     if (typeof id === "string" && id.length > 0 && !rank.has(id)) rank.set(id, index);
   }
   if (rank.size === 0) return list;
+  const declared = Array.isArray(declaredOrder) ? declaredOrder : [];
+  if (declared.length > 0) {
+    const anchorOf = /* @__PURE__ */ new Map();
+    for (let index = 0; index < declared.length; index++) {
+      const id = declared[index];
+      if (typeof id !== "string" || id.length === 0) continue;
+      if (rank.has(id)) continue;
+      let anchor = null;
+      for (let back = index - 1; back >= 0; back--) {
+        const prev = declared[back];
+        if (rank.has(prev) || anchorOf.has(prev)) {
+          anchor = prev;
+          break;
+        }
+      }
+      anchorOf.set(id, anchor);
+    }
+    if (anchorOf.size > 0) {
+      const effective = new Map(rank);
+      for (const [id, anchor] of anchorOf) {
+        const declaredIndex = declared.indexOf(id);
+        const anchorKey = anchor === null ? -1 : effective.get(anchor) ?? -1;
+        effective.set(id, anchorKey + declaredIndex / (declared.length + 1));
+      }
+      return [...list].sort((a, b) => {
+        const ra = effective.get(a?.id);
+        const rb = effective.get(b?.id);
+        if (ra !== void 0 && rb !== void 0) return ra - rb;
+        if (ra !== void 0) return -1;
+        if (rb !== void 0) return 1;
+        return 0;
+      });
+    }
+  }
   return [...list].sort((a, b) => {
     const ra = rank.get(a?.id);
     const rb = rank.get(b?.id);
@@ -3865,6 +4292,8 @@ var GEMINI_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5
 var AGGREGATE_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PGNpcmNsZSBjeD0iNSIgY3k9IjUiIHI9IjIuNiIgZmlsbD0iIzRGOERGNyIvPjxjaXJjbGUgY3g9IjUiIGN5PSIxOSIgcj0iMi42IiBmaWxsPSIjOUI3MkNCIi8+PGNpcmNsZSBjeD0iMTkiIGN5PSIxMiIgcj0iMi42IiBmaWxsPSIjNEY4REY3Ii8+PHBhdGggZD0iTTcgNi4yIDE2LjQgMTFNNyAxNy44IDE2LjQgMTMiIHN0cm9rZT0iIzlCNzJDQiIgc3Ryb2tlLXdpZHRoPSIxLjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgZmlsbD0ibm9uZSIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEuNSIgZmlsbD0iIzlCNzJDQiIvPjwvc3ZnPg==";
 var OFFICEACE_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiB4PSIyIiB5PSIyIiByeD0iNCIgZmlsbD0iI2M3MDAwMCIvPjx0ZXh0IHg9IjEyIiB5PSIxNS41IiBmb250LXNpemU9IjgiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiNmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk9BPC90ZXh0Pjwvc3ZnPg==";
 var ACCIO_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iI0ZGNkEwMCIvPjxwYXRoIGQ9Ik03LjQgMTcuMiAxMSA2LjhoMmwzLjYgMTAuNGgtMi4xbC0uNzItMi4yNEgxMC4ybC0uNzIgMi4yNEg3LjRaIiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTTEwLjc0IDEzLjI2aDIuNTJMMTIgOS41bC0xLjI2IDMuNzZaIiBmaWxsPSIjRkY2QTAwIi8+PC9zdmc+";
+var ASTUDIO_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzFGNkZFQiIvPjxwYXRoIGQ9Ik0xMiA2LjIgMTcuNiAxOC4yaC0yLjJsLTEuMi0yLjlIOS44bC0xLjIgMi45SDYuNHoiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSI5LjIiIHk9IjEyLjYiIHdpZHRoPSI1LjYiIGhlaWdodD0iMS41IiBmaWxsPSIjRkZGRkZGIi8+PC9zdmc+";
+var AUTOCLAW_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0Ij48cmVjdCB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHJ4PSI1IiBmaWxsPSIjNDM2MWVlIi8+PHBhdGggZD0iTTcgOGwzIDNsLTItNG00IDBsMyA0bC0yLTNtNCAwbDMgNWwtMi00IiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+";
 var PROVIDER_ICONS = {
   codearts: CODEARTS_ICON,
   buddy: CODEBUDDY_ICON,
@@ -3886,6 +4315,12 @@ var PROVIDER_ICONS = {
   gemini: GEMINI_ICON,
   officeace: OFFICEACE_ICON,
   accio: ACCIO_ICON,
+  astudio: ASTUDIO_ICON,
+  autoclaw: AUTOCLAW_ICON,
+  // ⚠️ 国际版与国内版**共用同一个图标**（同一产品，只是部署区域不同）。
+  //    但键必须存在：`PROVIDER_ICONS` 的键集合与 registry 的 id 集合必须完全相等
+  //    （`provider-registry.spec.ts` 有行为断言）。
+  autoclawintl: AUTOCLAW_ICON,
   modelscope: MODELSCOPE_ICON,
   aggregate: AGGREGATE_ICON
 };
@@ -4411,18 +4846,19 @@ function AccountCard({
         className: "dim-jh-btn",
         onClick: () => onToggle(account.id, !account.enabled)
       }, account.enabled ? "停用" : "启用"),
-      // ⚠️ 仅 opencode：出口代理与指纹轮换是该 provider **独有**的账号维度
-      // （其余 provider 没有这两项）。用 props 存在性开关而非
+      // ⚠️ 仅 opencode / gemini：出口代理是该 provider 独有的**账号维度**能力
+      // （其余 provider 没有这一项）。用 props 存在性开关而非
       // `provider === 'opencode'` 硬判断 —— 前者让 AccountCard 无需知道
       // provider 列表，也避免以后新增同类 provider 时漏改。
       // 位置在「停用」之后、「删除」之前：删除按钮带 data-kind='danger'，
       // 是这一行的视觉终点，不能被挤到中间。
       onOpenProxy ? React3.createElement("button", {
         className: "dim-jh-btn",
-        // ⚠️ tooltip 必须解释「不设置会怎样」：看到「代理」按钮很容易
-        // 当成锦上添花，实际不设 = 与其它账号共用同一出口（同一份额度）。
-        title: account.opencodeProxy ? "出口代理：" + account.opencodeProxy + "（点击修改）" : "设置该账号的出口代理；不设置则与其它未设代理的账号共享本机出口 IP",
-        onClick: () => onOpenProxy(account.id, account.opencodeProxy || "")
+        // ⚠️ tooltip 必须解释「不设置会怎样」。两家语义不同，故按
+        // `account.geminiProxy !== undefined` 分流文案：opencode 是
+        // 「共用出口 = 共用额度」，gemini 是「出不去 = 恒连不上」。
+        title: account.opencodeProxy ? "出口代理：" + account.opencodeProxy + "（点击修改）" : account.geminiProxy !== void 0 ? "出口代理：" + (account.geminiProxy || "直连") + "（点击修改）" : "设置该账号的出口代理；" + (account.geminiProxy !== void 0 ? "不设置则直连本机（出不去墙外服务）" : "不设置则与其它未设代理的账号共享本机出口 IP"),
+        onClick: () => onOpenProxy(account.id, account.opencodeProxy || account.geminiProxy || "")
       }, "代理") : null,
       onRotateFingerprint ? React3.createElement("button", {
         className: "dim-jh-btn",
@@ -4949,6 +5385,155 @@ function StatusDot({ ok, title }) {
     title,
     "aria-label": title
   });
+}
+function MinimaxXffPanel({ rpcCall, value, onSaved, onClose }) {
+  const mounted = React3.useRef(true);
+  React3.useEffect(() => () => {
+    mounted.current = false;
+  }, []);
+  const [draft, setDraft] = React3.useState(value ?? "");
+  const [busy, setBusy] = React3.useState(false);
+  const [notice, setNotice] = React3.useState(null);
+  const save = async (override) => {
+    const payloadValue = typeof override === "string" ? override : draft;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await rpcCall("minimax.setXff", { xff: payloadValue });
+      if (!mounted.current) return;
+      const next = typeof res?.xff === "string" ? res.xff : "";
+      setDraft(next);
+      onSaved(next);
+      setNotice(next === "" ? { kind: "ok", text: "已清除：后续请求不附 X-Forwarded-For（将按真实出口 IP 分流）。" } : { kind: "ok", text: `已保存并生效：${next}` });
+    } catch (caught) {
+      if (!mounted.current) return;
+      setDraft(value ?? "");
+      setNotice({
+        kind: "bad",
+        text: (caught instanceof Error ? caught.message : String(caught)) + `（当前生效值未改动：${value === "" ? "未设置" : value}）`
+      });
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  return React3.createElement(
+    "div",
+    {
+      className: "dim-jh-modalOverlay dim-jh-modalOverlay--top",
+      onClick: (event) => {
+        if (event.target === event.currentTarget) onClose();
+      }
+    },
+    React3.createElement(
+      "div",
+      {
+        className: "dim-jh-modal",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-label": "MiniMax 国际站分流设置"
+      },
+      React3.createElement(
+        "div",
+        { className: "dim-jh-modalHead" },
+        React3.createElement(
+          "div",
+          { className: "dim-jh-modalTitle" },
+          React3.createElement("strong", null, "MiniMax 国际站分流设置")
+        ),
+        React3.createElement(
+          "div",
+          { className: "dim-jh-modelPanelActions" },
+          React3.createElement("button", {
+            className: "dim-jh-btn",
+            onClick: onClose
+          }, "关闭")
+        )
+      ),
+      React3.createElement(
+        "div",
+        { className: "dim-jh-modalBody" },
+        // ── 原因说明 ──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-hint" },
+          "MiniMax 国际站的服务器按**出口 IP 所在国家**分流：中国大陆 IP 会被重定向到中国站，从而出现「余额查询失败」「模型不可用」，而凭据本身是好的。"
+        ),
+        // ── 两条出路（先给更正当的那条）──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-hint" },
+          "① 推荐：用代理把出口 IP 改到海外（此时无需本设置）；② 应急：在下面填一个海外 IP，让请求被判为海外来源。"
+        ),
+        // ── 输入 ──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-field" },
+          React3.createElement(
+            "label",
+            { className: "dim-jh-fieldLabel", htmlFor: "dim-jh-minimax-xff" },
+            "X-Forwarded-For（留空 = 不伪造来源）"
+          ),
+          React3.createElement("input", {
+            id: "dim-jh-minimax-xff",
+            className: "dim-jh-input",
+            type: "text",
+            value: draft,
+            spellCheck: false,
+            autoComplete: "off",
+            placeholder: "例如 8.8.8.8（只接受 IPv4 / IPv6）",
+            disabled: busy,
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === "Enter" && !busy) void save();
+            }
+          })
+        ),
+        // ── 结果 / 错误 ──
+        notice !== null ? React3.createElement("div", {
+          className: "dim-jh-hint",
+          style: notice.kind === "bad" ? { color: "var(--dim-danger, #e5534b)" } : void 0
+        }, notice.text) : null,
+        // ── 风险说明（必须显式写出来）──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-hint" },
+          "⚠️ 该值是**声明一个并非本机的来源 IP**，仅在应急时使用；上游若改为不信任该头，本设置会失效（届时仍会如实报错，不会假装成功）。"
+        ),
+        // ── 操作 ──
+        React3.createElement(
+          "div",
+          { className: "dim-jh-modalActions" },
+          React3.createElement("button", {
+            className: "dim-jh-btn",
+            "data-kind": "primary",
+            disabled: busy,
+            onClick: () => void save()
+          }, busy ? "保存中…" : "保存"),
+          /**
+           * ⚠️ 「清除设置」**必须真的落盘**，不能只清输入框。
+           *
+           * 初版写的是 `onClick: () => setDraft('')` —— 只改了本地草稿，
+           * 后端仍是旧值。用户点完看到输入框空了，会以为已经关掉绕过分流，
+           * 而实际请求**仍在带 XFF**（症状：他以为改回了正常行为，其实没有）。
+           * ⇒ 这里直接调后端清空并回读，语义与「保存空值」完全一致。
+           */
+          React3.createElement("button", {
+            className: "dim-jh-btn",
+            disabled: busy || draft === "" && value === "",
+            /**
+             * ⚠️ **不要在这里 `setDraft('')`**（2026-10-17 审计指出的细节）：
+             * `save('')` 成功后会回读 `next` 并 `setDraft(next)`；失败时 catch 会把
+             * draft 回滚到真值 `value`。若这里先清空，一旦失败就会出现
+             * 「输入框空、实际仍带 XFF」的不一致。
+             */
+            onClick: () => {
+              void save("");
+            }
+          }, "清除设置")
+        )
+      )
+    )
+  );
 }
 function ClineQuotaPanel({ rpcCall, onClose }) {
   const mounted = React3.useRef(true);
@@ -6049,6 +6634,8 @@ function ProviderPanel({ provider, rpcCall }) {
   const compensationClaimRef = React3.useRef(false);
   const [zcodeProvider, setZcodeProvider] = React3.useState("bigmodel");
   const [accioRegion, setAccioRegion] = React3.useState("cn");
+  const [astudioLoginMethod, setAstudioLoginMethod] = React3.useState("local");
+  const [autoclawMode, setAutoclawMode] = React3.useState("local");
   const [pendingLogin, setPendingLogin] = React3.useState(void 0);
   const [probeBusy, setProbeBusy] = React3.useState(null);
   const [probeNotice, setProbeNotice] = React3.useState(null);
@@ -6100,6 +6687,9 @@ function ProviderPanel({ provider, rpcCall }) {
   }, [provider, rpcCall]);
   const canLoadCredits = supportsCreditBalance(provider);
   const accioDialog = provider === "accio";
+  const astudioDialog = provider === "astudio";
+  const autoclawDialog = provider === "autoclaw" || provider === "autoclawintl";
+  const autoclawSmsAvailable = provider === "autoclaw";
   const supportsCredits = supportsDailyCheckin(provider);
   const supportsGrowthTasks = GROWTH_TASK_PROVIDERS.has(provider);
   const canShowSubscriptionQuota = supportsSubscriptionQuota(provider);
@@ -6229,6 +6819,22 @@ function ProviderPanel({ provider, rpcCall }) {
       alive = false;
     };
   }, [canLockPermanent, provider]);
+  React3.useEffect(() => {
+    if (provider !== "minimaxintl") return void 0;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await rpcCall("minimax.getXff", {});
+        if (!alive) return;
+        setMinimaxXff(typeof res?.xff === "string" ? res.xff : "");
+      } catch (caught) {
+        console.error("[jet-hub] load minimax xff failed:", caught);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [provider]);
   const togglePermanentLock = async () => {
     if (!canLockPermanent) return;
     const next = !permanentLocked;
@@ -6281,6 +6887,8 @@ function ProviderPanel({ provider, rpcCall }) {
   };
   const [showModels, setShowModels] = React3.useState(false);
   const [showQuota, setShowQuota] = React3.useState(false);
+  const [minimaxXff, setMinimaxXff] = React3.useState("");
+  const [showMinimaxXff, setShowMinimaxXff] = React3.useState(false);
   const claimCredits = async () => {
     if (!supportsCredits) return;
     if (claimInFlightRef.current) {
@@ -6455,7 +7063,9 @@ function ProviderPanel({ provider, rpcCall }) {
     try {
       const res = await rpcCall(
         "account.create",
-        buildCreateAccountPayload(provider, zcodeProvider, accioRegion)
+        // ⚠ 两个 provider 各占一个位置参数（astudio 第 4 位、autoclaw 第 5 位），
+        //    不可合并成一个 —— 载荷字段不同，合并会静默串台（见 new-account.js）。
+        buildCreateAccountPayload(provider, zcodeProvider, accioRegion, astudioLoginMethod, autoclawMode)
       );
       accountId = res.accountId;
       loginUrl = res.loginUrl;
@@ -6464,6 +7074,11 @@ function ProviderPanel({ provider, rpcCall }) {
         setLoginUrlForManual(null);
         await loadAccounts();
         setProbeNotice({ tone: "ok", text: "已复用本机已有的账号凭据，未新建账号。", details: [] });
+        return;
+      }
+      if (!loginUrl) {
+        await loadAccounts();
+        setProbeNotice({ tone: "ok", text: "已成功导入账号凭据。", details: [] });
         return;
       }
       if (loginUrl) {
@@ -6821,6 +7436,30 @@ function ProviderPanel({ provider, rpcCall }) {
           },
           disabled: creating
         }, creating ? "正在登录…" : "+ 新建账号"),
+        /**
+         * ⚠️ **只给 MiniMax 国际版**（issue IKMEVG）：它的数据面
+         * `agent.minimax.io` 按**出口 IP 国别**把中国大陆来源 307 到中国站，
+         * 于是大陆网络下国际站账号永远拿不到数据面（与 token 有效性无关）。
+         * 这里给一个入口让用户填海外 IP 绕开该分流。
+         *
+         * ⚠️ 其它 provider 一律不渲染（多一个永远无效的按钮只会让用户困惑）。
+         *
+         * ⚠️ **位置必须在「+ 新建账号」之后**（2026-10-17 用户要求
+         * 「minimax国际版的新建账号放在国际站分流之前」）：新建账号是**主操作**，
+         * 分流设置是**排障用的次要入口** —— 次要项排在主操作前面会让用户
+         * 先看到「分流设置」而不是「怎么加账号」。
+         */
+        provider === "minimaxintl" ? React3.createElement("button", {
+          className: "dim-jh-btn",
+          "data-kind": minimaxXff !== "" ? "primary" : void 0,
+          title: `MiniMax 国际站的服务器会按**出口 IP 所在国家**决定把你路由到哪个站：中国大陆 IP 会被 307 重定向到中国站，表现为「余额查询失败 / 模型不可用」。
+
+在此填写一个**海外 IP**（如 8.8.8.8）即可让请求被判为海外来源、留在国际站。
+留空 = 不伪造来源（推荐先用代理改变出口 IP，那是更正当的方式）。
+
+当前：${minimaxXff === "" ? "未设置" : minimaxXff}`,
+          onClick: () => setShowMinimaxXff(true)
+        }, minimaxXff !== "" ? "国际站分流：已绕过" : "国际站分流设置") : null,
         // ★ 预选对话框（用户 2026-10-03：从按钮旁搬到弹窗里）
         //
         // ⚠ 内容按 provider 分支：zcode 问**登录渠道**，accio 问**登录区域**
@@ -6853,14 +7492,16 @@ function ProviderPanel({ provider, rpcCall }) {
             React3.createElement(
               "h3",
               { className: "dim-jh-zcDialogTitle" },
-              accioDialog ? "添加 Accio 账号" : "添加 ZCode 账号"
+              // ⚠ 弹窗服务四个 provider（zcode / accio / astudio / autoclaw），
+              //   各问各的东西：渠道 / 区域 / AStudio 登录方式 / AutoClaw 登录方式。
+              astudioDialog ? "添加 AStudio 账号" : autoclawDialog ? "添加 AutoClaw 账号" : accioDialog ? "添加 Accio 账号" : "添加 ZCode 账号"
             ),
             React3.createElement(
               "p",
               { className: "dim-jh-zcDialogHint" },
-              accioDialog ? "Accio 的登录页按区域分域名，且区域由服务端按账号下发 —— 登录前无法自动判断。请选择该账号所属的区域，否则会打开打不开的登录页。" : "选择登录渠道后才会打开对应的认证页面。两个渠道的授权页与凭据各自独立，"
+              astudioDialog ? "支持导入本机桌面端已登录会话，或在浏览器中打开三合一登录页（支持手机短信/账号密码/微信扫码）。" : autoclawDialog ? "请选择登录方式：可直接读取本机已安装并登录的桌面端凭据，或使用手机短信验证码快速登录。" : accioDialog ? "Accio 的登录页按区域分域名，且区域由服务端按账号下发 —— 登录前无法自动判断。请选择该账号所属的区域，否则会打开打不开的登录页。" : "选择登录渠道后才会打开对应的认证页面。两个渠道的授权页与凭据各自独立，"
             ),
-            accioDialog ? null : React3.createElement(
+            accioDialog || astudioDialog || autoclawDialog ? null : React3.createElement(
               "p",
               { className: "dim-jh-zcDialogHint" },
               "可用 z.ai（国际）登录另一个账号。"
@@ -6868,26 +7509,256 @@ function ProviderPanel({ provider, rpcCall }) {
             React3.createElement(
               "label",
               { className: "dim-jh-zcProvider" },
-              accioDialog ? "登录区域" : "登录渠道",
-              accioDialog ? React3.createElement(
-                "select",
-                {
-                  className: "dim-jh-zcSelect",
-                  value: accioRegion,
-                  onChange: (event) => setAccioRegion(event.target.value)
-                },
-                React3.createElement("option", { value: "cn" }, "中国版（www.accio-ai.com）"),
-                React3.createElement("option", { value: "global" }, "国际版（zh.accio.com）")
-              ) : React3.createElement(
-                "select",
-                {
-                  className: "dim-jh-zcSelect",
-                  value: zcodeProvider,
-                  onChange: (event) => setZcodeProvider(event.target.value)
-                },
-                React3.createElement("option", { value: "bigmodel" }, "BigModel（智谱开放平台，国内）"),
-                React3.createElement("option", { value: "zai" }, "z.ai（chat.z.ai，国际版）")
-              )
+              astudioDialog ? "登录方式" : autoclawDialog ? "登录方式" : accioDialog ? "登录区域" : "登录渠道"
+              // ⚠️⚠️ **原生 `<select>` 已整体删除**（2026-10-17 审计 P2 修复，
+              //    本次合并 astudio 侧时一并采纳 —— astudio 侧原本还留着第四个死 select）。
+              //   原先此处有**四个**各自带 `style:{display:'none'}` 的 `<select>`
+              //   （astudioLoginMethod / autoclawMode / accioRegion / zcodeProvider），
+              //   功能已由下方**单选卡片组**接管（Windows/Electron 下原生下拉经常点不开）。
+              //   ⇒ 那四个是纯**死 DOM**：不可见、其 `onChange` 永不触发，
+              //     却仍渲染出 `<option>` 并把 state 挂在上面 ——
+              //     既是维护陷阱（改 options 会让人误以为生效），
+              //     也是「一份状态两套 UI 判据」这种本仓库红线形态。
+              //   ⚠️ 守卫已同步改写：`tests/unit/new-account-dialog.spec.ts`
+              //     里原先断言 `value: accioRegion` / `onChange: …target.value`
+              //     （原生 select 专属形态）的那几条，现在锁的是**卡片组**的
+              //     `onClick: () => setXxx(opt.value)` —— 否则删掉死 DOM
+              //     会让守卫变成「保护一个不存在的东西」。
+              // ⚠️ **label 自身到此闭合**（2026-10-17 审计 P2 修复）：
+              //   删掉原先那个 `<select>`（第三个子参数）后，`label` 的
+              //   `createElement(` 只剩两个参数 ⇒ 必须补这个右括号，
+              //   否则 esbuild 报 `Expected ")" but found ";"`。
+              //   ⚠️ 这类语法错误**单测查不出来**（本仓库 client 守卫多为
+              //   源码文本断言，不做解析）⇒ 改完本文件**必须**跑
+              //   `pnpm build:client`，见 AGENTS.md 的「单测只读源码文本」那条。
+            ),
+            // 彻底解决 Windows/Electron 下原生 <select> 下拉框经常点不开的恶心 bug：使用 100% 可靠的 DOM 单选卡片组
+            React3.createElement(
+              "div",
+              {
+                style: {
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  margin: "8px 0 16px"
+                }
+              },
+              astudioDialog ? [
+                { value: "local", label: "⚡ 一键导入本机桌面端凭据", desc: "需已在 AStudio 桌面端登录，自动读取本地会话" },
+                { value: "web", label: "🌐 网页三合一快捷登录", desc: "在浏览器载体页中登录，支持手机短信/账号密码/微信扫码，免依赖桌面端" }
+              ].map((opt) => {
+                const active = astudioLoginMethod === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setAstudioLoginMethod(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              }) : accioDialog ? [
+                { value: "cn", label: "🇨🇳 中国版（www.accio-ai.com）", desc: "适用于 Accio 国内站点账号" },
+                { value: "global", label: "🌐 国际版（zh.accio.com）", desc: "适用于 Accio 国际站点账号" }
+              ].map((opt) => {
+                const active = accioRegion === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setAccioRegion(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              }) : autoclawDialog ? [
+                { value: "local", label: "⚡ 一键导入本机桌面端凭据", desc: "需已在 AutoClaw 桌面端登录，自动秒级解密" },
+                // ⚠️ 国际版**不渲染**这条：它的账号是邮箱 + Z.ai OAuth 创建的、
+                //    `phone` 为 null、无绑手机端点 ⇒ 短信必然失败（详见
+                //    `autoclawSmsAvailable` 的注释）。
+                ...autoclawSmsAvailable ? [{ value: "sms", label: "📱 手机验证码快速登录", desc: "免安装桌面端，支持输入任意手机号登录" }] : []
+              ].map((opt) => {
+                const active = autoclawMode === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setAutoclawMode(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              }) : [
+                { value: "bigmodel", label: "🇨🇳 BigModel（智谱开放平台，国内）", desc: "适用于 open.bigmodel.cn 国内平台账号" },
+                { value: "zai", label: "🌐 z.ai（chat.z.ai，国际版）", desc: "适用于 z.ai 国际版账号" }
+              ].map((opt) => {
+                const active = zcodeProvider === opt.value;
+                return React3.createElement(
+                  "div",
+                  {
+                    key: opt.value,
+                    onClick: () => setZcodeProvider(opt.value),
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "10px 14px",
+                      borderRadius: "6px",
+                      border: active ? "1.5px solid var(--dsw-alias-primary, #0284c7)" : "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,0.25))",
+                      background: active ? "var(--dsw-alias-primary-tint, rgba(2, 132, 199, 0.1))" : "var(--dsw-alias-bg-layer-2, transparent)",
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
+                      userSelect: "none"
+                    }
+                  },
+                  React3.createElement("div", {
+                    style: {
+                      width: "14px",
+                      height: "14px",
+                      borderRadius: "50%",
+                      border: active ? "4px solid var(--dsw-alias-primary, #0284c7)" : "1.5px solid var(--dsw-alias-border-l2, #8b949e)",
+                      boxSizing: "border-box",
+                      flexShrink: 0,
+                      background: active ? "#fff" : "transparent"
+                    }
+                  }),
+                  React3.createElement(
+                    "div",
+                    { style: { display: "flex", flexDirection: "column" } },
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 400,
+                        color: "var(--dsw-alias-label-primary, inherit)"
+                      }
+                    }, opt.label),
+                    React3.createElement("span", {
+                      style: {
+                        fontSize: "11px",
+                        color: "var(--dsw-alias-label-tertiary, #888)",
+                        marginTop: "2px"
+                      }
+                    }, opt.desc)
+                  )
+                );
+              })
             ),
             React3.createElement(
               "div",
@@ -6896,14 +7767,20 @@ function ProviderPanel({ provider, rpcCall }) {
                 className: "dim-jh-btn",
                 onClick: () => setPendingLogin(void 0)
               }, "取消"),
-              React3.createElement("button", {
-                className: "dim-jh-btn",
-                "data-kind": "primary",
-                onClick: () => {
-                  setPendingLogin(void 0);
-                  void createAccount();
-                }
-              }, "确定并打开认证页")
+              React3.createElement(
+                "button",
+                {
+                  className: "dim-jh-btn",
+                  "data-kind": "primary",
+                  onClick: () => {
+                    setPendingLogin(void 0);
+                    void createAccount();
+                  }
+                  // ⚠ 两家（astudio / autoclaw）都在「本机导入」档时改成导入语义文案，
+                  //    其余档都是打开认证页。两个 provider 各判各的，不可合并。
+                },
+                astudioDialog && astudioLoginMethod === "local" || autoclawDialog && autoclawMode === "local" ? "确定并导入本地账号" : "确定并打开认证页"
+              )
             )
           )
         )
@@ -7080,8 +7957,16 @@ function ProviderPanel({ provider, rpcCall }) {
           // ⚠️ 仅 opencode：这两个回调只在该 provider 下传，
           // AccountCard 靠「props 存在性」决定是否渲染按钮。
           ...provider === "opencode" ? {
-            onOpenProxy: (id, current) => setProxyModal({ accountId: id, current }),
+            onOpenProxy: (id, current) => setProxyModal({ provider, accountId: id, current }),
             onRotateFingerprint: (id) => void rotateFingerprint(id)
+          } : {},
+          // ⚠️ **Gemini 也要「代理」按钮**（Gitee issue IKLTZ2）：它的全部端点
+          // 都在墙外，而插件进程**不读系统代理** ⇒ 没出口就恒连不上。
+          // ⚠️ 与 opencode **刻意分成两个回调**而不是共用：两者读不同的池字段
+          //（`geminiProxy` / `opencodeProxy`）、调不同的端点前缀、共用会让
+          // 「清掉 Gemini 的代理」连带清掉 opencode 的出口配置。
+          ...provider === "gemini" ? {
+            onOpenProxy: (id, current) => setProxyModal({ provider, accountId: id, current })
           } : {},
           // ⚠️ **本 fork 独有**（modelscope，2026-10-17）：编辑访问令牌。
           // 同样只在该 provider 下传，靠「props 存在性」决定是否渲染按钮。
@@ -7113,6 +7998,13 @@ function ProviderPanel({ provider, rpcCall }) {
         rpcCall,
         onClose: () => setShowQuota(false)
       }) : null,
+      // MiniMax 国际站分流设置弹窗（issue IKMEVG）：覆盖层，独立 state。
+      showMinimaxXff ? React3.createElement(MinimaxXffPanel, {
+        rpcCall,
+        value: minimaxXff,
+        onSaved: (next) => setMinimaxXff(next),
+        onClose: () => setShowMinimaxXff(false)
+      }) : null,
       // 出口代理弹窗（仅 opencode）：覆盖层，与上面两个弹窗各自独立 state，
       // 同时打开也只是叠加，不会互相顶掉。
       //
@@ -7123,7 +8015,7 @@ function ProviderPanel({ provider, rpcCall }) {
       // 不同，React 抛 #310（"Rendered more hooks than during the previous render"），
       // 整个设置页崩成白屏。仓库其它弹窗（ModelListPanel / BackupPanel /
       // ClineQuotaPanel）都是 `createElement` 形式，正是这个原因。
-      proxyModal ? React3.createElement(OpencodeProxyModal, {
+      proxyModal ? React3.createElement(proxyModal.provider === "gemini" ? GeminiProxyModal : OpencodeProxyModal, {
         // ⚠️ 传最小 ctx 门面而不是整个面板：弹窗只需要 rpc，
         // 这样它在单测/复用时不必拖上整个 ProviderPanel 的依赖。
         ctx: { rpc: (payload) => rpcCall(payload.method, payload.payload) },
@@ -7723,7 +8615,7 @@ function readFileAsText(file) {
 }
 function providerRowSummary(row) {
   if (row.models === null && row.accounts === null) return "状态尚未读取";
-  const models = row.models ? `模型 ${row.models.total ?? 0}（已关 ${row.models.disabled ?? 0}）` : "模型 —";
+  const models = row.models ? row.checked === false ? "模型已全部关闭" : `模型 ${row.models.total ?? 0}（已关 ${row.models.disabled ?? 0}）` : "模型 —";
   const accounts = row.accounts ? `账号 ${row.accounts.total ?? 0}（启用 ${row.accounts.enabled ?? 0}）` : "账号 —";
   return `${models} · ${accounts}`;
 }
@@ -8406,7 +9298,20 @@ function GatewayPanel({ status, busy, notice, onToggle, onReload, onClose }) {
     )
   );
 }
-var AGG_WIRED_CHANNEL_LABELS = "buddy / workbuddy / loomy / codearts / zcode / lobsterai / trae / accio / officeace / modelscope";
+var AGG_WIRED_CHANNEL_IDS = [
+  "buddy",
+  "workbuddy",
+  "loomy",
+  "codearts",
+  "zcode",
+  "lobsterai",
+  "trae",
+  "accio",
+  "officeace",
+  "modelscope",
+  "autoclaw",
+  "autoclawintl"
+];
 var AGG_EXPIRY_REPROBE_MS = 2 * 60 * 1e3;
 function AggregatePanel({ rpcCall }) {
   const [models, setModels] = React3.useState(null);
@@ -8809,13 +9714,14 @@ function AggregatePanel({ rpcCall }) {
     // ── 空态 ──
     // ⚠️ 文案**不得写死渠道数量**（那类快照必然腐坏，仓库既有教训：接入 accio/officeace
     //    后手抄名单没人回头改，只登那两家的用户会看到「请先登录」这句错话）。
-    //    这里继续复用 `AGG_WIRED_CHANNEL_LABELS`（它的集合相等由用例锁死）。
+    //    这里从 `AGG_WIRED_CHANNEL_IDS` 现查 `providerLabel()` —— id 名单的集合相等
+    //    由用例锁死；**名字不抄**（registry 是唯一真相源）⇒ 改名 / 新增均零改动。
     // ⚠️ 2026-10-15 补上「或手工打开」这条出路：未接入渠道的账号**不会**让模型自动
     //    进轮换，用户若只登录了那几家，看到的仍是空态 —— 必须告诉他第二步做什么。
     models !== null && models.length === 0 ? React3.createElement(
       "div",
       { className: "dim-jh-aggEmpty" },
-      "当前没有可聚合的模型：请先在至少一个已接入临期折算的渠道（" + AGG_WIRED_CHANNEL_LABELS + "）登录账号；或者登录其它渠道后，在本页展开模型、把候选逐条手工打开。"
+      "当前没有可聚合的模型：请先在至少一个已接入临期折算的渠道（" + AGG_WIRED_CHANNEL_IDS.map((id) => providerLabel(id)).join(" / ") + "）登录账号；或者登录其它渠道后，在本页展开模型、把候选逐条手工打开。"
     ) : null,
     // ── 模型列表（**平铺**，全局按候选渠道数降序；不再有厂商分组标题）──
     sortedModels.map((model) => renderModel(model)),
@@ -9109,7 +10015,15 @@ function JetHubPage({ rpcCall }) {
       list.map((p) => renderProviderRow(p))
     );
     return [
-      group(`已打开 (${open.length})`, sortOpenProvidersByOrder(open, providerOrder), "open"),
+      // ⚠️ 第三个实参 = **声明顺序**（注册表全量 id）。传它才能让
+      // `providerOrder` 里缺失的**新增** provider 落回它该在的位置，
+      // 而不是被缀到末尾（真实缺陷，2026-10-17 用户报障
+      // 「minimax 国际版的顺序应该在中国版下面」）。
+      group(
+        `已打开 (${open.length})`,
+        sortOpenProvidersByOrder(open, providerOrder, PROVIDERS.map((p) => p.id)),
+        "open"
+      ),
       group(`已关闭 (${closed.length})`, closed, "closed")
     ];
   };
@@ -9822,6 +10736,7 @@ function startCarrierContribution(options = {}) {
 
 // plugin-src/client/usage-badge.js
 var React4 = __toESM(require("react"), 1);
+var import_react_dom = require("react-dom");
 
 // plugin-src/client/badge-model.js
 var BADGE_PREFERENCES = Object.freeze(["auto", "subscription", "credits"]);
@@ -10103,6 +11018,39 @@ var POPOVER_ANCHOR_STYLE = Object.freeze({
   overflowY: "auto",
   zIndex: 40
 });
+var NARROW_BREAKPOINT_PX = 720;
+function isNarrowViewport() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia(`(max-width: ${NARROW_BREAKPOINT_PX}px)`).matches;
+}
+var NARROW_POPOVER_STYLE = Object.freeze({
+  position: "fixed",
+  left: 8,
+  right: 8,
+  top: "auto",
+  bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--dsh-composer-height, 152px))",
+  width: "auto",
+  maxWidth: "none",
+  maxHeight: "max(120px, calc(100dvh - 160px))",
+  overflowY: "auto",
+  zIndex: 1200
+});
+var COMPOSER_HEIGHT_FALLBACK_PX = 152;
+function readComposerHeightPx(anchor) {
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+    return COMPOSER_HEIGHT_FALLBACK_PX;
+  }
+  let node = anchor;
+  while (node !== null && node !== void 0) {
+    const raw = window.getComputedStyle(node).getPropertyValue("--dsh-composer-height").trim();
+    if (raw !== "") {
+      const parsed = Number.parseFloat(raw);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    node = node.parentElement;
+  }
+  return COMPOSER_HEIGHT_FALLBACK_PX;
+}
 var BADGE_POLL_MS = 6e4;
 var ACTIVE_PROVIDER_POLL_MS = 5e3;
 var CLAIM_NOTICE_MS = 8e3;
@@ -10247,8 +11195,10 @@ function UsageBadgeActive(props) {
     ensureJetHubStyles();
     if (!open) return;
     const element = popRef.current;
-    if (element !== null && window.getComputedStyle(element).position !== "absolute") {
-      console.warn("[jet-hub] 浮层未处于绝对定位：会撑高输入区（检查 POPOVER_ANCHOR_STYLE 是否被改坏）");
+    if (element === null) return;
+    const position = window.getComputedStyle(element).position;
+    if (position !== "absolute" && position !== "fixed") {
+      console.warn(`[jet-hub] 浮层定位异常（position=${position}）：会撑高输入区（检查 POPOVER_ANCHOR_STYLE / NARROW_POPOVER_STYLE 是否被改坏）`);
     }
   }, [open]);
   React4.useEffect(() => {
@@ -10307,7 +11257,10 @@ function UsageBadgeActive(props) {
   React4.useEffect(() => {
     if (!open) return void 0;
     const onDown = (event) => {
-      if (root.current !== null && event.target instanceof Node && !root.current.contains(event.target)) setOpen(false);
+      if (!(event.target instanceof Node)) return;
+      const insideRoot = root.current !== null && root.current.contains(event.target);
+      const insidePop = popRef.current !== null && popRef.current.contains(event.target);
+      if (!insideRoot && !insidePop) setOpen(false);
     };
     const onKey = (event) => {
       if (event.key === "Escape") setOpen(false);
@@ -10546,13 +11499,37 @@ function UsageBadgeActive(props) {
         role: failed ? "alert" : void 0
       }, failed ? readError === "" ? "用量不可用，可点右上角 ↻ 重试" : `${readError}（可点右上角 ↻ 重试）` : "正在读取用量…（首次要逐账号查询，可能要几秒）"));
       children.push(renderClaim());
-      return React4.createElement("div", { className: "dim-jh-badgePop", style: POPOVER_ANCHOR_STYLE, ref: popRef }, children);
+      return wrapPopover(children);
     }
     children.push(renderSubscription());
     children.push(renderCredits());
     children.push(renderClaim());
     children.push(renderFoot());
-    return React4.createElement("div", { className: "dim-jh-badgePop", style: POPOVER_ANCHOR_STYLE, ref: popRef }, children);
+    return wrapPopover(children);
+  }
+  function wrapPopover(children) {
+    const narrow = isNarrowViewport();
+    if (!narrow) {
+      return React4.createElement("div", {
+        className: "dim-jh-badgePop",
+        style: POPOVER_ANCHOR_STYLE,
+        ref: popRef
+      }, children);
+    }
+    const composerHeight = readComposerHeightPx(root.current);
+    const style = {
+      ...NARROW_POPOVER_STYLE,
+      // ⚠️ React 的内联样式对自定义属性（`--x`）是原样下发的，故这里可以
+      // 直接用 CSS 变量名作 key。
+      "--dsh-composer-height": `${composerHeight}px`
+    };
+    const node = React4.createElement("div", {
+      className: "dim-jh-badgePop",
+      style,
+      ref: popRef
+    }, children);
+    if (typeof document === "undefined" || document.body === null || document.body === void 0) return node;
+    return (0, import_react_dom.createPortal)(node, document.body, "jet-hub-badge-pop");
   }
   function renderPreference() {
     return React4.createElement("div", {

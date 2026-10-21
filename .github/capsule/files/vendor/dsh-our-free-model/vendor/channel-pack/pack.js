@@ -29193,6 +29193,7 @@ ${captureLines}` : capture.stack;
 import { credentialRef as credentialRef21 } from "@deepseek-ai/dsh-credentials";
 import { LlmError as LlmError28 } from "@deepseek-ai/dsh-llm";
 import Schema2 from "@deepseek-ai/schemastery";
+import { createHash as createHash16 } from "node:crypto";
 
 // vendor/channel-pack/src/llm-adapter.ts
 import {
@@ -29248,17 +29249,27 @@ var jetHubSchema = Schema.object({
   loomyPermanentLocked: Schema.boolean().default(false),
   gatewayEnabled: Schema.boolean().default(true),
   nativeWebSearchEnabled: Schema.boolean().default(true),
+  // 缺键 = 显示侧栏入口（升级前的行为是「没有这一行」，但缺键时显示它
+  // 才是用户装上就看到入口的默认；关掉是一个显式动作，见 `sanitizeSidebarEntryEnabled`）。
+  sidebarEntryEnabled: Schema.boolean().default(true),
   providerOrder: Schema.array(Schema.string()).default([]),
   // ⚠️ 用 `Schema.string()` 而不是自定义 IP 校验：schema 只负责类型，
   // 取值合法性由 `sanitizeMinimaxXff` 在**读写两侧**统一判（老契约后端不经过
   // schema，只靠那个函数；两处用同一份判据才不会漂移）。
   // 缺键 = 不附 XFF（行为与修复前逐字节一致）。
-  minimaxXff: Schema.string().default("")
+  minimaxXff: Schema.string().default(""),
+  // ⚠️ 同 `disabledModels`：用 `Schema.dict(Schema.any())`，取值合法性由
+  // `sanitizeProviderClosed` 在**读写两侧**统一判（老契约后端不经过 schema）。
+  // 缺键 = 没有任何供应商被关闭（与升级前行为一致）。
+  providerClosed: Schema.dict(Schema.any()).default({})
 });
 function sanitizeGatewayEnabled(raw) {
   return raw !== false;
 }
 function sanitizeNativeWebSearchEnabled(raw) {
+  return raw !== false;
+}
+function sanitizeSidebarEntryEnabled(raw) {
   return raw !== false;
 }
 function sanitizeMinimaxXff(raw) {
@@ -29327,6 +29338,14 @@ function sanitizeDisabledModels(raw) {
       if (flag === true) perProvider[modelId] = true;
     }
     if (Object.keys(perProvider).length > 0) result[provider] = perProvider;
+  }
+  return result;
+}
+function sanitizeProviderClosed(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const result = {};
+  for (const [provider, flag] of Object.entries(raw)) {
+    if (flag === true) result[provider] = true;
   }
   return result;
 }
@@ -29478,10 +29497,14 @@ var SettingsStore = class {
       gatewayEnabled: sanitizeGatewayEnabled(value.gatewayEnabled),
       // 老文档没这个键 → 启用（原生搜索本就是新功能，默认开启才符合「装上就能用」）。
       nativeWebSearchEnabled: sanitizeNativeWebSearchEnabled(value.nativeWebSearchEnabled),
+      // 老文档没这个键 → 显示侧栏入口（见 `sanitizeSidebarEntryEnabled` 的方向说明）。
+      sidebarEntryEnabled: sanitizeSidebarEntryEnabled(value.sidebarEntryEnabled),
       // 老文档没这个键 → 空数组（未自定义），展示侧按声明顺序渲染。
       providerOrder: sanitizeProviderOrder(value.providerOrder),
       // 老文档没这个键 ⇒ `undefined` ⇒ 不附 XFF（与修复前行为逐字节一致）。
-      minimaxXff: sanitizeMinimaxXff(value.minimaxXff)
+      minimaxXff: sanitizeMinimaxXff(value.minimaxXff),
+      // 老文档没这个键 → 空表（没有任何供应商被关闭），与升级前行为一致。
+      providerClosed: sanitizeProviderClosed(value.providerClosed)
     };
   }
   async save(state) {
@@ -29520,13 +29543,24 @@ var SettingsStore = class {
       //    探针实测（老契约后端）：`setNativeWebSearchEnabled(false)` 的
       //    replace 载荷里根本没有本键，新实例读回 `true`。
       nativeWebSearchEnabled: state.nativeWebSearchEnabled !== false,
+      // ⚠️ **必须带上本键**（与 `nativeWebSearchEnabled` 同因，是同一个
+      //    `replace` 整体替换陷阱的第二个受害者）：漏键会让用户明确关闭的
+      //    「侧栏入口」在**任何**一次账号/黑名单/网关/顺序写入时被抹掉，
+      //    重启后入口**静默回来**（用户本以为关掉了它）。
+      sidebarEntryEnabled: state.sidebarEntryEnabled !== false,
       // 顺序丢失只会回到声明顺序（可逆，重拖一次即恢复），同理接受丢失。
       providerOrder: state.providerOrder ?? [],
       // ⚠️ **必须带上本键**：`replace` 是整体替换语义 ⇒ 漏键会让用户设置的
       //    XFF 在**任何**一次账号/黑名单/网关/顺序写入时被抹掉，
       //    进而「国际站明明能用却突然又开始 307」—— 症状极难对应到本键。
       //    缺键/空串一律写 `''`（= 不附头），不会写出 `undefined` 空洞。
-      minimaxXff: sanitizeMinimaxXff(state.minimaxXff) ?? ""
+      minimaxXff: sanitizeMinimaxXff(state.minimaxXff) ?? "",
+      // ⚠️⚠️ **必须带上本键**（与上面几个新键逐条同因）：`replace` 是**整体替换**
+      //    语义 ⇒ 漏键会让「供应商关闭意图」**永不落盘**，且**任何**账号 / 黑名单 /
+      //    网关 / 顺序写入都会顺带把它抹掉 ⇒ 重启后该供应商**静默回到「已打开」**
+      //    （Gitee issue IKP8OF 原样复发，且用户无从察觉自己「又打开过」它）。
+      //    缺键 / 脏值一律写 `{}`，不会写出 `undefined` 空洞。
+      providerClosed: sanitizeProviderClosed(state.providerClosed)
     });
   }
 };
@@ -29593,7 +29627,14 @@ var REF_PREFIX_TO_PROVIDER = [
   // ⚠️ 第 18 个 provider（astudio，2026-10-16）—— 同款坑第 **六** 次。
   // 漏加 = `ASTUDIO_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
   //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新导入）。
-  ["ASTUDIO", "astudio"]
+  ["ASTUDIO", "astudio"],
+  // ⚠️ 第 19 个 provider（autoclawintl，2026-10-20）—— 同款坑第 **七** 次。
+  // 漏加 = `AUTOCLAWINTL_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
+  //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新导入）。
+  // ⚠️ 与 `AUTOCLAW` 是**超串关系**（`AUTOCLAWINTL` 以 `AUTOCLAW` 开头）——
+  //    顺序由 `ACCOUNT_REF_RE` 内部的**长度降序排序**保证，与本数组书写顺序无关
+  //    （与 `MINIMAX` / `MINIMAXINTL` 同型）。
+  ["AUTOCLAWINTL", "autoclawintl"]
 ];
 var ACCOUNT_REF_RE = new RegExp(
   // ⚠️ 按前缀长度**降序**排列：`QODERCN` 必须排在 `QODER` 之前。虽然正则的
@@ -29675,10 +29716,14 @@ var FileStore = class {
         gatewayEnabled: sanitizeGatewayEnabled(value.gatewayEnabled),
         // 老文档没这个键 → 启用，与升级前行为一致。
         nativeWebSearchEnabled: sanitizeNativeWebSearchEnabled(value.nativeWebSearchEnabled),
+        // 老文档没这个键 → 显示侧栏入口（与 `SettingsStore` 同一判据）。
+        sidebarEntryEnabled: sanitizeSidebarEntryEnabled(value.sidebarEntryEnabled),
         // 老文档没这个键 → 空数组（未自定义），展示侧按声明顺序渲染。
         providerOrder: sanitizeProviderOrder(value.providerOrder),
         // 老文档没这个键 ⇒ `undefined` ⇒ 不附 XFF（与修复前行为逐字节一致）。
-        minimaxXff: sanitizeMinimaxXff(value.minimaxXff)
+        minimaxXff: sanitizeMinimaxXff(value.minimaxXff),
+        // 老文档没这个键 → 空表（没有任何供应商被关闭），与升级前行为一致。
+        providerClosed: sanitizeProviderClosed(value.providerClosed)
       };
     } catch (error) {
       this.logger?.warn(`[jet-hub] \u8BFB\u53D6 ${this.path} \u5931\u8D25\uFF0C\u672C\u6B21\u4EE5\u7A7A\u5217\u8868\u542F\u52A8: ${String(error)}`);
@@ -29728,10 +29773,14 @@ var FileStore = class {
         gatewayEnabled: true,
         // 同上：恢复出的文档不含原生搜索开关信息 → 启用（与全新安装一致）。
         nativeWebSearchEnabled: true,
+        // 同上：恢复出的文档不含侧栏入口开关信息 → 显示入口（与全新安装一致）。
+        sidebarEntryEnabled: true,
         // 凭据文件里也没有顺序信息 → 空数组（未自定义，与全新安装一致）。
         providerOrder: [],
         // 凭据文件里没有 XFF 设置 → 不附头（与全新安装一致）。
-        minimaxXff: void 0
+        minimaxXff: void 0,
+        // 凭据文件里也没有关闭意图 → 空表（与全新安装一致）。
+        providerClosed: {}
       };
       try {
         this.write(state);
@@ -30287,6 +30336,18 @@ var AccountPool = class {
    */
   modelCache = {};
   /**
+   * **供应商关闭意图**的权威进程内副本（Gitee issue IKP8OF）。
+   *
+   * ⚠️ 与 {@link modelCache} **语义不同、不可合并**：黑名单是「这个模型被关着」，
+   * 本表是「用户要求这个**供应商**整体关着」。二者由 {@link disabledModelsFor}
+   * 双腿取或后对消费者**同形**（都表现为「这些 id 不可调用」），但判据与生命周期
+   * 完全不同：黑名单会被逐条打开，而本表只在「打开整个供应商」时才清除。
+   *
+   * 详见 `jet-hub-store.ts` 的 `ProviderClosedMap` 注释（含为什么它**不能**
+   * 单独充当 `provider.status.closed` 的权威）。
+   */
+  providerClosedCache = {};
+  /**
    * 聚合「拒绝轮换」表的**权威进程内副本**（与 {@link cache} / {@link modelCache} 同理）。
    *
    * ⚠️ 与 {@link modelCache} **语义不同、不可合并**：黑名单是「关闭这个模型」（它从
@@ -30352,6 +30413,16 @@ var AccountPool = class {
    * 唯一后果是回到原生搜索，用户再关一次即可。
    */
   nativeWebSearchCache = true;
+  /**
+   * 「侧栏入口」开关的进程内副本（`false` = 主导航不显示 Jet Hub 入口）。
+   *
+   * 缺键语义是**显示**（与 {@link nativeWebSearchCache} 同一方向）：老文档没有
+   * 本键时保持入口可见，不会因一次读取失败而让用户以为这个功能被删掉了。
+   *
+   * ⚠️ 与 {@link gatewayEnabledCache} 同级、**不需要**独立文档：丢失本键的
+   * 唯一后果是入口回到默认显示，用户再关一次即可（可逆）。
+   */
+  sidebarEntryCache = true;
   /**
    * 供应商自定义显示顺序（「供应商开关」弹窗拖拽排序）的进程内副本。
    *
@@ -30447,8 +30518,10 @@ var AccountPool = class {
       this.aggregateOrderModeCache = state.aggregateOrderMode === "manual" ? "manual" : "expiry";
       this.gatewayEnabledCache = state.gatewayEnabled !== false;
       this.nativeWebSearchCache = state.nativeWebSearchEnabled !== false;
+      this.sidebarEntryCache = state.sidebarEntryEnabled !== false;
       this.providerOrderCache = state.providerOrder ?? [];
       this.minimaxXffCache = sanitizeMinimaxXff(state.minimaxXff);
+      this.providerClosedCache = sanitizeProviderClosed(state.providerClosed);
     }
     this.loadLocks(state);
   }
@@ -30536,12 +30609,20 @@ var AccountPool = class {
         // 分两次快照会让同一份文档里的字段互相矛盾。
         gatewayEnabled: this.gatewayEnabledCache,
         nativeWebSearchEnabled: this.nativeWebSearchCache,
+        // ⚠️ **必须带上本键**（与 `nativeWebSearchEnabled` 同一个整体替换陷阱）：
+        //    漏键会让用户关掉的侧栏入口在**任何**一次账号/黑名单/网关/顺序写入时
+        //    被静默清掉，重启后入口又回来了。
+        sidebarEntryEnabled: this.sidebarEntryCache,
         providerOrder: this.providerOrderCache,
         // ⚠️ **必须带上本键**（同 `nativeWebSearchEnabled` 的坑）：
         //    `write` 是整体替换语义 ⇒ 漏键会让用户设的 XFF 在**任何**一次
         //    改账号 / 改黑名单 / 改网关 / 拖顺序时被静默清掉，
         //    症状是「国际站明明设好了 XFF，过一阵又开始 307」。
-        minimaxXff: this.minimaxXffCache
+        minimaxXff: this.minimaxXffCache,
+        // ⚠️⚠️ **必须与上面几份取自同一时刻的快照**（`replace` 是整体替换语义）：
+        //    漏键 ⇒ 关闭意图**永不落盘**，且任何账号/黑名单写入都会把它抹掉
+        //    ⇒ 重启后供应商静默回到「已打开」（Gitee issue IKP8OF 原样复发）。
+        providerClosed: this.providerClosedCache
       });
     });
     this.storeChain = next.catch(() => {
@@ -30624,6 +30705,76 @@ var AccountPool = class {
   listDisabledModels(provider) {
     this.ensureLoaded();
     return { ...this.modelCache[provider] ?? {} };
+  }
+  /**
+   * 该 provider 是否处于「**用户要求整体关闭**」态（Gitee issue IKP8OF）。
+   *
+   * ## ⚠️⚠️ 这是「关闭**意图**」，不是「当前是否真的全关」——两个判据必须分开
+   *
+   * | 判据 | 含义 | 谁用 |
+   * |---|---|---|
+   * | 本方法 | 用户点过「关闭供应商」，且此后没再打开过它 | 过滤（选择器 / 路由）、`provider.status` |
+   * | `disabled === total` | 目录里**每一个**模型都在黑名单里 | 兜底（用户逐条关光也算关闭） |
+   *
+   * 二者取**或**才是 `closed`（见 `provider.status`）。只读本方法会漏掉
+   * 「用户逐条关光」（既有语义，有既有用例锁定）；只读派生判据会漏掉
+   * 「关闭后目录继续变长」（本 issue）。
+   *
+   * ## 为什么它是修「新模型仍可选」的关键
+   *
+   * 关闭供应商时只写入了**当时目录**的黑名单；目录随后变长，新 id 不在黑名单里
+   * ⇒ 它们**可被选中**。本意图表让「该 provider 整体关闭」这件事不再依赖
+   * 目录快照 ⇒ 各适配器的 `listModels` 见它即返回 `[]`，选择器里**一条都不出现**。
+   *
+   * ⚠️ **纯内存同步读、零 IO**：本方法在 `provider.status`（设置页挂载时对
+   * 每个供应商各调一次）与每次 `listModels` 的路径上，不能有 await 或磁盘读。
+   */
+  providerClosedFor(provider) {
+    this.ensureLoaded();
+    return this.providerClosedCache[provider] === true;
+  }
+  /**
+   * 设置/清除某 provider 的「整体关闭」意图（Gitee issue IKP8OF）。
+   *
+   * ⚠️ **只动意图，不动黑名单**：黑名单由 `provider.setEnabled` 按固定顺序
+   * 显式处理（先关模型、再停账号）。本方法只回答「用户要求这个供应商关着吗」。
+   *
+   * ⚠️ 幂等且无变更不落盘（与 `setModelsDisabled` 的「空列表不落盘」同精神）：
+   * 重复点同一个开关不该产生一次文档重写。
+   */
+  async setProviderClosed(provider, closed) {
+    this.ensureLoaded();
+    if (this.providerClosedCache[provider] === true === closed) return;
+    const next = { ...this.providerClosedCache };
+    if (closed) next[provider] = true;
+    else delete next[provider];
+    this.providerClosedCache = next;
+    if (this.store.kind === "memory") {
+      this.ctx.logger?.warn?.("[jet-hub] \u65E0\u6301\u4E45\u5316\u540E\u7AEF\uFF0C\u4F9B\u5E94\u5546\u5173\u95ED\u72B6\u6001\u672A\u843D\u76D8");
+      return;
+    }
+    await this.queueStoreSave();
+  }
+  /**
+   * 清除「整体关闭」意图 —— **任何**打开方向的操作都必须走这里。
+   *
+   * ## ⚠️⚠️ 为什么必须在「打开」时清除，否则用户点不动
+   *
+   * 意图为 `true` 时，全部模型都被过滤掉（`listModels` 返回 `[]`）、设置页里
+   * 每条模型开关也显示为「已关闭」。此时用户在模型列表里打开**某一个**模型，
+   * 若意图不清除 ⇒ 该模型仍被整体关闭拦掉 ⇒ **点击看起来毫无效果**，
+   * 而界面也不报错。这与本仓库反复修的「开关点了没反应」同型。
+   *
+   * ⇒ 语义定为：**「打开任意一个模型」= 用户想让这个供应商可用** ⇒ 清除意图，
+   * 之后由派生判据（黑名单是否覆盖全目录）如实反映「还剩几个关着」。
+   *
+   * ⚠️ 三个打开入口（`setModelDisabled(false)` / `clearModelsDisabled` /
+   * `clearDisabledModels`）都在**本类内部**调用它 —— 调用方（RPC 层）不需要
+   * 记得清，这正是「收口到一个实现」的目的。
+   */
+  async clearProviderClosed(provider) {
+    if (this.providerClosedCache[provider] !== true) return;
+    await this.setProviderClosed(provider, false);
   }
   /**
    * 聚合「拒绝轮换」表的**只读快照**（供适配器与设置面板读取）。
@@ -30873,6 +31024,35 @@ var AccountPool = class {
     await this.queueStoreSave();
   }
   /**
+   * 「侧栏入口」当前是否启用（`false` = 主导航不显示 Jet Hub 入口）。
+   *
+   * 缺键语义为**显示**（见 {@link sidebarEntryCache}）。
+   *
+   * ⚠️ 调用方（客户端在 `apply` 里注册侧栏行前）**必须每次现读**，不能缓存
+   * 返回值：用户随时可能在 Jet Hub 面板里切换，而客户端只在启动时读一次。
+   */
+  sidebarEntryEnabled() {
+    this.ensureLoaded();
+    return this.sidebarEntryCache;
+  }
+  /**
+   * 打开/关闭「侧栏入口」并落盘。
+   *
+   * 关闭后主导航里不再有 Jet Hub 那一行，进入路径只剩「设置 → Jet Hub」；
+   * 不影响 Jet Hub 页面本身的任何功能（它仍在 `settings.section` 里注册）。
+   */
+  async setSidebarEntryEnabled(enabled) {
+    this.ensureLoaded();
+    if (this.sidebarEntryCache === enabled) return;
+    this.sidebarEntryCache = enabled;
+    this.loaded = true;
+    if (this.store.kind === "memory") {
+      this.ctx.logger?.warn?.("[jet-hub] \u65E0\u6301\u4E45\u5316\u540E\u7AEF\uFF0C\u4FA7\u680F\u5165\u53E3\u5F00\u5173\u4EC5\u672C\u6B21\u4F1A\u8BDD\u6709\u6548");
+      return;
+    }
+    await this.queueStoreSave();
+  }
+  /**
    * 读取供应商自定义显示顺序（进程内权威副本）。
    *
    * 空数组 = 用户尚未自定义（或老文档没有该键），展示侧按声明顺序渲染。
@@ -30949,6 +31129,7 @@ var AccountPool = class {
     if (Object.keys(perProvider).length === 0) delete next[provider];
     else next[provider] = perProvider;
     await this.writeModels(next);
+    if (!disabled) await this.clearProviderClosed(provider);
   }
   /**
    * 批量关闭一批模型（Jet Hub 模型列表的「关闭全部」）。
@@ -30987,7 +31168,10 @@ var AccountPool = class {
     if (modelIds.length === 0) return;
     this.ensureLoaded();
     const perProvider = this.modelCache[provider];
-    if (perProvider === void 0) return;
+    if (perProvider === void 0) {
+      await this.clearProviderClosed(provider);
+      return;
+    }
     const nextPerProvider = { ...perProvider };
     let changed = false;
     for (const id of modelIds) {
@@ -30996,11 +31180,15 @@ var AccountPool = class {
         changed = true;
       }
     }
-    if (!changed) return;
+    if (!changed) {
+      await this.clearProviderClosed(provider);
+      return;
+    }
     const next = { ...this.modelCache };
     if (Object.keys(nextPerProvider).length === 0) delete next[provider];
     else next[provider] = nextPerProvider;
     await this.writeModels(next);
+    await this.clearProviderClosed(provider);
   }
   /**
    * 批量启用/停用某 provider 的**全部**账号（Jet Hub 左侧供应商一键开关）。
@@ -31063,10 +31251,108 @@ var AccountPool = class {
    */
   async clearDisabledModels(provider) {
     this.ensureLoaded();
-    if (this.modelCache[provider] === void 0) return;
+    if (this.modelCache[provider] === void 0) {
+      await this.clearProviderClosed(provider);
+      return;
+    }
     const next = { ...this.modelCache };
     delete next[provider];
     await this.writeModels(next);
+    await this.clearProviderClosed(provider);
+  }
+  /**
+   * 一次性写入「模型黑名单 + 供应商关闭意图」并落盘**一次**（Gitee issue IKP8OF）。
+   *
+   * ## ⚠️⚠️ 为什么必须合并成一次落盘（真实窗口，已实测）
+   *
+   * `provider.setEnabled(false)` 的语义是「关掉全部模型 + 记下关闭意图」。
+   * 若分两次落盘（先 `setModelsDisabled`、再 `setProviderClosed`），第二次失败时：
+   *
+   * ```
+   * 磁盘: disabledModels = {buddy:{a:true,b:true}}   ← 已写
+   * 磁盘: providerClosed  = {}                        ← 未写（失败）
+   * 内存: providerClosedFor = true                    ← 内存已是 true，本次会话看起来正常
+   * ```
+   *
+   * 后果是**重启后静默复发**：意图丢了 ⇒ 只剩派生判据 ⇒ 目录一变长就翻回
+   * 「已打开」（正是本 issue 的症状），而用户完全不知道「上次关闭其实只成了一半」。
+   *
+   * ⇒ 两者必须**同一份快照、同一次 `save`**：要么都落盘、要么都不落盘。
+   * 这与 `queueStoreSave` 的既有约定（账号 / 黑名单 / 各开关**取自同一时刻**）
+   * 完全同源 —— 那份注释里已写明「分两次快照会让同一份文档里的字段互相矛盾」。
+   *
+   * ## 参数语义：**合并**（与 `setModelsDisabled` 同口径）
+   *
+   * 传「要追加关闭的 id 列表」而不是整张表 —— 这样调用方不必先读全表再拼，
+   * 少一次「读 → 拼 → 写」的往返，也就少一个读到的快照过期的时间窗。
+   *
+   * @param provider - provider id
+   * @param modelIds - 要**追加**进黑名单的 id（已有的关闭项不受影响）
+   * @param closed - 目标关闭意图（`true` 写入 / `false` 删除该键）
+   */
+  async writeModelsWithProviderClosed(provider, modelIds, closed) {
+    this.ensureLoaded();
+    const next = { ...this.modelCache };
+    if (modelIds.length > 0) {
+      const perProvider = { ...next[provider] ?? {} };
+      for (const id of modelIds) perProvider[id] = true;
+      next[provider] = perProvider;
+    }
+    this.modelCache = next;
+    const nextClosed = { ...this.providerClosedCache };
+    if (closed) nextClosed[provider] = true;
+    else delete nextClosed[provider];
+    this.providerClosedCache = nextClosed;
+    this.loaded = true;
+    if (this.store.kind === "memory") {
+      this.ctx.logger?.warn?.("[jet-hub] \u65E0\u6301\u4E45\u5316\u540E\u7AEF\uFF0C\u6A21\u578B\u9ED1\u540D\u5355\u4E0E\u5173\u95ED\u72B6\u6001\u53D8\u66F4\u672A\u843D\u76D8");
+      return;
+    }
+    await this.queueStoreSave();
+  }
+  /**
+   * 一次性**清空**某 provider 的黑名单**并**清除「关闭意图」并落盘**一次**
+   *（Gitee issue IKP8OF，「打开供应商」专用）。
+   *
+   * ## ⚠️⚠️ 为什么必须合并（对抗审计打穿的真实窗口）
+   *
+   * 「打开供应商」原先走两步：`clearDisabledModels`（save #1）→
+   * `setProviderClosed(false)`（save #2）。实测 `saves=2`，两次 `replace` 之间
+   * 磁盘上是「**黑名单空 + 意图真**」。若第二次失败或进程被杀：
+   *
+   * ```
+   * 磁盘: disabledModels = {}            ← 已清
+   * 磁盘: providerClosed  = {buddy:true} ← 仍是「已关闭」
+   * 内存: providerClosedFor = false      ← 本次会话看起来正常
+   * ```
+   *
+   * ⇒ **重启后该供应商的模型选择器恒空**（意图真 + 黑名单空 ⇒ `listModels` 返回
+   * `[]`、`provider.status` 报 `closed:true`），而设置页黑名单里一条关闭项都没有
+   * ⇒ 用户无从归因，只能手工编辑 `state.json`。
+   *
+   * ⚠️ 危险的那条路径恰好是**最常见**的一条：只有「黑名单本来就空」时
+   * `clearDisabledModels` 才会一次写完（它的早退分支）；黑名单非空（= 用户真的
+   * 关过东西、现在要打开）时必然两次。
+   *
+   * ⚠️ 语义与 {@link clearDisabledModels} **逐字相同**（清空该 provider 的全部键，
+   * 含历史死键），只是把「清意图」并进同一次落盘。
+   */
+  async clearModelsWithProviderClosed(provider) {
+    this.ensureLoaded();
+    const next = { ...this.modelCache };
+    const hadModels = next[provider] !== void 0;
+    delete next[provider];
+    const nextClosed = { ...this.providerClosedCache };
+    delete nextClosed[provider];
+    const hadIntent = this.providerClosedCache[provider] === true;
+    if (!hadModels && !hadIntent) return;
+    this.modelCache = next;
+    this.providerClosedCache = nextClosed;
+    if (this.store.kind === "memory") {
+      this.ctx.logger?.warn?.("[jet-hub] \u65E0\u6301\u4E45\u5316\u540E\u7AEF\uFF0C\u6A21\u578B\u9ED1\u540D\u5355\u4E0E\u5173\u95ED\u72B6\u6001\u53D8\u66F4\u672A\u843D\u76D8");
+      return;
+    }
+    await this.queueStoreSave();
   }
   /** 持久化模型黑名单（同时更新进程内权威副本）。 */
   async writeModels(disabledModels) {
@@ -31361,6 +31647,93 @@ var AccountPool = class {
     } catch {
     }
     await this.writeAccounts(this.readAccounts().filter((a) => a.id !== id));
+  }
+  /**
+   * **启动自愈**：按「身份字段」清理同一账号的重复条目（只留一条）。
+   *
+   * ## 为什么需要它（2026-10-19 真机报障）
+   *
+   * AutoClaw 的 `access_token` 是 JWT、**每次登录/续期都轮换**，而早期实现
+   * 拿它当身份判据 ⇒ 同一账号每续一次就被当成新账号。用户面板里同一个手机号
+   * 出现了 **3 次**，积分被**重复累加**：
+   *
+   * ```
+   * 合计 62416 积分
+   *   187****9406  20838
+   *   187****9406  20789
+   *   187****9406  20789
+   * ```
+   *
+   * 判据侧已修（改用稳定的 `user_id`，见 `autoclawIdentityOf`），但**池里已有的
+   * 重复条目不会自己消失** ⇒ 用户仍看到 62416。本方法负责一次性清掉存量。
+   *
+   * ## 保留哪一条
+   *
+   * 保留**凭据最新**的那一条（`expiresAt` 最大者）；`expiresAt` 相同则保留
+   * **先出现**的（与 `writeAccounts` 的「保留首次」同口径，保证确定性）。
+   * ⚠️ 不按 `id` 字典序 —— 那与「哪个账号能续期」无关。
+   *
+   * ## 边界
+   *
+   * - 身份字段缺失的条目**跳过**（无法判断，不误删）；
+   * - 只处理传入的 `provider`，绝不跨渠道合并；
+   * - 每次只删「确认同身份且非保留项」的条目，删除走 {@link removeAccount}
+   *   （它会一并 `credentials.unset`，不留孤儿凭据）；
+   * - 失败不抛：自愈是**尽力而为**，不能因此让插件启动失败。
+   *
+   * @param provider - provider id（如 `autoclaw`）。
+   * @param field - 凭据里作身份判据的字段名（如 `user_id`）。
+   * @returns 实际删除的条目数。
+   */
+  async dedupeByCredentialField(provider, field) {
+    try {
+      const entries = this.readAccounts().filter((a) => a.provider === provider);
+      if (entries.length < 2) return 0;
+      const byIdentity = /* @__PURE__ */ new Map();
+      for (const entry of entries) {
+        const resolved = await this.resolveCredentialByRef(entry.credentialRef);
+        if (resolved === void 0) continue;
+        const raw = resolved[field];
+        const identity = typeof raw === "string" ? raw.trim() : typeof raw === "number" && Number.isFinite(raw) ? String(raw) : "";
+        if (identity === "") continue;
+        const list = byIdentity.get(identity);
+        if (list === void 0) byIdentity.set(identity, [entry]);
+        else list.push(entry);
+      }
+      const toRemove = [];
+      for (const [identity, list] of byIdentity) {
+        if (list.length < 2) continue;
+        let keep = list[0];
+        for (const candidate of list.slice(1)) {
+          const keepAt = keep.expiresAt ?? 0;
+          const candAt = candidate.expiresAt ?? 0;
+          if (candAt > keepAt) keep = candidate;
+        }
+        for (const entry of list) {
+          if (entry.id !== keep.id) toRemove.push(entry.id);
+        }
+        this.ctx.logger?.warn?.(
+          `[jet-hub] ${provider} \u8D26\u53F7\u53BB\u91CD\uFF1A${field}=${identity} \u6709 ${list.length} \u6761\uFF0C\u4FDD\u7559 ${keep.id}\uFF0C\u5220\u9664 ${list.length - 1} \u6761`
+        );
+      }
+      let removed = 0;
+      for (const id of toRemove) {
+        try {
+          await this.removeAccount(id);
+          removed += 1;
+        } catch (error) {
+          this.ctx.logger?.warn?.(
+            `[jet-hub] ${provider} \u8D26\u53F7\u53BB\u91CD\uFF1A\u5220\u9664 ${id} \u5931\u8D25\uFF08\u7EE7\u7EED\u5904\u7406\u5176\u4F59\u6761\u76EE\uFF09\uFF1A` + (error instanceof Error ? error.message : String(error))
+          );
+        }
+      }
+      return removed;
+    } catch (error) {
+      this.ctx.logger?.warn?.(
+        `[jet-hub] ${provider} \u8D26\u53F7\u81EA\u6108\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u542F\u52A8\uFF09\uFF1A` + (error instanceof Error ? error.message : String(error))
+      );
+      return 0;
+    }
   }
   /**
    * 重排某 provider 下账号的顺序（Jet Hub 拖拽排序）。
@@ -32157,6 +32530,7 @@ var AccountPool = class {
     }
     this.cache = next;
     this.modelCache = sanitizeDisabledModels(disabledModels);
+    this.providerClosedCache = {};
     if (permanentLocks !== void 0) {
       this.permanentLockCache = sanitizePermanentLocks(permanentLocks);
     }
@@ -32215,8 +32589,10 @@ function createModelCatalog(deps, config) {
   return {
     async listModels(provider) {
       if (!await providerCatalogVisible(deps.accountPool, providerId)) return [];
+      const closedWholeProvider = deps.accountPool?.providerClosedFor?.(providerId) === true;
       const all = await config.loadCatalog();
       cached2 = all;
+      if (closedWholeProvider) return [];
       const disabled = deps.accountPool?.disabledModelsFor(providerId);
       const listed = disabled === void 0 || disabled.size === 0 ? all : all.filter((entry) => !disabled.has(entry.id));
       return listed.map(toModelInfo);
@@ -32256,8 +32632,14 @@ function createModelCatalog(deps, config) {
         const unknownModalities = config.unknownModelInputModalities?.();
         if (unknownModalities !== void 0) resolved.inputModalities = unknownModalities;
       }
-      if (entry?.contextWindow !== void 0 && entry.contextWindow > 0) {
-        resolved.context = { contextWindow: entry.contextWindow };
+      const knownContextWindow = entry?.contextWindow;
+      if (knownContextWindow !== void 0 && knownContextWindow > 0) {
+        resolved.context = { contextWindow: knownContextWindow };
+      } else if (entry === void 0) {
+        const fallbackContextWindow = config.unknownModelContextWindow?.(model);
+        if (fallbackContextWindow !== void 0 && Number.isInteger(fallbackContextWindow) && fallbackContextWindow > 0) {
+          resolved.context = { contextWindow: fallbackContextWindow };
+        }
       }
       const maxTokens = entry?.maxTokens;
       if (maxTokens !== void 0 && Number.isSafeInteger(maxTokens) && maxTokens > 0) {
@@ -32540,7 +32922,7 @@ function normalizeModelId(id) {
   }
   return id;
 }
-function parseModelInfo(m, seen) {
+function parseModelInfo(m, seen, nowMs) {
   const rawId = m["model_id"];
   if (typeof rawId !== "string" || rawId.length === 0) return void 0;
   const id = normalizeModelId(rawId);
@@ -32549,7 +32931,52 @@ function parseModelInfo(m, seen) {
   const name2 = typeof rawName === "string" && rawName.length > 0 ? normalizeModelId(rawName) : id;
   if (seen.has(id)) return void 0;
   seen.add(id);
-  return { id, name: name2 };
+  return { id, name: name2, ...readRateLabel(m, nowMs) };
+}
+function readRateLabel(m, nowMs = Date.now()) {
+  const credit = m["credit"];
+  if (!Array.isArray(credit) || credit.length === 0) return {};
+  const slots = m["time_slots"];
+  const picked = pickActiveCredit(credit, slots, nowMs);
+  if (picked === void 0) return {};
+  const display = picked["ratio_display"];
+  if (typeof display !== "string" || display.length === 0) return {};
+  return { rateLabel: display };
+}
+function pickActiveCredit(credit, slots, nowMs) {
+  const entries = credit.filter(
+    (c) => typeof c === "object" && c !== null
+  );
+  if (entries.length === 0) return void 0;
+  if (typeof slots !== "object" || slots === null) return entries[0];
+  for (const entry of entries) {
+    const slotId = entry["time_slot_id"];
+    if (typeof slotId !== "string") continue;
+    const slot2 = slots[slotId];
+    if (typeof slot2 !== "object" || slot2 === null) continue;
+    if (isTimeSlotActive(slot2, nowMs)) return entry;
+  }
+  return entries[0];
+}
+function isTimeSlotActive(slot2, nowMs) {
+  const schedule = slot2["schedule"];
+  if (typeof schedule !== "string" || schedule.length === 0) return false;
+  const parts = schedule.trim().split(/\s+/);
+  if (parts.length < 3) return false;
+  const hour = Number(parts[2]);
+  const minute = Number(parts[1]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+  const duration = Number(slot2["duration"]);
+  const unit = slot2["timeunit"];
+  if (!Number.isFinite(duration) || duration <= 0) return false;
+  if (unit !== "hour") return false;
+  const shanghaiMs = nowMs + 8 * 36e5;
+  const dayMinutes = Math.floor(shanghaiMs / 6e4) % (24 * 60);
+  const startMinutes = hour * 60 + minute;
+  const windowMinutes = duration * 60;
+  const offset = (dayMinutes - startMinutes + 24 * 60) % (24 * 60);
+  return offset < windowMinutes;
 }
 function extractJsonArray(text, path4) {
   try {
@@ -32584,7 +33011,7 @@ async function fetchSignedGet(fetcher, url, ak, sk, st, extraUnsignedHeaders) {
     return void 0;
   }
 }
-async function fetchCodeArtsRemoteModels(credential, fetcher = fetch, outcome) {
+async function fetchCodeArtsRemoteModels(credential, fetcher = fetch, outcome, nowMs = Date.now()) {
   const { access_key_id: ak, secret_access_key: sk, security_token: st } = credential;
   if (!ak || !sk) {
     if (outcome !== void 0) {
@@ -32604,7 +33031,7 @@ async function fetchCodeArtsRemoteModels(credential, fetcher = fetch, outcome) {
       if (typeof item === "object" && item !== null) {
         const entry = item;
         const rawId = typeof entry["model_id"] === "string" ? entry["model_id"] : "";
-        const mi = parseModelInfo(entry, seen);
+        const mi = parseModelInfo(entry, seen, nowMs);
         if (mi) {
           if (rawId.length > 0 && normalizeModelId(rawId) === rawId) benefitIds.push(mi.id);
           models.push(mi);
@@ -32622,7 +33049,7 @@ async function fetchCodeArtsRemoteModels(credential, fetcher = fetch, outcome) {
   if (snapArr !== void 0) {
     for (const item of snapArr) {
       if (typeof item === "object" && item !== null) {
-        const mi = parseModelInfo(item, seen);
+        const mi = parseModelInfo(item, seen, nowMs);
         if (mi) models.push(mi);
       }
     }
@@ -34953,12 +35380,27 @@ var DEFAULT_MODELS = [
   "deepseek-v4.1-flash"
 ];
 var CONTEXT_WINDOWS = /* @__PURE__ */ new Map([
-  ["GLM-5.2", 202752],
+  ["GLM-5.2", 1048576],
+  ["glm-5.3", 1048576],
   ["glm-5.3-flash", 1048576],
+  ["glm-5.2-sft-harmony", 202752],
+  ["openpangu-2.0-flash", 524288],
+  ["openpangu-2.0-pro", 524288],
   ["deepseek-v4-flash", 1048576],
   ["deepseek-v4-pro", 1048576],
-  ["deepseek-v4.1-flash", 1e6]
+  ["deepseek-v4.1-flash", 1048576]
 ]);
+var CODEARTS_FALLBACK_CONTEXT_WINDOW = 524288;
+function codeartsContextWindow(modelId) {
+  const known = CONTEXT_WINDOWS.get(modelId);
+  return known !== void 0 && known > 0 ? known : CODEARTS_FALLBACK_CONTEXT_WINDOW;
+}
+function codeartsRateSuffix(display) {
+  if (typeof display !== "string") return void 0;
+  const m = /^\s*(\d+(?:\.\d+)?)\s*x\s*$/i.exec(display);
+  if (m === null) return void 0;
+  return `x${m[1]}`;
+}
 var CODEARTS_MAX_OUTPUT_TOKENS = 65536;
 function clampCodeArtsMaxTokens(value) {
   if (value === void 0 || !Number.isFinite(value)) return void 0;
@@ -35184,6 +35626,24 @@ var CodeArtsAdapter = class extends LlmAdapter {
           defaultEffort: ReasoningEffortId(CODEARTS_DEFAULT_EFFORT)
         }),
         /**
+         * ⚠️ **未知 id 也给窗口**（用户手填模型 id 时否则永远没有上下文占用条）。
+         *
+         * 与 `unknownModelInputModalities` / `unknownModelReasoning` **同一形态**：
+         * 本家这两项都与「具体模型」无关（纯文本网关 / 顶层 `thinking.type`），
+         * 窗口这一项在本家同样有本地兜底可用（目录窗口本就全来自静态表）。
+         *
+         * ⚠️⚠️ **必须走 `codeartsContextWindow(modelId)`，不能直接返回常数兜底**
+         *    （2026-10-21 全量测试实测踩到）：`glm-5.3` 在静态窗口表里是 1M，
+         *    但**不在静态兜底目录**（`DEFAULT_MODELS`）里 ⇒ 远端失败时它算
+         *    「目录外 id」⇒ 直接返回常数会让它拿到 524_288（**分母错 2 倍**），
+         *    而它**正是用户报障的那个模型**。
+         *
+         * ⚠️ **不要推广到别家**：多数家的窗口来自远端该模型的配置，对未知 id
+         *    编一个就是**假窗口**（分母错 ⇒ 占用比与压缩阈值一起错）。
+         *    取值理由见 `CODEARTS_FALLBACK_CONTEXT_WINDOW` 的长注释。
+         */
+        unknownModelContextWindow: (modelId) => codeartsContextWindow(modelId),
+        /**
          * ★ **强制重拉**（供后台 20 分钟刷新器与「用户改设置」）。
          *
          * ⚠️ 与 `loadCatalog` 的差别：后者内部有 `isCatalogFreshFor` 判据
@@ -35303,7 +35763,9 @@ var CodeArtsAdapter = class extends LlmAdapter {
    * ⚠️ 本家三处**真实差异**（不要「顺手统一」）：
    * 1. **VL 多模态不参与目录**（`-VL-` / `-VL` 结尾的 id 被滤掉）——
    *    这是本家的可见性判据，骨架不认识；
-   * 2. `contextWindow` 来自静态 `CONTEXT_WINDOWS` 表（不是远端字段）；
+   * 2. `contextWindow` 来自静态 `CONTEXT_WINDOWS` 表（不是远端字段 ——
+   *    本家两个目录端点都**不下发**窗口，取证见该表的注释），表里查不到时
+   *    走具名兜底 {@link CODEARTS_FALLBACK_CONTEXT_WINDOW}（**恒有值**）；
    * 3. `reasoning` 是**恒声明**的两档（关闭/开启，**强度序**），与 entry 无关 ——
    *    实测（2026-09-29）：本网关**唯一**真正生效的思考控制是顶层
    *    `thinking.type`，`reasoning_effort`（含 low/high/none/minimal）与嵌套
@@ -35312,13 +35774,21 @@ var CodeArtsAdapter = class extends LlmAdapter {
    *    故**不**臆造 low/high/max 强度阶梯。
    */
   toCatalogEntry(model) {
-    const contextWindow = CONTEXT_WINDOWS.get(model.id);
+    const contextWindow = codeartsContextWindow(model.id);
+    const rate = model.rateLabel !== void 0 ? codeartsRateSuffix(model.rateLabel) : void 0;
+    const name2 = rate !== void 0 ? `${model.name} \xB7 ${rate}` : model.name;
     return {
       id: model.id,
-      name: model.name,
+      name: name2,
+      // ⚠️ `resolveModel` 用的**裸名**（不含倍率）—— 价格只属于选择列表语境
+      //    （与 loomy / raccoon / trae / lobsterai 同款，见 `model-catalog.ts`
+      //    的 `bareName` 字段注释）。
+      bareName: model.name,
       // ⚠️ 本家恒声明 `['text']`（CodeArts 是纯文本网关；VL 模型上面已滤掉）。
       inputModalities: ["text"],
-      ...contextWindow !== void 0 ? { contextWindow } : {},
+      // ⚠️ **无条件落键**（`codeartsContextWindow` 恒返回正数）—— 写成
+      //    `...contextWindow !== undefined ? {...} : {}` 就是本缺陷的成因。
+      contextWindow,
       reasoning: {
         // ⚠️ 顺序 = **强度序（弱 → 强）**，逐条理由见 `CODEARTS_REASONING_EFFORTS`
         // 的长注释（Issue IKLIDV）—— 简言之：DSH 把该数组当展示顺序、客户端不排序，
@@ -42170,6 +42640,51 @@ The request used endpoint ${JSON.stringify(endpoint)}. Expected { pageItems: [{ 
     return this.syncCatalogEntries();
   }
   /**
+   * 该模型是否**消耗 0 积分**（免费额度模型）。
+   *
+   * ## 为什么必须有这个方法（真实报障 2026-10-21）
+   *
+   * 用户开着「锁定永久积分」，用**免费模型**（CN `Qwen3.8-Flash` / `DeepSeek-Flash`、
+   * 国际版 `Qwen3.8-Max` / `Qwen3.8-Flash`）请求，却报「没有可用账号 ⋯ 当前账号的
+   * 额度都属于长期 / 永久」。
+   *
+   * 根因：`src/credential-resolver.ts:368` 的免费短路**只在 `plan.isFreeModel`
+   * 存在时**才可能命中。本家装配层（`src/index.ts` 的两处 `balance:`）**从未传
+   * `isFreeModel`** ⇒ 免费模型与付费模型走同一条余额分档路 ⇒ 锁定期间被
+   * `allowPermanent=false` 一并拦下。报出的错误还**自相矛盾**：免费模型既不扣
+   * 临时也不扣永久积分，说它「额度都是永久的」毫无意义。
+   *
+   * 这与 buddy / trae 的成文教训是同一个（`credential-resolver.ts:359-365` 的
+   * 长注释记录了 buddy 那次报障）：**保护永久积分的闸门不该拦免费模型**。
+   *
+   * ## 判据：只认目录里明确的 `isFree`
+   *
+   * - 两条来源（远端目录 / 编译期兜底表）**同源**：`src/qoder-catalog.ts` 的
+   *   `qoderRemoteModelToFallback()` 已把远端 `is_free` 归一成 `isFree` 并透出
+   *   （`:425`），与兜底表的 `isFree: true` 是同一个字段 ⇒ 不存在「远端少了字段
+   *   于是判不出免费」这种分叉。
+   * - ⚠️ **不用 `priceFactor === 0` 代替**：`priceFactor` 是「计费倍率」，它等于 0
+   *   与「这个模型免费」在本家是两条独立信号（CN `dfmodel` 就是
+   *   `priceFactor: 0` + `isFree: true`，而国际版 `qmodel_38max` 是
+   *   `isFree: true` + `priceFactor: 0.2` —— **免费但倍率非 0**）。用倍率推断免费
+   *   会漏掉后者、并把倍率解析失败（undefined）误判成免费。
+   * - **只在确定免费时返回 true**：查不到目录 / 解析失败一律 false。方向保守 ——
+   *   宁可多走一次余额门（用户至多多一次网络请求），也不要把付费模型误判成免费
+   *   （那会**真的烧掉永久积分**，是不可逆损失）。与 `BuddyAdapter.isFreeModel`
+   *   同一约定。
+   * - ⚠️ 远端目录懒加载，**必须先 `await ensureRemoteModels()`**：否则「直接进
+   *   会话」等路径尚未加载目录，会静默退回被拦截的行为（trae 的同款教训见
+   *   `TraeAdapter.isFreeModel` 的注释）。
+   *
+   * @param modelId - 模型 id（目录 key，如 `qfmodel`）。
+   * @returns true 仅当目录明确标记 `is_free`。
+   */
+  async isFreeModel(modelId) {
+    if (typeof modelId !== "string" || modelId.length === 0) return false;
+    await this.ensureRemoteModels();
+    return this.catalogModel(modelId)?.isFree === true;
+  }
+  /**
    * 懒加载远端模型目录（**每 20 分钟**一次；失败/空结果走闸门冷却）。
    *
    * 三条口径与其余 12 家逐字同构：
@@ -43625,6 +44140,7 @@ function serializeTraeMessages(messages, imageUrls) {
   };
   for (const message2 of normalized2) {
     if (message2.role === "assistant") {
+      flushToolImages();
       const content2 = stripCourseLeakFromHistoryContent(
         message2.role,
         Array.isArray(message2.content) ? message2.content : []
@@ -43683,8 +44199,8 @@ function serializeTraeMessages(messages, imageUrls) {
       flushToolImages();
       wire.push({ role: "user", content: parts ?? text });
     }
-    flushToolImages();
   }
+  flushToolImages();
   return wire;
 }
 function errorDetail4(body) {
@@ -44882,6 +45398,57 @@ var CLINE_FALLBACK_MODELS = [
     supportsImage: true,
     isFree: true,
     description: "Meta\u2019s multimodal reasoning model for experimentation, learning, and early-stage agentic, multi-agent, and coding workflows."
+  },
+  {
+    // ⚠️ 这条是「**只补元数据**」的条目，不是「新增一个模型」（2026-10-21）。
+    //
+    // ## 为什么必须补
+    //
+    // 远端 `recommended-models` 的 `free` 数组**不下发 `maxTokens`**
+    // （实测 2026-10-21：6 个 free 模型全部只有 `{id,name,description,tags}`），
+    // 而 `mergeClineModels` 的 `build()` 里 `maxTokens` **只**取自本兜底表
+    // （`fallback?.maxTokens`）⇒ 该模型拿不到 `maxTokens` ⇒ catalog entry 没有它
+    // ⇒ 宿主 `model-catalog.ts` 桥接不出 `defaultMaxTokens`
+    // ⇒ 宿主 `resolveCallWithInfo` 不做兜底 ⇒ `options.maxTokens` 是 `undefined`
+    // ⇒ 报文里 **`max_tokens` 整个字段不发** ⇒ 退回 cline 网关自己的默认值。
+    //
+    // ## 网关默认值是 4096，且会静默截断（实测 2026-10-21）
+    //
+    // 直连 `https://api.cline.bot/api/v1/chat/completions`，同一模型同一提示词：
+    //   · 不传 `max_tokens` → `finish_reason=length`，`completion_tokens=4096`
+    //   · `max_tokens=4096`  → `finish_reason=length`，`completion_tokens=4096`
+    //   · `max_tokens=32768` → `finish_reason=stop`，  `completion_tokens=8894`
+    // ⇒ 4096 不是模型能力上限（注册表标 512000），只是网关的保守缺省。
+    // ⇒ 撞上它的后果是**长回答被静默砍断**（`finish=length`），用户看不到报错，
+    //    只看到「回答说到一半断了」——实测命中 5 个 turn 全部颗粒无收，
+    //    且 13KB 的 `write` 载荷正好被这个上限卡死。
+    //
+    // ## 为什么填 131_072
+    //
+    // 与同表 `cline-free/mimo-v2.6-flash` 的 131_072 同量级（128K），
+    // 且与 `minimax-product.ts` 兜底表给 MiniMax-M3.1 系列的 128_000 一致 ——
+    // **同一家模型的两条通道给同一个量级**，避免「M3.1 走 minimax 给 128K、
+    // 走 cline 网关给 4K」这种同模型不同待遇的割裂。
+    //
+    // 实测依据（2026-10-21，直连 `https://api.cline.bot/api/v1/chat/completions`）：
+    //   · 不传 `max_tokens` → `finish_reason=length`，`completion_tokens=4096`
+    //   · `max_tokens=32768` → `finish_reason=stop`，  `completion_tokens=8894`
+    //   ⇒ 网关至少接受到 32768；取 131_072 是按「同族同量级」对齐，
+    //     也给长推理留足余量（13KB 的 `write` 载荷实测正好卡死 4096）。
+    //
+    // ⚠️ 这不是「模型单次输出上限」而是「**默认输出预算**」：宿主契约是
+    // 「用户未指定 `max_tokens` 时直接拿它填请求」，故每轮都会按这个值请求。
+    // 取 128K 而非注册表的 512000，是为了不让每轮都按上限走
+    // （同 `opencode-capability.ts` 的取舍：上限值当默认值荒谬）。
+    //
+    // `contextWindow` 取 1_048_576，与表内同族的 `cline-free/mimo-v2.6-flash`
+    // 同规格（网关注册表给该模型标 1000000，此处取同族的 1048576 整数规格）。
+    id: "cline-free/minimax-m3.1-flash",
+    name: "Minimax M3.1 Flash",
+    contextWindow: 1048576,
+    maxTokens: 131072,
+    isFree: true,
+    description: "Next-generation Flash model"
   }
 ];
 var CLINE_REASONING_EFFORTS = [
@@ -46530,6 +47097,10 @@ function fallbackToRemote(model) {
   };
 }
 var LOOMY_MAX_ROTATE = 8;
+var LOOMY_PROBE_BACKOFF_MS = 5 * 6e4;
+function isLoomyTerminalRefreshError(error) {
+  return error instanceof Error && error.name === "RefreshTokenExpiredError";
+}
 var LOOMY_RATE_LIMIT_COOLDOWN_MS = 36e5;
 function classifyLoomyFailure(errorText, status) {
   if (status === 401 || status === 403) return "auth";
@@ -46538,6 +47109,9 @@ function classifyLoomyFailure(errorText, status) {
   if (quotaText || status === 402) return "quota";
   if (status === 429) return "rate";
   return "other";
+}
+function isLoomyAuthBusinessCode(envelope) {
+  return !envelope.ok && envelope.code === LOOMY_AUTH_ERROR_CODE;
 }
 function recordsLoomyRateLimit(cls) {
   return cls === "quota" || cls === "rate";
@@ -46728,6 +47302,81 @@ var LoomyAdapter = class extends LlmAdapter7 {
     };
   }
   /**
+   * 探测退避表（`modelId` → 退避到期时刻）。
+   *
+   * ⚠️ 按 **modelId** 分桶而不是全局一个值：探测本身与模型无关，但热路径的
+   * 前置分支是**按模型**进来的（`isLoomyExpired` 与 `resolveCredential(model)`），
+   * 用全局值会让「A 模型抖动一次 ⇒ B 模型也跳过探测」——那是不必要的耦合，
+   * 而按模型分桶没有额外代价（`Map` 只有几十条）。
+   *
+   * ⚠️ **只增不减**在此处是可接受的：条目数 = 用户用过的模型数（个位到几十），
+   * 每次写都是覆盖同一个键。不做定期清理，避免再引入一个需要调度的东西。
+   */
+  probeBackoffUntil = /* @__PURE__ */ new Map();
+  /** 「现在」的统一取法（与 `options.now` 注入点同源，单测可推进）。 */
+  nowMs() {
+    return this.options.now?.() ?? Date.now();
+  }
+  /** 该模型当前是否处于探测退避窗口内。 */
+  probeBackedOff(modelId) {
+    const until = this.probeBackoffUntil.get(modelId);
+    if (until === void 0) return false;
+    const now = this.nowMs();
+    if (now >= until) return false;
+    if (until - now > LOOMY_PROBE_BACKOFF_MS) return false;
+    return true;
+  }
+  /** 记一次退避（探测非终态失败后调用）。 */
+  armProbeBackoff(modelId) {
+    this.probeBackoffUntil.set(modelId, this.nowMs() + LOOMY_PROBE_BACKOFF_MS);
+  }
+  /** 清掉退避（探测成功，或终态已抛之后）。 */
+  clearProbeBackoff(modelId) {
+    this.probeBackoffUntil.delete(modelId);
+  }
+  /**
+   * 把 `HTTP 200 + 业务码 100002` 的响应**重建**成一个 `401` 响应，交给既有换号循环。
+   *
+   * 返回 `undefined` 表示「不是这种形态，原样继续」。
+   *
+   * ## ⚠️ 三条边界（都是刻意收窄，避免制造新缺陷）
+   *
+   * 1. **只处理 `content-type: application/json`**：SSE 流**不能**在这里 `text()`
+   *    读干——那会把正文吃掉，用户看到空回复。SSE 内嵌错误帧仍归
+   *    `consumeOpenAiSse`。
+   * 2. **只有 `code` 恰为 `LOOMY_AUTH_ERROR_CODE` 才转**：别的业务码（额度、参数）
+   *    形态各异，一律不碰 —— 那是分类器与 `!response.ok` 分支的职责。
+   * 3. **转换后仍带原始报文**：把原 JSON 原文塞回新响应的 body，于是下游
+   *    `errorDetail()` 与日志拿到的仍是上游原话（不编造、不丢信息）。
+   *    ⚠️ `normalize` 出来的 `status` 是 **401**（而不是编一个 4xx），
+   *    因为下游 `classifyLoomyFailure` 对 401 判 `auth`、且认证类**不写冷却**
+   *    （2026-10-06 全池被封事故的铁律）。
+   */
+  async rebuildAuthBusinessFailure(response) {
+    if (response.status !== 200) return void 0;
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) return void 0;
+    let text;
+    try {
+      text = await response.text();
+    } catch {
+      return void 0;
+    }
+    const rebuiltOk = () => new Response(text, { status: response.status, headers: { "content-type": contentType } });
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return rebuiltOk();
+    }
+    const envelope = parseLoomyEnvelope(parsed);
+    if (!isLoomyAuthBusinessCode(envelope)) return rebuiltOk();
+    this.options.warn?.(
+      `[loomy] \u4E0A\u6E38\u4EE5 HTTP 200 + \u4E1A\u52A1\u7801 ${envelope.code} \u8868\u8FBE\u8BA4\u8BC1\u5931\u8D25\uFF08${envelope.message}\uFF09\uFF1A\u6539\u6309\u8BA4\u8BC1\u5931\u8D25\u5904\u7406\uFF08\u6362\u53F7\uFF0C\u4E0D\u5199\u51B7\u5374\uFF09`
+    );
+    return new Response(text, { status: 401, headers: { "content-type": "application/json" } });
+  }
+  /**
    * 兼容 0.1.1-rc.2：新版 `LlmRuntime.prepareCall()` 会调用
    * `registration.adapter.prepareCall(...)`，而本仓库链接的 dsh-llm 副本
    * 基类尚未提供该方法，缺少时会在每轮请求开始时抛
@@ -46764,7 +47413,18 @@ var LoomyAdapter = class extends LlmAdapter7 {
     }
     let credential = await this.options.resolveCredential(options.model);
     if (credential === void 0 || isLoomyExpired(credential)) {
-      await this.options.refresh();
+      if (!this.probeBackedOff(options.model)) {
+        try {
+          await this.options.refresh(credential);
+          this.clearProbeBackoff(options.model);
+        } catch (error) {
+          if (isLoomyTerminalRefreshError(error)) throw error;
+          this.armProbeBackoff(options.model);
+          this.options.warn?.(
+            `[loomy] \u51ED\u636E\u63A2\u6D4B\u5931\u8D25\uFF08\u975E\u7EC8\u6001\uFF0C\u7EE7\u7EED\u4F7F\u7528\u73B0\u6709\u51ED\u636E\uFF0C${LOOMY_PROBE_BACKOFF_MS / 1e3} \u79D2\u5185\u4E0D\u518D\u63A2\u6D4B\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
       credential = await this.options.resolveCredential(options.model);
     }
     if (credential === void 0 || credential.access_token.length === 0) {
@@ -46832,23 +47492,36 @@ var LoomyAdapter = class extends LlmAdapter7 {
     };
     let response = await send(credential.access_token);
     if (response.status === 401 || response.status === 403) {
-      await this.options.refresh();
-      const refreshed = await this.options.resolveCredential(options.model);
-      if (refreshed === void 0 || refreshed.access_token.length === 0) {
-        throw new LlmError10("loomy: credential expired and refresh failed", "AUTH", { status: response.status });
+      let probeFailed = false;
+      try {
+        await this.options.refresh();
+      } catch (error) {
+        if (isLoomyTerminalRefreshError(error)) throw error;
+        probeFailed = true;
+        this.options.warn?.(
+          `[loomy] 401/403 \u540E\u51ED\u636E\u63A2\u6D4B\u5931\u8D25\uFF08\u975E\u7EC8\u6001\uFF0C\u6539\u8D70\u6362\u53F7\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+        );
       }
-      if (this.options.accountPool) {
-        try {
-          activeAccountId = await this.options.accountPool.findAccountIdByCredential(
-            this.product.id,
-            refreshed.access_token
-          ) ?? "";
-        } catch {
+      if (!probeFailed) {
+        const refreshed = await this.options.resolveCredential(options.model);
+        if (refreshed === void 0 || refreshed.access_token.length === 0) {
+          throw new LlmError10("loomy: credential expired and refresh failed", "AUTH", { status: response.status });
         }
+        if (this.options.accountPool) {
+          try {
+            activeAccountId = await this.options.accountPool.findAccountIdByCredential(
+              this.product.id,
+              refreshed.access_token
+            ) ?? "";
+          } catch {
+          }
+        }
+        response = await send(refreshed.access_token);
+        if (response.ok) credential = refreshed;
       }
-      response = await send(refreshed.access_token);
-      if (response.ok) credential = refreshed;
     }
+    const authBusinessFailure = await this.rebuildAuthBusinessFailure(response);
+    if (authBusinessFailure !== void 0) response = authBusinessFailure;
     if (!response.ok) {
       let errorText = await response.text().catch(() => "");
       let status = response.status;
@@ -47073,7 +47746,8 @@ var RACCOON_FALLBACK_MODELS = [
     name: "GLM-5-3-Flash \xB7 x0.2\u2192x0.1",
     contextWindow: 1e6,
     maxTokens: 1e5,
-    // ⚠️ 远端 tags 不含 `vision`，但**实测能看图**（见 RACCOON_IMAGE_CAPABILITY_OVERRIDES）。
+    // ⚠️ 远端 tags 不含 `vision`，但**实测能看图**（tags 不是能力契约，见
+    // `RACCOON_TEXT_ONLY_MODELS` 的注释）。
     supportsImage: true
   },
   {
@@ -47085,13 +47759,19 @@ var RACCOON_FALLBACK_MODELS = [
     supportsImage: true
   }
 ];
-var RACCOON_IMAGE_CAPABILITY_OVERRIDES = /* @__PURE__ */ new Set([
-  "sn-deepseek-v4-1-flash",
-  "sn-glm-5-3-flash"
+var RACCOON_TEXT_ONLY_MODELS = /* @__PURE__ */ new Set([
+  // 当前目录（10 条：3 个 visible:false 内部模型 + 7 个可见模型）里**没有**
+  // 实测确认的纯文本模型 ⇒ 空集。新增条目必须先有带图实测证据（见上方「代价」）。
 ]);
-function raccoonSupportsImage(modelId, tags) {
-  if (RACCOON_IMAGE_CAPABILITY_OVERRIDES.has(modelId)) return true;
-  return tags.includes("vision") || tags.includes("image") || tags.includes("image-understanding");
+var RACCOON_MODEL_VERSION_SUFFIX = /-\d{4}$/;
+function raccoonSupportsImageWith(textOnly, modelId) {
+  if (textOnly.has(modelId)) return false;
+  const baseId = modelId.replace(RACCOON_MODEL_VERSION_SUFFIX, "");
+  if (baseId !== modelId && textOnly.has(baseId)) return false;
+  return true;
+}
+function raccoonSupportsImage(modelId) {
+  return raccoonSupportsImageWith(RACCOON_TEXT_ONLY_MODELS, modelId);
 }
 var RACCOON = {
   id: "raccoon",
@@ -48201,6 +48881,14 @@ var CodeArtsAuth = class extends Service {
    * 为什么用「可用账号」而不是遍历全部账号：模型目录是**账号无关**的（同一个
    * 华为云账号体系下发同一份目录），取第一个能解析出 AK/SK 的账号即可，
    * 无需为每个账号各拉一次。
+   */
+  /**
+   * ⚠️ 返回**完整 `RemoteModel`**（含 `rateLabel`），不是只有 `{id, name}`。
+   *
+   * 2026-10-21 修：此前签名写死 `Array<{id,name}>` ⇒ 即使
+   * `fetchCodeArtsRemoteModels` 解析出了倍率，也会在**这一层被丢弃**
+   * （TS 结构类型允许「少字段」赋值，编译不报错、运行期静默丢字段 ——
+   * 正是「目录里明明有倍率却显示不出来」的根因）。
    */
   async refreshModels(pool) {
     if (!this.active) return [];
@@ -52997,9 +53685,9 @@ var LoomyAuth = class extends Service7 {
   async refreshAccountCredential(refName, pool, accountId) {
     const ref = credentialRef8(refName);
     const resolved = await this.ctx.credentials.resolve(ref);
-    if (!resolved) throw new Error("\u51ED\u636E\u672A\u914D\u7F6E");
+    if (!resolved) throw new RefreshTokenExpiredError7("\u51ED\u636E\u672A\u914D\u7F6E\uFF0C\u8BF7\u5148\u5728 Jet Hub \u767B\u5F55 Loomy");
     const credential = parseCredential7(resolved.value);
-    if (!credential) throw new Error("\u51ED\u636E\u89E3\u6790\u5931\u8D25");
+    if (!credential) throw new RefreshTokenExpiredError7("\u51ED\u636E\u89E3\u6790\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55 Loomy");
     await this.probeCredential(credential);
     await syncAccountExpiry({
       pool,
@@ -54283,18 +54971,16 @@ function normalizeRemoteModel(entry) {
   const readPositiveInt = (value) => {
     return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
   };
-  const tags = Array.isArray(entry.tags) ? entry.tags.filter((t) => typeof t === "string").map((t) => t.toLowerCase()) : [];
   return {
     id,
     name: raccoonDisplayName(meta),
     contextWindow: readPositiveInt(params.context_window ?? entry.context_window),
     maxTokens: readPositiveInt(params.max_tokens),
-    // ⚠️ **不能只看 tags**：`vision` 是客户端「Raccoon-Auto 选模」的偏好标签，
-    // 不是服务端能力契约（远端根本没有模态字段，已穷举证实）。`tags` 不含
-    // `vision` 的 `sn-deepseek-v4-1-flash` 实测能看图（5/5 读对随机数字），
-    // 只认 tags 会让它被 DSH 投影成文本占位符 —— 图片根本发不出去。
-    // 证据与取舍见 `raccoon-product.ts` 的 RACCOON_IMAGE_CAPABILITY_OVERRIDES。
-    supportsImage: raccoonSupportsImage(id, tags)
+    // ⚠️ **不看 tags**：`vision` 是客户端「Raccoon-Auto 选模」的偏好标签，
+    // 不是服务端能力契约（远端根本没有模态字段，已穷举证实）。判据是
+    // 「**默认支持**，只禁 RACCOON_TEXT_ONLY_MODELS 里实测确认的纯文本模型」，
+    // 理由与实测证据见 `raccoon-product.ts` 的注释。
+    supportsImage: raccoonSupportsImage(id)
   };
 }
 var RaccoonAuth = class extends Service8 {
@@ -60747,6 +61433,30 @@ function registerZcodeLlm(ctx, options) {
   return adapter;
 }
 
+// vendor/channel-pack/src/network-hint.ts
+var NETWORK_BLOCKED_CODE_RE = /UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ECONNRESET/i;
+var CAUSE_TRAVERSE_CAP = 8;
+function collectCauseCodes(error) {
+  const codes = [];
+  let current = error;
+  for (let i = 0; i < CAUSE_TRAVERSE_CAP && current !== null && current !== void 0; i += 1) {
+    const code = current.code;
+    if (typeof code === "string" && code.length > 0 && !codes.includes(code)) codes.push(code);
+    current = current.cause;
+  }
+  return codes;
+}
+function isNetworkBlocked(error, aborted) {
+  if (aborted) return true;
+  return NETWORK_BLOCKED_CODE_RE.test(collectCauseCodes(error).join(" "));
+}
+function networkBlockedHint(params) {
+  if (!isNetworkBlocked(params.error, params.aborted)) return void 0;
+  const codes = collectCauseCodes(params.error).join(" ").trim();
+  const reason = codes.length > 0 ? `\uFF08${codes}\uFF09` : "";
+  return `\u8FDE\u4E0D\u4E0A ${params.subject}${reason}\uFF1A${params.remedy}`;
+}
+
 // vendor/channel-pack/src/opencode-proxy.js
 var import_undici = __toESM(require_undici(), 1);
 import { connect as netConnect } from "node:net";
@@ -60959,18 +61669,12 @@ var geminiFetchForAccount = createGeminiFetcherResolver(
   (accountId) => geminiPoolRef === void 0 ? "" : geminiPoolRef.geminiProxyFor(accountId)
 );
 function geminiNetworkHint(error, aborted) {
-  let current = error;
-  let codes = "";
-  for (let i = 0; i < 8 && current !== null && current !== void 0; i += 1) {
-    const code = current.code;
-    if (typeof code === "string" && !codes.includes(code)) codes += `${code} `;
-    current = current.cause;
-  }
-  const message2 = error instanceof Error ? error.message : String(error);
-  const unreachable = /UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ECONNRESET/i.test(codes);
-  if (!unreachable && !aborted) return void 0;
-  const reason = codes.trim().length > 0 ? `\uFF08${codes.trim()}\uFF09` : "";
-  return `\u8FDE\u4E0D\u4E0A Google${reason}\uFF1AGemini \u5168\u90E8\u7AEF\u70B9\u90FD\u5728\u5899\u5916\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8D70\u7CFB\u7EDF\u4EE3\u7406\u3002\u8BF7\u4E3A\u8BE5\u8D26\u53F7\u8BBE\u7F6E\u51FA\u53E3\u4EE3\u7406\uFF08\u8D26\u53F7\u5361\u7247\u4E0A\u7684\u300C\u4EE3\u7406\u300D\u6309\u94AE\uFF09\uFF0C\u6216\u5728\u542F\u52A8 DSH \u524D\u5BFC\u51FA HTTPS_PROXY\uFF1B\u6D4F\u89C8\u5668\u80FD\u6388\u6743\u662F\u56E0\u4E3A\u6D4F\u89C8\u5668\u8BFB\u7CFB\u7EDF\u4EE3\u7406\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8BFB\u3002`;
+  return networkBlockedHint({
+    error,
+    aborted,
+    subject: "Google",
+    remedy: "Gemini \u5168\u90E8\u7AEF\u70B9\u90FD\u5728\u5899\u5916\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8D70\u7CFB\u7EDF\u4EE3\u7406\u3002\u8BF7\u4E3A\u8BE5\u8D26\u53F7\u8BBE\u7F6E\u51FA\u53E3\u4EE3\u7406\uFF08\u8D26\u53F7\u5361\u7247\u4E0A\u7684\u300C\u4EE3\u7406\u300D\u6309\u94AE\uFF09\uFF0C\u6216\u5728\u542F\u52A8 DSH \u524D\u5BFC\u51FA HTTPS_PROXY\uFF1B\u6D4F\u89C8\u5668\u80FD\u6388\u6743\u662F\u56E0\u4E3A\u6D4F\u89C8\u5668\u8BFB\u7CFB\u7EDF\u4EE3\u7406\uFF0C\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8BFB\u3002"
+  });
 }
 
 // vendor/channel-pack/src/refresh-scheduler.ts
@@ -61175,6 +61879,11 @@ var CODE_ALREADY_CLAIMED = 10001;
 var CODE_ALREADY_CLAIMED_ALT = 1001;
 var CODE_NO_QUALIFICATION = 1002;
 var CODE_ACTIVITY_ENDED = 1003;
+function isExclusiveCreditPool(pkg) {
+  const name2 = pkg !== null && pkg !== void 0 && typeof pkg.name === "string" ? pkg.name : "";
+  return name2.includes(EXCLUSIVE_POOL_NAME_MARK);
+}
+var EXCLUSIVE_POOL_NAME_MARK = "\u72EC\u7ACB\u6C60";
 function checkinHeaders(credential, product) {
   const headers = new Headers();
   headers.set("Authorization", `Bearer ${credential.access_token}`);
@@ -61408,6 +62117,7 @@ var CREDIT_METRIC_LABELS = {
   usageBonusPackageCredit: "\u8D60\u9001\u79EF\u5206\u5305"
 };
 var TOTAL_CREDIT_METRIC = "usageTotalPackageCredit";
+var BASIC_CREDIT_METRIC = "usageBasicPackageCredit";
 var UNPARSABLE_RESPONSE_MESSAGE2 = "\u8BF7\u6C42\u5931\u8D25\u6216\u54CD\u5E94\u65E0\u6CD5\u89E3\u6790";
 function describeHttpFailure(status, text) {
   let detail = "";
@@ -61435,6 +62145,15 @@ function readNumber5(source, key) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return 0;
+}
+function readOptionalNumber(source, key) {
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return void 0;
 }
 function readString5(source, key) {
   const value = source[key];
@@ -61507,11 +62226,19 @@ async function signedSnapRequest(method, url, credential, body, fetcher) {
     };
   }
 }
-function parseCreditBalance(metrics) {
+function parseDateMs(value) {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return void 0;
+  const ms = Date.parse(trimmed);
+  return Number.isFinite(ms) && ms > 0 ? ms : void 0;
+}
+function parseCreditBalance(metrics, packageEndDate) {
   if (!Array.isArray(metrics)) return void 0;
   const packages = [];
   let totalRemain;
   let sawAnyCreditMetric = false;
+  let expiringTotal;
+  const packageEndMs = packageEndDate === void 0 ? void 0 : parseDateMs(packageEndDate);
   for (const item of metrics) {
     if (typeof item !== "object" || item === null) continue;
     const record3 = item;
@@ -61522,27 +62249,40 @@ function parseCreditBalance(metrics) {
     const amount = readNumber5(record3, "package_credit_amount");
     const used = readNumber5(record3, "package_credit_used");
     const remain = readNumber5(record3, "package_credit_remain");
-    if (name2 === TOTAL_CREDIT_METRIC) totalRemain = remain;
+    if (name2 === TOTAL_CREDIT_METRIC) {
+      totalRemain = remain;
+      const expiring = readOptionalNumber(record3, "package_credit_expiring_amount");
+      if (expiring !== void 0 && expiring > 0) expiringTotal = expiring;
+      continue;
+    }
     if (amount <= 0 && remain <= 0) continue;
+    const deductionEndTime = name2 === BASIC_CREDIT_METRIC ? packageEndMs : void 0;
+    const expiringRaw = deductionEndTime === void 0 ? readOptionalNumber(record3, "package_credit_expiring_amount") : void 0;
+    const expiringRemaining = expiringRaw === void 0 || expiringRaw <= 0 ? void 0 : Math.min(expiringRaw, remain);
     packages.push({
       name: label,
       unit: "credit",
       remaining: remain,
       total: amount,
       used,
-      // `statistics/plugin` 不下发资源包的有效性/周期字段（那是腾讯侧的形态）。
-      // 这里如实置为有效、周期留空，而不是臆造一个到期时间。
       active: true,
       cycleStartTime: "",
       cycleEndTime: "",
-      expiredTime: ""
+      expiredTime: deductionEndTime === void 0 ? "" : new Date(deductionEndTime).toISOString(),
+      ...deductionEndTime === void 0 ? {} : { deductionEndTime },
+      ...expiringRemaining === void 0 ? {} : { expiringRemaining }
     });
   }
   if (!sawAnyCreditMetric) return void 0;
   const total = roundCredits2(
     totalRemain ?? packages.reduce((sum, pkg) => sum + pkg.remaining, 0)
   );
-  return { total, packages, expiredTotal: 0 };
+  return {
+    total,
+    packages,
+    expiredTotal: 0,
+    ...expiringTotal === void 0 ? {} : { expiringTotal }
+  };
 }
 async function fetchCodeArtsAccountInfoDetailed(credential, fetcher = fetch) {
   const url = `${CODEARTS_SNAP_ENGINE_URL}${CODEARTS_PACKAGE_INFO_PATH}`;
@@ -61560,7 +62300,9 @@ async function fetchCodeArtsAccountInfoDetailed(credential, fetcher = fetch) {
       specCode: readString5(pkg, "spec_code"),
       packageName: packageNameCn.length > 0 ? packageNameCn : packageNameEn,
       packageStatus: readString5(pkg, "status"),
-      credit: parseCreditBalance(data.metrics)
+      // `end_date` 是套餐周期结束日（顶层字段，与 `package` 同级）。
+      // 只有基础积分包跟随它到期，见 `parseCreditBalance` 的注释。
+      credit: parseCreditBalance(data.metrics, readString5(data, "end_date"))
     }
   };
 }
@@ -62412,7 +63154,34 @@ var AUTOCLAW_FALLBACK_MODELS = [
     //   ⇒ 换成 256×256、笔画粗、双判据（数字 7 + 红色横线）后，
     //     **四个 `zai_*` 模型全部答对**。
     supportsImage: true,
-    isFree: true
+    /**
+     * ⚠️⚠️ **`false`，已按真机实测订正**（2026-10-21 二轮审计，P1）。
+     *
+     * ## 原值 `true` 是错的
+     *
+     * `docs/autoclaw-models.md:25` 的真机实测写得很清楚：
+     * > **扣减机制**：依然走统一积分钱包扣减（实测每次请求扣减约 1 点积分），
+     * > **并非脱离钱包的免费模型**；钱包积分耗尽后同样会被限制。
+     *
+     * ## 原注释的错因（值得记住）
+     *
+     * 初版把 `isFree` 理解成「**远端目录里没有它、但直接调用能用**」= 免费。
+     * 那是把「**目录缺失**」当成了「**不扣费**」—— 两件不同的事。
+     *
+     * ## 用户可见后果
+     *
+     * `plugin-src/client/model-groups.js` 按 `isFree === true` 把模型归入
+     * **「免费额度」分栏**。而这个模型实测**每次都扣积分** ⇒
+     * - 用户以为它免费，实际在烧钱包；
+     * - 叠加「锁定永久积分」后更误导：锁定状态下它走 `autoclawLockedError`
+     *   报「请解锁永久积分」，用户解锁后**照样扣分** —— 两条口径互相矛盾。
+     *
+     * ## 为什么改是对的
+     *
+     * 原注释说「删掉会让『免费额度』分栏变空」—— 那个分栏**本来就不该有**
+     * 这一条（本家没有真正的免费模型）。**空分栏比「把付费模型标成免费」好得多**。
+     */
+    isFree: false
   },
   {
     id: "zaicoding_glm-5.3",
@@ -62467,7 +63236,10 @@ var AUTOCLAW_APP_ID = "100003";
 var AUTOCLAW_APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
 var AUTOCLAW_SOURCE_ID = "autoclaw";
 var AUTOCLAW_PRODUCT_NAME = "autoclaw";
+var AUTOCLAW_CLIENT_VERSION = "2.1.1";
 var AUTOCLAW_DEFAULT_CREDENTIAL_REF = "AUTOCLAW_ACCOUNT_DEFAULT";
+var AUTOCLAW_INTL_API_BASE = "https://autoglm-api.autoglm.ai";
+var AUTOCLAW_INTL_DEFAULT_CREDENTIAL_REF = "AUTOCLAWINTL_ACCOUNT_DEFAULT";
 var AUTOCLAW = {
   id: "autoclaw",
   displayName: "AutoClaw (\u667A\u8C31)",
@@ -62476,7 +63248,21 @@ var AUTOCLAW = {
   appKey: AUTOCLAW_APP_KEY,
   product: AUTOCLAW_PRODUCT_NAME,
   defaultCredentialRef: AUTOCLAW_DEFAULT_CREDENTIAL_REF,
-  fallbackModels: AUTOCLAW_FALLBACK_MODELS
+  fallbackModels: AUTOCLAW_FALLBACK_MODELS,
+  userDataDirName: "AutoClaw-official"
+};
+var AUTOCLAW_INTL = {
+  id: "autoclawintl",
+  displayName: "AutoClaw (\u56FD\u9645\u7248)",
+  apiBase: AUTOCLAW_INTL_API_BASE,
+  appId: AUTOCLAW_APP_ID,
+  appKey: AUTOCLAW_APP_KEY,
+  product: AUTOCLAW_PRODUCT_NAME,
+  defaultCredentialRef: AUTOCLAW_INTL_DEFAULT_CREDENTIAL_REF,
+  fallbackModels: AUTOCLAW_FALLBACK_MODELS,
+  // ⚠️ 国际构建的 userData 目录（实测）。见 `AutoclawProduct.userDataDirName` 的
+  //    P0 注释：三个读点（一键导入 / device_id / 登录页 import-local）都取这里。
+  userDataDirName: "AutoClaw-oversea-official"
 };
 
 // vendor/channel-pack/src/autoclaw.ts
@@ -62494,6 +63280,29 @@ function calculateAutoclawSign(appId, timestamp, appKey) {
 function cleanBearerToken(rawToken) {
   if (!rawToken || typeof rawToken !== "string") return "";
   return rawToken.trim().replace(/^Bearer\s+/i, "").trim();
+}
+function readUserIdFromJwt(accessToken) {
+  const token = cleanBearerToken(accessToken);
+  if (token === "") return void 0;
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return void 0;
+    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = payload + "=".repeat((4 - payload.length % 4) % 4);
+    const parsed = JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+    const raw = parsed?.user_id;
+    if (typeof raw === "string" && raw.trim() !== "") return raw.trim();
+    if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+function isAutoclawUuidUserId(value) {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed === "") return false;
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(trimmed) || /^[0-9a-fA-F]{32}$/.test(trimmed);
 }
 function autoclawExpiresAtMs(expiresVal, nowMs = Date.now()) {
   if (expiresVal === void 0 || Number.isNaN(expiresVal) || expiresVal <= 0) {
@@ -62767,6 +63576,13 @@ function buildAutoclawHeaders(options) {
   const cleanToken2 = cleanBearerToken(options.accessToken);
   const headers = {
     "Content-Type": "application/json",
+    // ⚠️⚠️ **`X-Version` 是国际站推理的硬校验头**（2026-10-20 真机二分实测）：
+    //    缺它 → `HTTP 500` 且**响应体为空**（不像 401/400/406 那样给原因），
+    //    症状极具误导性。加上即 `HTTP 200`。其余客户端头（X-Tm / X-Lang /
+    //    X-Channel / User-Agent / X-Trace-Id 等 9 个）单独加都不改变 500，
+    //    唯 `X-Version` 是关键项 ⇒ 只补这一个，不堆冗余头。
+    //    详见 `AUTOCLAW_CLIENT_VERSION` 的注释。
+    "X-Version": AUTOCLAW_CLIENT_VERSION,
     "X-Auth-Appid": options.product.appId,
     "X-Auth-TimeStamp": ts,
     "X-Auth-Sign": sign,
@@ -62870,9 +63686,11 @@ function parseAutoclawLedgerBatches(entriesRaw, nowMs = Date.now()) {
   for (const raw of entriesRaw) {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw;
-    if (entry.mutation_type !== "credit") continue;
+    const type = entry.mutation_type;
+    if (type !== "credit" && type !== "debit" && type !== "expire") continue;
     const amount = typeof entry.amount === "number" && Number.isFinite(entry.amount) ? entry.amount : 0;
-    if (amount <= 0) continue;
+    if (amount === 0) continue;
+    if (type === "credit" && amount < 0) continue;
     const metaDesc = typeof entry.metadata === "object" && entry.metadata !== null ? entry.metadata.description : void 0;
     const candidates = [metaDesc, entry.description, entry.source];
     const label = candidates.find((v) => typeof v === "string" && v.trim().length > 0);
@@ -62887,11 +63705,12 @@ function parseAutoclawLedgerBatches(entriesRaw, nowMs = Date.now()) {
     bucket.amount += amount;
     byExpiry.set(exp, bucket);
   }
-  const packages = [...byExpiry.entries()].sort((a, b) => a[0] - b[0]).map(([expSec, batch]) => ({
+  const packages = [...byExpiry.entries()].filter(([, batch]) => batch.amount > 0).sort((a, b) => a[0] - b[0]).map(([expSec, batch]) => ({
     ...makePackage3(disambiguateBatchName(batch.label), batch.amount, true),
     deductionEndTime: expSec * 1e3
   }));
   for (const [label, amount] of permanentByLabel) {
+    if (amount <= 0) continue;
     packages.push(makePackage3(disambiguateBatchName(label), amount, true));
   }
   return packages;
@@ -62939,15 +63758,20 @@ async function fetchAutoclawBalanceDetailed(credential, options) {
     const total = typeof data?.total_balance === "number" && Number.isFinite(data.total_balance) ? data.total_balance : 0;
     const walletPackages = parseAutoclawWallets(data?.wallets);
     let packages = walletPackages;
+    let degraded = false;
     if (total > 0) {
       try {
         const entries = await fetchAutoclawLedgerEntries(credential, options);
         const batches = parseAutoclawLedgerBatches(entries);
         const batchSum = batches.reduce((sum, pkg) => sum + pkg.remaining, 0);
-        if (batches.length > 0 && batchSum === total) {
+        const tolerance = Math.max(100, Math.floor(total * 0.01));
+        if (batches.length > 0 && Math.abs(batchSum - total) <= tolerance) {
           packages = batches;
+        } else {
+          degraded = true;
         }
       } catch {
+        degraded = true;
       }
     }
     if (packages.length === 0) {
@@ -62956,7 +63780,10 @@ async function fetchAutoclawBalanceDetailed(credential, options) {
     const balance = {
       total,
       packages,
-      expiredTotal: 0
+      expiredTotal: 0,
+      // ⚠️ 只有**真的降级**时才带上该键（`undefined` 不写 ⇒ 与既有响应逐字节相同，
+      //    避免让所有消费者都去处理一个恒为 `false` 的字段）。
+      ...degraded ? { degraded: true } : {}
     };
     return { balance };
   } catch (error) {
@@ -62979,7 +63806,13 @@ async function fetchAutoclawLedgerEntries(credential, options) {
       asset_type: "point",
       wallet_type: "all",
       page_size: "100",
-      flow_direction: "income"
+      // ⚠️⚠️ **必须是 `all`，不能是 `income`**（2026-10-20 真机取证修正）：
+      //    原实现只拉收入流 ⇒ 拿不到 `debit`（消耗）/ `expire`（过期）
+      //    ⇒ 批次和恒等于**历史发放额**，用户一有消耗就不守恒
+      //    ⇒ 逐批次分档永不出现（用户看到的「全是永久」）。
+      //    实测 `debit` 条目同样带 `wallet_expires_at`，可精确归入批次。
+      //    改为 `all` 后批次和 20856 vs 钱包总额 20842（差 0.07%，翻页误差）。
+      flow_direction: "all"
     });
     if (cursor !== void 0) query.set("cursor", cursor);
     let resp;
@@ -63001,6 +63834,10 @@ async function fetchAutoclawLedgerEntries(credential, options) {
     if (cursor === void 0) break;
   }
   return all;
+}
+async function fetchAutoclawCreditBalance(credential, options) {
+  const result = await fetchAutoclawBalanceDetailed(credential, options);
+  return result.balance;
 }
 async function claimAutoclawDailyQuota(credential, options) {
   const token = cleanToken(credential.access_token);
@@ -63063,6 +63900,289 @@ async function claimAutoclawDailyQuota(credential, options) {
       message: `AutoClaw \u7B7E\u5230\u7F51\u7EDC\u8BF7\u6C42\u5F02\u5E38\uFF1A${error instanceof Error ? error.message : String(error)}`
     };
   }
+}
+
+// vendor/channel-pack/src/accio-product.ts
+var ACCIO_TOKEN_EXCHANGE_PATH = "/api/oauth/token";
+var ACCIO_REFRESH_PATH = "/api/auth/refresh_token";
+var ACCIO_LLM_PATH = "/api/adk/llm/generateContent";
+var ACCIO_CATALOG_PATH = "/api/llm/config/v2";
+var ACCIO_USERINFO_PATH = "/api/auth/userinfo";
+var ACCIO_SUBSCRIPTION_PATH = "/api/entitlement/currentSubscription";
+var ACCIO_QUOTA_PATH = "/api/entitlement/quota";
+var ACCIO_REQUEST_TIMEOUT_MS = 3e4;
+var ACCIO_LOGIN_TIMEOUT_MS = 6e5;
+var ACCIO_REGIONS = Object.freeze(["cn", "global"]);
+var LOGIN_BASE = Object.freeze({
+  cn: "https://www.accio-ai.com",
+  global: "https://zh.accio.com"
+});
+var FALLBACK_MODELS = Object.freeze([
+  { id: "1Drift-N8kP2Q7wR5mX", name: "Qwen 3.8 27B", contextWindow: 512e3, supportsImage: true, multiple: 0.013 },
+  { id: "1Drift-F8hS3mK7pL2n", name: "Qwen 3.8 Flash", contextWindow: 1e6, supportsImage: true, multiple: 0.03 },
+  { id: "1Chronos-F53X9nQ3rT8w", name: "GLM 5.3 Flash", contextWindow: 1e6, supportsImage: true, multiple: 0.03 },
+  { id: "1Nova-Q3xM8vJ1rH6z", name: "DeepSeek V4.1 Flash", contextWindow: 1e6, supportsImage: true, multiple: 0.045 },
+  { id: "1Zenith-M27hS2SR5xQ2p", name: "MiniMax M3", contextWindow: 1e6, supportsImage: true, multiple: 0.08 },
+  { id: "1Chronos-dX3cV9sA2mK7", name: "GLM 5.1", contextWindow: 2e5, supportsImage: false, multiple: 0.12 },
+  { id: "1Nexus-R3wF8qJ5vB6h", name: "Standard", contextWindow: 1e6, supportsImage: true, multiple: 0.13 },
+  { id: "1Drift-A3bM5nK8pQ2w", name: "Qwen 3.5 A3B", contextWindow: 256e3, supportsImage: false, multiple: 0.13 },
+  { id: "1Synapse-G5aJ8wL1dV4s", name: "Kimi K2.6", contextWindow: 256e3, supportsImage: true, multiple: 0.14 },
+  { id: "1Chronos-L53W8nP2qR6m", name: "GLM-5.3", contextWindow: 1e6, supportsImage: false, multiple: 0.16 },
+  { id: "1Chronos-G5p2V9sA2mK7", name: "GLM-5.2", contextWindow: 1e6, supportsImage: false, multiple: 0.16 },
+  { id: "1Nova-bW7yT4kL9pN2", name: "DeepSeek V4 Pro", contextWindow: 1e6, supportsImage: false, multiple: 0.17 },
+  { id: "1Drift-T3TB6WS9a23w", name: "Qwen 3.8 Max", contextWindow: 1e6, supportsImage: true, multiple: 0.44 },
+  { id: "1Orbit-I9eY4tK8bW1f", name: "Professional", contextWindow: 1e6, supportsImage: true, multiple: 1 },
+  { id: "1Orbit-Q7hN3xR6cP2m", name: "Ultimate", contextWindow: 1e6, supportsImage: true, multiple: 2.8 }
+]);
+var ACCIO = {
+  id: "accio",
+  displayName: "Accio (\u963F\u91CC)",
+  gatewayBaseUrl: "https://phoenix-gw.alibaba.com",
+  loginBaseUrlOf(region) {
+    return LOGIN_BASE[region] ?? LOGIN_BASE.cn;
+  },
+  clientId: "accio-work",
+  defaultCredentialRef: "ACCIO_ACCESS_TOKEN",
+  appKey: "OneChat",
+  appVersion: "0.34.4",
+  fallbackModels: FALLBACK_MODELS
+};
+
+// vendor/channel-pack/src/accio-credits.ts
+var ACCIO_CREDIT_UNIT = "credit";
+var ACCIO_CREDIT_BUCKETS = Object.freeze([
+  { key: "daily", label: "\u6BCF\u65E5\u79EF\u5206" },
+  { key: "monthly", label: "\u6BCF\u6708\u79EF\u5206" },
+  { key: "referral", label: "\u63A8\u8350\u79EF\u5206" }
+]);
+var ACCIO_NOT_LOGIN_BASE = "\u672A\u767B\u5F55\u6216\u767B\u5F55\u5DF2\u8FC7\u671F\uFF08NOT_LOGIN\uFF09\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55 Accio \u8D26\u53F7";
+var ACCIO_TIER_LABELS = /* @__PURE__ */ new Map([
+  ["freemember", "Free"]
+]);
+function accioAccessToken(credential) {
+  return typeof credential?.access_token === "string" ? credential.access_token : "";
+}
+function readRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function readString7(source, key) {
+  const value = source[key];
+  return typeof value === "string" ? value : "";
+}
+function readScalarString(source, key) {
+  const value = source[key];
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+function readNumber8(source, key) {
+  const value = source[key];
+  if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : void 0;
+  }
+  return void 0;
+}
+function parseAccioEnvelope(parsed, httpStatus, text) {
+  const statusOk = httpStatus >= 200 && httpStatus < 300;
+  const record3 = readRecord2(parsed);
+  if (record3 === void 0) {
+    return {
+      httpStatus,
+      ok: false,
+      authFailed: httpStatus === 401 || httpStatus === 403,
+      message: `HTTP ${httpStatus} ${text.slice(0, 200)}`.trim()
+    };
+  }
+  const code = readScalarString(record3, "code");
+  const message2 = readScalarString(record3, "message") || readScalarString(record3, "error");
+  const data = readRecord2(record3.data);
+  const codeUpper = code.toUpperCase();
+  const authFailed = httpStatus === 401 || httpStatus === 403 || codeUpper === "401" || codeUpper === "NOT_LOGIN" || message2.toUpperCase() === "NOT_LOGIN";
+  const summary = [
+    httpStatus > 0 ? `HTTP ${httpStatus}` : "",
+    code.length > 0 ? `code=${code}` : "",
+    message2
+  ].filter((part) => part.length > 0).join(" ");
+  return {
+    httpStatus,
+    ok: statusOk && record3.success !== false && data !== void 0,
+    authFailed,
+    data,
+    message: summary.length > 0 ? summary : `HTTP ${httpStatus}`
+  };
+}
+async function callAccioEndpoint(options) {
+  const token = accioAccessToken(options.credential);
+  const base = `${ACCIO.gatewayBaseUrl}${options.path}`;
+  const headers = { Accept: "application/json" };
+  let url = base;
+  let body;
+  if (options.method === "POST") {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify({ accessToken: token });
+  } else {
+    url = `${base}?${new URLSearchParams({ accessToken: token }).toString()}`;
+  }
+  const init = {
+    method: options.method,
+    headers,
+    signal: AbortSignal.timeout(ACCIO_REQUEST_TIMEOUT_MS),
+    ...body === void 0 ? {} : { body }
+  };
+  try {
+    const response = await options.fetcher(url, init);
+    const text = await response.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = void 0;
+    }
+    return parseAccioEnvelope(parsed, response.status, text);
+  } catch (error) {
+    return {
+      httpStatus: 0,
+      ok: false,
+      authFailed: false,
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+function accioNotLoginMessage(envelope) {
+  return envelope.message.length > 0 ? `${ACCIO_NOT_LOGIN_BASE}\uFF08\u670D\u52A1\u7AEF\u539F\u6587\uFF1A${envelope.message}\uFF09` : ACCIO_NOT_LOGIN_BASE;
+}
+function accioCreditBuckets(subscription) {
+  const root = readRecord2(subscription);
+  if (root === void 0) return [];
+  const entitlement = readRecord2(root.entitlement);
+  if (entitlement === void 0) return [];
+  const rows = [];
+  for (const bucket of ACCIO_CREDIT_BUCKETS) {
+    const value = readRecord2(entitlement[bucket.key]);
+    if (value === void 0) continue;
+    const remaining = readNumber8(value, "remaining");
+    if (remaining === void 0) continue;
+    rows.push({
+      key: bucket.key,
+      label: bucket.label,
+      total: readNumber8(value, "total") ?? 0,
+      used: readNumber8(value, "used") ?? 0,
+      remaining
+    });
+  }
+  return rows;
+}
+async function fetchAccioUserInfo(credential, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  if (accioAccessToken(credential) === "") return void 0;
+  const envelope = await callAccioEndpoint({
+    path: ACCIO_USERINFO_PATH,
+    method: "POST",
+    credential,
+    fetcher
+  });
+  if (!envelope.ok || envelope.data === void 0) return void 0;
+  const data = envelope.data;
+  return {
+    userId: readString7(data, "userId"),
+    userName: readString7(data, "userName"),
+    routeRegion: readString7(data, "routeRegion"),
+    userLevel: readString7(data, "userLevel"),
+    maskedMobile: readString7(data, "maskedMobile")
+  };
+}
+async function fetchAccioQuota(credential, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  if (accioAccessToken(credential) === "") return void 0;
+  const envelope = await callAccioEndpoint({
+    path: ACCIO_QUOTA_PATH,
+    method: "GET",
+    credential,
+    fetcher
+  });
+  if (!envelope.ok || envelope.data === void 0) return void 0;
+  const data = envelope.data;
+  const usagePercent = readNumber8(data, "usagePercent");
+  const refreshCountdownSeconds = readNumber8(data, "refreshCountdownSeconds");
+  return {
+    ...usagePercent === void 0 ? {} : { usagePercent },
+    ...refreshCountdownSeconds === void 0 ? {} : { refreshCountdownSeconds }
+  };
+}
+function accioQuotaResetIso(quota, nowMs = Date.now()) {
+  const seconds = quota?.refreshCountdownSeconds;
+  if (seconds === void 0 || !Number.isFinite(seconds) || seconds <= 0) return "";
+  return new Date(nowMs + seconds * 1e3).toISOString();
+}
+function accioAccountTierExtra(userInfo) {
+  const level = userInfo?.userLevel ?? "";
+  if (level === "") return void 0;
+  const label = ACCIO_TIER_LABELS.get(level.toLowerCase()) ?? level;
+  return { accountTier: { label, title: `Accio \u8D26\u53F7\u7B49\u7EA7\uFF08${level}\uFF09` } };
+}
+function makeAccioPackage(name2, total, used, remaining, cycleEndTime) {
+  return {
+    name: name2,
+    unit: ACCIO_CREDIT_UNIT,
+    remaining,
+    total,
+    used,
+    active: true,
+    cycleStartTime: "",
+    cycleEndTime,
+    expiredTime: ""
+  };
+}
+async function fetchAccioBalanceDetailed(credential, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  if (accioAccessToken(credential) === "") {
+    return { balance: null, error: ACCIO_NOT_LOGIN_BASE };
+  }
+  const subscription = await callAccioEndpoint({
+    path: ACCIO_SUBSCRIPTION_PATH,
+    method: "GET",
+    credential,
+    fetcher
+  });
+  if (subscription.authFailed) {
+    return { balance: null, error: accioNotLoginMessage(subscription) };
+  }
+  if (!subscription.ok || subscription.data === void 0) {
+    return { balance: null, error: `\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A${subscription.message}` };
+  }
+  const data = subscription.data;
+  const buckets = accioCreditBuckets(data);
+  const topRemaining = readNumber8(data, "remaining");
+  if (buckets.length === 0 && topRemaining === void 0) {
+    return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A\u54CD\u5E94\u672A\u5305\u542B\u4F59\u989D\u5B57\u6BB5" };
+  }
+  const [quota, userInfo] = await Promise.all([
+    fetchAccioQuota(credential, { fetcher }),
+    fetchAccioUserInfo(credential, { fetcher })
+  ]);
+  const dailyResetAt = accioQuotaResetIso(quota);
+  const packages = buckets.map((bucket) => makeAccioPackage(
+    bucket.label,
+    roundCredits(bucket.total),
+    roundCredits(bucket.used),
+    roundCredits(bucket.remaining),
+    // 只有 daily 知道周期何时结束（quota 的倒计时）；其余留空而不是复用它的值。
+    bucket.key === "daily" ? dailyResetAt : ""
+  ));
+  const total = roundCredits(
+    topRemaining ?? buckets.reduce((sum, bucket) => sum + bucket.remaining, 0)
+  );
+  if (packages.length === 0) {
+    packages.push(makeAccioPackage("\u53EF\u7528\u79EF\u5206", total, 0, total, dailyResetAt));
+  }
+  const balance = { total, packages, expiredTotal: 0 };
+  const extra = accioAccountTierExtra(userInfo);
+  return {
+    balance,
+    ...extra === void 0 ? {} : { extra }
+  };
 }
 
 // vendor/channel-pack/src/astudio-product.ts
@@ -63668,6 +64788,12 @@ function readAstudioLocalTime(source, key) {
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
+function astudioLocalTimeMs(source, key) {
+  const raw = readAstudioLocalTime(source, key);
+  if (raw.length === 0) return void 0;
+  const ms = Date.parse(raw.replace(" ", "T"));
+  return Number.isFinite(ms) && ms > 0 ? ms : void 0;
+}
 function failDetail(error) {
   return { balance: null, error };
 }
@@ -63682,6 +64808,7 @@ function buildAstudioBalance(data) {
     if (remaining === void 0) return;
     const poolTotal = readAstudioInt(data, totalKey) ?? remaining;
     const expiredTime = readAstudioLocalTime(data, expireKey);
+    const deductionEndTime = astudioLocalTimeMs(data, expireKey);
     packages.push({
       name: name2,
       unit: ASTUDIO_CREDIT_UNIT,
@@ -63693,8 +64820,10 @@ function buildAstudioBalance(data) {
       cycleStartTime: "",
       cycleEndTime: "",
       // ⚠️ `*NextExpireTime` **不在官方 Schema 内**（Effect.Struct 会裁未知字段），
-      // 且是**不带时区的本地时间串** ⇒ 原样透出、不 Date.parse、不做数学比较。
-      expiredTime
+      // 且是**不带时区的本地时间串** ⇒ `expiredTime` 原样透出（展示用），
+      // 数学比较统一走 `deductionEndTime`（上面的归一化值）。
+      expiredTime,
+      ...deductionEndTime === void 0 ? {} : { deductionEndTime }
     });
   };
   pushPool("\u4F1A\u5458\u79EF\u5206", "memberTotal", "memberBalance", "memberNextExpireTime");
@@ -63703,6 +64832,7 @@ function buildAstudioBalance(data) {
   const sparkBalance = readAstudioInt(data, "sparkTotalBalance");
   if (sparkBalance !== void 0) {
     const sparkTotal = readAstudioInt(data, "sparkTotalAmount") ?? sparkBalance;
+    const sparkDeductionEndTime = astudioLocalTimeMs(data, "sparkNextExpireTime");
     packages.push({
       name: "\u661F\u706B\u79EF\u5206\uFF08\u72EC\u7ACB\u6C60\uFF0C\u4E0D\u53C2\u4E0E\u4E3B\u6C60\u5408\u8BA1\uFF09",
       unit: ASTUDIO_CREDIT_UNIT,
@@ -63712,7 +64842,8 @@ function buildAstudioBalance(data) {
       active: sparkBalance > 0,
       cycleStartTime: "",
       cycleEndTime: "",
-      expiredTime: readAstudioLocalTime(data, "sparkNextExpireTime")
+      expiredTime: readAstudioLocalTime(data, "sparkNextExpireTime"),
+      ...sparkDeductionEndTime === void 0 ? {} : { deductionEndTime: sparkDeductionEndTime }
     });
   }
   if (packages.length === 0) {
@@ -63777,6 +64908,13 @@ async function fetchAstudioBalanceDetailed(credential, options = {}) {
     return failDetail("\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A\u54CD\u5E94\u672A\u5305\u542B\u4F59\u989D\u5B57\u6BB5");
   }
   return { balance };
+}
+async function fetchAstudioCreditBalance(credential, product) {
+  const result = await fetchAstudioBalanceDetailed(
+    credential,
+    product === void 0 ? {} : { product }
+  );
+  return result.balance;
 }
 var ASTUDIO_CLIENT_POPUPS_PENDING_PATH = "/client-popups/pending";
 var ASTUDIO_CLIENT_POPUPS_COMPLETE_PATH = "/client-popups/complete";
@@ -64012,289 +65150,6 @@ async function claimAstudioDailyReward(credential, options = {}) {
   };
 }
 var claimDaily = claimAstudioDailyReward;
-
-// vendor/channel-pack/src/accio-product.ts
-var ACCIO_TOKEN_EXCHANGE_PATH = "/api/oauth/token";
-var ACCIO_REFRESH_PATH = "/api/auth/refresh_token";
-var ACCIO_LLM_PATH = "/api/adk/llm/generateContent";
-var ACCIO_CATALOG_PATH = "/api/llm/config/v2";
-var ACCIO_USERINFO_PATH = "/api/auth/userinfo";
-var ACCIO_SUBSCRIPTION_PATH = "/api/entitlement/currentSubscription";
-var ACCIO_QUOTA_PATH = "/api/entitlement/quota";
-var ACCIO_REQUEST_TIMEOUT_MS = 3e4;
-var ACCIO_LOGIN_TIMEOUT_MS = 6e5;
-var ACCIO_REGIONS = Object.freeze(["cn", "global"]);
-var LOGIN_BASE = Object.freeze({
-  cn: "https://www.accio-ai.com",
-  global: "https://zh.accio.com"
-});
-var FALLBACK_MODELS = Object.freeze([
-  { id: "1Drift-N8kP2Q7wR5mX", name: "Qwen 3.8 27B", contextWindow: 512e3, supportsImage: true, multiple: 0.013 },
-  { id: "1Drift-F8hS3mK7pL2n", name: "Qwen 3.8 Flash", contextWindow: 1e6, supportsImage: true, multiple: 0.03 },
-  { id: "1Chronos-F53X9nQ3rT8w", name: "GLM 5.3 Flash", contextWindow: 1e6, supportsImage: true, multiple: 0.03 },
-  { id: "1Nova-Q3xM8vJ1rH6z", name: "DeepSeek V4.1 Flash", contextWindow: 1e6, supportsImage: true, multiple: 0.045 },
-  { id: "1Zenith-M27hS2SR5xQ2p", name: "MiniMax M3", contextWindow: 1e6, supportsImage: true, multiple: 0.08 },
-  { id: "1Chronos-dX3cV9sA2mK7", name: "GLM 5.1", contextWindow: 2e5, supportsImage: false, multiple: 0.12 },
-  { id: "1Nexus-R3wF8qJ5vB6h", name: "Standard", contextWindow: 1e6, supportsImage: true, multiple: 0.13 },
-  { id: "1Drift-A3bM5nK8pQ2w", name: "Qwen 3.5 A3B", contextWindow: 256e3, supportsImage: false, multiple: 0.13 },
-  { id: "1Synapse-G5aJ8wL1dV4s", name: "Kimi K2.6", contextWindow: 256e3, supportsImage: true, multiple: 0.14 },
-  { id: "1Chronos-L53W8nP2qR6m", name: "GLM-5.3", contextWindow: 1e6, supportsImage: false, multiple: 0.16 },
-  { id: "1Chronos-G5p2V9sA2mK7", name: "GLM-5.2", contextWindow: 1e6, supportsImage: false, multiple: 0.16 },
-  { id: "1Nova-bW7yT4kL9pN2", name: "DeepSeek V4 Pro", contextWindow: 1e6, supportsImage: false, multiple: 0.17 },
-  { id: "1Drift-T3TB6WS9a23w", name: "Qwen 3.8 Max", contextWindow: 1e6, supportsImage: true, multiple: 0.44 },
-  { id: "1Orbit-I9eY4tK8bW1f", name: "Professional", contextWindow: 1e6, supportsImage: true, multiple: 1 },
-  { id: "1Orbit-Q7hN3xR6cP2m", name: "Ultimate", contextWindow: 1e6, supportsImage: true, multiple: 2.8 }
-]);
-var ACCIO = {
-  id: "accio",
-  displayName: "Accio (\u963F\u91CC)",
-  gatewayBaseUrl: "https://phoenix-gw.alibaba.com",
-  loginBaseUrlOf(region) {
-    return LOGIN_BASE[region] ?? LOGIN_BASE.cn;
-  },
-  clientId: "accio-work",
-  defaultCredentialRef: "ACCIO_ACCESS_TOKEN",
-  appKey: "OneChat",
-  appVersion: "0.34.4",
-  fallbackModels: FALLBACK_MODELS
-};
-
-// vendor/channel-pack/src/accio-credits.ts
-var ACCIO_CREDIT_UNIT = "credit";
-var ACCIO_CREDIT_BUCKETS = Object.freeze([
-  { key: "daily", label: "\u6BCF\u65E5\u79EF\u5206" },
-  { key: "monthly", label: "\u6BCF\u6708\u79EF\u5206" },
-  { key: "referral", label: "\u63A8\u8350\u79EF\u5206" }
-]);
-var ACCIO_NOT_LOGIN_BASE = "\u672A\u767B\u5F55\u6216\u767B\u5F55\u5DF2\u8FC7\u671F\uFF08NOT_LOGIN\uFF09\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55 Accio \u8D26\u53F7";
-var ACCIO_TIER_LABELS = /* @__PURE__ */ new Map([
-  ["freemember", "Free"]
-]);
-function accioAccessToken(credential) {
-  return typeof credential?.access_token === "string" ? credential.access_token : "";
-}
-function readRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
-}
-function readString7(source, key) {
-  const value = source[key];
-  return typeof value === "string" ? value : "";
-}
-function readScalarString(source, key) {
-  const value = source[key];
-  if (typeof value === "string") return value.trim();
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return "";
-}
-function readNumber8(source, key) {
-  const value = source[key];
-  if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : void 0;
-  }
-  return void 0;
-}
-function parseAccioEnvelope(parsed, httpStatus, text) {
-  const statusOk = httpStatus >= 200 && httpStatus < 300;
-  const record3 = readRecord2(parsed);
-  if (record3 === void 0) {
-    return {
-      httpStatus,
-      ok: false,
-      authFailed: httpStatus === 401 || httpStatus === 403,
-      message: `HTTP ${httpStatus} ${text.slice(0, 200)}`.trim()
-    };
-  }
-  const code = readScalarString(record3, "code");
-  const message2 = readScalarString(record3, "message") || readScalarString(record3, "error");
-  const data = readRecord2(record3.data);
-  const codeUpper = code.toUpperCase();
-  const authFailed = httpStatus === 401 || httpStatus === 403 || codeUpper === "401" || codeUpper === "NOT_LOGIN" || message2.toUpperCase() === "NOT_LOGIN";
-  const summary = [
-    httpStatus > 0 ? `HTTP ${httpStatus}` : "",
-    code.length > 0 ? `code=${code}` : "",
-    message2
-  ].filter((part) => part.length > 0).join(" ");
-  return {
-    httpStatus,
-    ok: statusOk && record3.success !== false && data !== void 0,
-    authFailed,
-    data,
-    message: summary.length > 0 ? summary : `HTTP ${httpStatus}`
-  };
-}
-async function callAccioEndpoint(options) {
-  const token = accioAccessToken(options.credential);
-  const base = `${ACCIO.gatewayBaseUrl}${options.path}`;
-  const headers = { Accept: "application/json" };
-  let url = base;
-  let body;
-  if (options.method === "POST") {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify({ accessToken: token });
-  } else {
-    url = `${base}?${new URLSearchParams({ accessToken: token }).toString()}`;
-  }
-  const init = {
-    method: options.method,
-    headers,
-    signal: AbortSignal.timeout(ACCIO_REQUEST_TIMEOUT_MS),
-    ...body === void 0 ? {} : { body }
-  };
-  try {
-    const response = await options.fetcher(url, init);
-    const text = await response.text();
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = void 0;
-    }
-    return parseAccioEnvelope(parsed, response.status, text);
-  } catch (error) {
-    return {
-      httpStatus: 0,
-      ok: false,
-      authFailed: false,
-      message: error instanceof Error ? error.message : String(error)
-    };
-  }
-}
-function accioNotLoginMessage(envelope) {
-  return envelope.message.length > 0 ? `${ACCIO_NOT_LOGIN_BASE}\uFF08\u670D\u52A1\u7AEF\u539F\u6587\uFF1A${envelope.message}\uFF09` : ACCIO_NOT_LOGIN_BASE;
-}
-function accioCreditBuckets(subscription) {
-  const root = readRecord2(subscription);
-  if (root === void 0) return [];
-  const entitlement = readRecord2(root.entitlement);
-  if (entitlement === void 0) return [];
-  const rows = [];
-  for (const bucket of ACCIO_CREDIT_BUCKETS) {
-    const value = readRecord2(entitlement[bucket.key]);
-    if (value === void 0) continue;
-    const remaining = readNumber8(value, "remaining");
-    if (remaining === void 0) continue;
-    rows.push({
-      key: bucket.key,
-      label: bucket.label,
-      total: readNumber8(value, "total") ?? 0,
-      used: readNumber8(value, "used") ?? 0,
-      remaining
-    });
-  }
-  return rows;
-}
-async function fetchAccioUserInfo(credential, options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  if (accioAccessToken(credential) === "") return void 0;
-  const envelope = await callAccioEndpoint({
-    path: ACCIO_USERINFO_PATH,
-    method: "POST",
-    credential,
-    fetcher
-  });
-  if (!envelope.ok || envelope.data === void 0) return void 0;
-  const data = envelope.data;
-  return {
-    userId: readString7(data, "userId"),
-    userName: readString7(data, "userName"),
-    routeRegion: readString7(data, "routeRegion"),
-    userLevel: readString7(data, "userLevel"),
-    maskedMobile: readString7(data, "maskedMobile")
-  };
-}
-async function fetchAccioQuota(credential, options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  if (accioAccessToken(credential) === "") return void 0;
-  const envelope = await callAccioEndpoint({
-    path: ACCIO_QUOTA_PATH,
-    method: "GET",
-    credential,
-    fetcher
-  });
-  if (!envelope.ok || envelope.data === void 0) return void 0;
-  const data = envelope.data;
-  const usagePercent = readNumber8(data, "usagePercent");
-  const refreshCountdownSeconds = readNumber8(data, "refreshCountdownSeconds");
-  return {
-    ...usagePercent === void 0 ? {} : { usagePercent },
-    ...refreshCountdownSeconds === void 0 ? {} : { refreshCountdownSeconds }
-  };
-}
-function accioQuotaResetIso(quota, nowMs = Date.now()) {
-  const seconds = quota?.refreshCountdownSeconds;
-  if (seconds === void 0 || !Number.isFinite(seconds) || seconds <= 0) return "";
-  return new Date(nowMs + seconds * 1e3).toISOString();
-}
-function accioAccountTierExtra(userInfo) {
-  const level = userInfo?.userLevel ?? "";
-  if (level === "") return void 0;
-  const label = ACCIO_TIER_LABELS.get(level.toLowerCase()) ?? level;
-  return { accountTier: { label, title: `Accio \u8D26\u53F7\u7B49\u7EA7\uFF08${level}\uFF09` } };
-}
-function makeAccioPackage(name2, total, used, remaining, cycleEndTime) {
-  return {
-    name: name2,
-    unit: ACCIO_CREDIT_UNIT,
-    remaining,
-    total,
-    used,
-    active: true,
-    cycleStartTime: "",
-    cycleEndTime,
-    expiredTime: ""
-  };
-}
-async function fetchAccioBalanceDetailed(credential, options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  if (accioAccessToken(credential) === "") {
-    return { balance: null, error: ACCIO_NOT_LOGIN_BASE };
-  }
-  const subscription = await callAccioEndpoint({
-    path: ACCIO_SUBSCRIPTION_PATH,
-    method: "GET",
-    credential,
-    fetcher
-  });
-  if (subscription.authFailed) {
-    return { balance: null, error: accioNotLoginMessage(subscription) };
-  }
-  if (!subscription.ok || subscription.data === void 0) {
-    return { balance: null, error: `\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A${subscription.message}` };
-  }
-  const data = subscription.data;
-  const buckets = accioCreditBuckets(data);
-  const topRemaining = readNumber8(data, "remaining");
-  if (buckets.length === 0 && topRemaining === void 0) {
-    return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF1A\u54CD\u5E94\u672A\u5305\u542B\u4F59\u989D\u5B57\u6BB5" };
-  }
-  const [quota, userInfo] = await Promise.all([
-    fetchAccioQuota(credential, { fetcher }),
-    fetchAccioUserInfo(credential, { fetcher })
-  ]);
-  const dailyResetAt = accioQuotaResetIso(quota);
-  const packages = buckets.map((bucket) => makeAccioPackage(
-    bucket.label,
-    roundCredits(bucket.total),
-    roundCredits(bucket.used),
-    roundCredits(bucket.remaining),
-    // 只有 daily 知道周期何时结束（quota 的倒计时）；其余留空而不是复用它的值。
-    bucket.key === "daily" ? dailyResetAt : ""
-  ));
-  const total = roundCredits(
-    topRemaining ?? buckets.reduce((sum, bucket) => sum + bucket.remaining, 0)
-  );
-  if (packages.length === 0) {
-    packages.push(makeAccioPackage("\u53EF\u7528\u79EF\u5206", total, 0, total, dailyResetAt));
-  }
-  const balance = { total, packages, expiredTotal: 0 };
-  const extra = accioAccountTierExtra(userInfo);
-  return {
-    balance,
-    ...extra === void 0 ? {} : { extra }
-  };
-}
 
 // vendor/channel-pack/src/officeace-auth.ts
 var officeace_auth_exports = {};
@@ -65294,6 +66149,1164 @@ function isBasicCredentialRejection(status, body) {
   return /APIG\.1009/i.test(body) || /AppKey or AppSecret/i.test(body);
 }
 
+// vendor/channel-pack/src/qoder-machine.ts
+import { execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
+import { existsSync as existsSync7, readFileSync as readFileSync8, readdirSync as readdirSync2 } from "node:fs";
+import { homedir as homedir7 } from "node:os";
+import { join as join9 } from "node:path";
+var RUNTIME_INFO_TIMEOUT_MS = 2e4;
+var cached;
+function candidatePaths() {
+  const override = process.env.QODER_MACHINE_TOKEN_PATH;
+  if (override !== void 0 && override.length > 0) return [override];
+  const paths = [];
+  const appData = process.env.APPDATA;
+  if (appData !== void 0 && appData.length > 0) {
+    for (const dir of ["Qoder", "Qoder CN"]) {
+      paths.push(join9(appData, dir, "SharedClientCache", "cache", "machine_token.json"));
+    }
+  }
+  const home = homedir7();
+  for (const dir of ["Qoder", "Qoder CN"]) {
+    paths.push(join9(home, "Library", "Application Support", dir, "SharedClientCache", "cache", "machine_token.json"));
+    paths.push(join9(home, ".config", dir, "SharedClientCache", "cache", "machine_token.json"));
+  }
+  return paths;
+}
+function parseFile(path4) {
+  let raw;
+  try {
+    raw = readFileSync8(path4, "utf8");
+  } catch {
+    return void 0;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return void 0;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return void 0;
+  const record3 = parsed;
+  const token = record3.token;
+  const type = record3.type;
+  if (typeof token !== "string" || token.length === 0) return void 0;
+  if (typeof type !== "string" || type.length === 0) return void 0;
+  return { token, type };
+}
+async function resolveQoderMachineIdentityAsync(forceExecutable) {
+  if (cached !== void 0) return cached ?? void 0;
+  const live = await readFromRuntimeInfoAsync(forceExecutable);
+  if (live !== void 0) {
+    cached = live;
+    return live;
+  }
+  for (const path4 of candidatePaths()) {
+    const identity = parseFile(path4);
+    if (identity !== void 0) {
+      cached = identity;
+      return identity;
+    }
+  }
+  cached = null;
+  return void 0;
+}
+var QODER_DATA_DIR_NAMES = [".qoder", ".qoder-cn"];
+function findRuntimeInfoExecutable(home, dataDirNames = QODER_DATA_DIR_NAMES) {
+  const exeName = process.platform === "win32" ? "runtime-info.exe" : "runtime-info";
+  for (const dirName of dataDirNames) {
+    const binDir = join9(home, dirName, ".bin");
+    let entries;
+    try {
+      entries = readdirSync2(binDir);
+    } catch {
+      continue;
+    }
+    const dir = entries.find((name2) => name2.startsWith("umid-"));
+    if (dir === void 0) continue;
+    const exe = join9(binDir, dir, exeName);
+    if (existsSync7(exe)) return exe;
+  }
+  return void 0;
+}
+function locateRuntimeInfo(override) {
+  const fromEnv = process.env.QODER_RUNTIME_INFO;
+  const candidate = override ?? (fromEnv !== void 0 && fromEnv.length > 0 ? fromEnv : void 0);
+  if (candidate !== void 0) {
+    return existsSync7(candidate) ? candidate : void 0;
+  }
+  return findRuntimeInfoExecutable(homedir7());
+}
+var RUNTIME_INFO_ENVIRONMENT = "3";
+function runtimeInfoArgs() {
+  return [RUNTIME_INFO_ENVIRONMENT, "--account-stdin"];
+}
+function parseRuntimeInfoOutput(out) {
+  const start = out.indexOf("{");
+  if (start < 0) return void 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(out.slice(start));
+  } catch {
+    return void 0;
+  }
+  if (typeof parsed !== "object" || parsed === null) return void 0;
+  const record3 = parsed;
+  const token = record3.machineToken;
+  const type = record3.machineType;
+  if (typeof token !== "string" || token.length === 0) return void 0;
+  if (typeof type !== "string" || type.length === 0) return void 0;
+  return { token, type };
+}
+async function readFromRuntimeInfoAsync(override) {
+  const exe = locateRuntimeInfo(override);
+  if (exe === void 0) return void 0;
+  return await new Promise((resolve2) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve2(value);
+    };
+    let child;
+    try {
+      child = spawn3(exe, [...runtimeInfoArgs()], { windowsHide: true });
+    } catch {
+      done(void 0);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+      }
+      done(void 0);
+    }, RUNTIME_INFO_TIMEOUT_MS);
+    timer.unref?.();
+    let stdout = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", () => {
+    });
+    child.once("error", () => {
+      clearTimeout(timer);
+      done(void 0);
+    });
+    child.once("close", () => {
+      clearTimeout(timer);
+      done(parseRuntimeInfoOutput(stdout));
+    });
+    child.stdin?.on("error", () => {
+    });
+    child.stdin?.end(JSON.stringify({ account: "" }));
+  });
+}
+async function withQoderMachineHeadersAsync(headers, forceExecutable) {
+  const identity = await resolveQoderMachineIdentityAsync(forceExecutable);
+  if (identity === void 0) return headers;
+  return {
+    ...headers,
+    "Cosy-MachineToken": identity.token,
+    "Cosy-MachineType": identity.type
+  };
+}
+
+// vendor/channel-pack/src/qoder-credits.ts
+var QODER_USAGE_PATH = "/sash/api/v2/me/usage";
+var QODER_CAMPAIGNS_PATH = "/sash/api/v1/me/campaigns";
+var QODER_PERMANENT_EXPIRY_MS = 2534022144e5;
+function isPermanentSentinelMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return false;
+  return ms >= QODER_PERMANENT_EXPIRY_MS || new Date(ms).getUTCFullYear() >= 9999;
+}
+var QODER_CAMPAIGN_REFRESH_HOUR_UTC8 = 10;
+function hasQoderCampaignRefreshedToday(nowMs = Date.now()) {
+  const utc8 = new Date(nowMs + QODER_BILLING_UTC_OFFSET_MS);
+  return utc8.getUTCHours() >= QODER_CAMPAIGN_REFRESH_HOUR_UTC8;
+}
+var QODER_CREDITS_TIMEOUT_MS = 15e3;
+var NOT_ACTIVATED_HINT = "\u8BE5\u8D26\u53F7\u5C1A\u672A\u5728 Qoder \u4FA7\u5F00\u901A\u6BCF\u65E5\u9886\u53D6\uFF08\u6BCF\u65E5 100 Credits\uFF09\u3002\u8BF7\u5148\u7528 Qoder \u5B98\u65B9\u5BA2\u6237\u7AEF\u767B\u5F55\u4E00\u6B21\u8BE5\u8D26\u53F7\uFF0C\u5F00\u901A\u540E\u518D\u56DE\u6765\u9886\u53D6\u3002";
+var NOT_REFRESHED_YET_HINT = `\u4ECA\u5929\u7684\u6BCF\u65E5\u6D3B\u52A8\u5C1A\u672A\u5237\u65B0\uFF08\u6BCF\u65E5 ${QODER_CAMPAIGN_REFRESH_HOUR_UTC8}:00\uFF08UTC+8\uFF09\u5237\u65B0\uFF09\uFF0C\u5F53\u524D\u770B\u5230\u7684\u662F\u6628\u5929\u90A3\u4E00\u8F6E\uFF0C\u8BF7\u7A0D\u540E\u518D\u6765\u9886\u53D6\u3002`;
+function isQoderNotActivated(campaigns, machineHeadersPresent = false) {
+  if (campaigns === void 0) return false;
+  if (!machineHeadersPresent) return false;
+  const hasBenefit = campaigns.campaigns.some((c) => c.actionType === "CLAIM_BENEFIT");
+  if (hasBenefit) return false;
+  if (!campaigns.showCampaign || campaigns.campaigns.length === 0) return false;
+  return true;
+}
+async function creditsHeaders(credential, product) {
+  return await withQoderMachineHeadersAsync({
+    Accept: "application/json",
+    Authorization: `Bearer ${qoderBearerToken(credential)}`,
+    // 桌面 app 身份（`'10'`）；服务端据此进入活动下发分支。
+    "Cosy-ClientType": product.sashClientType,
+    "User-Agent": "Qoder"
+  });
+}
+function readNumber9(source, key) {
+  if (typeof source !== "object" || source === null) return void 0;
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : void 0;
+  }
+  return void 0;
+}
+function readString8(source, key) {
+  if (typeof source !== "object" || source === null) return void 0;
+  const value = source[key];
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+var QODER_PLAN_PACKAGE = "\u5957\u9910\u989D\u5EA6";
+function toPackage(name2, quota, options = {}) {
+  const total = readNumber9(quota, "total");
+  const used = readNumber9(quota, "used");
+  const remainingRaw = readNumber9(quota, "remaining");
+  if (total === void 0 && used === void 0 && remainingRaw === void 0) return void 0;
+  const totalValue = Math.max(0, total ?? 0);
+  const usedValue = Math.max(0, used ?? 0);
+  const remaining = remainingRaw !== void 0 ? Math.max(0, remainingRaw) : Math.max(0, totalValue - usedValue);
+  const explicitMs = options.expiresAtMs;
+  const explicitUsable = typeof explicitMs === "number" && Number.isFinite(explicitMs) && explicitMs > 0;
+  const explicitIsPermanent = explicitUsable && isPermanentSentinelMs(explicitMs);
+  const expMs = options.expiredTime && options.expiredTime.length > 0 ? Date.parse(options.expiredTime.replace(" ", "T")) : Number.NaN;
+  const expIsPermanent = isPermanentSentinelMs(expMs);
+  const deductionEndTime = explicitUsable && !explicitIsPermanent ? explicitMs : Number.isFinite(expMs) && !expIsPermanent ? expMs : void 0;
+  const expiredTimeRaw = options.expiredTime ?? "";
+  return {
+    name: name2,
+    unit: readString8(quota, "unit") ?? "credits",
+    remaining,
+    total: totalValue,
+    used: usedValue,
+    active: options.active ?? true,
+    cycleStartTime: "",
+    cycleEndTime: "",
+    expiredTime: expIsPermanent ? "" : expiredTimeRaw,
+    ...deductionEndTime !== void 0 ? { deductionEndTime } : {}
+  };
+}
+async function fetchQoderCreditBalance(credential, product, fetcher = fetch) {
+  const detailed = await fetchQoderBalanceDetailed(credential, product, { fetcher });
+  return detailed.balance;
+}
+async function fetchQoderBalanceDetailed(credential, product, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  const timeoutMs = options.timeoutMs ?? QODER_CREDITS_TIMEOUT_MS;
+  const url = `${product.openApiBase}${QODER_USAGE_PATH}`;
+  let headers;
+  try {
+    headers = await creditsHeaders(credential, product);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { balance: null, error: `\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u51ED\u636E\u4E0D\u53EF\u7528\uFF09\uFF1A${reason}` };
+  }
+  let response;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  try {
+    response = await fetcher(url, { method: "GET", headers, signal: timeoutSignal });
+  } catch (error) {
+    const hint = networkBlockedHint({
+      error,
+      aborted: timeoutSignal.aborted,
+      subject: product.openApiBase,
+      /**
+       * ⚠️ **只给出路，不断言机制**（2026-10-21 合并审计发现）。
+       *
+       * 旧文案写死「Qoder **国际版**端点在本机被阻断（TCP 能连通、TLS 握手被丢）」，
+       * 两处都错：
+       * ① 本分支被 `isQoderFamily` **两站共用** ⇒ 中国版用户在自己公司网络里失败时，
+       *    会读到与同一句里打印的主机名（`product.openApiBase`）**自相矛盾**的结论；
+       * ② `remedy` 是常量 ⇒ 不论命中哪个码照发，而对 `ENOTFOUND`（DNS 解析不到）
+       *    说「TCP 能连通」是**事实性错误**。
+       * ⇒ 站点已由 `subject`（主机名）点名，机制留给用户自己看码；
+       *    这里只保证**出路**是可操作的（本插件目前**没有**按账号配代理的按钮，
+       *    故只能说「换网络 / 启动前导出 HTTPS_PROXY」）。
+       */
+      remedy: "\u63D2\u4EF6\u8FDB\u7A0B\u4E0D\u8D70\u7CFB\u7EDF\u4EE3\u7406\uFF1B\u8BF7\u5728\u80FD\u76F4\u63A5\u8BBF\u95EE\u8BE5\u5730\u5740\u7684\u7F51\u7EDC\u4E0B\u4F7F\u7528\uFF0C\u6216\u4E3A\u63D2\u4EF6\u8FDB\u7A0B\u914D\u7F6E\u51FA\u53E3\u4EE3\u7406\u540E\u5728\u542F\u52A8 DSH \u524D\u5BFC\u51FA HTTPS_PROXY\u3002"
+    });
+    if (hint !== void 0) return { balance: null, error: hint };
+    const reason = error instanceof Error ? error.message : String(error);
+    return { balance: null, error: `\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u7F51\u7EDC\u5F02\u5E38\uFF09\uFF1A${reason}` };
+  }
+  if (!response.ok) {
+    const status = response.status;
+    if (status === 401 || status === 403) {
+      return {
+        balance: null,
+        error: `\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08HTTP ${status}\uFF0C\u767B\u5F55\u5DF2\u5931\u6548\uFF09\uFF1A\u8BF7\u5220\u9664\u8BE5\u8D26\u53F7\u540E\u91CD\u65B0\u767B\u5F55 Qoder`
+      };
+    }
+    return { balance: null, error: `\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08HTTP ${status}\uFF09` };
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u54CD\u5E94\u4E0D\u662F JSON\uFF09" };
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u54CD\u5E94\u4E0D\u662F\u5BF9\u8C61\uFF09" };
+  }
+  const root = body;
+  if (root.displayMode === "enterprise") {
+    return {
+      balance: null,
+      error: "\u4F01\u4E1A\u7248\u8D26\u53F7\u4E0D\u63D0\u4F9B\u989D\u5EA6\u6570\u5B57\uFF08\u4E0A\u6E38\u53EA\u7ED9\u7F51\u9875\u7248\u7528\u91CF\u94FE\u63A5\uFF09\uFF0C\u8BF7\u5728 Qoder \u7F51\u9875\u7AEF\u67E5\u770B"
+    };
+  }
+  const usage = root.qoderUsage;
+  if (typeof usage !== "object" || usage === null) {
+    return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u54CD\u5E94\u7F3A\u5C11 qoderUsage \u5B57\u6BB5\uFF09" };
+  }
+  const parsed = parseQoderUsage(usage);
+  if (parsed === null) {
+    return { balance: null, error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u54CD\u5E94\u672A\u5305\u542B\u4EFB\u4F55\u989D\u5EA6\u5305\uFF09" };
+  }
+  return { balance: parsed };
+}
+function parseQoderUsage(qoderUsage) {
+  const packages = [];
+  const userQuotaExpiresAtMs = readNumber9(qoderUsage, "expiresAt");
+  const userQuota = toPackage(
+    QODER_PLAN_PACKAGE,
+    qoderUsage.userQuota,
+    { expiresAtMs: userQuotaExpiresAtMs }
+  );
+  if (userQuota !== void 0) packages.push(userQuota);
+  const addOnQuota = toPackage("\u8D44\u6E90\u5305", qoderUsage.addOnQuota);
+  if (addOnQuota !== void 0) packages.push(addOnQuota);
+  const dedicated = qoderUsage.dedicatedResourcePackages;
+  if (Array.isArray(dedicated)) {
+    for (const item of dedicated) {
+      const pkg = toPackage(
+        readString8(item, "name") ?? readString8(item, "id") ?? "\u4E13\u7528\u8D44\u6E90\u5305",
+        item,
+        { expiredTime: readString8(item, "expiresAt") ?? readString8(item, "expires_at") ?? "" }
+      );
+      if (pkg !== void 0) packages.push(pkg);
+    }
+  }
+  if (packages.length === 0) return null;
+  const total = roundCredits(packages.reduce((sum, pkg) => sum + pkg.remaining, 0));
+  return { total, packages, expiredTotal: 0 };
+}
+function parseQoderCampaigns(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return void 0;
+  const root = body;
+  const raw = root.campaigns;
+  const campaigns = [];
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const id = readString8(item, "campaignId");
+      if (id === void 0) continue;
+      campaigns.push({
+        campaignId: id,
+        ...readString8(item, "campaignKey") !== void 0 ? { campaignKey: readString8(item, "campaignKey") } : {},
+        ...readString8(item, "actionType") !== void 0 ? { actionType: readString8(item, "actionType") } : {},
+        ...readString8(item, "claimStatus") !== void 0 ? { claimStatus: readString8(item, "claimStatus") } : {},
+        ...benefitAmount(item) !== void 0 ? { amount: benefitAmount(item) } : {}
+      });
+    }
+  }
+  return {
+    showCampaign: root.showCampaign === true,
+    claimable: root.claimable === true,
+    campaigns
+  };
+}
+function benefitAmount(item) {
+  if (typeof item !== "object" || item === null) return void 0;
+  return readNumber9(item.benefit, "amount");
+}
+async function loadCampaigns(credential, product, fetcher) {
+  const headers = await creditsHeaders(credential, product);
+  const machineHeadersPresent = headers["Cosy-MachineToken"] !== void 0 && headers["Cosy-MachineType"] !== void 0;
+  let response;
+  try {
+    response = await fetcher(`${product.openApiBase}${QODER_CAMPAIGNS_PATH}`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
+    });
+  } catch {
+    return void 0;
+  }
+  if (!response.ok) return void 0;
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return void 0;
+  }
+  const campaigns = parseQoderCampaigns(body);
+  if (campaigns === void 0) return void 0;
+  return { campaigns, machineHeadersPresent };
+}
+function claimableCampaigns(parsed) {
+  return parsed.campaigns.filter(
+    (c) => c.actionType === "CLAIM_BENEFIT" && c.claimStatus === "CLAIMABLE"
+  );
+}
+function parseClaimResult(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return {};
+  const root = body;
+  return {
+    ...readString8(root, "status") !== void 0 ? { status: readString8(root, "status") } : {},
+    ...typeof root.replayed === "boolean" ? { replayed: root.replayed } : {},
+    ...benefitAmount(root) !== void 0 ? { amount: benefitAmount(root) } : {}
+  };
+}
+async function claimQoderCampaign(credential, product, campaignId, fetcher = fetch) {
+  const url = `${product.openApiBase}${QODER_CAMPAIGNS_PATH}/${encodeURIComponent(campaignId)}/claim`;
+  let response;
+  try {
+    response = await fetcher(url, {
+      method: "POST",
+      headers: { ...await creditsHeaders(credential, product), "Content-Type": "application/json" },
+      body: "",
+      signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
+    });
+  } catch (error) {
+    return { kind: "failed", code: -1, message: error instanceof Error ? error.message : String(error) };
+  }
+  const text = await response.text().catch(() => "");
+  let body;
+  try {
+    body = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    return { kind: "failed", code: response.status, message: describeNonJson(response.status, text) };
+  }
+  if (!response.ok) {
+    return { kind: "failed", code: response.status, message: describeNonJson(response.status, text) };
+  }
+  const result = parseClaimResult(body);
+  if (result.replayed === true) {
+    return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6" };
+  }
+  if (result.status !== void 0 && result.status !== "CLAIMED") {
+    return { kind: "failed", code: -1, message: `\u9886\u53D6\u672A\u6210\u529F\uFF08status=${result.status}\uFF09` };
+  }
+  return { kind: "claimed", credit: result.amount ?? 0, streakDays: 0, isStreakDay: false };
+}
+function describeNonJson(status, text) {
+  if (status === 401 || status === 403) return `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${status}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7`;
+  const snippet = text.trim().slice(0, 80).replace(/\s+/g, " ");
+  return `\u670D\u52A1\u7AEF\u8FD4\u56DE\u4E86\u975E JSON \u54CD\u5E94\uFF08HTTP ${status}\uFF09\uFF1A${snippet}`;
+}
+async function claimQoderDailyCheckin(credential, product, fetcher = fetch, nowMs = Date.now()) {
+  const loaded = await loadCampaigns(credential, product, fetcher);
+  if (loaded === void 0) {
+    return { kind: "failed", code: -1, message: "\u6D3B\u52A8\u5217\u8868\u67E5\u8BE2\u5931\u8D25" };
+  }
+  const { campaigns: parsed, machineHeadersPresent } = loaded;
+  const refreshed = hasQoderCampaignRefreshedToday(nowMs);
+  const stale = refreshed ? void 0 : { coversToday: false };
+  const targets = claimableCampaigns(parsed);
+  if (targets.length === 0) {
+    const claimedBefore = parsed.campaigns.some(
+      (c) => c.actionType === "CLAIM_BENEFIT" && c.claimStatus === "CLAIMED"
+    );
+    if (claimedBefore) {
+      if (!refreshed) return { kind: "inactive", message: NOT_REFRESHED_YET_HINT };
+      return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6" };
+    }
+    if (isQoderNotActivated(parsed, machineHeadersPresent)) {
+      return { kind: "inactive", message: NOT_ACTIVATED_HINT, actionRequired: true };
+    }
+    return { kind: "inactive", message: "\u5F53\u524D\u6CA1\u6709\u53EF\u9886\u53D6\u7684\u6D3B\u52A8" };
+  }
+  let total = 0;
+  let firstError;
+  for (const target of targets) {
+    const outcome = await claimQoderCampaign(credential, product, target.campaignId, fetcher);
+    if (outcome.kind === "claimed") total += outcome.credit;
+    else if (outcome.kind === "failed" && firstError === void 0) firstError = outcome.message;
+  }
+  if (total > 0) return { kind: "claimed", credit: total, streakDays: 0, isStreakDay: false, ...stale };
+  if (firstError !== void 0) return { kind: "failed", code: -1, message: firstError };
+  return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6", ...stale };
+}
+
+// vendor/channel-pack/src/minimax-product.ts
+var MINIMAX_FALLBACK_MODELS = [
+  {
+    id: "MiniMax-M3.1-Flash-Preview",
+    name: "M3.1-Flash-Preview",
+    contextWindow: 1e6,
+    maxTokens: 128e3,
+    supportsImage: true,
+    effortOptions: ["default", "low", "medium", "high", "xhigh", "max"],
+    defaultEffort: "default",
+    // ⚠️ forced_on：传 disabled 会被服务端**硬拒**（400 `requires adaptive
+    // thinking ... (2013)`，实测）。它与 M2.7 的 forced_on 不同形态：
+    // M2.7 是**静默忽略**，M3.1 是**报错**。
+    thinkingMode: "forced_on"
+  },
+  {
+    id: "MiniMax-M3",
+    name: "M3",
+    contextWindow: 1e6,
+    maxTokens: 128e3,
+    supportsImage: true,
+    // ⚠️ 实测可开关思考（`switchable`）：不传/disabled → 0 思考块，
+    // adaptive → 有思考块。官方形态见远端 `variants`。
+    // ⚠️ 但它**没有 `effort_options`** ⇒ 没有「档位」可选，
+    // 只有「开/关」两态 —— 与 Qoder `qmodel` 的「只有关闭思考」同型。
+    thinkingMode: "switchable"
+  },
+  {
+    id: "MiniMax-M2.7-highspeed",
+    name: "M2.7-highspeed",
+    contextWindow: 2e5,
+    maxTokens: 128e3,
+    supportsImage: false,
+    // ⚠️ forced_on：传 disabled 被**静默忽略**（实测仍产出思考块）
+    thinkingMode: "forced_on"
+  },
+  {
+    id: "MiniMax-M2.7",
+    name: "M2.7",
+    contextWindow: 2e5,
+    maxTokens: 128e3,
+    supportsImage: false,
+    thinkingMode: "forced_on"
+  }
+];
+var MINIMAX = {
+  id: "minimax",
+  // ⚠️ 与国际版并列后必须带括注，否则用户分不清哪个是国内站
+  //（与 `Qoder (中国版)` / `WorkBuddy (国际版)` 的既有命名风格一致）。
+  displayName: "MiniMax Code (\u4E2D\u56FD\u7248)",
+  accountHost: "https://account.minimax.cn",
+  apiHost: "https://agent.minimax.cn",
+  region: "cn",
+  buildEnv: "prod",
+  clientId: "mcode-public",
+  audience: "agent-backend",
+  scope: "agent.default",
+  defaultCredentialRef: "MINIMAX_ACCESS_TOKEN",
+  fallbackModels: MINIMAX_FALLBACK_MODELS,
+  maxImageBytesInline: 10 * 1024 * 1024,
+  maxRequestBodyBytes: 64 * 1024 * 1024
+};
+var MINIMAX_INTL = {
+  id: "minimaxintl",
+  displayName: "MiniMax Code (\u56FD\u9645\u7248)",
+  accountHost: "https://account.minimax.io",
+  apiHost: "https://agent.minimax.io",
+  // ⚠️ 目录查询参数按站点不同：国内 `cn` / 国际 `en`（上游实现实测）。
+  region: "en",
+  buildEnv: "prod",
+  clientId: "mcode-public",
+  audience: "agent-backend",
+  scope: "agent.default",
+  defaultCredentialRef: "MINIMAXINTL_ACCESS_TOKEN",
+  fallbackModels: MINIMAX_FALLBACK_MODELS,
+  maxImageBytesInline: 10 * 1024 * 1024,
+  maxRequestBodyBytes: 64 * 1024 * 1024
+};
+var MINIMAX_DEVICE_CODE_PATH = "/oauth2/device/code";
+var MINIMAX_TOKEN_PATH = "/oauth2/token";
+var MINIMAX_MODELS_PATH = "/mavis/api/v1/models";
+var MINIMAX_INFER_PATH = "/mavis/api/v1/llm/v1/messages";
+var MINIMAX_SIGNIN_STATUS_PATH = "/minimax-cloud/api/v1/signin/status";
+var MINIMAX_SIGNIN_CLAIM_PATH = "/minimax-cloud/api/v1/signin/claim";
+var MINIMAX_CREDIT_DETAILS_PATH = "/minimax-cloud/api/v1/credit/details";
+var MINIMAX_REQUEST_TIMEOUT_MS = 3e4;
+var MINIMAX_OAUTH_TIMEOUT_MS = 2e4;
+
+// vendor/channel-pack/src/minimax.ts
+function decodeJwtExpMs2(token) {
+  const segments = token.split(".");
+  if (segments.length !== 3 || segments[1] === void 0) return void 0;
+  try {
+    const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
+    return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? Number.isFinite(payload.exp * 1e3) ? payload.exp * 1e3 : void 0 : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function decodeJwtSub(token) {
+  const segments = token.split(".");
+  if (segments.length !== 3 || segments[1] === void 0) return void 0;
+  try {
+    const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
+    return typeof payload.sub === "string" && payload.sub.length > 0 ? payload.sub : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function minimaxCredentialExpiresAtMs(credential) {
+  const raw = credential.expires_at;
+  if (raw !== void 0) {
+    if (/^\d+$/.test(raw)) {
+      const value = Number(raw);
+      const parsed = value > 1e12 ? value : value * 1e3;
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return decodeJwtExpMs2(credential.access_token);
+}
+function isMinimaxExpired(credential, nowMs = Date.now()) {
+  const expiresAt = minimaxCredentialExpiresAtMs(credential);
+  return expiresAt !== void 0 && nowMs >= expiresAt;
+}
+function isMinimaxRefreshable(credential) {
+  return typeof credential.refresh_token === "string" && credential.refresh_token.length > 0;
+}
+var MINIMAX_TRANSPORT_RETRIES = 2;
+var MINIMAX_TRANSPORT_RETRY_BASE_MS = 400;
+function isMinimaxTransportError(error) {
+  const seen = /* @__PURE__ */ new Set();
+  let current = error;
+  for (let depth = 0; current !== null && current !== void 0 && depth < 6; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (typeof current !== "object") break;
+    const record3 = current;
+    const name2 = typeof record3.name === "string" ? record3.name : "";
+    const message2 = typeof record3.message === "string" ? record3.message.toLowerCase() : "";
+    const code = typeof record3.code === "string" ? record3.code : "";
+    if (name2.startsWith("UND_ERR_") || code.startsWith("UND_ERR_")) return true;
+    if (code.startsWith("SELF_SIGNED_CERT") || code.startsWith("CERT_") || code === "DEPTH_ZERO_SELF_SIGNED_CERT" || code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE") return true;
+    if (code === "ECONNRESET" || code === "ECONNREFUSED" || code === "EPIPE" || code === "ETIMEDOUT" || code === "ENOTFOUND" || code === "EAI_AGAIN") return true;
+    if (message2.includes("fetch failed")) return true;
+    if (message2.includes("socket hang up") || message2.includes("terminated") || message2.includes("other side closed")) return true;
+    current = record3.cause;
+  }
+  return false;
+}
+function minimaxRetrySleep(ms) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve2) => {
+    setTimeout(resolve2, ms);
+  });
+}
+async function minimaxFetchWithRetry(fetchOnce2, signal, retries = MINIMAX_TRANSPORT_RETRIES) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetchOnce2();
+    } catch (error) {
+      lastError = error;
+      if (signal?.aborted === true) throw error;
+      if (!isMinimaxTransportError(error)) throw error;
+      if (attempt === retries) break;
+      await minimaxRetrySleep(MINIMAX_TRANSPORT_RETRY_BASE_MS * 2 ** attempt);
+    }
+  }
+  throw lastError;
+}
+var MINIMAX_REDIRECT_MAX_HOPS = 3;
+var MINIMAX_TRUSTED_HOST_SUFFIXES = [
+  "minimax.io",
+  "minimax.cn",
+  "minimaxi.com",
+  "xaminim.com"
+];
+function hasHostSuffix(hostname, suffix) {
+  const host = hostname.trim().toLowerCase();
+  const bare = suffix.trim().toLowerCase();
+  if (host.length === 0 || bare.length === 0) return false;
+  return host === bare || host.endsWith(`.${bare}`);
+}
+function isMinimaxTrustedHost(hostname) {
+  return MINIMAX_TRUSTED_HOST_SUFFIXES.some((suffix) => hasHostSuffix(hostname, suffix));
+}
+function isFollowableRedirect(status) {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+async function minimaxFetchFollowRedirects(url, buildInit, fetcher = fetch, signal, maxHops = MINIMAX_REDIRECT_MAX_HOPS, onGeoRoute) {
+  let currentUrl = url;
+  for (let hop = 0; hop <= maxHops; hop += 1) {
+    const init = buildInit(currentUrl);
+    const response = await fetcher(currentUrl, { ...init, redirect: "manual" });
+    if (!isFollowableRedirect(response.status)) return response;
+    if (signal?.aborted === true) return response;
+    const location = response.headers.get("location");
+    if (location === null || location.length === 0) return response;
+    try {
+      if (isMinimaxGeoRoute(new URL(currentUrl).hostname, response.status, location)) {
+        onGeoRoute?.();
+      }
+    } catch {
+    }
+    let nextUrl;
+    try {
+      nextUrl = new URL(location, currentUrl);
+    } catch {
+      return response;
+    }
+    if (nextUrl.protocol !== "https:" || !isMinimaxTrustedHost(nextUrl.hostname)) return response;
+    if (hop === maxHops) return response;
+    await response.body?.cancel().catch(() => void 0);
+    currentUrl = nextUrl.toString();
+  }
+  throw new Error("minimax: redirect follow exhausted");
+}
+async function minimaxFetch(url, buildInit, options = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  return minimaxFetchWithRetry(
+    () => minimaxFetchFollowRedirects(
+      url,
+      buildInit,
+      fetcher,
+      options.signal,
+      options.maxHops,
+      options.onGeoRoute
+    ),
+    options.signal,
+    options.retries
+  );
+}
+var MINIMAX_XFF_HEADER = "X-Forwarded-For";
+function withMinimaxXff(headers, xff) {
+  if (typeof xff !== "string") return headers;
+  if (/[\r\n]/.test(xff)) return headers;
+  const value = xff.trim();
+  if (value.length === 0) return headers;
+  headers.set(MINIMAX_XFF_HEADER, value);
+  return headers;
+}
+function minimaxHeaders(credential) {
+  const headers = new Headers();
+  headers.set("Authorization", `Bearer ${credential.access_token}`);
+  headers.set("Accept", "application/json");
+  return headers;
+}
+function minimaxHeadersFor(credential, xff, productId) {
+  const headers = minimaxHeaders(credential);
+  if (productId !== "minimaxintl") return headers;
+  return withMinimaxXff(headers, xff);
+}
+function minimaxInferHeaders(credential) {
+  const headers = new Headers();
+  headers.set("Authorization", `Bearer ${credential.access_token}`);
+  headers.set("Content-Type", "application/json");
+  headers.set("Accept", "text/event-stream");
+  return headers;
+}
+function minimaxInferHeadersFor(credential, xff, productId) {
+  const headers = minimaxInferHeaders(credential);
+  if (productId !== "minimaxintl") return headers;
+  return withMinimaxXff(headers, xff);
+}
+function isMinimaxGeoRoute(fromHost, status, location) {
+  if (status !== 307 && status !== 308) return false;
+  if (location === null || location.length === 0) return false;
+  const from = fromHost.trim().toLowerCase();
+  if (!from.startsWith("agent.") || !from.endsWith("minimax.io")) return false;
+  try {
+    const target = new URL(location);
+    return hasHostSuffix(target.hostname, "minimaxi.com");
+  } catch {
+    return false;
+  }
+}
+function describeMinimaxGeoRoute(detail) {
+  const base = "MiniMax \u56FD\u9645\u7AD9\u6309**\u51FA\u53E3 IP \u6240\u5728\u533A\u57DF**\u5206\u6D41\uFF1A\u5F53\u524D\u51FA\u53E3 IP \u88AB\u5224\u6210\u4E2D\u56FD\u533A\uFF08\u5185\u7F51\u6216\u65E0\u6CD5\u89E3\u6790\u7684\u5730\u5740\u4E5F\u4F1A\u88AB\u5224\u6210\u4E2D\u56FD\u533A\uFF09\uFF0C\u8BF7\u6C42\u5DF2\u88AB\u91CD\u5B9A\u5411\u5230\u4E2D\u56FD\u7AD9 \u2014\u2014 \u8FD9\u4E0D\u662F\u51ED\u636E\u95EE\u9898\u3002\u5EFA\u8BAE\u5148\u786E\u8BA4\u672C\u673A\u51FA\u53E3 IP\uFF08\u4F8B\u5982\u6D4F\u89C8\u5668\u6253\u5F00 ifconfig.me\uFF09\uFF0C\u7136\u540E\u4E8C\u9009\u4E00\uFF1A\u2460 \u5728 Jet Hub \u7684\u300CMiniMax Code (\u56FD\u9645\u7248)\u300D\u9762\u677F\u91CC\u586B\u5199\u4E00\u4E2A\u6D77\u5916 IP\uFF08X-Forwarded-For\uFF09\uFF1B\u2461 \u7528\u4EE3\u7406\u628A\u51FA\u53E3 IP \u6539\u5230\u6D77\u5916\u3002";
+  const trimmed = typeof detail === "string" ? detail.trim() : "";
+  if (trimmed.length === 0) return base;
+  const clipped = trimmed.length > 200 ? `${trimmed.slice(0, 200)}\u2026` : trimmed;
+  return `\u4E0A\u6E38\u8FD8\u8FD4\u56DE\u4E86\uFF1A${clipped}\u3002\u53E6\u5916\uFF1A${base}`;
+}
+function positiveInt(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : void 0;
+}
+function nonEmptyString2(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : void 0;
+}
+function stringArray(value) {
+  if (!Array.isArray(value)) return void 0;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    const text = nonEmptyString2(item);
+    if (text === void 0 || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out.length > 0 ? out : void 0;
+}
+function normalizeMinimaxModel(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+  const record3 = raw;
+  const id = nonEmptyString2(record3.id) ?? nonEmptyString2(record3.name);
+  if (id === void 0) return void 0;
+  const name2 = nonEmptyString2(record3.name) ?? id;
+  const limit = typeof record3.limit === "object" && record3.limit !== null ? record3.limit : {};
+  const options = Array.isArray(record3.context_window_options) ? record3.context_window_options.filter((v) => positiveInt(v) !== void 0) : [];
+  const limitContext = positiveInt(limit.context);
+  const contextWindow = options.length > 0 ? Math.max(...options) : limitContext;
+  const modalities = typeof record3.modalities === "object" && record3.modalities !== null ? record3.modalities : {};
+  const inputs = Array.isArray(modalities.input) ? modalities.input.filter((v) => typeof v === "string") : [];
+  const effortOptions = stringArray(record3.effort_options);
+  const rawDefault = nonEmptyString2(record3.default_effort);
+  const defaultEffort = rawDefault !== void 0 && effortOptions?.includes(rawDefault) === true ? rawDefault : void 0;
+  const thinkingConfig = typeof record3.thinking_config === "object" && record3.thinking_config !== null ? record3.thinking_config : void 0;
+  const thinkingMode = thinkingConfig === void 0 ? void 0 : nonEmptyString2(thinkingConfig.mode);
+  const maxTokens = positiveInt(limit.output);
+  return {
+    id,
+    name: name2,
+    // 窗口未知时**不编造**：用 0 表示「不知道」，由 resolveModel 判 `> 0`
+    contextWindow: contextWindow ?? 0,
+    ...maxTokens === void 0 ? {} : { maxTokens },
+    supportsImage: inputs.includes("image"),
+    ...effortOptions === void 0 ? {} : { effortOptions },
+    ...defaultEffort === void 0 ? {} : { defaultEffort },
+    ...thinkingMode === void 0 ? {} : { thinkingMode }
+  };
+}
+function fallbackToEntry(model) {
+  return {
+    id: model.id,
+    name: model.name,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    supportsImage: model.supportsImage,
+    ...model.effortOptions === void 0 ? {} : { effortOptions: model.effortOptions },
+    ...model.defaultEffort === void 0 ? {} : { defaultEffort: model.defaultEffort },
+    ...model.thinkingMode === void 0 ? {} : { thinkingMode: model.thinkingMode }
+  };
+}
+function minimaxFallbackEntries(product = MINIMAX) {
+  return product.fallbackModels.map(fallbackToEntry);
+}
+
+// vendor/channel-pack/src/minimax-credits.ts
+var MINIMAX_SIGNIN_STATUS = Object.freeze({
+  Upcoming: 1,
+  Claimable: 2,
+  Claimed: 3,
+  Disabled: 4
+});
+var MINIMAX_CLAIM_RESULT = Object.freeze({
+  Claimed: 1,
+  AlreadyClaimed: 2
+});
+var MINIMAX_PANEL_SCENE = Object.freeze({
+  Unknown: 0,
+  First: 1,
+  Active: 2,
+  Completed: 3,
+  Broken: 4
+});
+var MINIMAX_SIGNIN_STATUS_VALUES = Object.values(MINIMAX_SIGNIN_STATUS);
+var MINIMAX_PANEL_SCENE_VALUES = Object.values(MINIMAX_PANEL_SCENE);
+function resolveMinimaxTimezoneId(resolve2 = () => Intl.DateTimeFormat().resolvedOptions().timeZone) {
+  try {
+    const zone = resolve2();
+    return typeof zone === "string" && zone.trim().length > 0 ? zone.trim() : "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+function finiteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+function looseAmount(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  if (trimmed === "") return void 0;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : void 0;
+}
+function parseMinimaxSigninPanel(data) {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return void 0;
+  const record3 = data;
+  const scene = finiteNumber(record3.scene);
+  if (scene === void 0 || !MINIMAX_PANEL_SCENE_VALUES.includes(scene)) return void 0;
+  const rawDays = record3.days;
+  if (!Array.isArray(rawDays) || rawDays.length !== 7) return void 0;
+  const days = [];
+  const seen = /* @__PURE__ */ new Set();
+  let claimable = 0;
+  let today = 0;
+  for (const raw of rawDays) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+    const day = raw;
+    const dayNo = finiteNumber(day.day_no);
+    const points = finiteNumber(day.points);
+    const status = finiteNumber(day.status);
+    const bonusRaw = day.bonus_points;
+    const bonusPoints = bonusRaw === void 0 ? 0 : finiteNumber(bonusRaw);
+    if (dayNo === void 0 || !Number.isInteger(dayNo) || dayNo < 1 || dayNo > 7) return void 0;
+    if (seen.has(dayNo)) return void 0;
+    if (points === void 0 || points < 0) return void 0;
+    if (bonusPoints === void 0 || bonusPoints < 0) return void 0;
+    if (typeof day.is_today !== "boolean") return void 0;
+    if (status === void 0 || !MINIMAX_SIGNIN_STATUS_VALUES.includes(status)) {
+      return void 0;
+    }
+    seen.add(dayNo);
+    if (status === MINIMAX_SIGNIN_STATUS.Claimable) claimable++;
+    if (day.is_today) today++;
+    days.push({ dayNo, points, bonusPoints, status, isToday: day.is_today });
+  }
+  if (claimable > 1 || today > 1) return void 0;
+  return { scene, days };
+}
+function minimaxPanelToCheckinStatus(panel) {
+  const today = panel.days.find((day) => day.isToday);
+  const claimedToday = today !== void 0 && today.status === MINIMAX_SIGNIN_STATUS.Claimed;
+  const sorted = [...panel.days].sort((a, b) => a.dayNo - b.dayNo);
+  const todayIndex = sorted.findIndex((day) => day.isToday);
+  let streakDays = 0;
+  if (todayIndex >= 0) {
+    let index = sorted[todayIndex]?.status === MINIMAX_SIGNIN_STATUS.Claimed ? todayIndex : sorted[todayIndex]?.status === MINIMAX_SIGNIN_STATUS.Claimable ? todayIndex - 1 : -1;
+    for (; index >= 0; index -= 1) {
+      if (sorted[index]?.status !== MINIMAX_SIGNIN_STATUS.Claimed) break;
+      streakDays += 1;
+    }
+  }
+  const claimable = panel.days.find((day) => day.status === MINIMAX_SIGNIN_STATUS.Claimable);
+  const target = today ?? claimable;
+  return {
+    active: true,
+    todayCheckedIn: claimedToday,
+    streakDays,
+    // ⚠️ points 就是总数，不相加 bonus_points
+    dailyCredit: target?.points ?? 0,
+    todayCredit: claimedToday ? today?.points ?? 0 : 0,
+    // ⚠️⚠️ **本字段当前不可判读，且几乎恒为 `true`**（2026-09-29 实测发现，
+    // **未修复** —— 因为缺权威语义依据，不擅自改）。
+    //
+    // 实测本机 7 天面板：`bonus_points` 是 **800 档日 400 / 2000 档日 1000**，
+    // **七天全都有值**。故 `bonusPoints > 0` 恒真，不携带任何信息 ——
+    // 与 `credit/details` 那个 `total_count` 误读（见 `fetchMinimaxCreditBalance`）
+    // 是**同一类缺陷形态**：拿一个「在已知样本上恰好符合预期」的字段当判据。
+    //
+    // 危害**目前为零**：`isStreakDay` 在 RPC（`computeClaimSummary` 只用
+    // `credit`）与 Jet Hub UI 上**都没有消费者**（已全仓检索确认）。
+    // 但语义仍是错的：`bonus_points` 看起来是「该日的额外奖励数额」，
+    // **不是**「今天是连续奖励日」的布尔标志。
+    //
+    // 客户端权威实现（`.minimax-forensics/shared-dist/daily-signin.js`）里
+    // **根本没有 `isStreakDay` 这个概念** —— 它只有 `getCurrentSigninStreak()`
+    //（与我们的 `streakDays` 逐行一致）。故无法从客户端反推正确判据。
+    // ⚠️ 要改先拿到 `bonus_points` 的权威语义（或真实「非连续日」样本），
+    // **不要**凭猜测把它改成别的表达式。
+    isStreakDay: (target?.bonusPoints ?? 0) > 0,
+    totalCredits: 0,
+    checkinDates: [],
+    activityName: "",
+    themeName: "",
+    endTime: ""
+  };
+}
+function unwrapEnvelopeData(payload) {
+  const nested = payload.data;
+  return typeof nested === "object" && nested !== null && !Array.isArray(nested) ? nested : payload;
+}
+async function requestEnvelope(url, credential, init, fetcher, product, xff) {
+  try {
+    const buildInit = () => {
+      const headers = minimaxHeadersFor(credential, xff, product.id);
+      if (init.body !== void 0) headers.set("Content-Type", "application/json");
+      return {
+        method: init.method,
+        headers,
+        ...init.body === void 0 ? {} : { body: init.body },
+        signal: AbortSignal.timeout(MINIMAX_REQUEST_TIMEOUT_MS)
+      };
+    };
+    let geoRouted = false;
+    const response = await minimaxFetch(url, buildInit, {
+      fetcher,
+      onGeoRoute: () => {
+        geoRouted = true;
+      }
+    });
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      return {
+        ok: false,
+        code: response.status,
+        message: response.status === 401 || response.status === 403 ? `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${response.status}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7` : `\u670D\u52A1\u7AEF\u8FD4\u56DE\u4E86\u975E JSON \u54CD\u5E94\uFF08HTTP ${response.status}\uFF09`
+      };
+    }
+    if (typeof payload !== "object" || payload === null) {
+      return { ok: false, code: -1, message: "\u54CD\u5E94\u65E0\u6CD5\u89E3\u6790" };
+    }
+    const record3 = payload;
+    if (geoRouted && !response.ok) {
+      return {
+        ok: false,
+        code: response.status,
+        message: describeMinimaxGeoRoute(describeMinimaxApiError(record3))
+      };
+    }
+    const apiError = describeMinimaxApiError(record3);
+    if (!response.ok) {
+      const suffix = apiError === void 0 ? "" : `\uFF1A${apiError}`;
+      if (response.status === 401 || response.status === 403) {
+        return {
+          ok: false,
+          code: response.status,
+          message: `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${response.status}\uFF09${suffix || "\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7"}`
+        };
+      }
+      return {
+        ok: false,
+        code: response.status,
+        message: `\u670D\u52A1\u7AEF\u8FD4\u56DE HTTP ${response.status}${suffix}`
+      };
+    }
+    const baseResp = typeof record3.base_resp === "object" && record3.base_resp !== null ? record3.base_resp : {};
+    const statusCode = finiteNumber(baseResp.status_code);
+    const statusMsg = typeof baseResp.status_msg === "string" ? baseResp.status_msg : "";
+    if (statusCode !== void 0 && statusCode !== 0) {
+      return { ok: false, code: statusCode, message: statusMsg || `\u4E1A\u52A1\u9519\u8BEF ${statusCode}` };
+    }
+    return { ok: true, payload: record3 };
+  } catch (error) {
+    return {
+      ok: false,
+      code: -1,
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+function describeMinimaxApiError(record3) {
+  const candidates = [
+    record3.error_description,
+    record3.error,
+    record3.message,
+    record3.msg,
+    // 嵌套形态：`{ error: { message } }`
+    typeof record3.error === "object" && record3.error !== null ? record3.error.message : void 0
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      const text = candidate.trim();
+      return text.length > 200 ? `${text.slice(0, 200)}\u2026` : text;
+    }
+  }
+  return void 0;
+}
+function withTimezone(base, path4, timezoneId) {
+  const url = new URL(`${base}${path4}`);
+  url.searchParams.set("timezone_id", timezoneId);
+  return url.toString();
+}
+async function fetchMinimaxSigninStatus(credential, fetcher = fetch, product = MINIMAX, xff) {
+  const detailed = await fetchMinimaxSigninStatusDetailed(credential, fetcher, product, xff);
+  return detailed.status;
+}
+async function fetchMinimaxSigninStatusDetailed(credential, fetcher = fetch, product = MINIMAX, xff) {
+  const url = withTimezone(
+    product.apiHost,
+    MINIMAX_SIGNIN_STATUS_PATH,
+    resolveMinimaxTimezoneId()
+  );
+  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher, product, xff);
+  if (!result.ok) return { status: null, error: result.message };
+  const panel = parseMinimaxSigninPanel(unwrapEnvelopeData(result.payload));
+  if (panel === void 0) {
+    return { status: null, error: "\u7B7E\u5230\u9762\u677F\u54CD\u5E94\u5F62\u72B6\u4E0D\u7B26\u5408\u9884\u671F\uFF08\u670D\u52A1\u7AEF\u53EF\u80FD\u6539\u7248\uFF09" };
+  }
+  return { status: minimaxPanelToCheckinStatus(panel) };
+}
+async function claimMinimaxDailyCheckin(credential, fetcher = fetch, product = MINIMAX, xff) {
+  const url = withTimezone(
+    product.apiHost,
+    MINIMAX_SIGNIN_CLAIM_PATH,
+    resolveMinimaxTimezoneId()
+  );
+  const result = await requestEnvelope(url, credential, { method: "POST", body: "{}" }, fetcher, product, xff);
+  if (!result.ok) {
+    return { kind: "failed", code: result.code, message: result.message };
+  }
+  const data = unwrapEnvelopeData(result.payload);
+  const claimResult = finiteNumber(data.claim_result);
+  if (claimResult === MINIMAX_CLAIM_RESULT.AlreadyClaimed) {
+    return { kind: "already-claimed", message: "\u4ECA\u65E5\u5DF2\u7B7E\u5230" };
+  }
+  if (claimResult !== MINIMAX_CLAIM_RESULT.Claimed) {
+    return { kind: "failed", code: -1, message: "\u7B7E\u5230\u54CD\u5E94\u7F3A\u5C11\u6709\u6548\u7684 claim_result" };
+  }
+  const points = finiteNumber(data.points) ?? 0;
+  const panel = parseMinimaxSigninPanel(data.panel);
+  const status = panel === void 0 ? void 0 : minimaxPanelToCheckinStatus(panel);
+  return {
+    kind: "claimed",
+    credit: points,
+    streakDays: status?.streakDays ?? 0,
+    isStreakDay: status?.isStreakDay ?? false
+  };
+}
+async function fetchMinimaxCreditBalance(credential, fetcher = fetch, product = MINIMAX, xff) {
+  const detailed = await fetchMinimaxCreditBalanceDetailed(credential, fetcher, product, xff);
+  return detailed.balance;
+}
+async function fetchMinimaxCreditBalanceDetailed(credential, fetcher = fetch, product = MINIMAX, xff) {
+  const url = `${product.apiHost}${MINIMAX_CREDIT_DETAILS_PATH}`;
+  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher, product, xff);
+  if (!result.ok) return { balance: null, error: result.message };
+  const data = unwrapEnvelopeData(result.payload);
+  const details = Array.isArray(data.details) ? data.details : void 0;
+  if (details === void 0 && finiteNumber(data.total_count) === void 0) {
+    return { balance: null, error: "\u4F59\u989D\u54CD\u5E94\u5F62\u72B6\u4E0D\u7B26\u5408\u9884\u671F\uFF08\u670D\u52A1\u7AEF\u53EF\u80FD\u6539\u7248\uFF09" };
+  }
+  let total = 0;
+  const packages = [];
+  for (const entry of details ?? []) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry;
+    const remaining = looseAmount(row.remaining_amount);
+    if (remaining === void 0) continue;
+    total += remaining;
+    const granted = finiteNumber(row.granted_at_ms);
+    const expires = finiteNumber(row.expire_at_ms);
+    packages.push({
+      /**
+       * ⚠️ 包名**不编造业务含义**：`credit_type` 的语义未实测（实测全部样本都是 2），
+       * 故不按它起名（「签到包」/「活动包」都是猜测）。用发放日期作可区分标识
+       * —— 它来自实测字段，且在 UI 上足以让用户对上「哪一笔」。
+       */
+      name: granted === void 0 ? "\u79EF\u5206\u5305" : `\u79EF\u5206\u5305 ${new Date(granted).toLocaleDateString("zh-CN")}`,
+      unit: "credit",
+      remaining,
+      total: remaining,
+      // ⚠️ `consumed_amount` 与 `granted_amount` 都在，但口径不确定
+      //（`total` 究竟该取发放额还是「剩余+已用」未实测，两者在多笔混合消耗时不等）
+      // ⇒ 只填有把握的：`total = remaining`，`used = 0`。
+      // 两者在 `splitCreditsByExpiry` / `sharedPackageExpiry` 里**都没有消费者**
+      //（它们只读 `active`/`remaining`/`deductionEndTime`），故不编造不会影响分档。
+      used: 0,
+      /**
+       * ⚠️ 恒 `true`，依据是**实测「服务端只回有效包」**（20 条样本全部
+       * `expire_at_ms` 晚于现在、`remaining_amount` 非 0）。
+       * 若将来它开始回过期条目，**必须**改成
+       * `expires !== undefined && expires > Date.now()`
+       * —— 否则过期包会参与分档排序，把「已作废的额度」当成可用。
+       */
+      active: true,
+      cycleStartTime: "",
+      cycleEndTime: "",
+      expiredTime: expires === void 0 ? "" : new Date(expires).toISOString(),
+      /**
+       * ⚠️⚠️ **这才是分档与到期排序唯一读的字段**（`CreditPackage` 的类型注释
+       * 第 130 行起有完整说明）。`expire_at_ms` 实测是**毫秒时间戳**（无需 ×1000），
+       * 直接透传 —— 不要做 `Date.parse` / 时区换算（那是字符串形态才需要的）。
+       * 解析不出就**不写这个键**（`undefined` = 「到期时间未知」，
+       * 分档会落到永久桶），绝不填 0（0 会被判成「服务端未下发」，语义不同）。
+       */
+      ...expires === void 0 ? {} : { deductionEndTime: expires }
+    });
+  }
+  return { balance: { total: roundCredits(total), packages, expiredTotal: 0 } };
+}
+
 // vendor/channel-pack/src/provider-runtime.ts
 var runtimes = /* @__PURE__ */ new Map();
 function registerProviderRuntime(runtime) {
@@ -65375,10 +67388,67 @@ var WIRED_EXPIRY_PROVIDERS = Object.freeze([
   //    + 折算原语（后两者的一致性由 `expiry-runtime-parity.spec.ts` 真跑
   //    `apply()` 锁一致）。
   "autoclaw",
-  // phone-port adapter: astudio-wired —— 本 fork 2026-10-20 接入（与 modelscope / autoclaw 同格：
-  //    有 active 余额即 NEVER、烧光即 UNUSABLE）。上游刻意不接（豁免说明见
-  //    aggregate-adapter.ts）；本 fork 推翻该决定以满足「astudio 参与聚合临期轮换」。
-  "astudio"
+  // ⚠️ AutoClaw **国际版**（`autoclawintl`，2026-10-20）：与 `autoclaw` 同格
+  //    （同一份 `autoclawExpiry` 折算原语，实测批次带 `deductionEndTime`）。
+  //    ⚠️ 它也是**陷阱复发**的一次：只加 `AGGREGATE_CHANNELS` 而不加本表，
+  //    症状是「模型层归并发生了、看起来接好了，但候选层被这道闸门剔掉」，
+  //    用户在聚合轮换列表里**永远看不到国际版**，且**零报错、零日志**。
+  //    ⚠️ 三处同改：本表 + `provider-expiry.ts` 的 `autoclawintl` 条目
+  //    （⚠️ 那里必须传 `AUTOCLAW_INTL`，否则会用国内基址查国际账号余额）
+  //    + 折算原语（`autoclawExpiry` 本身产品无关，无需改）。
+  "autoclawintl",
+  // ⚠️ **Qoder**（中国版 / 国际版，2026-10-20，用户要求补齐三档分档 + 永久锁）。
+  //    折算原语见 `qoderExpiry`（两站共用，只换 product）。
+  //
+  //    取证（2026-10-20，两个真实 qodercn 账号，`/sash/api/v2/me/usage`）：
+  //    - `userQuota` 只有顶层 `expiresAt`，且恒为**永久哨兵**（见下）；
+  //    - `addOnQuota` **无任何日期字段，只给聚合标量**；
+  //    - `dedicatedResourcePackages` 是**唯一**带真实逐包 `expiresAt` 的字段，
+  //      但本机账号为 `undefined`。
+  //
+  //    - 顶层 `qoderUsage.expiresAt = 253402214400000`（`9999-12-31T00:00:00Z`），
+  //      是 Qoder 给 `userQuota` 下发的**永久哨兵**、**不是**到期时刻。
+  //    - 实际后果：`qoder-credits.ts` 对哨兵**不写** `deductionEndTime`
+  //      （写进去会让客户端渲染出「9999-12-31（约 2900000 天后）」荒谬文案）
+  //      ⇒ 有余额 ⇒ `NEVER`（长期，排最后但可当选）。
+  //    - ⚠️ 国际站 `openapi.qoder.sh` 本机**网络不可达**（`fetch failed` ~10.7s），
+  //      ⇒ 对「取不到」保守：`fetchQoderCreditBalance` 返回 `null` ⇒ `UNUSABLE`。
+  //
+  //    ⚠️⚠️ **这是该陷阱的第 7 次复发**（cline → accio → officeace → autoclaw
+  //    → astudio → minimax → qoder），症状恒定**静默**：**决定候选表可见性的
+  //    是本表**，只改 `aggregate-adapter.ts` 的 `AGGREGATE_CHANNELS` 等于没接 ——
+  //    折算恒 `UNUSABLE`，用户在聚合轮换列表里**永远看不到 qoder / qodercn**。
+  //    ⚠️ 两家**各占一行**：本表按 provider id，漏 `qodercn` 会让中国版单独被剔。
+  "qoder",
+  "qodercn",
+  // ⚠️ **AStudio**（讯飞 AstronStudio，2026-10-20）：折算原语见 `astudioExpiry`。
+  //    三池（会员 / 购买 / 赠送）各下发 `*NextExpireTime`（不带时区的本地时间串），
+  //    已由 `astudio-credits.ts` 的 `astudioLocalTimeMs` 归一化到
+  //    `packages[].deductionEndTime`（毫秒）⇒ 与 buddy 系同一套
+  //    `sharedPackageExpiry` 折算即可，不需要自写原语。
+  //    ⚠️⚠️ **这是该陷阱的第 5 次复发**（cline → accio → officeace → autoclaw
+  //    → astudio），症状恒定**静默**：PR 只加了 `aggregate-adapter.ts` 的
+  //    `AGGREGATE_CHANNELS`（模型层归并会发生、看起来接好了），而**决定候选表
+  //    可见性的是本表** —— 漏加它 ⇒ 折算恒 `UNUSABLE`，用户在聚合轮换列表里
+  //    **永远看不到 astudio**，且**无报错、无日志**。
+  //    ⚠️ 三处必须同改：本表 + `provider-expiry.ts` 的 `createProviderExpiry()`
+  //    + 折算原语（后两者的一致性由 `expiry-runtime-parity.spec.ts` 真跑
+  //    `apply()` 锁一致）。
+  "astudio",
+  // ⚠️ **MiniMax Code**（中国版 / 国际版，2026-10-20，用户报障
+  //    「MiniMax Code 积分也有到期时间，也应当有相同功能」）。
+  //    折算原语见 `minimaxExpiry`（两家共用，只换 product）。
+  //    `/minimax-cloud/api/v1/credit/details` 的每条 `details[]` 都带
+  //    `expire_at_ms`（毫秒时间戳）⇒ 可精确折算，无已知代价。
+  //    ⚠️ 国际站必须透传 `xff`（`pool.minimaxXff()`），否则 `agent.minimax.io`
+  //    307 到中国站、token 不被认 ⇒ 折算恒失败（IKMEVG）。
+  //    ⚠️⚠️ **这是该陷阱的第 6 次复发**（cline → accio → officeace → autoclaw
+  //    → astudio → minimax），症状恒定**静默**：**决定候选表可见性的是本表**，
+  //    只改 `aggregate-adapter.ts` 的 `AGGREGATE_CHANNELS` 等于没接。
+  //    ⚠️ 三处必须同改：本表 + `provider-expiry.ts` 的 `createProviderExpiry()`
+  //    + `provider-registry.ts` 的 `usesExpiryWindow` / `permanentLock`。
+  "minimax",
+  "minimaxintl"
 ]);
 var EXPIRY_CACHE_TTL_MS = 6e4;
 function createExpiryProbe(pool, firstModelIdOf, options = {}) {
@@ -65540,6 +67610,7 @@ async function sharedPackageExpiry(fetchBalance) {
   for (const pkg of balance.packages) {
     if (pkg.active !== true) continue;
     if (!(typeof pkg.remaining === "number" && pkg.remaining > 0)) continue;
+    if (isExclusiveCreditPool(pkg)) continue;
     hasAnyCredit = true;
     const end = pkg.deductionEndTime;
     if (typeof end === "number" && Number.isFinite(end) && end > 0 && end < earliest) earliest = end;
@@ -65577,11 +67648,26 @@ async function autoclawExpiry(credential, product, cached2) {
     }
   ));
 }
+async function qoderExpiry(credential, product, cached2) {
+  return sharedPackageExpiry(() => fetchBalanceWithCache(
+    cached2,
+    () => fetchQoderCreditBalance(credential, product)
+  ));
+}
 async function astudioExpiry(credential, product, cached2) {
   return sharedPackageExpiry(() => fetchBalanceWithCache(
     cached2,
     async () => {
       const result = await fetchAstudioBalanceDetailed(credential, { product });
+      return result.balance;
+    }
+  ));
+}
+async function minimaxExpiry(credential, product, cached2, xff) {
+  return sharedPackageExpiry(() => fetchBalanceWithCache(
+    cached2,
+    async () => {
+      const result = await fetchMinimaxCreditBalanceDetailed(credential, fetch, product, xff);
       return result.balance;
     }
   ));
@@ -66919,12 +69005,27 @@ function splitBuddyCreditsByExpiry(balance, now = Date.now(), windowMs = BUDDY_E
   let expiring = 0;
   let permanent = 0;
   for (const pkg of balance.packages) {
+    if (!pkg) continue;
     if (pkg.active !== true) continue;
     const remaining = positiveOrZero(pkg.remaining);
     if (remaining <= 0) continue;
+    if (isExclusiveCreditPool(pkg)) continue;
     const endTime = pkg.deductionEndTime;
-    const known = typeof endTime === "number" && Number.isFinite(endTime) && endTime > 0;
-    if (known && endTime - now < windowMs) expiring += remaining;
+    const endIsNumeric = typeof endTime === "number" || typeof endTime === "string";
+    const endMs = endIsNumeric ? Number(endTime) : Number.NaN;
+    const known = Number.isFinite(endMs) && endMs > 0;
+    if (!known) {
+      const expiringPart = positiveOrZero(pkg.expiringRemaining);
+      if (expiringPart > 0) {
+        const capped = Math.min(expiringPart, remaining);
+        expiring += capped;
+        permanent += remaining - capped;
+      } else {
+        permanent += remaining;
+      }
+      continue;
+    }
+    if (endMs - now < windowMs) expiring += remaining;
     else permanent += remaining;
   }
   return { expiring, permanent };
@@ -67839,17 +69940,33 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
     //    且症状静默（无报错、无日志）。现两处都补齐。
     "accio",
     "autoclaw",
-    // phone-port adapter: astudio-aggregate —— 本 fork 2026-10-20 **推翻**上游下面这条豁免（用户要求
-    //    astudio 参与聚合临期轮换）。前提是该风险已被折算层挡住：会话终态（HTTP 200 +
-    //    code=80000）时余额探针拿不到 totalBalance ⇒ 折算给 UNUSABLE ⇒ **不会被选中**。
-    //    ⚠️ 三处必须同补（本数组 + WIRED_EXPIRY_PROVIDERS + provider-expiry 表），
-    //    只补一处是无效接线、症状静默。
+    // ⚠️ AutoClaw 国际版（2026-10-20）：`channel: true` ⇒ 必须进聚合目录，
+    //    否则它的模型**永不进聚合、静默不可见**（同款陷阱已复发四次：
+    //    cline → accio → officeace → autoclaw）。
+    //    与 `autoclaw` 一样**已接入** `WIRED_EXPIRY_PROVIDERS`（三处同改：
+    //    本数组 + `aggregate-expiry.ts` 的清单 + `provider-expiry.ts` 的条目）。
+    //    ⚠️ `provider-expiry.ts` 里必须传 `AUTOCLAW_INTL` —— 传国内版会用国内
+    //    基址查国际账号余额（410000）⇒ 折算恒 `UNUSABLE` ⇒ 又回到静默不可见。
+    "autoclawintl",
+    // ⚠️ **AStudio**（讯飞 AstronStudio，2026-10-20 **改判**）
+    //
+    // 原注释（2026-10-16 定案）写着「有意**不进** AGGREGATE_CHANNELS」，三条理由
+    // 在 2026-10-20 用户报障后逐条复核，**全部不成立或已不适用**：
+    //
+    // | 原理由 | 复核结论 |
+    // |---|---|
+    // | 「模型目录来自上游动态 catalog」 | 与是否接入聚合无关 —— `aggregate-adapter` 读的是 `listModels()`（本家适配器已实现），不关心它内部怎么取 |
+    // | 「额度语义不同」 | **当时是没查证**。实测 `/points/balance` 三池各带 `*NextExpireTime`（赠送池实测 `"2026-11-20T01:50:14"`），与 buddy 系同形，`sharedPackageExpiry` 直接适用 |
+    // | 「失效语义不同（HTTP 200 + code 80000 = 需重登）」 | 只影响**额度读数失败时**的文案分流（`fetchAstudioBalanceDetailed` 的 terminal 判定），与「该渠道何时作废」的折算无关 |
+    //
+    // ⚠️ 第 4 条原理由是「两处均未补齐」—— 那是**当时的实现状态**，不是设计约束。
+    //    本次三处同时补齐：本数组 + `WIRED_EXPIRY_PROVIDERS` + `createProviderExpiry()`
+    //    的 `astudioExpiry`（缺任一处都静默失效，见上面 accio/autoclaw 的教训）。
+    //
+    // ⚠️⚠️ **只加本数组是无效接线**（2026-10-13 合并审计实测）：决定候选可见性的
+    //    是 `WIRED_EXPIRY_PROVIDERS` —— 本文件有 4 处按它过滤。用户报障
+    //    「astudio 缺永久/长期/临期三档」的直接成因之一就是这条「有意不接入」。
     "astudio"
-    // ⚠️ astudio 有意**不进** AGGREGATE_CHANNELS（2026-10-16 定案，沿用先前取证结论）：
-    //    本家的模型目录来自上游动态 catalog，额度与失效语义（HTTP 200 + 业务 code 80000
-    //    归「需人工重新登录」终态）与聚合渠道不同；且上方注释已实证「只加本数组而不补
-    //    aggregate-expiry 的 WIRED_EXPIRY_PROVIDERS」是无效接线。两处均未补齐 ⇒ 本轮保持
-    //    不接入聚合渠道，此处不新增成员，仅留此说明防止后人误以为漏接。
   ]);
   /**
    * 本插件注册的渠道 id（`aggregate` 与 `jet-hub-auto` 自身除外）。
@@ -67893,6 +70010,7 @@ var AggregateAdapter = class _AggregateAdapter extends LlmAdapter11 {
    *     —— 目录身份保持稳定（`this.catalog` 不随门控漂移，这是上面那份不变式的另一半）。
    */
   async listModels(provider) {
+    if (this.options.accountPool.providerClosedFor?.(AGGREGATE_PROVIDER) === true) return [];
     const models = await this.catalogForListModels();
     const disabled = this.options.accountPool.disabledModelsFor(AGGREGATE_PROVIDER);
     const entries = [];
@@ -69027,353 +71145,6 @@ function registerAggregateLlm(ctx, options) {
     ctx.logger?.warn?.(`[aggregate] \u6CE8\u518C\u540E\u9884\u70ED\u76EE\u5F55\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u53EF\u7528\u6027\uFF09\uFF1A${String(error)}`);
   });
   return adapter;
-}
-
-// vendor/channel-pack/src/minimax-product.ts
-var MINIMAX_FALLBACK_MODELS = [
-  {
-    id: "MiniMax-M3.1-Flash-Preview",
-    name: "M3.1-Flash-Preview",
-    contextWindow: 1e6,
-    maxTokens: 128e3,
-    supportsImage: true,
-    effortOptions: ["default", "low", "medium", "high", "xhigh", "max"],
-    defaultEffort: "default",
-    // ⚠️ forced_on：传 disabled 会被服务端**硬拒**（400 `requires adaptive
-    // thinking ... (2013)`，实测）。它与 M2.7 的 forced_on 不同形态：
-    // M2.7 是**静默忽略**，M3.1 是**报错**。
-    thinkingMode: "forced_on"
-  },
-  {
-    id: "MiniMax-M3",
-    name: "M3",
-    contextWindow: 1e6,
-    maxTokens: 128e3,
-    supportsImage: true,
-    // ⚠️ 实测可开关思考（`switchable`）：不传/disabled → 0 思考块，
-    // adaptive → 有思考块。官方形态见远端 `variants`。
-    // ⚠️ 但它**没有 `effort_options`** ⇒ 没有「档位」可选，
-    // 只有「开/关」两态 —— 与 Qoder `qmodel` 的「只有关闭思考」同型。
-    thinkingMode: "switchable"
-  },
-  {
-    id: "MiniMax-M2.7-highspeed",
-    name: "M2.7-highspeed",
-    contextWindow: 2e5,
-    maxTokens: 128e3,
-    supportsImage: false,
-    // ⚠️ forced_on：传 disabled 被**静默忽略**（实测仍产出思考块）
-    thinkingMode: "forced_on"
-  },
-  {
-    id: "MiniMax-M2.7",
-    name: "M2.7",
-    contextWindow: 2e5,
-    maxTokens: 128e3,
-    supportsImage: false,
-    thinkingMode: "forced_on"
-  }
-];
-var MINIMAX = {
-  id: "minimax",
-  // ⚠️ 与国际版并列后必须带括注，否则用户分不清哪个是国内站
-  //（与 `Qoder (中国版)` / `WorkBuddy (国际版)` 的既有命名风格一致）。
-  displayName: "MiniMax Code (\u4E2D\u56FD\u7248)",
-  accountHost: "https://account.minimax.cn",
-  apiHost: "https://agent.minimax.cn",
-  region: "cn",
-  buildEnv: "prod",
-  clientId: "mcode-public",
-  audience: "agent-backend",
-  scope: "agent.default",
-  defaultCredentialRef: "MINIMAX_ACCESS_TOKEN",
-  fallbackModels: MINIMAX_FALLBACK_MODELS,
-  maxImageBytesInline: 10 * 1024 * 1024,
-  maxRequestBodyBytes: 64 * 1024 * 1024
-};
-var MINIMAX_INTL = {
-  id: "minimaxintl",
-  displayName: "MiniMax Code (\u56FD\u9645\u7248)",
-  accountHost: "https://account.minimax.io",
-  apiHost: "https://agent.minimax.io",
-  // ⚠️ 目录查询参数按站点不同：国内 `cn` / 国际 `en`（上游实现实测）。
-  region: "en",
-  buildEnv: "prod",
-  clientId: "mcode-public",
-  audience: "agent-backend",
-  scope: "agent.default",
-  defaultCredentialRef: "MINIMAXINTL_ACCESS_TOKEN",
-  fallbackModels: MINIMAX_FALLBACK_MODELS,
-  maxImageBytesInline: 10 * 1024 * 1024,
-  maxRequestBodyBytes: 64 * 1024 * 1024
-};
-var MINIMAX_DEVICE_CODE_PATH = "/oauth2/device/code";
-var MINIMAX_TOKEN_PATH = "/oauth2/token";
-var MINIMAX_MODELS_PATH = "/mavis/api/v1/models";
-var MINIMAX_INFER_PATH = "/mavis/api/v1/llm/v1/messages";
-var MINIMAX_SIGNIN_STATUS_PATH = "/minimax-cloud/api/v1/signin/status";
-var MINIMAX_SIGNIN_CLAIM_PATH = "/minimax-cloud/api/v1/signin/claim";
-var MINIMAX_CREDIT_DETAILS_PATH = "/minimax-cloud/api/v1/credit/details";
-var MINIMAX_REQUEST_TIMEOUT_MS = 3e4;
-var MINIMAX_OAUTH_TIMEOUT_MS = 2e4;
-
-// vendor/channel-pack/src/minimax.ts
-function decodeJwtExpMs2(token) {
-  const segments = token.split(".");
-  if (segments.length !== 3 || segments[1] === void 0) return void 0;
-  try {
-    const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
-    return typeof payload.exp === "number" && Number.isFinite(payload.exp) ? Number.isFinite(payload.exp * 1e3) ? payload.exp * 1e3 : void 0 : void 0;
-  } catch {
-    return void 0;
-  }
-}
-function decodeJwtSub(token) {
-  const segments = token.split(".");
-  if (segments.length !== 3 || segments[1] === void 0) return void 0;
-  try {
-    const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
-    return typeof payload.sub === "string" && payload.sub.length > 0 ? payload.sub : void 0;
-  } catch {
-    return void 0;
-  }
-}
-function minimaxCredentialExpiresAtMs(credential) {
-  const raw = credential.expires_at;
-  if (raw !== void 0) {
-    if (/^\d+$/.test(raw)) {
-      const value = Number(raw);
-      const parsed = value > 1e12 ? value : value * 1e3;
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    }
-  }
-  return decodeJwtExpMs2(credential.access_token);
-}
-function isMinimaxExpired(credential, nowMs = Date.now()) {
-  const expiresAt = minimaxCredentialExpiresAtMs(credential);
-  return expiresAt !== void 0 && nowMs >= expiresAt;
-}
-function isMinimaxRefreshable(credential) {
-  return typeof credential.refresh_token === "string" && credential.refresh_token.length > 0;
-}
-var MINIMAX_TRANSPORT_RETRIES = 2;
-var MINIMAX_TRANSPORT_RETRY_BASE_MS = 400;
-function isMinimaxTransportError(error) {
-  const seen = /* @__PURE__ */ new Set();
-  let current = error;
-  for (let depth = 0; current !== null && current !== void 0 && depth < 6; depth += 1) {
-    if (seen.has(current)) break;
-    seen.add(current);
-    if (typeof current !== "object") break;
-    const record3 = current;
-    const name2 = typeof record3.name === "string" ? record3.name : "";
-    const message2 = typeof record3.message === "string" ? record3.message.toLowerCase() : "";
-    const code = typeof record3.code === "string" ? record3.code : "";
-    if (name2.startsWith("UND_ERR_") || code.startsWith("UND_ERR_")) return true;
-    if (code.startsWith("SELF_SIGNED_CERT") || code.startsWith("CERT_") || code === "DEPTH_ZERO_SELF_SIGNED_CERT" || code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE") return true;
-    if (code === "ECONNRESET" || code === "ECONNREFUSED" || code === "EPIPE" || code === "ETIMEDOUT" || code === "ENOTFOUND" || code === "EAI_AGAIN") return true;
-    if (message2.includes("fetch failed")) return true;
-    if (message2.includes("socket hang up") || message2.includes("terminated") || message2.includes("other side closed")) return true;
-    current = record3.cause;
-  }
-  return false;
-}
-function minimaxRetrySleep(ms) {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve2) => {
-    setTimeout(resolve2, ms);
-  });
-}
-async function minimaxFetchWithRetry(fetchOnce2, signal, retries = MINIMAX_TRANSPORT_RETRIES) {
-  let lastError;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      return await fetchOnce2();
-    } catch (error) {
-      lastError = error;
-      if (signal?.aborted === true) throw error;
-      if (!isMinimaxTransportError(error)) throw error;
-      if (attempt === retries) break;
-      await minimaxRetrySleep(MINIMAX_TRANSPORT_RETRY_BASE_MS * 2 ** attempt);
-    }
-  }
-  throw lastError;
-}
-var MINIMAX_REDIRECT_MAX_HOPS = 3;
-var MINIMAX_TRUSTED_HOST_SUFFIXES = [
-  "minimax.io",
-  "minimax.cn",
-  "minimaxi.com",
-  "xaminim.com"
-];
-function hasHostSuffix(hostname, suffix) {
-  const host = hostname.trim().toLowerCase();
-  const bare = suffix.trim().toLowerCase();
-  if (host.length === 0 || bare.length === 0) return false;
-  return host === bare || host.endsWith(`.${bare}`);
-}
-function isMinimaxTrustedHost(hostname) {
-  return MINIMAX_TRUSTED_HOST_SUFFIXES.some((suffix) => hasHostSuffix(hostname, suffix));
-}
-function isFollowableRedirect(status) {
-  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
-}
-async function minimaxFetchFollowRedirects(url, buildInit, fetcher = fetch, signal, maxHops = MINIMAX_REDIRECT_MAX_HOPS, onGeoRoute) {
-  let currentUrl = url;
-  for (let hop = 0; hop <= maxHops; hop += 1) {
-    const init = buildInit(currentUrl);
-    const response = await fetcher(currentUrl, { ...init, redirect: "manual" });
-    if (!isFollowableRedirect(response.status)) return response;
-    if (signal?.aborted === true) return response;
-    const location = response.headers.get("location");
-    if (location === null || location.length === 0) return response;
-    try {
-      if (isMinimaxGeoRoute(new URL(currentUrl).hostname, response.status, location)) {
-        onGeoRoute?.();
-      }
-    } catch {
-    }
-    let nextUrl;
-    try {
-      nextUrl = new URL(location, currentUrl);
-    } catch {
-      return response;
-    }
-    if (nextUrl.protocol !== "https:" || !isMinimaxTrustedHost(nextUrl.hostname)) return response;
-    if (hop === maxHops) return response;
-    await response.body?.cancel().catch(() => void 0);
-    currentUrl = nextUrl.toString();
-  }
-  throw new Error("minimax: redirect follow exhausted");
-}
-async function minimaxFetch(url, buildInit, options = {}) {
-  const fetcher = options.fetcher ?? fetch;
-  return minimaxFetchWithRetry(
-    () => minimaxFetchFollowRedirects(
-      url,
-      buildInit,
-      fetcher,
-      options.signal,
-      options.maxHops,
-      options.onGeoRoute
-    ),
-    options.signal,
-    options.retries
-  );
-}
-var MINIMAX_XFF_HEADER = "X-Forwarded-For";
-function withMinimaxXff(headers, xff) {
-  if (typeof xff !== "string") return headers;
-  if (/[\r\n]/.test(xff)) return headers;
-  const value = xff.trim();
-  if (value.length === 0) return headers;
-  headers.set(MINIMAX_XFF_HEADER, value);
-  return headers;
-}
-function minimaxHeaders(credential) {
-  const headers = new Headers();
-  headers.set("Authorization", `Bearer ${credential.access_token}`);
-  headers.set("Accept", "application/json");
-  return headers;
-}
-function minimaxHeadersFor(credential, xff, productId) {
-  const headers = minimaxHeaders(credential);
-  if (productId !== "minimaxintl") return headers;
-  return withMinimaxXff(headers, xff);
-}
-function minimaxInferHeaders(credential) {
-  const headers = new Headers();
-  headers.set("Authorization", `Bearer ${credential.access_token}`);
-  headers.set("Content-Type", "application/json");
-  headers.set("Accept", "text/event-stream");
-  return headers;
-}
-function minimaxInferHeadersFor(credential, xff, productId) {
-  const headers = minimaxInferHeaders(credential);
-  if (productId !== "minimaxintl") return headers;
-  return withMinimaxXff(headers, xff);
-}
-function isMinimaxGeoRoute(fromHost, status, location) {
-  if (status !== 307 && status !== 308) return false;
-  if (location === null || location.length === 0) return false;
-  const from = fromHost.trim().toLowerCase();
-  if (!from.startsWith("agent.") || !from.endsWith("minimax.io")) return false;
-  try {
-    const target = new URL(location);
-    return hasHostSuffix(target.hostname, "minimaxi.com");
-  } catch {
-    return false;
-  }
-}
-function describeMinimaxGeoRoute(detail) {
-  const base = "MiniMax \u56FD\u9645\u7AD9\u6309**\u51FA\u53E3 IP \u6240\u5728\u533A\u57DF**\u5206\u6D41\uFF1A\u5F53\u524D\u51FA\u53E3 IP \u88AB\u5224\u6210\u4E2D\u56FD\u533A\uFF08\u5185\u7F51\u6216\u65E0\u6CD5\u89E3\u6790\u7684\u5730\u5740\u4E5F\u4F1A\u88AB\u5224\u6210\u4E2D\u56FD\u533A\uFF09\uFF0C\u8BF7\u6C42\u5DF2\u88AB\u91CD\u5B9A\u5411\u5230\u4E2D\u56FD\u7AD9 \u2014\u2014 \u8FD9\u4E0D\u662F\u51ED\u636E\u95EE\u9898\u3002\u5EFA\u8BAE\u5148\u786E\u8BA4\u672C\u673A\u51FA\u53E3 IP\uFF08\u4F8B\u5982\u6D4F\u89C8\u5668\u6253\u5F00 ifconfig.me\uFF09\uFF0C\u7136\u540E\u4E8C\u9009\u4E00\uFF1A\u2460 \u5728 Jet Hub \u7684\u300CMiniMax Code (\u56FD\u9645\u7248)\u300D\u9762\u677F\u91CC\u586B\u5199\u4E00\u4E2A\u6D77\u5916 IP\uFF08X-Forwarded-For\uFF09\uFF1B\u2461 \u7528\u4EE3\u7406\u628A\u51FA\u53E3 IP \u6539\u5230\u6D77\u5916\u3002";
-  const trimmed = typeof detail === "string" ? detail.trim() : "";
-  if (trimmed.length === 0) return base;
-  const clipped = trimmed.length > 200 ? `${trimmed.slice(0, 200)}\u2026` : trimmed;
-  return `\u4E0A\u6E38\u8FD8\u8FD4\u56DE\u4E86\uFF1A${clipped}\u3002\u53E6\u5916\uFF1A${base}`;
-}
-function positiveInt(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : void 0;
-}
-function nonEmptyString2(value) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : void 0;
-}
-function stringArray(value) {
-  if (!Array.isArray(value)) return void 0;
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const item of value) {
-    const text = nonEmptyString2(item);
-    if (text === void 0 || seen.has(text)) continue;
-    seen.add(text);
-    out.push(text);
-  }
-  return out.length > 0 ? out : void 0;
-}
-function normalizeMinimaxModel(raw) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
-  const record3 = raw;
-  const id = nonEmptyString2(record3.id) ?? nonEmptyString2(record3.name);
-  if (id === void 0) return void 0;
-  const name2 = nonEmptyString2(record3.name) ?? id;
-  const limit = typeof record3.limit === "object" && record3.limit !== null ? record3.limit : {};
-  const options = Array.isArray(record3.context_window_options) ? record3.context_window_options.filter((v) => positiveInt(v) !== void 0) : [];
-  const limitContext = positiveInt(limit.context);
-  const contextWindow = options.length > 0 ? Math.max(...options) : limitContext;
-  const modalities = typeof record3.modalities === "object" && record3.modalities !== null ? record3.modalities : {};
-  const inputs = Array.isArray(modalities.input) ? modalities.input.filter((v) => typeof v === "string") : [];
-  const effortOptions = stringArray(record3.effort_options);
-  const rawDefault = nonEmptyString2(record3.default_effort);
-  const defaultEffort = rawDefault !== void 0 && effortOptions?.includes(rawDefault) === true ? rawDefault : void 0;
-  const thinkingConfig = typeof record3.thinking_config === "object" && record3.thinking_config !== null ? record3.thinking_config : void 0;
-  const thinkingMode = thinkingConfig === void 0 ? void 0 : nonEmptyString2(thinkingConfig.mode);
-  const maxTokens = positiveInt(limit.output);
-  return {
-    id,
-    name: name2,
-    // 窗口未知时**不编造**：用 0 表示「不知道」，由 resolveModel 判 `> 0`
-    contextWindow: contextWindow ?? 0,
-    ...maxTokens === void 0 ? {} : { maxTokens },
-    supportsImage: inputs.includes("image"),
-    ...effortOptions === void 0 ? {} : { effortOptions },
-    ...defaultEffort === void 0 ? {} : { defaultEffort },
-    ...thinkingMode === void 0 ? {} : { thinkingMode }
-  };
-}
-function fallbackToEntry(model) {
-  return {
-    id: model.id,
-    name: model.name,
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-    supportsImage: model.supportsImage,
-    ...model.effortOptions === void 0 ? {} : { effortOptions: model.effortOptions },
-    ...model.defaultEffort === void 0 ? {} : { defaultEffort: model.defaultEffort },
-    ...model.thinkingMode === void 0 ? {} : { thinkingMode: model.thinkingMode }
-  };
-}
-function minimaxFallbackEntries(product = MINIMAX) {
-  return product.fallbackModels.map(fallbackToEntry);
 }
 
 // vendor/channel-pack/src/gemini.ts
@@ -71589,7 +73360,7 @@ async function startAstudioLoginFlow(options = {}) {
 }
 
 // vendor/channel-pack/src/astudio-auth.ts
-import { existsSync as existsSync7, readFileSync as readFileSync8 } from "node:fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "node:fs";
 import { Service as Service11 } from "@deepseek-ai/cordis";
 import { credentialRef as credentialRef12 } from "@deepseek-ai/dsh-credentials";
 var AstudioRefreshTokenExpiredError = class extends Error {
@@ -71613,8 +73384,8 @@ function astudioSessionFilePath(env = process.env, product = ASTUDIO) {
 }
 function readSessionText(path4) {
   try {
-    if (!existsSync7(path4)) return void 0;
-    return readFileSync8(path4, "utf8");
+    if (!existsSync8(path4)) return void 0;
+    return readFileSync9(path4, "utf8");
   } catch {
     return void 0;
   }
@@ -72184,6 +73955,51 @@ var PROVIDER_REGISTRY = Object.freeze([
     displayName: "CodeArts (\u534E\u4E3A\u4E91)",
     logoClass: "codearts",
     credits: { balance: true, dailyCheckin: true },
+    /**
+     * 三档分档覆盖**两个来源**（2026-10-20）：
+     *
+     * - **基础积分包**（`usageBasicPackageCredit`）随套餐周期到期，响应顶层
+     *   给了 `end_date`（纯日期，如 `2026-10-27`）⇒ 有确切时刻，已写进
+     *   `packages[].deductionEndTime`，可正常分档。
+     * - **赠送积分包**（签到/活动，逐笔「发放日 +30 天」）与**按需包**没有
+     *   逐包到期字段，但上游在该分类 metric 上给了
+     *   `package_credit_expiring_amount`（「其中 N 分即将到期」的标量）
+     *   ⇒ 已解析到 `packages[].expiringRemaining`，**拆开**进两个桶：
+     *   临期 += `expiringRemaining`，永久 += 余下部分。
+     *
+     * 于是三档合计恒等于 `credits.total`，不再出现「永久 25000」旁边
+     * 又写「另有 2000 即将到期」这种对不上的数字（用户 2026-10-20 报障）。
+     *
+     * ⚠️ 拆出来的那部分**没有倒计时** —— 上游不给逐笔日期，绝不编造。
+     * ⚠️ 赠送包整体仍是**会到期**的性质，只是其中一段时间窗口内的部分被
+     *   标成「即将到期」；余下部分归入永久桶是**保守方向**（宁可少用）。
+     */
+    usesExpiryWindow: true,
+    /**
+     * ⚠️ 不开 `permanentLock`：CodeArts 的积分**没有「永久」这一档**。
+     *
+     * 依据（官方计费文档 + 实测）：
+     * - 基础积分包随套餐周期作废（体验版虽自动免费续期，但基础包额度按周期重置）；
+     * - 赠送积分包逐笔「发放日 +30 天」；
+     * - 按需包按消费实时结算。
+     *
+     * 三类的共同点是**都会到期**，没有「永不作废」的池。开永久锁会让用户
+     * 误以为「锁住就不会作废」，而实际只是把这批号从选号里摘出去 ——
+     * 语义错位，故不登记。
+     */
+    /**
+     * ⚠️ **必须与 `usesExpiryWindow` 同时登记**（2026-10-20 合并审计发现，
+     * 与 minimax 两站同因）：`provider-registry.spec.ts` 有一条从**能力事实
+     * 派生**的守卫「`usesExpiryWindow` 的家必须有 `creditPackages`（同一份数据）」
+     * —— 两者读的是同一批 `packages[]`。只开前者会让账号卡片**不展示逐包列表**，
+     * 用户看得到「永久 / 长期 / 临期」三档合计，却看不到是**哪几笔**构成的。
+     *
+     * ⚠️ 本家补上是有实据的：`codearts-credits.ts` 已把上游的
+     * `package_credit_expiring_amount` 聚合标量**拆到逐包**
+     * （`packages[].expiringRemaining`），基础包还带 `deductionEndTime`
+     * （取自套餐周期 `end_date`）—— 「N/M 个资源包有效」这句因此有真实内容。
+     */
+    creditPackages: true,
     settingsNamespace: "llm-codearts",
     channel: true
   },
@@ -72231,6 +74047,61 @@ var PROVIDER_REGISTRY = Object.freeze([
     logoClass: "qoder",
     credits: { balance: true, dailyCheckin: true },
     creditPackages: true,
+    /**
+     * ⚠️ **2026-10-20 补登记：三档分档（永久 / 长期 / 临期）与永久锁此前完全没生效。**
+     *
+     * 这两项此前缺失导致**两个静默故障**（与 minimax / astudio 那两次逐字同因）：
+     * - 缺 `usesExpiryWindow` ⇒ `jet-hub-rpc.ts` 的判据
+     *   `descriptorOf(req.provider)?.usesExpiryWindow === true` 为 false ⇒
+     *   响应里没有 `windowDays` ⇒ 客户端 `splitCreditsByExpiry` 收 `undefined`
+     *   ⇒ 面板上「永久 X · 长期 Y · 临期 Z」那整行**不渲染**；
+     * - 缺 `permanentLock` ⇒ 客户端 `supportsPermanentLock()` 为 false ⇒
+     *   「锁定永久积分」开关**整个不渲染**（不是灰掉，是不存在）。
+     *
+     * ⚠️⚠️ **但这两项对本家是「能力开关」，不是数据保证 —— 逐包到期拿不到。**
+     *
+     * 实测（2026-10-20，两个真实 qodercn 账号）
+     * `GET /sash/api/v2/me/usage` 只下发三个额度块：
+     * - `userQuota`（套餐额度，实测 `{total:0,used:0,remaining:0}`）；
+     * - `addOnQuota`（用户截图里的「个人资源包 1,900」）—— **只给聚合标量**
+     *   （`total` / `used` / `remaining`）加一个 `detailUrl` 网页链接，
+     *   **没有任何日期字段**；
+     * - `dedicatedResourcePackages` —— **唯一**带真实逐包到期（`expiresAt`
+     *   字符串）的那一项，而本机账号实测为 `undefined`。
+     *
+     * ⇒ 当前账号形态下 `packages[]` 里**没有任何真实的逐包到期时刻**，
+     *   `qoder-credits.ts` 的 `toPackage()` 因此**不写** `deductionEndTime`
+     *   ⇒ `splitBuddyCreditsByExpiry` 只得到一个「永久（未知到期）」桶 ⇒
+     *   **临期桶恒为 0**。这**不是缺陷**，是「上游不下发 ⇒ 我们不编造」的如实结果
+     *   （本仓库红线）。只有上游真的给了 `dedicatedResourcePackages` 的账号
+     *   才会出现临期档。
+     *
+     * ⚠️ 顺带澄清一个**反例**：顶层 `qoderUsage.expiresAt` 实测
+     *   `253402214400000`（= `9999-12-31T00:00:00.000Z`）**不是**到期时刻 ——
+     *   它是 Qoder 对 `userQuota`（套餐额度）下发的**永久哨兵**：官方客户端
+     *   asar 的用量面板里只有 `userQuota.expiresAt` 走 `renewson`
+     *   （文案「将于 {{date}} 刷新」，语义是**订阅刷新日**），而
+     *   `addOnQuota` 那一格**只渲染 used/total/remaining、不给任何日期**。
+     *   把它当真实到期写进 `deductionEndTime` 会把整个套餐额度伪造成
+     *   「9999 年到期」的临期档，故 `qoder-credits.ts` 用
+     *   `QODER_PERMANENT_EXPIRY_MS` 显式识别并**不写**。
+     *   （活动的 `validity = {mode:'RELATIVE_DAYS', days:30}` 只描述
+     *   「领取后 30 天有效」的**语义**，同样不是任何一笔已知时刻。）
+     *
+     * ⚠️ **`permanentLock` 因此锁的正是「未知到期」那一桶**：
+     *   `credential-resolver.ts` 的 `allowPermanent` 拦掉永久桶的可消耗性。
+     *   对「上游只给聚合标量」的账号，锁定后确实把该桶保了下来 ——
+     *   语义如实，**不是假开关**（Qoder 的 `dedicatedResourcePackages` 一旦下发，
+     *   其真实临期包与永久桶的分档同样成立）。
+     *
+     * ⚠️ 三处必须同改（本文件 + `provider-expiry.ts` 的 `createProviderExpiry()`
+     * + `aggregate-expiry.ts` 的 `WIRED_EXPIRY_PROVIDERS`），由
+     * `expiry-runtime-parity.spec.ts` 真跑 `apply()` 锁一致 ——
+     * 这是该陷阱的**第 7 次复发**（cline → accio → officeace → autoclaw
+     * → astudio → minimax → qoder），漏任何一处的症状都是**静默**的。
+     */
+    permanentLock: true,
+    usesExpiryWindow: true,
     settingsNamespace: "llm-qoder",
     channel: true
   },
@@ -72241,6 +74112,22 @@ var PROVIDER_REGISTRY = Object.freeze([
     logoClass: "qodercn",
     credits: { balance: true, dailyCheckin: true },
     creditPackages: true,
+    // ⚠️ 与上面的国际版**同因同日**补登记（2026-10-20）：两站共用全部
+    //    `src/qoder*.ts` 实现（适配器 / 认证 / 积分），余额响应形状逐字段同形，
+    //    差异只在 `src/qoder-product.ts` 的 `QODER_CN` 常量（域名 / client_id /
+    //    模型表）。⇒ 分档与永久锁的理由、以及「逐包到期拿不到」那条限制，
+    //    与国际版**逐字相同**（见上一条的长注释，不重复）。
+    //    ⚠️ 唯一需要单独记一笔的差异：**本次真机取证用的正是中国版账号**
+    //    （`openapi.qoder.com.cn`），而国际版 `openapi.qoder.sh` 在本机
+    //    **网络不可达**（`fetch failed` ~10.7s）⇒ 国际版的实际响应形状
+    //    **未在本次实测覆盖**。实现必须对「取不到」保守：
+    //    `fetchQoderCreditBalance` 网络失败/非 2xx/形状非法一律返回 `null`
+    //    ⇒ 聚合折算得 `UNUSABLE`（剔除该候选），**绝不**退化成「有余额」。
+    //    ⚠️ 两家必须各占一项：`WIRED_EXPIRY_PROVIDERS` 是按 **provider id**
+    //    的清单，漏掉 `qodercn` 会让中国版在聚合候选层被静默剔掉
+    //    （与 minimax / minimaxintl 同因）。
+    permanentLock: true,
+    usesExpiryWindow: true,
     settingsNamespace: "llm-qodercn",
     channel: true
   },
@@ -72304,6 +74191,42 @@ var PROVIDER_REGISTRY = Object.freeze([
     displayName: "MiniMax Code (\u4E2D\u56FD\u7248)",
     logoClass: "minimax",
     credits: { balance: true, dailyCheckin: true },
+    /**
+     * ⚠️ **2026-10-20 补登记**（用户报障：「MiniMax Code 积分也有到期时间，
+     * 也应当有相同功能」，并附 AStudio 面板截图作参照）。
+     *
+     * 这两项此前**空缺导致两个静默故障**：
+     * - 缺 `usesExpiryWindow` ⇒ `jet-hub-rpc.ts` 的 `usesWindow` 为 false ⇒
+     *   响应里没有 `windowDays` ⇒ 客户端 `splitCreditsByExpiry` 收 `null` ⇒
+     *   面板上「永久 X · 长期 Y · 临期 Z」那整行**不渲染**。
+     * - 缺 `permanentLock` ⇒ 客户端 `supportsPermanentLock()` 为 false ⇒
+     *   「锁定永久积分」按钮**整个不渲染**（不是灰掉，是不存在）。
+     *
+     * ⚠️ 补登记的前提是**上游确实下发到期时间**：`/minimax-cloud/api/v1/credit/details`
+     * 的每条 `details[]` 都带 `expire_at_ms`（毫秒时间戳，无需换算）。
+     * 此前 `fetchMinimaxCreditBalance` 把 `packages` 硬编码成 `[]`，聚合侧据此
+     * 把本家归为「查不到到期时间」—— **那是「我们没解析」，不是「上游不下发」**。
+     * 该函数已于同日补齐解析。
+     *
+     * ⚠️ 三处必须同改（本文件 + `provider-expiry.ts` + `aggregate-expiry.ts` 的
+     * `WIRED_EXPIRY_PROVIDERS`），由 `expiry-runtime-parity.spec.ts` 真跑
+     * `apply()` 锁一致。
+     */
+    usesExpiryWindow: true,
+    permanentLock: true,
+    /**
+     * ⚠️ **必须与 `usesExpiryWindow` 同时登记**（2026-10-20 合并审计发现）。
+     *
+     * `provider-registry.spec.ts` 有一条从**能力事实派生**的守卫：
+     * 「`usesExpiryWindow` 的家必须有 `creditPackages`（同一份数据）」——
+     * 两者读的是同一批 `packages[]`，只开前者会让账号卡片**不展示逐包列表**，
+     * 用户看得到「永久 / 长期 / 临期」三档合计，却看不到是**哪几笔**构成的。
+     *
+     * ⚠️ 本次补上是有实据的：`minimax-credits.ts` 已把 `packages[]` 从硬编码
+     * `[]` 改为**逐条 `details[]` 各成一包**（带 `deductionEndTime`），
+     * 卡片上「2/2 个资源包有效」这句因此有了真实内容。
+     */
+    creditPackages: true,
     settingsNamespace: "llm-minimax",
     channel: true
   },
@@ -72332,6 +74255,20 @@ var PROVIDER_REGISTRY = Object.freeze([
     displayName: "MiniMax Code (\u56FD\u9645\u7248)",
     logoClass: "minimaxintl",
     credits: { balance: true, dailyCheckin: true },
+    // ⚠️ 与中国版**同因同日**补登记（2026-10-20）：两站共用同一个
+    //    `fetchMinimaxCreditBalanceDetailed`，后端解析补齐后两边都该亮分档与锁定。
+    //    ⚠️ 国际站另有**地理分流**风险：`agent.minimax.io` 会 307 到中国站，
+    //    而中国站不认国际站 token ⇒ 余额查询恒失败。故折算原语 `minimaxExpiry`
+    //    必须透传 `xff`（见 `aggregate-expiry.ts` 该函数的注释与
+    //    `src/index.ts` 的 `minimaxXff: () => pool.minimaxXff()`）——
+    //    漏传的后果正是「面板能刷新、聚合候选却恒折算失败」。
+    usesExpiryWindow: true,
+    permanentLock: true,
+    // ⚠️ 同国内站：`usesExpiryWindow` 必须与 `creditPackages` 同时登记
+    //    （`provider-registry.spec.ts` 有从能力事实派生的守卫，只开前者会让
+    //    账号卡片不展示逐包列表）。两站共用同一个 `MinimaxAdapter` 与同一份
+    //    `fetchMinimaxCreditBalance`，`packages[]` 已由逐条 `details[]` 产出。
+    creditPackages: true,
     settingsNamespace: "llm-minimaxintl",
     channel: true
   },
@@ -72488,6 +74425,36 @@ var PROVIDER_REGISTRY = Object.freeze([
     //    到期时间（`member` / `buy` / `activity` / `spark` 各自的 `*NextExpireTime`）
     //    ⇒ 数据本来就齐，此前只是没声明。
     creditPackages: true,
+    // ⚠️ **2026-10-20 补登记：三档分档（永久/长期/临期）此前完全没生效**。
+    //
+    // `/points/balance` 实测**确实下发**到期时间：`activityNextExpireTime`
+    // = `"2026-11-20T01:50:14"`（会员/购买两池同形，字段名 `*NextExpireTime`）。
+    // 但漏登记本字段会让 `jet-hub-rpc.ts` 不回传 `windowDays`
+    // （判据 `descriptorOf(req.provider)?.usesExpiryWindow === true`），
+    // 客户端 `splitCreditsByExpiry` 拿到 `windowDays === undefined` ⇒
+    // `normalizeWindowDays2` 返回 `null` ⇒ **整个分档返回 `null`**
+    // ⇒ 胶囊只剩「合计」，永久绿/长期黄/临期红三行一个都不渲染。
+    // ⚠️ 漏登记的症状是**静默的**（无报错、无日志），与 officeace / autoclaw
+    //    当初同一根因；新增带到期时间的渠道时必须一并登记本字段。
+    // ⚠️ PR !134 独立补登了同一字段（2026-10-21 用户报障「星火 25000 不显示」，
+    //    注释称「四个池都带 `*NextExpireTime`」—— member / buy / activity / spark）。
+    //    合并时保留 master 这份（依据 `/points/balance` 实测原文），并保留
+    //    PR !134 带来的**客户端侧**修法（`packageExpiryMs` 归一 + 独立池摘出）——
+    //    那两处才是「25000 不显示」的另一半根因，registry 登记只是另一半。
+    usesExpiryWindow: true,
+    // ⚠️ **2026-10-20 补登记：永久积分锁定**。
+    //
+    // 判据同 buddy 系（`permanentLock` ⇒ Jet Hub 账号卡片出现「锁定永久积分」开关，
+    // 锁后 `credential-resolver.ts` 的 `allowPermanent` 变 false ⇒ 只有「窗口内到期」
+    // 的积分包可消耗，长期/永久积分被保住）。astudio 的三个池**各自带到期时间**
+    // ⇒ 与 buddy 系同形，该语义可如实成立（不是假开关）。
+    // ⚠️ 与 `usesExpiryWindow` / `WIRED_EXPIRY_PROVIDERS` / `createProviderExpiry()`
+    //    的 `astudioExpiry` 是**四件不同的事**，不能互相替代：
+    //    · `usesExpiryWindow` ⇒ 面板三行分档
+    //    · `permanentLock`     ⇒ 锁定开关 + 选号时的 `allowPermanent`
+    //    · `WIRED_EXPIRY_PROVIDERS` ⇒ 聚合候选可见性
+    //    · `astudioExpiry`     ⇒ 聚合时如何折算到期时刻
+    permanentLock: true,
     settingsNamespace: "llm-astudio",
     channel: true
   },
@@ -72526,8 +74493,107 @@ var PROVIDER_REGISTRY = Object.freeze([
     //    流水批次的包名取服务端描述（实测「每日签到」**不等于**「每日积分」）
     //    ⇒ 两条路径都不再命中那份名单，「每日 0」红字消失。
     usesExpiryWindow: true,
+    /**
+     * ⚠️ **2026-10-21 补齐**（用户明确要求「补锁定开关」）。
+     *
+     * ## 为什么本家需要它
+     *
+     * `autoclaw-credits.ts` 的批次映射里有一条**代码分支**：`wallet_expires_at`
+     * 缺失 / `<= 0` 的发放 ⇒ 进 `permanentByLabel` ⇒ **不带 `deductionEndTime`**
+     * （= 永久桶）。⇒ 只要上游下发那种条目，就有永不作废的积分需要保护。
+     * 补登记前：`supportsPermanentLock()` 为 false ⇒ 按钮**不渲染**、
+     * `credits.permanentLock` RPC 直接 `bad-request` ⇒ 用户无从保护。
+     *
+     * ⚠️⚠️ **前提强度如实标注（2026-10-21 二轮审计）**：该分支**结构上可达、
+     * 但零实测**。仓库内唯一一次流水字段完整性实测（`5fbe7ab`）结论是
+     * 「**28/28 全带 `wallet_expires_at`**」，方向上**否定**该形态存在。
+     * ⇒ 若上游恒带到期字段，本家的永久桶**恒为空**，这个开关**永不产生实际效果**
+     *（但也不会出错 —— 它只是把已存在的分档能力接上，与仓库 11 家同构）。
+     * **不得**据此声称「本家确实有永久桶」。
+     *
+     * ## ⚠️⚠️ 与 buddy 系的取舍**不同源**，别照抄那两行
+     *
+     * | | buddy 系 | AutoClaw |
+     * |---|---|---|
+     * | `rateLimit` | 省缺（true） | **false**（不写 `modelRateLimits`、不在 `probeById`） |
+     * | 请求级换号 | 有 | **刻意没有** |
+     * | 账户「每日红」语义 | 有 | **不适用**（每日签到积分是发放进余额、按批次到期） |
+     *
+     * ⇒ 本家的锁定只作用于「**按余额分档选号**」这一层，不涉及换号冷却
+     *   （它本来就没有）。这正是 `balance: { kind: 'buddy' }` 能直接套用的原因：
+     *   分档判据（`splitBuddyCreditsByExpiry`）只读通用的
+     *   `packages[].{active, remaining, deductionEndTime}`，**与 provider 无关**。
+     *
+     * ## 四处同改（缺一即静默失效或假开关）
+     *
+     * 1. **本行**（`permanentLock`）——决定按钮是否渲染、RPC 是否放行；
+     * 2. `src/index.ts` 的 `balance: { kind: 'buddy', selector, lockedError }` 接线
+     *    ——**缺它按钮在、点了不拦**（假开关，比没有按钮更糟：`credential-resolver`
+     *    的 `allowPermanent` 读不到，锁定对选号完全无影响）；
+     * 3. `autoclawLockedError` 文案（本家池名与 buddy 的「服务端资源包」不同）；
+     * 4. `tests/unit/autoclaw-lock-wiring.spec.ts` 的三层守卫。
+     *
+     * ⚠️ `autoclawintl` **同因同状态**（两站共用全部实现，只差 product 常量），
+     *    两处必须同时登记 —— 漏国际站的症状是「只登国际站的用户没有锁定按钮」。
+     */
+    permanentLock: true,
     rateLimit: false,
     settingsNamespace: "llm-autoclaw",
+    channel: true
+  },
+  {
+    /**
+     * **AutoClaw 国际版**（`autoglm-api.autoglm.ai`）。
+     *
+     * ⚠️⚠️ **为什么是独立 provider 而不是 autoclaw 的站点参数**
+     *    （判据与 `minimaxintl` 完全同款，见 `src/minimax-product.ts` 文件头）：
+     *
+     * | 判据 | 国内 | 国际 |
+     * |---|---|---|
+     * | 账号体系 | 手机号 / `7c54a9ac…`（UUID） | 邮箱 / `2c99dc99…` |
+     * | API 主机 | `autoglm-acceleration-api.zhipuai.cn` | `autoglm-api.autoglm.ai` |
+     * | 登录方式 | 短信验证码 | **Z.ai OAuth** |
+     *
+     *    实测佐证（2026-10-20）：拿国内 token 打国际基址，
+     *    `wallets` / `user-profile` 一律 `410000 用户未登录`、
+     *    推理 `401 Invalid token` ⇒ 用户体系**物理隔离**。
+     *
+     * ⚠️ **实现零复制**：`AutoclawAuth` / `registerAutoclawLlm` / 积分与批次逻辑
+     *    全部复用国内版那一套，只有 `AUTOCLAW_INTL` 配置不同
+     *    （与 `minimaxintl` 同纪律：复制会让同类缺陷修两遍）。
+     *
+     * ⚠️ **当前登录尚未接入**：Z.ai OAuth 的 `state.nh` 来源未知
+     *    （`client_id` 与 `state.dh = SHA256(deviceId)` 已逆向确认）。
+     *    在打通之前本渠道只能手工注入 token 使用。
+     */
+    id: "autoclawintl",
+    label: "AutoClaw (\u56FD\u9645\u7248)",
+    displayName: "AutoClaw (\u56FD\u9645\u7248)",
+    logoClass: "autoclaw",
+    credits: { balance: true, dailyCheckin: true },
+    /**
+     * ⚠️ **必须与国内版同格**（2026-10-20 审计 P1 补）。
+     *
+     * 漏它的后果是**用户可见**的：国际版账号卡片 hover 看不到资源包明细
+     * （与 astudio 2026-10-20 那次用户报障同型）。两家共用同一份
+     * `autoclaw-credits.ts`，批次包同样带 `deductionEndTime` ⇒ 能力应当一致。
+     *
+     * ⚠️⚠️ 这个字段曾经**漏了却全绿**：`provider-registry.spec.ts` 把它写成
+     *    **手写名单快照**，于是「漏项」被固化成了期望值 —— 补上它反而变红
+     *    （审计实测：`expected [...(10)] to deeply equal [ Array(9) ]`）。
+     *    ⇒ 同一次整改把那条断言改成**从能力事实派生**（见该 spec 的注释）。
+     */
+    creditPackages: true,
+    // 分档 / 临期逻辑与国内同源（同一份 `autoclaw-credits.ts`）。
+    usesExpiryWindow: true,
+    // ⚠️ **与国内站同因同日补齐**（2026-10-21，用户要求「补锁定开关」）。
+    //    两站共用全部实现，只差 product 常量 ⇒ 有没有永久桶、要不要锁**逐字相同**
+    //    （见国内站那一段的长注释，不重复）。
+    //    ⚠️ **两站必须各占一项**：`PERMANENT_LOCK_PROVIDERS` 按 provider id，
+    //    漏 `autoclawintl` 会让**只登国际站**的用户没有锁定按钮（与 minimaxintl 同因）。
+    permanentLock: true,
+    rateLimit: false,
+    settingsNamespace: "llm-autoclawintl",
     channel: true
   },
   {
@@ -72607,7 +74673,7 @@ function descriptorOf(id) {
 // vendor/channel-pack/src/cline-credits.ts
 var CLINE_CREDITS_TIMEOUT_MS = 3e4;
 var CLINE_BALANCE_SCALE = 1e5;
-function readNumber9(source, key) {
+function readNumber10(source, key) {
   const value = source[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim().length > 0) {
@@ -72642,7 +74708,7 @@ function parseClineBalanceResponse(value) {
   }
   const data = typeof record3.data === "object" && record3.data !== null && !Array.isArray(record3.data) ? record3.data : void 0;
   if (data === void 0) return { error: "\u54CD\u5E94\u7F3A\u5C11 data \u5B57\u6BB5" };
-  const rawBalance = readNumber9(data, "balance");
+  const rawBalance = readNumber10(data, "balance");
   if (rawBalance === void 0) return { error: "\u54CD\u5E94\u7F3A\u5C11 balance \u5B57\u6BB5" };
   return { rawBalance };
 }
@@ -72874,290 +74940,6 @@ function quotaRejectionHint(text) {
   return text === "" ? "" : `\uFF1A${text.slice(0, 160)}`;
 }
 
-// vendor/channel-pack/src/minimax-credits.ts
-var MINIMAX_SIGNIN_STATUS = Object.freeze({
-  Upcoming: 1,
-  Claimable: 2,
-  Claimed: 3,
-  Disabled: 4
-});
-var MINIMAX_CLAIM_RESULT = Object.freeze({
-  Claimed: 1,
-  AlreadyClaimed: 2
-});
-var MINIMAX_PANEL_SCENE = Object.freeze({
-  Unknown: 0,
-  First: 1,
-  Active: 2,
-  Completed: 3,
-  Broken: 4
-});
-var MINIMAX_SIGNIN_STATUS_VALUES = Object.values(MINIMAX_SIGNIN_STATUS);
-var MINIMAX_PANEL_SCENE_VALUES = Object.values(MINIMAX_PANEL_SCENE);
-function resolveMinimaxTimezoneId(resolve2 = () => Intl.DateTimeFormat().resolvedOptions().timeZone) {
-  try {
-    const zone = resolve2();
-    return typeof zone === "string" && zone.trim().length > 0 ? zone.trim() : "UTC";
-  } catch {
-    return "UTC";
-  }
-}
-function finiteNumber(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
-}
-function looseAmount(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
-  if (typeof value !== "string") return void 0;
-  const trimmed = value.trim();
-  if (trimmed === "") return void 0;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : void 0;
-}
-function parseMinimaxSigninPanel(data) {
-  if (typeof data !== "object" || data === null || Array.isArray(data)) return void 0;
-  const record3 = data;
-  const scene = finiteNumber(record3.scene);
-  if (scene === void 0 || !MINIMAX_PANEL_SCENE_VALUES.includes(scene)) return void 0;
-  const rawDays = record3.days;
-  if (!Array.isArray(rawDays) || rawDays.length !== 7) return void 0;
-  const days = [];
-  const seen = /* @__PURE__ */ new Set();
-  let claimable = 0;
-  let today = 0;
-  for (const raw of rawDays) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
-    const day = raw;
-    const dayNo = finiteNumber(day.day_no);
-    const points = finiteNumber(day.points);
-    const status = finiteNumber(day.status);
-    const bonusRaw = day.bonus_points;
-    const bonusPoints = bonusRaw === void 0 ? 0 : finiteNumber(bonusRaw);
-    if (dayNo === void 0 || !Number.isInteger(dayNo) || dayNo < 1 || dayNo > 7) return void 0;
-    if (seen.has(dayNo)) return void 0;
-    if (points === void 0 || points < 0) return void 0;
-    if (bonusPoints === void 0 || bonusPoints < 0) return void 0;
-    if (typeof day.is_today !== "boolean") return void 0;
-    if (status === void 0 || !MINIMAX_SIGNIN_STATUS_VALUES.includes(status)) {
-      return void 0;
-    }
-    seen.add(dayNo);
-    if (status === MINIMAX_SIGNIN_STATUS.Claimable) claimable++;
-    if (day.is_today) today++;
-    days.push({ dayNo, points, bonusPoints, status, isToday: day.is_today });
-  }
-  if (claimable > 1 || today > 1) return void 0;
-  return { scene, days };
-}
-function minimaxPanelToCheckinStatus(panel) {
-  const today = panel.days.find((day) => day.isToday);
-  const claimedToday = today !== void 0 && today.status === MINIMAX_SIGNIN_STATUS.Claimed;
-  const sorted = [...panel.days].sort((a, b) => a.dayNo - b.dayNo);
-  const todayIndex = sorted.findIndex((day) => day.isToday);
-  let streakDays = 0;
-  if (todayIndex >= 0) {
-    let index = sorted[todayIndex]?.status === MINIMAX_SIGNIN_STATUS.Claimed ? todayIndex : sorted[todayIndex]?.status === MINIMAX_SIGNIN_STATUS.Claimable ? todayIndex - 1 : -1;
-    for (; index >= 0; index -= 1) {
-      if (sorted[index]?.status !== MINIMAX_SIGNIN_STATUS.Claimed) break;
-      streakDays += 1;
-    }
-  }
-  const claimable = panel.days.find((day) => day.status === MINIMAX_SIGNIN_STATUS.Claimable);
-  const target = today ?? claimable;
-  return {
-    active: true,
-    todayCheckedIn: claimedToday,
-    streakDays,
-    // ⚠️ points 就是总数，不相加 bonus_points
-    dailyCredit: target?.points ?? 0,
-    todayCredit: claimedToday ? today?.points ?? 0 : 0,
-    // ⚠️⚠️ **本字段当前不可判读，且几乎恒为 `true`**（2026-09-29 实测发现，
-    // **未修复** —— 因为缺权威语义依据，不擅自改）。
-    //
-    // 实测本机 7 天面板：`bonus_points` 是 **800 档日 400 / 2000 档日 1000**，
-    // **七天全都有值**。故 `bonusPoints > 0` 恒真，不携带任何信息 ——
-    // 与 `credit/details` 那个 `total_count` 误读（见 `fetchMinimaxCreditBalance`）
-    // 是**同一类缺陷形态**：拿一个「在已知样本上恰好符合预期」的字段当判据。
-    //
-    // 危害**目前为零**：`isStreakDay` 在 RPC（`computeClaimSummary` 只用
-    // `credit`）与 Jet Hub UI 上**都没有消费者**（已全仓检索确认）。
-    // 但语义仍是错的：`bonus_points` 看起来是「该日的额外奖励数额」，
-    // **不是**「今天是连续奖励日」的布尔标志。
-    //
-    // 客户端权威实现（`.minimax-forensics/shared-dist/daily-signin.js`）里
-    // **根本没有 `isStreakDay` 这个概念** —— 它只有 `getCurrentSigninStreak()`
-    //（与我们的 `streakDays` 逐行一致）。故无法从客户端反推正确判据。
-    // ⚠️ 要改先拿到 `bonus_points` 的权威语义（或真实「非连续日」样本），
-    // **不要**凭猜测把它改成别的表达式。
-    isStreakDay: (target?.bonusPoints ?? 0) > 0,
-    totalCredits: 0,
-    checkinDates: [],
-    activityName: "",
-    themeName: "",
-    endTime: ""
-  };
-}
-function unwrapEnvelopeData(payload) {
-  const nested = payload.data;
-  return typeof nested === "object" && nested !== null && !Array.isArray(nested) ? nested : payload;
-}
-async function requestEnvelope(url, credential, init, fetcher, product, xff) {
-  try {
-    const buildInit = () => {
-      const headers = minimaxHeadersFor(credential, xff, product.id);
-      if (init.body !== void 0) headers.set("Content-Type", "application/json");
-      return {
-        method: init.method,
-        headers,
-        ...init.body === void 0 ? {} : { body: init.body },
-        signal: AbortSignal.timeout(MINIMAX_REQUEST_TIMEOUT_MS)
-      };
-    };
-    let geoRouted = false;
-    const response = await minimaxFetch(url, buildInit, {
-      fetcher,
-      onGeoRoute: () => {
-        geoRouted = true;
-      }
-    });
-    const text = await response.text();
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      return {
-        ok: false,
-        code: response.status,
-        message: response.status === 401 || response.status === 403 ? `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${response.status}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7` : `\u670D\u52A1\u7AEF\u8FD4\u56DE\u4E86\u975E JSON \u54CD\u5E94\uFF08HTTP ${response.status}\uFF09`
-      };
-    }
-    if (typeof payload !== "object" || payload === null) {
-      return { ok: false, code: -1, message: "\u54CD\u5E94\u65E0\u6CD5\u89E3\u6790" };
-    }
-    const record3 = payload;
-    if (geoRouted && !response.ok) {
-      return {
-        ok: false,
-        code: response.status,
-        message: describeMinimaxGeoRoute(describeMinimaxApiError(record3))
-      };
-    }
-    const apiError = describeMinimaxApiError(record3);
-    if (!response.ok) {
-      const suffix = apiError === void 0 ? "" : `\uFF1A${apiError}`;
-      if (response.status === 401 || response.status === 403) {
-        return {
-          ok: false,
-          code: response.status,
-          message: `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${response.status}\uFF09${suffix || "\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7"}`
-        };
-      }
-      return {
-        ok: false,
-        code: response.status,
-        message: `\u670D\u52A1\u7AEF\u8FD4\u56DE HTTP ${response.status}${suffix}`
-      };
-    }
-    const baseResp = typeof record3.base_resp === "object" && record3.base_resp !== null ? record3.base_resp : {};
-    const statusCode = finiteNumber(baseResp.status_code);
-    const statusMsg = typeof baseResp.status_msg === "string" ? baseResp.status_msg : "";
-    if (statusCode !== void 0 && statusCode !== 0) {
-      return { ok: false, code: statusCode, message: statusMsg || `\u4E1A\u52A1\u9519\u8BEF ${statusCode}` };
-    }
-    return { ok: true, payload: record3 };
-  } catch (error) {
-    return {
-      ok: false,
-      code: -1,
-      message: error instanceof Error ? error.message : String(error)
-    };
-  }
-}
-function describeMinimaxApiError(record3) {
-  const candidates = [
-    record3.error_description,
-    record3.error,
-    record3.message,
-    record3.msg,
-    // 嵌套形态：`{ error: { message } }`
-    typeof record3.error === "object" && record3.error !== null ? record3.error.message : void 0
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      const text = candidate.trim();
-      return text.length > 200 ? `${text.slice(0, 200)}\u2026` : text;
-    }
-  }
-  return void 0;
-}
-function withTimezone(base, path4, timezoneId) {
-  const url = new URL(`${base}${path4}`);
-  url.searchParams.set("timezone_id", timezoneId);
-  return url.toString();
-}
-async function fetchMinimaxSigninStatus(credential, fetcher = fetch, product = MINIMAX, xff) {
-  const detailed = await fetchMinimaxSigninStatusDetailed(credential, fetcher, product, xff);
-  return detailed.status;
-}
-async function fetchMinimaxSigninStatusDetailed(credential, fetcher = fetch, product = MINIMAX, xff) {
-  const url = withTimezone(
-    product.apiHost,
-    MINIMAX_SIGNIN_STATUS_PATH,
-    resolveMinimaxTimezoneId()
-  );
-  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher, product, xff);
-  if (!result.ok) return { status: null, error: result.message };
-  const panel = parseMinimaxSigninPanel(unwrapEnvelopeData(result.payload));
-  if (panel === void 0) {
-    return { status: null, error: "\u7B7E\u5230\u9762\u677F\u54CD\u5E94\u5F62\u72B6\u4E0D\u7B26\u5408\u9884\u671F\uFF08\u670D\u52A1\u7AEF\u53EF\u80FD\u6539\u7248\uFF09" };
-  }
-  return { status: minimaxPanelToCheckinStatus(panel) };
-}
-async function claimMinimaxDailyCheckin(credential, fetcher = fetch, product = MINIMAX, xff) {
-  const url = withTimezone(
-    product.apiHost,
-    MINIMAX_SIGNIN_CLAIM_PATH,
-    resolveMinimaxTimezoneId()
-  );
-  const result = await requestEnvelope(url, credential, { method: "POST", body: "{}" }, fetcher, product, xff);
-  if (!result.ok) {
-    return { kind: "failed", code: result.code, message: result.message };
-  }
-  const data = unwrapEnvelopeData(result.payload);
-  const claimResult = finiteNumber(data.claim_result);
-  if (claimResult === MINIMAX_CLAIM_RESULT.AlreadyClaimed) {
-    return { kind: "already-claimed", message: "\u4ECA\u65E5\u5DF2\u7B7E\u5230" };
-  }
-  if (claimResult !== MINIMAX_CLAIM_RESULT.Claimed) {
-    return { kind: "failed", code: -1, message: "\u7B7E\u5230\u54CD\u5E94\u7F3A\u5C11\u6709\u6548\u7684 claim_result" };
-  }
-  const points = finiteNumber(data.points) ?? 0;
-  const panel = parseMinimaxSigninPanel(data.panel);
-  const status = panel === void 0 ? void 0 : minimaxPanelToCheckinStatus(panel);
-  return {
-    kind: "claimed",
-    credit: points,
-    streakDays: status?.streakDays ?? 0,
-    isStreakDay: status?.isStreakDay ?? false
-  };
-}
-async function fetchMinimaxCreditBalanceDetailed(credential, fetcher = fetch, product = MINIMAX, xff) {
-  const url = `${product.apiHost}${MINIMAX_CREDIT_DETAILS_PATH}`;
-  const result = await requestEnvelope(url, credential, { method: "GET" }, fetcher, product, xff);
-  if (!result.ok) return { balance: null, error: result.message };
-  const data = unwrapEnvelopeData(result.payload);
-  const details = Array.isArray(data.details) ? data.details : void 0;
-  if (details === void 0 && finiteNumber(data.total_count) === void 0) {
-    return { balance: null, error: "\u4F59\u989D\u54CD\u5E94\u5F62\u72B6\u4E0D\u7B26\u5408\u9884\u671F\uFF08\u670D\u52A1\u7AEF\u53EF\u80FD\u6539\u7248\uFF09" };
-  }
-  let total = 0;
-  for (const entry of details ?? []) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const remaining = looseAmount(entry.remaining_amount);
-    if (remaining !== void 0) total += remaining;
-  }
-  return { balance: { total: roundCredits(total), packages: [], expiredTotal: 0 } };
-}
-
 // vendor/channel-pack/src/buddy-growth.ts
 import { createHash as createHash12 } from "node:crypto";
 var BUDDY_APP_ID = "cb_y5Dy46tPQGGWtueMxXbe";
@@ -73260,14 +75042,14 @@ function conversationHeaders(conversationId) {
 function newConversationId() {
   return crypto.randomUUID().replace(/-/g, "");
 }
-function readString8(source, key) {
+function readString9(source, key) {
   if (typeof source !== "object" || source === null) {
     return "";
   }
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
-function readNumber10(source, key) {
+function readNumber11(source, key) {
   if (typeof source !== "object" || source === null) {
     return 0;
   }
@@ -73365,7 +75147,7 @@ function classifyGrowthWrite(result) {
   }
   const body = result.body;
   const code = typeof body.code === "number" ? body.code : -1;
-  const message2 = readString8(body, "msg");
+  const message2 = readString9(body, "msg");
   if (code === 0) {
     const data = typeof body.data === "object" && body.data !== null ? body.data : {};
     return { state: "success", data };
@@ -73409,16 +75191,16 @@ async function fetchGrowthTaskCodes(credential, product, fetcher = fetch, option
       if (typeof task !== "object" || task === null) {
         continue;
       }
-      const taskCode = readString8(task, "task_code") || readString8(task, "code");
+      const taskCode = readString9(task, "task_code") || readString9(task, "code");
       if (!AUTOMATABLE_TASK_CODES.has(taskCode)) {
         continue;
       }
       const progress = task.progress ?? {};
-      const acceptStatus = readString8(task, "accept_status");
+      const acceptStatus = readString9(task, "accept_status");
       if (acceptStatus !== "") {
         progressByCode[taskCode] = {
-          current: readNumber10(progress, "current"),
-          target: readNumber10(progress, "target") || 1
+          current: readNumber11(progress, "current"),
+          target: readNumber11(progress, "target") || 1
         };
         if (includeInProgress) {
           if (acceptStatus === "not_accepted" || acceptStatus === "in_progress" || acceptStatus === "accepted") {
@@ -73432,7 +75214,7 @@ async function fetchGrowthTaskCodes(credential, product, fetcher = fetch, option
         }
         continue;
       }
-      const status = readString8(task, "status");
+      const status = readString9(task, "status");
       progressByCode[taskCode] = { current: status === "available" ? 0 : 1, target: 1 };
       if (status === "available") {
         pending2.push(taskCode);
@@ -74129,7 +75911,7 @@ async function fetchMarketExpertList(credential, product, fetcher = fetch, exper
       return {
         ok: false,
         experts: [],
-        message: `\u4E13\u5BB6\u5E02\u573A\u67E5\u8BE2\u5931\u8D25\uFF1A${readString8(envelope, "msg")}`
+        message: `\u4E13\u5BB6\u5E02\u573A\u67E5\u8BE2\u5931\u8D25\uFF1A${readString9(envelope, "msg")}`
       };
     }
     const data = typeof envelope.data === "object" && envelope.data !== null ? envelope.data : envelope;
@@ -74176,7 +75958,7 @@ async function listAllGrowthTaskCodes(credential, product, fetcher) {
       continue;
     }
     for (const task of tasksOf(result)) {
-      const code = readString8(task, "task_code") || readString8(task, "code");
+      const code = readString9(task, "task_code") || readString9(task, "code");
       if (code.length > 0) {
         codes.add(code);
       }
@@ -74240,7 +76022,7 @@ async function claimGrowthTaskReward(credential, product, fetcher = fetch, taskC
     }
     const code = typeof payload.code === "number" ? payload.code : void 0;
     if (code !== 0) {
-      const reason = readString8(payload, "msg");
+      const reason = readString9(payload, "msg");
       return {
         ok: false,
         claimed: false,
@@ -74249,7 +76031,7 @@ async function claimGrowthTaskReward(credential, product, fetcher = fetch, taskC
       };
     }
     const data = typeof payload.data === "object" && payload.data !== null ? payload.data : {};
-    const credit = readNumber10(data, "credit");
+    const credit = readNumber11(data, "credit");
     if (data["already_claimed"] === true) {
       return {
         ok: true,
@@ -74258,7 +76040,7 @@ async function claimGrowthTaskReward(credential, product, fetcher = fetch, taskC
         message: `${taskCode} \u5956\u52B1\u5DF2\u9886\u53D6\u8FC7\uFF08\u5E42\u7B49\uFF0C\u65E0\u65B0\u589E\u79EF\u5206\uFF09`
       };
     }
-    const energy = readNumber10(data, "energy");
+    const energy = readNumber11(data, "energy");
     return {
       ok: true,
       claimed: true,
@@ -75418,6 +77200,28 @@ function createProviderCredits(deps = {}) {
       claim: async (credential) => await claimAutoclawDailyQuota(credential),
       precheckStatus: false
     },
+    /**
+     * **AutoClaw 国际版**（`autoclawintl`）。
+     *
+     * ⚠️⚠️ **必须显式传 `product: AUTOCLAW_INTL`** —— 不传会走默认的国内基址，
+     *    用户的国际账号余额恒查不到（表现为 `410000 用户未登录`）。
+     *    这是「同一实现两个实例」最容易踩的一处：`fetchAutoclawBalanceDetailed`
+     *    的默认参数是 `AUTOCLAW`（国内），漏传会**静默**查错站。
+     *
+     * 实测（2026-10-20）：国际站返回 `code=0`、`total_balance=13000`，
+     * 两个批次包（`AutoClaw Weekly Perks` 3000 / `New-user credits` 10000）。
+     */
+    autoclawintl: {
+      fetchBalanceDetailed: async (credential) => await fetchAutoclawBalanceDetailed(
+        credential,
+        { product: AUTOCLAW_INTL }
+      ),
+      claim: async (credential) => await claimAutoclawDailyQuota(
+        credential,
+        { product: AUTOCLAW_INTL }
+      ),
+      precheckStatus: false
+    },
     accio: {
       fetchBalanceDetailed: async (credential) => await fetchAccioBalanceDetailed(credential)
     },
@@ -75740,415 +77544,6 @@ function createProviderOnboarding(deps = {}) {
 function onboardingOf(table2, provider) {
   if (!Object.hasOwn(table2, provider)) return void 0;
   return table2[provider];
-}
-
-// vendor/channel-pack/src/qoder-machine.ts
-import { execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
-import { existsSync as existsSync8, readFileSync as readFileSync9, readdirSync as readdirSync2 } from "node:fs";
-import { homedir as homedir7 } from "node:os";
-import { join as join9 } from "node:path";
-var RUNTIME_INFO_TIMEOUT_MS = 2e4;
-var cached;
-function candidatePaths() {
-  const override = process.env.QODER_MACHINE_TOKEN_PATH;
-  if (override !== void 0 && override.length > 0) return [override];
-  const paths = [];
-  const appData = process.env.APPDATA;
-  if (appData !== void 0 && appData.length > 0) {
-    for (const dir of ["Qoder", "Qoder CN"]) {
-      paths.push(join9(appData, dir, "SharedClientCache", "cache", "machine_token.json"));
-    }
-  }
-  const home = homedir7();
-  for (const dir of ["Qoder", "Qoder CN"]) {
-    paths.push(join9(home, "Library", "Application Support", dir, "SharedClientCache", "cache", "machine_token.json"));
-    paths.push(join9(home, ".config", dir, "SharedClientCache", "cache", "machine_token.json"));
-  }
-  return paths;
-}
-function parseFile(path4) {
-  let raw;
-  try {
-    raw = readFileSync9(path4, "utf8");
-  } catch {
-    return void 0;
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return void 0;
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return void 0;
-  const record3 = parsed;
-  const token = record3.token;
-  const type = record3.type;
-  if (typeof token !== "string" || token.length === 0) return void 0;
-  if (typeof type !== "string" || type.length === 0) return void 0;
-  return { token, type };
-}
-async function resolveQoderMachineIdentityAsync(forceExecutable) {
-  if (cached !== void 0) return cached ?? void 0;
-  const live = await readFromRuntimeInfoAsync(forceExecutable);
-  if (live !== void 0) {
-    cached = live;
-    return live;
-  }
-  for (const path4 of candidatePaths()) {
-    const identity = parseFile(path4);
-    if (identity !== void 0) {
-      cached = identity;
-      return identity;
-    }
-  }
-  cached = null;
-  return void 0;
-}
-var QODER_DATA_DIR_NAMES = [".qoder", ".qoder-cn"];
-function findRuntimeInfoExecutable(home, dataDirNames = QODER_DATA_DIR_NAMES) {
-  const exeName = process.platform === "win32" ? "runtime-info.exe" : "runtime-info";
-  for (const dirName of dataDirNames) {
-    const binDir = join9(home, dirName, ".bin");
-    let entries;
-    try {
-      entries = readdirSync2(binDir);
-    } catch {
-      continue;
-    }
-    const dir = entries.find((name2) => name2.startsWith("umid-"));
-    if (dir === void 0) continue;
-    const exe = join9(binDir, dir, exeName);
-    if (existsSync8(exe)) return exe;
-  }
-  return void 0;
-}
-function locateRuntimeInfo(override) {
-  const fromEnv = process.env.QODER_RUNTIME_INFO;
-  const candidate = override ?? (fromEnv !== void 0 && fromEnv.length > 0 ? fromEnv : void 0);
-  if (candidate !== void 0) {
-    return existsSync8(candidate) ? candidate : void 0;
-  }
-  return findRuntimeInfoExecutable(homedir7());
-}
-var RUNTIME_INFO_ENVIRONMENT = "3";
-function runtimeInfoArgs() {
-  return [RUNTIME_INFO_ENVIRONMENT, "--account-stdin"];
-}
-function parseRuntimeInfoOutput(out) {
-  const start = out.indexOf("{");
-  if (start < 0) return void 0;
-  let parsed;
-  try {
-    parsed = JSON.parse(out.slice(start));
-  } catch {
-    return void 0;
-  }
-  if (typeof parsed !== "object" || parsed === null) return void 0;
-  const record3 = parsed;
-  const token = record3.machineToken;
-  const type = record3.machineType;
-  if (typeof token !== "string" || token.length === 0) return void 0;
-  if (typeof type !== "string" || type.length === 0) return void 0;
-  return { token, type };
-}
-async function readFromRuntimeInfoAsync(override) {
-  const exe = locateRuntimeInfo(override);
-  if (exe === void 0) return void 0;
-  return await new Promise((resolve2) => {
-    let settled = false;
-    const done = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve2(value);
-    };
-    let child;
-    try {
-      child = spawn3(exe, [...runtimeInfoArgs()], { windowsHide: true });
-    } catch {
-      done(void 0);
-      return;
-    }
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-      }
-      done(void 0);
-    }, RUNTIME_INFO_TIMEOUT_MS);
-    timer.unref?.();
-    let stdout = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr?.on("data", () => {
-    });
-    child.once("error", () => {
-      clearTimeout(timer);
-      done(void 0);
-    });
-    child.once("close", () => {
-      clearTimeout(timer);
-      done(parseRuntimeInfoOutput(stdout));
-    });
-    child.stdin?.on("error", () => {
-    });
-    child.stdin?.end(JSON.stringify({ account: "" }));
-  });
-}
-async function withQoderMachineHeadersAsync(headers, forceExecutable) {
-  const identity = await resolveQoderMachineIdentityAsync(forceExecutable);
-  if (identity === void 0) return headers;
-  return {
-    ...headers,
-    "Cosy-MachineToken": identity.token,
-    "Cosy-MachineType": identity.type
-  };
-}
-
-// vendor/channel-pack/src/qoder-credits.ts
-var QODER_USAGE_PATH = "/sash/api/v2/me/usage";
-var QODER_CAMPAIGNS_PATH = "/sash/api/v1/me/campaigns";
-var QODER_CAMPAIGN_REFRESH_HOUR_UTC8 = 10;
-function hasQoderCampaignRefreshedToday(nowMs = Date.now()) {
-  const utc8 = new Date(nowMs + QODER_BILLING_UTC_OFFSET_MS);
-  return utc8.getUTCHours() >= QODER_CAMPAIGN_REFRESH_HOUR_UTC8;
-}
-var QODER_CREDITS_TIMEOUT_MS = 15e3;
-var NOT_ACTIVATED_HINT = "\u8BE5\u8D26\u53F7\u5C1A\u672A\u5728 Qoder \u4FA7\u5F00\u901A\u6BCF\u65E5\u9886\u53D6\uFF08\u6BCF\u65E5 100 Credits\uFF09\u3002\u8BF7\u5148\u7528 Qoder \u5B98\u65B9\u5BA2\u6237\u7AEF\u767B\u5F55\u4E00\u6B21\u8BE5\u8D26\u53F7\uFF0C\u5F00\u901A\u540E\u518D\u56DE\u6765\u9886\u53D6\u3002";
-var NOT_REFRESHED_YET_HINT = `\u4ECA\u5929\u7684\u6BCF\u65E5\u6D3B\u52A8\u5C1A\u672A\u5237\u65B0\uFF08\u6BCF\u65E5 ${QODER_CAMPAIGN_REFRESH_HOUR_UTC8}:00\uFF08UTC+8\uFF09\u5237\u65B0\uFF09\uFF0C\u5F53\u524D\u770B\u5230\u7684\u662F\u6628\u5929\u90A3\u4E00\u8F6E\uFF0C\u8BF7\u7A0D\u540E\u518D\u6765\u9886\u53D6\u3002`;
-function isQoderNotActivated(campaigns, machineHeadersPresent = false) {
-  if (campaigns === void 0) return false;
-  if (!machineHeadersPresent) return false;
-  const hasBenefit = campaigns.campaigns.some((c) => c.actionType === "CLAIM_BENEFIT");
-  if (hasBenefit) return false;
-  if (!campaigns.showCampaign || campaigns.campaigns.length === 0) return false;
-  return true;
-}
-async function creditsHeaders(credential, product) {
-  return await withQoderMachineHeadersAsync({
-    Accept: "application/json",
-    Authorization: `Bearer ${qoderBearerToken(credential)}`,
-    // 桌面 app 身份（`'10'`）；服务端据此进入活动下发分支。
-    "Cosy-ClientType": product.sashClientType,
-    "User-Agent": "Qoder"
-  });
-}
-function readNumber11(source, key) {
-  if (typeof source !== "object" || source === null) return void 0;
-  const value = source[key];
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : void 0;
-  }
-  return void 0;
-}
-function readString9(source, key) {
-  if (typeof source !== "object" || source === null) return void 0;
-  const value = source[key];
-  return typeof value === "string" && value.length > 0 ? value : void 0;
-}
-var QODER_PLAN_PACKAGE = "\u5957\u9910\u989D\u5EA6";
-function toPackage(name2, quota, options = {}) {
-  const total = readNumber11(quota, "total");
-  const used = readNumber11(quota, "used");
-  const remainingRaw = readNumber11(quota, "remaining");
-  if (total === void 0 && used === void 0 && remainingRaw === void 0) return void 0;
-  const totalValue = Math.max(0, total ?? 0);
-  const usedValue = Math.max(0, used ?? 0);
-  const remaining = remainingRaw !== void 0 ? Math.max(0, remainingRaw) : Math.max(0, totalValue - usedValue);
-  const expMs = options.expiredTime && options.expiredTime.length > 0 ? Date.parse(options.expiredTime.replace(" ", "T")) : Number.NaN;
-  return {
-    name: name2,
-    unit: readString9(quota, "unit") ?? "credits",
-    remaining,
-    total: totalValue,
-    used: usedValue,
-    active: options.active ?? true,
-    cycleStartTime: "",
-    cycleEndTime: "",
-    expiredTime: options.expiredTime ?? "",
-    ...Number.isFinite(expMs) ? { deductionEndTime: expMs } : {}
-  };
-}
-async function fetchQoderCreditBalance(credential, product, fetcher = fetch) {
-  let response;
-  try {
-    response = await fetcher(`${product.openApiBase}${QODER_USAGE_PATH}`, {
-      method: "GET",
-      headers: await creditsHeaders(credential, product),
-      signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
-    });
-  } catch {
-    return null;
-  }
-  if (!response.ok) return null;
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    return null;
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
-  const root = body;
-  if (root.displayMode === "enterprise") return null;
-  const usage = root.qoderUsage;
-  if (typeof usage !== "object" || usage === null) return null;
-  const packages = [];
-  const userQuota = toPackage(QODER_PLAN_PACKAGE, usage.userQuota);
-  if (userQuota !== void 0) packages.push(userQuota);
-  const addOnQuota = toPackage("\u8D44\u6E90\u5305", usage.addOnQuota);
-  if (addOnQuota !== void 0) packages.push(addOnQuota);
-  const dedicated = usage.dedicatedResourcePackages;
-  if (Array.isArray(dedicated)) {
-    for (const item of dedicated) {
-      const pkg = toPackage(
-        readString9(item, "name") ?? readString9(item, "id") ?? "\u4E13\u7528\u8D44\u6E90\u5305",
-        item,
-        { expiredTime: readString9(item, "expiresAt") ?? readString9(item, "expires_at") ?? "" }
-      );
-      if (pkg !== void 0) packages.push(pkg);
-    }
-  }
-  if (packages.length === 0) return null;
-  const total = roundCredits(packages.reduce((sum, pkg) => sum + pkg.remaining, 0));
-  return { total, packages, expiredTotal: 0 };
-}
-function parseQoderCampaigns(body) {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return void 0;
-  const root = body;
-  const raw = root.campaigns;
-  const campaigns = [];
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      const id = readString9(item, "campaignId");
-      if (id === void 0) continue;
-      campaigns.push({
-        campaignId: id,
-        ...readString9(item, "campaignKey") !== void 0 ? { campaignKey: readString9(item, "campaignKey") } : {},
-        ...readString9(item, "actionType") !== void 0 ? { actionType: readString9(item, "actionType") } : {},
-        ...readString9(item, "claimStatus") !== void 0 ? { claimStatus: readString9(item, "claimStatus") } : {},
-        ...benefitAmount(item) !== void 0 ? { amount: benefitAmount(item) } : {}
-      });
-    }
-  }
-  return {
-    showCampaign: root.showCampaign === true,
-    claimable: root.claimable === true,
-    campaigns
-  };
-}
-function benefitAmount(item) {
-  if (typeof item !== "object" || item === null) return void 0;
-  return readNumber11(item.benefit, "amount");
-}
-async function loadCampaigns(credential, product, fetcher) {
-  const headers = await creditsHeaders(credential, product);
-  const machineHeadersPresent = headers["Cosy-MachineToken"] !== void 0 && headers["Cosy-MachineType"] !== void 0;
-  let response;
-  try {
-    response = await fetcher(`${product.openApiBase}${QODER_CAMPAIGNS_PATH}`, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
-    });
-  } catch {
-    return void 0;
-  }
-  if (!response.ok) return void 0;
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    return void 0;
-  }
-  const campaigns = parseQoderCampaigns(body);
-  if (campaigns === void 0) return void 0;
-  return { campaigns, machineHeadersPresent };
-}
-function claimableCampaigns(parsed) {
-  return parsed.campaigns.filter(
-    (c) => c.actionType === "CLAIM_BENEFIT" && c.claimStatus === "CLAIMABLE"
-  );
-}
-function parseClaimResult(body) {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return {};
-  const root = body;
-  return {
-    ...readString9(root, "status") !== void 0 ? { status: readString9(root, "status") } : {},
-    ...typeof root.replayed === "boolean" ? { replayed: root.replayed } : {},
-    ...benefitAmount(root) !== void 0 ? { amount: benefitAmount(root) } : {}
-  };
-}
-async function claimQoderCampaign(credential, product, campaignId, fetcher = fetch) {
-  const url = `${product.openApiBase}${QODER_CAMPAIGNS_PATH}/${encodeURIComponent(campaignId)}/claim`;
-  let response;
-  try {
-    response = await fetcher(url, {
-      method: "POST",
-      headers: { ...await creditsHeaders(credential, product), "Content-Type": "application/json" },
-      body: "",
-      signal: AbortSignal.timeout(QODER_CREDITS_TIMEOUT_MS)
-    });
-  } catch (error) {
-    return { kind: "failed", code: -1, message: error instanceof Error ? error.message : String(error) };
-  }
-  const text = await response.text().catch(() => "");
-  let body;
-  try {
-    body = text.length > 0 ? JSON.parse(text) : {};
-  } catch {
-    return { kind: "failed", code: response.status, message: describeNonJson(response.status, text) };
-  }
-  if (!response.ok) {
-    return { kind: "failed", code: response.status, message: describeNonJson(response.status, text) };
-  }
-  const result = parseClaimResult(body);
-  if (result.replayed === true) {
-    return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6" };
-  }
-  if (result.status !== void 0 && result.status !== "CLAIMED") {
-    return { kind: "failed", code: -1, message: `\u9886\u53D6\u672A\u6210\u529F\uFF08status=${result.status}\uFF09` };
-  }
-  return { kind: "claimed", credit: result.amount ?? 0, streakDays: 0, isStreakDay: false };
-}
-function describeNonJson(status, text) {
-  if (status === 401 || status === 403) return `\u51ED\u636E\u5DF2\u5931\u6548\uFF08HTTP ${status}\uFF09\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7`;
-  const snippet = text.trim().slice(0, 80).replace(/\s+/g, " ");
-  return `\u670D\u52A1\u7AEF\u8FD4\u56DE\u4E86\u975E JSON \u54CD\u5E94\uFF08HTTP ${status}\uFF09\uFF1A${snippet}`;
-}
-async function claimQoderDailyCheckin(credential, product, fetcher = fetch, nowMs = Date.now()) {
-  const loaded = await loadCampaigns(credential, product, fetcher);
-  if (loaded === void 0) {
-    return { kind: "failed", code: -1, message: "\u6D3B\u52A8\u5217\u8868\u67E5\u8BE2\u5931\u8D25" };
-  }
-  const { campaigns: parsed, machineHeadersPresent } = loaded;
-  const refreshed = hasQoderCampaignRefreshedToday(nowMs);
-  const stale = refreshed ? void 0 : { coversToday: false };
-  const targets = claimableCampaigns(parsed);
-  if (targets.length === 0) {
-    const claimedBefore = parsed.campaigns.some(
-      (c) => c.actionType === "CLAIM_BENEFIT" && c.claimStatus === "CLAIMED"
-    );
-    if (claimedBefore) {
-      if (!refreshed) return { kind: "inactive", message: NOT_REFRESHED_YET_HINT };
-      return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6" };
-    }
-    if (isQoderNotActivated(parsed, machineHeadersPresent)) {
-      return { kind: "inactive", message: NOT_ACTIVATED_HINT, actionRequired: true };
-    }
-    return { kind: "inactive", message: "\u5F53\u524D\u6CA1\u6709\u53EF\u9886\u53D6\u7684\u6D3B\u52A8" };
-  }
-  let total = 0;
-  let firstError;
-  for (const target of targets) {
-    const outcome = await claimQoderCampaign(credential, product, target.campaignId, fetcher);
-    if (outcome.kind === "claimed") total += outcome.credit;
-    else if (outcome.kind === "failed" && firstError === void 0) firstError = outcome.message;
-  }
-  if (total > 0) return { kind: "claimed", credit: total, streakDays: 0, isStreakDay: false, ...stale };
-  if (firstError !== void 0) return { kind: "failed", code: -1, message: firstError };
-  return { kind: "already-claimed", message: "\u4ECA\u5929\u5DF2\u9886\u53D6", ...stale };
 }
 
 // vendor/channel-pack/src/cline-quota.ts
@@ -76633,6 +78028,24 @@ async function exportBackup(pool, credentials, options = {}) {
       credentials: exported,
       accounts,
       disabledModels: state.disabledModels,
+      // ⚠️⚠️ **本载荷刻意不含 `providerClosed`（供应商关闭意图）**
+      //（Gitee issue IKP8OF 审计登记 —— 不是漏键，`getStateSnapshot()` 同样不导出它）。
+      //
+      // 两条理由：
+      // ① **格式兼容**：加字段要抬 `BACKUP_VERSION`，而导入端对版本是**严格相等**
+      //    （见下方 `record.version !== BACKUP_VERSION` 的分支）⇒ 抬版本会让
+      //    老版本插件**完全无法导入**新备份（不是「忽略未知字段」，是整份拒绝）。
+      //    为一个「丢失后果可逆」的开关付这个代价不划算。
+      // ② **语义上它也不该被搬走**：关闭意图描述的是「**这台机器上这个 provider
+      //    该不该出现**」，而备份的主要用途是换机 / 迁移账号。把 A 机器的关闭态
+      //    带到 B 机器上，B 上那个 provider 会**静默消失**（选择器里一条模型都没有），
+      //    用户会以为「导入后模型全丢了」—— 那是比「关闭态丢失」更糟的方向。
+      //
+      // ⇒ 如实登记的代价：**导入备份会让「整家关闭」态退化为「逐条关闭」**。
+      //    目录不再变长时两者表现相同（派生判据仍报已关闭）；只有目录继续变长时
+      //    新增模型会重新出现。用户重新点一次供应商开关即恢复。
+      //    ⚠️ 这条代价**同机「导出 → 恢复」也会命中**（不是只有换机）。
+      //    见 `AccountPool.replaceAll` 里 `providerClosedCache = {}` 的注释。
       // 权威表 + Loomy 兼容字段**同源**（老版本只读后者，缺了会看到
       // 「锁定悄悄失效」，而失效的后果是真把永久积分烧掉了）。
       permanentLocks: locks,
@@ -78232,7 +79645,9 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     gemini,
     accio,
     autoclaw,
-    astudio
+    astudio,
+    // ⚠️ AutoClaw 国际版（`autoclawintl`）—— 与 `autoclaw` 是**两个实例**。
+    autoclawintl
   } = auths;
   const credits = createProviderCredits({
     loomy,
@@ -78331,7 +79746,13 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
     //   一次性终态「需人工重新登录」，不进重试循环。
     // 漏登记的后果与 accio 同款：凭据其实只需一次重取，面板却永报「未登录」。
     ASTUDIO.id,
-    AUTOCLAW.id
+    AUTOCLAW.id,
+    // ⚠️ autoclawintl（AutoClaw 国际版，2026-10-20）：与 `autoclaw` 共用同一个
+    //    auth 类，**有**真实 refresh 端点（`/userapi/v1/refresh`，实测国际站
+    //    续期成功）⇒ 不属 loomy / zcode 那类「设计上没有 refresh 端点」的豁免。
+    //    漏登记的后果与 issue IKKHL5 逐字相同：积分行报「未登录」而上游其实
+    //    只需一次 refresh，且**日志零字**。
+    AUTOCLAW_INTL.id
     // ⚠️ **本 fork 独有**（modelscope，2026-10-17 改判）**仍刻意不在本表里**：
     //    ⚠️ 原注释写「它是 `balance: false`（魔搭没有额度 API）⇒ 积分端点压根不会
     //    为它走这条链」——**那条已被证伪**：魔搭**有**魔粒余额端点
@@ -79338,17 +80759,20 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             ok: true,
             value: { accountId: id, loginUrl: started.authorizeUrl, incognitoOpened }
           };
-        } else if (provider === AUTOCLAW.id) {
-          const id2 = `autoclaw-${shortId()}`;
-          const refName2 = `AUTOCLAW_ACCOUNT_${shortId().toUpperCase()}`;
+        } else if (provider === AUTOCLAW.id || provider === AUTOCLAW_INTL.id) {
+          const isIntl = provider === AUTOCLAW_INTL.id;
+          const autoclawAuthForProvider = isIntl ? autoclawintl : autoclaw;
+          const autoclawProduct = isIntl ? AUTOCLAW_INTL : AUTOCLAW;
+          const id2 = `${provider}-${shortId()}`;
+          const refName2 = `${autoclawProduct.defaultCredentialRef.replace(/_DEFAULT$/, "_")}${shortId().toUpperCase()}`;
           const autoclawMode = payload?.autoclawMode;
           if (autoclawMode === "local") {
-            const localCred = await autoclaw.probeLocal();
+            const localCred = await autoclawAuthForProvider.probeLocal();
             if (!localCred) {
               return { ok: false, error: "\u672A\u68C0\u6D4B\u5230\u672C\u5730 AutoClaw \u684C\u9762\u7AEF\u6709\u6548\u767B\u5F55\u51ED\u636E\uFF0C\u8BF7\u5148\u5728 AutoClaw \u4E2D\u767B\u5F55" };
             }
             try {
-              await autoclaw.importLocalAccount(pool, { accountId: id2, refName: refName2 });
+              await autoclawAuthForProvider.importLocalAccount(pool, { accountId: id2, refName: refName2 });
               return { ok: true, value: { accountId: id2 } };
             } catch (err) {
               const reason = err instanceof Error ? err.message : String(err);
@@ -79357,7 +80781,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           }
           await pool.addAccount({
             id: id2,
-            provider: AUTOCLAW.id,
+            provider: autoclawProduct.id,
             nickname: "AutoClaw (\u767B\u5F55\u4E2D...)",
             enabled: true,
             credentialRef: refName2,
@@ -79366,7 +80790,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           });
           let started;
           try {
-            started = await autoclaw.startLogin({ refName: refName2 });
+            started = await autoclawAuthForProvider.startLogin({ refName: refName2 });
           } catch (error) {
             void pool.removeAccount(id2).catch(() => {
             });
@@ -79374,6 +80798,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             throw new Error(`\u65E0\u6CD5\u542F\u52A8 AutoClaw \u767B\u5F55\u670D\u52A1\uFF1A${reason}`);
           }
           started.result.then(async ({ credential }) => {
+            await autoclawAuthForProvider.verifyCredentialSite(credential);
             const ref = credentialRef17(refName2);
             await ctx.credentials.set(ref, JSON.stringify(credential));
             const nickname = autoclawDisplayNickname(credential, id2);
@@ -79383,7 +80808,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
               refreshable: isAutoclawRefreshable(credential)
             });
           }).catch((error) => {
-            ctx.logger.warn(`[jet-hub] background ${AUTOCLAW.id} login failed for ${id2}: ${String(error)}`);
+            ctx.logger.warn(`[jet-hub] background ${autoclawProduct.id} login failed for ${id2}: ${String(error)}`);
             void failLogin(id2, error);
           });
           return { ok: true, value: { accountId: id2, loginUrl: started.loginUrl } };
@@ -79676,6 +81101,44 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             }
             const cred = loginRes.credential;
             const nickname = autoclawDisplayNickname(cred, req.accountId);
+            const identity = cred.user_id === void 0 ? "" : String(cred.user_id).trim();
+            const duplicateId = identity === "" ? "" : await pool.findAccountIdByIdentityField(AUTOCLAW.id, "user_id", identity);
+            if (duplicateId !== "" && duplicateId !== req.accountId) {
+              try {
+                const existing = pool.listAccountsByProvider(AUTOCLAW.id).find((entry) => entry.id === duplicateId);
+                if (existing !== void 0) {
+                  await ctx.credentials.set(
+                    credentialRef17(existing.credentialRef),
+                    JSON.stringify(cred)
+                  );
+                  await pool.updateAccount(existing.id, {
+                    nickname: autoclawDisplayNickname(cred, existing.id),
+                    expiresAt: cred.expires_at,
+                    refreshable: isAutoclawRefreshable(cred)
+                  });
+                }
+              } catch (error) {
+                ctx.logger?.warn?.(
+                  `[autoclaw] \u5E76\u5165\u5DF2\u5B58\u5728\u6761\u76EE ${duplicateId} \u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u672C\u6B21\u63D0\u793A\uFF09\uFF1A` + (error instanceof Error ? error.message : String(error))
+                );
+              }
+              await pool.removeAccount(req.accountId).catch((error) => {
+                ctx.logger?.warn?.(
+                  `[autoclaw] \u6E05\u7406\u91CD\u590D\u5360\u4F4D\u6761\u76EE ${req.accountId} \u5931\u8D25\uFF1A${String(error)}`
+                );
+              });
+              pendingSmsMsgid.delete(req.accountId);
+              ctx.logger?.warn?.(
+                `[autoclaw] \u8BE5\u8D26\u53F7\u5DF2\u5B58\u5728\uFF08user_id=${identity}\uFF0C\u6761\u76EE ${duplicateId}\uFF09\u2014\u2014 \u672C\u6B21\u767B\u5F55\u5DF2\u5E76\u5165\u539F\u6761\u76EE\u5E76\u6E05\u7406\u5360\u4F4D\u6761\u76EE ${req.accountId}`
+              );
+              return {
+                ok: true,
+                value: {
+                  done: false,
+                  error: `\u8BE5 AutoClaw \u8D26\u53F7\uFF08user_id=${identity}\uFF09\u5DF2\u5728\u8D26\u53F7\u5217\u8868\u4E2D\uFF0C\u65E0\u9700\u91CD\u590D\u6DFB\u52A0`
+                }
+              };
+            }
             await pool.updateAccount(req.accountId, {
               nickname,
               expiresAt: cred.expires_at,
@@ -80148,39 +81611,43 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         if (isQoderFamily(req.provider)) {
           const { product } = requireQoderFamily(req.provider);
           const values2 = [];
-          for (const account of accounts) {
+          values2.push(...await Promise.all(accounts.map(async (account) => {
             const resolved = await ctx.credentials.resolve(credentialRef17(account.credentialRef));
             if (!resolved) {
-              values2.push({
+              return {
                 accountId: account.id,
                 nickname: account.nickname,
                 balance: null,
                 error: "\u51ED\u636E\u672A\u914D\u7F6E"
-              });
-              continue;
+              };
             }
             let credential;
             try {
               credential = JSON.parse(resolved.value);
             } catch {
-              values2.push({
+              return {
                 accountId: account.id,
                 nickname: account.nickname,
                 balance: null,
                 error: "\u51ED\u636E\u89E3\u6790\u5931\u8D25"
-              });
-              continue;
+              };
             }
-            const balance = await fetchQoderCreditBalance(credential, product);
-            values2.push({
+            const detailed = await fetchQoderBalanceDetailed(credential, product);
+            return {
               accountId: account.id,
               nickname: account.nickname,
-              balance,
+              balance: detailed.balance,
               // 查不到时带上原因，卡片显示原因而非 0（与其它 provider 同约定）。
-              ...balance === null ? { error: "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u51ED\u636E\u5931\u6548\u6216\u54CD\u5E94\u5F02\u5E38\uFF09" } : {}
-            });
-          }
-          return { ok: true, value: { accounts: values2 } };
+              ...detailed.balance === null ? { error: detailed.error ?? "\u79EF\u5206\u67E5\u8BE2\u5931\u8D25\uFF08\u539F\u56E0\u672A\u77E5\uFF09" } : {}
+            };
+          })));
+          return {
+            ok: true,
+            value: {
+              accounts: values2,
+              windowDays: buddyExpiringWindowDays()
+            }
+          };
         }
         if (req.provider === OFFICEACE.id) {
           const fetchSummary = auths.officeace?.fetchSubscriptionSummary;
@@ -80510,6 +81977,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           return { ok: false, error: { code: "bad-request", message: `\u8BFB\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF1A${reason}` } };
         }
         const disabledMap = pool.listDisabledModels(req.provider);
+        const providerClosed = pool.providerClosedFor(req.provider);
         const catalogSource = modelAdapters?.[req.provider];
         const all = catalogSource?.listAllModels();
         let catalog;
@@ -80539,7 +82007,13 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           models: catalog.map((model) => ({
             id: model.id,
             name: model.name,
-            disabled: disabledMap[model.id] === true,
+            // ⚠️⚠️ **「供应商整体关闭」意图为真 ⇒ 每条都显示为已关闭**（IKP8OF）。
+            // 否则设置页与 `provider.status` 自相矛盾：分组说「已关闭」，
+            // 而这里每条开关都显示「已打开」（意图关闭的模型**不在**黑名单里，
+            // 那正是本 issue 的成因）。用户据此会以为开关坏了。
+            // ⚠️ 打开任意一条即清除意图（见 `AccountPool` 的三个打开入口），
+            //    故这里的「全关」显示是**可操作**的，不是死状态。
+            disabled: providerClosed || disabledMap[model.id] === true,
             // ⚠️ **照实透传**：缺失即 false，**不推导**（黑名单命中也算用户主动关的，
             // 不是失效）。客户端据它灰显并显示「重新显示」按钮。
             dead: dead.has(model.id),
@@ -80691,8 +82165,8 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             error: { code: "bad-request", message: "provider \u4E0E disabled\uFF08\u5E03\u5C14\uFF09\u5FC5\u586B" }
           };
         }
-        if (req.disabled) {
-          const catalog = await fullCatalogIds(ctx, modelAdapters, req.provider);
+        const catalog = req.disabled ? await fullCatalogIds(ctx, modelAdapters, req.provider) : void 0;
+        if (req.disabled && catalog !== void 0) {
           if (catalog.remoteError !== void 0) {
             return {
               ok: false,
@@ -80726,8 +82200,11 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
               }
             };
           } else {
-            await pool.setModelsDisabled(req.provider, pending2);
-            ctx.logger.info(`[jet-hub] \u5173\u95ED ${req.provider} \u7684 ${pending2.length} \u4E2A\u6A21\u578B`);
+            const closeProvider = req.closeProvider !== false;
+            await pool.writeModelsWithProviderClosed(req.provider, pending2, closeProvider);
+            ctx.logger.info(
+              `[jet-hub] \u5173\u95ED ${req.provider} \u7684 ${pending2.length} \u4E2A\u6A21\u578B` + (closeProvider ? "" : "\uFF08\u4E0D\u843D\u4F9B\u5E94\u5546\u5173\u95ED\u610F\u56FE\uFF09")
+            );
           }
         } else {
           await pool.clearDisabledModels(req.provider);
@@ -80756,6 +82233,13 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
        *
        * 适配器缺失（外部/旧适配器）时 `total = 0`、`closed = false`：
        * 保守判为「未关闭」，让用户可以尝试操作，而不是误报成已关闭。
+       *
+       * ⚠️ **唯一的例外是「关闭意图」**（Gitee issue IKP8OF）：用户**确实点过**
+       * 「关闭供应商」时，意图为真 ⇒ `closed: true`，即使适配器已缺失、`total = 0`。
+       * 这不是误报 —— 用户明确关过它，报「已关闭」才是如实。而且这种形态
+       * **可以自救**：前端 `providerSwitchState` 对 `closed === true` 一律允许点击
+       * （见该函数里「已关闭优先于没有模型可关」那条注释），点一下就清意图。
+       * ⇒ 不要按「适配器缺失 ⇒ 恒 false」写用例：那条不变式**已经不再成立**。
        *
        * ## ⚠️⚠️ `closed` 必须只走「安全方向」，故它在必要时**会去核实一次**
        *
@@ -80802,7 +82286,12 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
             }
           }
           let closed = total > 0 && disabled === total;
-          if (closed) {
+          const closedByIntent = pool.providerClosedFor(provider);
+          if (closedByIntent) {
+            closed = true;
+            disabled = total;
+          }
+          if (closed && !closedByIntent) {
             const full = await fullCatalogIds(ctx, modelAdapters, provider);
             if (full.notReady !== void 0) {
               closed = false;
@@ -80878,7 +82367,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
         let modelCount = 0;
         if (req.enabled) {
           const cleared = pool.listDisabledModels(req.provider);
-          await pool.clearDisabledModels(req.provider);
+          await pool.clearModelsWithProviderClosed(req.provider);
           modelCount = Object.keys(cleared).length;
         } else {
           const catalog = await fullCatalogIds(ctx, modelAdapters, req.provider);
@@ -80911,7 +82400,7 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           }
           const disabledBefore = pool.listDisabledModels(req.provider);
           const pending2 = catalog.ids.filter((id) => disabledBefore[id] !== true);
-          await pool.setModelsDisabled(req.provider, catalog.ids);
+          await pool.writeModelsWithProviderClosed(req.provider, catalog.ids, true);
           modelCount = pending2.length;
         }
         const accountCount = await pool.setAccountsEnabled(req.provider, req.enabled);
@@ -81266,6 +82755,31 @@ function registerJetHubEndpoints(ctx, pool, auths, modelAdapters) {
           `[jet-hub] ${req.enabled ? "\u6253\u5F00" : "\u5173\u95ED"}\u6E20\u9053\u539F\u751F\u641C\u7D22${req.enabled ? "" : "\uFF08\u6240\u6709\u6E20\u9053\u6539\u7528 DeepSeek \u5B98\u65B9\u641C\u7D22\uFF09"}`
         );
         const value = { enabled: pool.nativeWebSearchEnabled() };
+        return { ok: true, value };
+      }
+      // ── 「侧栏入口」开关（Jet Hub 页头的「侧栏」开关）──
+      //
+      // 语义：**开** = 主导航（`sidebar.panellist`）里显示「Jet Hub」一行，
+      // 点它把 Jet Hub 页渲染进中央主面板（`main` 槽的 `jet-hub` key）；
+      // **关** = 该行消失，进入路径只剩「设置 → Jet Hub」。
+      //
+      // 消费方是客户端：`plugin-src/client/sidebar-entry.js` 在 `apply` 里先读
+      // 一次本端点，再决定注不注入那行；页头开关写回后由同一份进程内副本
+      // 通知两侧（设置页与主面板）重新渲染。
+      case "sidebarEntry.getEnabled": {
+        const value = { enabled: pool.sidebarEntryEnabled() };
+        return { ok: true, value };
+      }
+      case "sidebarEntry.setEnabled": {
+        const req = payload;
+        if (typeof req.enabled !== "boolean") {
+          return { ok: false, error: { code: "bad-request", message: "\u975E\u7A7A\u5E03\u5C14 enabled \u5FC5\u586B" } };
+        }
+        await pool.setSidebarEntryEnabled(req.enabled);
+        ctx.logger.info(
+          `[jet-hub] ${req.enabled ? "\u663E\u793A" : "\u9690\u85CF"}\u4E3B\u5BFC\u822A\u4FA7\u680F\u5165\u53E3${req.enabled ? "" : "\uFF08\u4ECD\u53EF\u4ECE\u300C\u8BBE\u7F6E \u2192 Jet Hub\u300D\u8FDB\u5165\uFF09"}`
+        );
+        const value = { enabled: pool.sidebarEntryEnabled() };
         return { ok: true, value };
       }
       /**
@@ -84292,7 +85806,8 @@ var BuddyBalanceSelector = class {
     const now = this.deps.now?.() ?? Date.now();
     const cached2 = this.cache.get(account.id);
     if (cached2 !== void 0) {
-      const ttl = cached2.source.ok ? this.deps.ttlMs ?? BUDDY_BALANCE_CACHE_TTL_MS : this.deps.errorTtlMs ?? BUDDY_BALANCE_ERROR_CACHE_TTL_MS;
+      const degradedSource = cached2.source.ok && cached2.source.balance.degraded === true;
+      const ttl = cached2.source.ok && !degradedSource ? this.deps.ttlMs ?? BUDDY_BALANCE_CACHE_TTL_MS : this.deps.errorTtlMs ?? BUDDY_BALANCE_ERROR_CACHE_TTL_MS;
       if (now - cached2.at < ttl) {
         return this.classify(account.id, cached2.source, now);
       }
@@ -84316,7 +85831,9 @@ var BuddyBalanceSelector = class {
       ok: true,
       expiringBalance: split.expiring,
       permanentBalance: split.permanent,
-      split
+      split,
+      // ⚠️ 透传「降级」：总额可信、明细不可达 ⇒ 下游不得据此断言 exhausted。
+      ...source.balance.degraded === true ? { degraded: true } : {}
     };
     entry.tier = buddyBalanceTier(entry, { now, windowMs });
     return entry;
@@ -84389,7 +85906,15 @@ var BuddyBalanceSelector = class {
 };
 function noAccountReason(balances) {
   const errors = balances.filter((b) => !b.ok).map((b) => b.error ?? "\u672A\u77E5\u539F\u56E0");
-  return errors.length > 0 ? { kind: "unknown", errors } : { kind: "exhausted" };
+  if (errors.length > 0) return { kind: "unknown", errors };
+  const degraded = balances.filter((b) => b.ok && b.degraded === true);
+  if (degraded.length > 0) {
+    return {
+      kind: "unknown",
+      errors: [`${degraded.length} \u4E2A\u8D26\u53F7\u7684**\u9010\u5305\u660E\u7EC6**\u4E0D\u53EF\u7528\uFF08\u603B\u989D\u5DF2\u8BFB\u5230\uFF0C\u4F46\u6CA1\u6709\u5230\u671F\u65F6\u523B\uFF09`]
+    };
+  }
+  return { kind: "exhausted" };
 }
 function failedEntry(id, error) {
   return { id, ok: false, error };
@@ -84419,6 +85944,7 @@ async function pickBuddyAccount(selector, candidates, options) {
 }
 
 // vendor/channel-pack/src/credential-resolver.ts
+var NO_FREE_MODEL = () => false;
 function candidatesOf(pool, providerId, modelId) {
   return pool.listAccountsByProvider(providerId).filter((a) => a.enabled).filter((a) => {
     const key = modelId ?? "";
@@ -84435,7 +85961,7 @@ function createCredentialResolver(deps, config) {
     const tried = /* @__PURE__ */ new Set();
     const plan = config.balance;
     if (plan?.kind === "buddy") {
-      const free = plan.isFreeModel === void 0 ? false : await plan.isFreeModel(modelId);
+      const free = await plan.isFreeModel(modelId);
       const candidates = candidatesOf(deps.pool, providerId, modelId);
       if (free) {
         for (const candidate of candidates) {
@@ -86924,12 +88450,88 @@ import http from "node:http";
 import { execFileSync as execFileSync4 } from "node:child_process";
 var AUTOCLAW_SEND_CODE_PATH = "/userapi/v1/agent-send-code";
 var AUTOCLAW_LOGIN_PATH = "/userapi/v1/agent-login";
+var AUTOCLAW_ZAI_AUTH_URL = "https://chat.z.ai/auth";
+var AUTOCLAW_ZAI_CLIENT_ID = "client_EnD0QI8bLRFT8cciLp389Q";
+var AUTOCLAW_ZAI_EXCHANGE_PATH = "/userapi/overseasv1/zai-oauth-login";
+function buildAutoclawZaiAuthUrl(redirectUri) {
+  const url = new URL(AUTOCLAW_ZAI_AUTH_URL);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", AUTOCLAW_ZAI_CLIENT_ID);
+  url.searchParams.set("redirect_uri", redirectUri);
+  return url.toString();
+}
+async function exchangeAutoclawZaiCode(code, state, navigateUri, options) {
+  const trimmedCode = code.trim();
+  if (trimmedCode === "") return { ok: false, error: "\u6388\u6743\u7801\u4E0D\u80FD\u4E3A\u7A7A" };
+  const product = options?.product ?? AUTOCLAW;
+  const fetcher = options?.fetchImpl ?? fetch;
+  const deviceId = resolveDeviceId(product, options?.deviceId);
+  const ts = Math.floor(Date.now() / 1e3).toString();
+  const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
+  try {
+    const resp = await fetcher(`${product.apiBase}${AUTOCLAW_ZAI_EXCHANGE_PATH}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // ⚠️ 这三个头缺一不可（见上面实测对照）。
+        "X-Version": AUTOCLAW_CLIENT_VERSION,
+        "X-Tm": "win",
+        "X-Product": product.product,
+        "X-Auth-Appid": product.appId,
+        "X-Auth-TimeStamp": ts,
+        "X-Auth-Sign": sign,
+        "X-Lang": "en-US",
+        "X-Channel": "official",
+        "User-Agent": `AutoClaw/${AUTOCLAW_CLIENT_VERSION} (win)`
+      },
+      body: JSON.stringify({
+        code: trimmedCode,
+        // ⚠️ `state` 原样透传（不解析、不重建）—— 见文件头「关于 state.nh」。
+        state,
+        navigate_uri: navigateUri,
+        source_id: AUTOCLAW_SOURCE_ID,
+        device_id: deviceId
+      }),
+      signal: AbortSignal.timeout(AUTOCLAW_REQUEST_TIMEOUT_MS)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: `Z.ai \u6388\u6743\u5931\u8D25(${resp.status}): ${text}` };
+    }
+    const json = await resp.json();
+    const data = json.data ?? {};
+    const rawAccess = data.access_token;
+    if (json.code !== 0 || rawAccess === void 0 || rawAccess === "") {
+      return {
+        ok: false,
+        error: json.msg !== void 0 && json.msg !== "" ? `Z.ai \u6388\u6743\u5931\u8D25\uFF1A${json.msg}\uFF08code=${json.code}\uFF09` : `Z.ai \u6388\u6743\u5931\u8D25\uFF08code=${json.code}\uFF09`
+      };
+    }
+    const cleanAccess = cleanBearerToken(rawAccess);
+    const cleanRefresh = data.refresh_token === void 0 ? "" : cleanBearerToken(data.refresh_token);
+    const expiresAt = typeof data.expires_at === "number" ? autoclawExpiresAtMs(data.expires_at) : typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1e3 : Date.now() + 7 * 864e5;
+    const jwtUserId = readUserIdFromJwt(cleanAccess);
+    const resolvedUserId = data.user_id ?? jwtUserId;
+    const credential = {
+      access_token: cleanAccess,
+      refresh_token: cleanRefresh,
+      expires_at: expiresAt,
+      device_id: deviceId,
+      account_id: resolvedUserId === void 0 ? void 0 : String(resolvedUserId),
+      user_id: resolvedUserId
+    };
+    return { ok: true, credential };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 var PHONE_NUMBER_RE = /^1[3-9]\d{9}$/;
 async function probeAutoclawLocalCredential(options) {
   try {
     const appData = options?.customAppData ?? process.env.DSH_AUTOCLAW_APPDATA ?? process.env.APPDATA ?? (process.env.USERPROFILE ? path2.join(process.env.USERPROFILE, "AppData", "Roaming") : void 0);
     if (!appData) return void 0;
-    const localStatePath = path2.join(appData, "AutoClaw-official", "Local State");
+    const appDirName = options?.product?.userDataDirName ?? options?.appDirName ?? AUTOCLAW.userDataDirName;
+    const localStatePath = path2.join(appData, appDirName, "Local State");
     if (!fs2.existsSync(localStatePath)) return void 0;
     const localState = JSON.parse(fs2.readFileSync(localStatePath, "utf8"));
     const encKeyB64 = localState?.os_crypt?.encrypted_key;
@@ -86952,7 +88554,7 @@ async function probeAutoclawLocalCredential(options) {
       timeout: 1e4
     }).trim();
     const masterKey = Buffer.from(clearB64, "base64");
-    const accountsDir = path2.join(appData, "AutoClaw-official", "accounts");
+    const accountsDir = path2.join(appData, appDirName, "accounts");
     if (!fs2.existsSync(accountsDir)) return void 0;
     const entries = fs2.readdirSync(accountsDir, { withFileTypes: true });
     for (const ent of entries) {
@@ -87062,7 +88664,25 @@ async function refreshAutoclawToken(refreshToken2, options) {
         access_token: newAccess,
         refresh_token: newRefresh,
         expires_at: expiresAt,
-        user_id: json.data.user_id,
+        /**
+         * ⚠️⚠️ **`user_id` 必须带 JWT 兜底**（2026-10-20 审计 P1，实测真缺陷）。
+         *
+         * 上游 `/userapi/v1/refresh` **不下发 `user_id`**（登录端点都不下发，
+         * 见下面 `loginAutoclawWithCode` 的同一处兜底）。原先这里写
+         * `user_id: json.data.user_id` ⇒ 恒 `undefined` ⇒ `JSON.stringify`
+         * 把该键**整键丢弃** ⇒ 一次自动续期就把「已补齐的 UUID」抹掉 ⇒
+         * 下一轮 `dedupeByCredentialField` 因身份字段缺失而跳过该条
+         * ⇒ **自愈能力随续期逐条退化**，且日志零字。
+         *
+         * 兜底顺序与登录路径**同源**：声明值优先，取不到就从新 JWT 的
+         * `user_id` 读（`readUserIdFromJwt` 是唯一实现，不写第二份解析）。
+         *
+         * ⚠️ 注意兜底拿到的是 **numericUserId**（数字 id），不是 UUID ——
+         *    那是**比没有好**的退化（`autoclawIdentityOf` 靠它仍能判同账号）；
+         *    UUID 的真正补齐由启动自愈负责，且其跳过判据已改为
+         *    「已经是 UUID 才算补齐」（见 `isAutoclawUuidUserId`）。
+         */
+        user_id: json.data.user_id ?? readUserIdFromJwt(newAccess),
         device_id: deviceId
       };
     } catch (err) {
@@ -87071,12 +88691,12 @@ async function refreshAutoclawToken(refreshToken2, options) {
   }
   throw lastError ?? new Error("AutoClaw token refresh failed on all endpoints");
 }
-function resolveDeviceId(explicitId) {
+function resolveDeviceId(product, explicitId) {
   if (explicitId && explicitId.trim().length > 0) return explicitId.trim();
   try {
     const p = path2.join(
       process.env.DSH_AUTOCLAW_APPDATA ?? process.env.APPDATA ?? path2.join(process.env.USERPROFILE ?? "", "AppData", "Roaming"),
-      "AutoClaw-official",
+      product.userDataDirName,
       "device",
       "device-id.json"
     );
@@ -87097,7 +88717,7 @@ async function sendAutoclawVerificationCode(phone, options) {
   }
   const product = options?.product ?? AUTOCLAW;
   const fetcher = options?.fetchImpl ?? fetch;
-  const deviceId = resolveDeviceId(options?.deviceId);
+  const deviceId = resolveDeviceId(product, options?.deviceId);
   const ts = Math.floor(Date.now() / 1e3).toString();
   const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
   const url = `${product.apiBase}${AUTOCLAW_SEND_CODE_PATH}`;
@@ -87148,7 +88768,7 @@ async function loginAutoclawWithCode(phone, code, options) {
   }
   const product = options?.product ?? AUTOCLAW;
   const fetcher = options?.fetchImpl ?? fetch;
-  const deviceId = resolveDeviceId(options?.deviceId);
+  const deviceId = resolveDeviceId(product, options?.deviceId);
   const ts = Math.floor(Date.now() / 1e3).toString();
   const sign = calculateAutoclawSign(product.appId, ts, product.appKey);
   const url = `${product.apiBase}${AUTOCLAW_LOGIN_PATH}`;
@@ -87187,13 +88807,15 @@ async function loginAutoclawWithCode(phone, code, options) {
     const cleanRefresh = data.refresh_token ? cleanBearerToken(data.refresh_token) : void 0;
     const declaredExpiresAt = typeof data.expires_at === "number" ? autoclawExpiresAtMs(data.expires_at) : typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1e3 : void 0;
     const expiresAt = autoclawAccessTokenExpiresAtMs(cleanAccess, declaredExpiresAt);
+    const jwtUserId = readUserIdFromJwt(cleanAccess);
+    const resolvedUserId = data.user_id ?? jwtUserId;
     const credential = {
       access_token: cleanAccess,
       refresh_token: cleanRefresh ?? "",
       expires_at: expiresAt,
       device_id: deviceId,
-      account_id: data.user_id !== void 0 ? String(data.user_id) : void 0,
-      user_id: data.user_id,
+      account_id: resolvedUserId !== void 0 ? String(resolvedUserId) : void 0,
+      user_id: resolvedUserId,
       user_name: data.user_name,
       user_phone: data.user_phone ?? trimmedPhone
     };
@@ -87393,7 +89015,7 @@ async function startAutoclawSmsLoginFlow(options) {
           return;
         }
         if (url.pathname === "/autoclaw/import-local") {
-          const localCred = await probeAutoclawLocalCredential();
+          const localCred = await probeAutoclawLocalCredential({ product });
           if (localCred) {
             settleOk({ credential: localCred, phone: localCred.user_phone ?? "" });
             res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -87438,6 +89060,31 @@ async function startAutoclawSmsLoginFlow(options) {
 var AUTOCLAW_EXPIRY_ACCESSORS = {
   expiresAtOf: (credential) => credential.expires_at,
   refreshableOf: isAutoclawRefreshable,
+  /**
+   * **`findAccountIdByCredential` 用的身份**（`syncAccountExpiry` 的池内反查）。
+   *
+   * ⚠️⚠️ **它与上面的 `autoclawIdentityOf` 是两个不同用途，绝不能混用**
+   *    （2026-10-20 审计 P1，真缺陷）：
+   *
+   * | 用途 | 消费者 | 判据 | 口径 |
+   * |---|---|---|---|
+   * | **同账号去重** | `findAccountIdByIdentityField` | `autoclawIdentityOf` | 带渠道前缀 `autoclaw:<id>` |
+   * | **池内按凭据反查** | `findAccountIdByCredential` | **本行** | 裸 `access_token` |
+   *
+   * 原因：`AccountPool.findAccountIdByCredential` 的匹配字段是**写死的**
+   *（`provider === 'codearts' ? 'access_key_id' : 'access_token'`，见该方法注释），
+   * 它拿 `identityOf` 的返回值去和凭据里的 `access_token` **逐字比较**。
+   * ⇒ 把带前缀的 `autoclaw:7c54a9a…` 喂进去**恒不命中**。
+   *
+   * 后果（实测）：`refreshAccountCredential(refName, pool)` 若调用方不传第三参，
+   * 反查失败 ⇒ `syncAccountExpiry` 直接 return ⇒ **池内 `expiresAt` 永不更新**，
+   * UI 一直显示旧有效期。这是 PR122 引入的行为回归
+   *（改前 `identityOf` 返回裸 `access_token`，能命中）。
+   *
+   * ⚠️ 与 `accio-auth.ts` / `cline-auth.ts` / `buddy-auth.ts` 的
+   *    `identityOf: (c) => c.access_token ?? ''` **同一口径** —— 那几家的注释
+   *    都明写「必须是 access_token，因为 `findAccountIdByCredential` 就这么比」。
+   */
   identityOf: (credential) => credential.access_token ?? ""
 };
 var RefreshTokenExpiredError9 = class extends Error {
@@ -87474,10 +89121,22 @@ var AutoclawAuth = class extends Service14 {
     return this.options.fetcher ?? fetch;
   }
   /**
-   * 探测本地是否有有效凭据。
+   * 探测本地是否有有效凭据（一键导入）。
+   *
+   * ⚠️ **按产品选 userData 目录**（2026-10-20）：国内版与国际版是同一客户端的
+   * 两份构建（`isOversea` 构建期常量），但 userData 目录名不同：
+   * - 国内：`AutoClaw-official`
+   * - 国际：`AutoClaw-oversea-official`
+   *
+   * 原实现硬编码国内目录 ⇒ **国际版永远导入不到自己的凭据**。
+   *
+   * ⚠️⚠️ 目录名**不再在这里拼**（2026-10-20 审计 P0 后收口）：它已进
+   *    `product.userDataDirName`，因为同一个目录名有**三个读点**
+   *    （本函数 / `resolveDeviceId` / 登录页 `/autoclaw/import-local`），
+   *    原先各写一份 ⇒ PR 只修了本函数，另两处照旧读国内目录。
    */
   async probeLocal() {
-    return probeAutoclawLocalCredential();
+    return probeAutoclawLocalCredential({ product: this.product });
   }
   /**
    * 刷新指定的凭据对象。
@@ -87626,6 +89285,54 @@ var AutoclawAuth = class extends Service14 {
     };
   }
   /**
+   * **归属校验**：用**本产品自己的**基址探一次余额，确认这份凭据属于本站。
+   *
+   * ## 为什么必须存在（真实事故，2026-10-20）
+   *
+   * 旧代码把 `refName` 写死 `AUTOCLAW_ACCOUNT_*`、且读国内目录 ⇒ 国际版槽位里
+   * 被塞进**国内版凭据**。用户看到的是「国际版卡片显示国内手机号、且已过期」
+   * —— 而凭据本身能解出来、能落盘，**全流程无一处报错**。
+   *
+   * ⇒ 「能读到」不等于「读对了」。国内凭据打国际基址会 `410000 未登录`，
+   *    反之亦然（实测）。
+   *
+   * ## ⚠️⚠️ 为什么抽成 public 方法（审计 P0 的直接产物）
+   *
+   * 凭据落盘有**两条腿**：
+   * 1. `importLocalAccount()` —— 本类内部，原先就调它；
+   * 2. `startLogin()` 的 `started.result` —— 登录页上的「⚡ 一键读取本机凭据」
+   *    （`/autoclaw/import-local`）走这条，结果由 `jet-hub-rpc.ts` **直接
+   *    `credentials.set`** ⇒ 原先把校验留在 `importLocalAccount` 里，
+   *    这条腿**完全绕过**它。
+   *
+   * 审计实测：以 `product: AUTOCLAW_INTL` 起 flow 后请求该端点，被探测的
+   * 路径是 `AutoClaw-official`（国内）⇒ 国内凭据进 `AUTOCLAWINTL_ACCOUNT_*`，
+   * 零报错。
+   *
+   * ⇒ 校验必须**与落盘同址**、且能被两条腿各自调用。
+   *
+   * @param cred - 待落盘的凭据。
+   * @throws 校验失败时抛出**指向性**错误（告诉用户去哪个客户端登录）。
+   */
+  async verifyCredentialSite(cred) {
+    try {
+      const detail = await fetchAutoclawBalanceDetailed(cred, { product: this.product });
+      if (detail.balance === null || detail.balance === void 0) {
+        const site = this.product.id === "autoclawintl" ? "\u56FD\u9645\u7248" : "\u56FD\u5185\u7248";
+        throw new Error(
+          `\u5BFC\u5165\u7684\u51ED\u636E\u5728 AutoClaw${site}\u6821\u9A8C\u5931\u8D25\uFF08${detail.error ?? "\u672A\u77E5\u539F\u56E0"}\uFF09\u2014\u2014\u8BF7\u786E\u8BA4\u4F60\u5728 AutoClaw${site}\u5BA2\u6237\u7AEF\u91CC\u767B\u5F55\u7684\u662F${site}\u8D26\u53F7`
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("\u6821\u9A8C\u5931\u8D25")) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      const site = this.product.id === "autoclawintl" ? "\u56FD\u9645\u7248" : "\u56FD\u5185\u7248";
+      throw new Error(
+        `\u5BFC\u5165\u7684\u51ED\u636E\u65E0\u6CD5\u901A\u8FC7 AutoClaw${site}\u6821\u9A8C\uFF1A${reason}\u2014\u2014\u8BF7\u786E\u8BA4\u4F60\u5728 AutoClaw${site}\u5BA2\u6237\u7AEF\u91CC\u767B\u5F55\u7684\u662F${site}\u8D26\u53F7`
+      );
+    }
+  }
+  /**
    * 将本地探测到的凭据导入为账号。
    */
   async importLocalAccount(pool, options) {
@@ -87633,8 +89340,10 @@ var AutoclawAuth = class extends Service14 {
     if (!cred) {
       throw new Error("\u672A\u68C0\u6D4B\u5230\u672C\u5730 AutoClaw \u684C\u9762\u7AEF\u6709\u6548\u767B\u5F55\u51ED\u636E\uFF0C\u8BF7\u5148\u5728 AutoClaw \u4E2D\u767B\u5F55");
     }
-    const accountId = options?.accountId ?? `autoclaw-${Date.now().toString(36)}`;
-    const refName = options?.refName ?? `AUTOCLAW_ACCOUNT_${Date.now().toString(16).toUpperCase()}`;
+    await this.verifyCredentialSite(cred);
+    const accountId = options?.accountId ?? `${this.product.id}-${Date.now().toString(36)}`;
+    const refPrefix = this.product.defaultCredentialRef.replace(/_DEFAULT$/, "_");
+    const refName = options?.refName ?? `${refPrefix}${Date.now().toString(16).toUpperCase()}`;
     const ref = credentialRef19(refName);
     await this.ctx.credentials.set(ref, JSON.stringify(cred));
     const nickname = autoclawDisplayNickname(cred, accountId);
@@ -87696,6 +89405,63 @@ var AutoclawAuth = class extends Service14 {
       product: this.product,
       fetchImpl: this.fetchImpl
     });
+  }
+  /**
+   * 构造 **Z.ai OAuth** 授权 URL（仅国际版 `autoclawintl` 用）。
+   *
+   * ## 为什么国际版必须走 OAuth 而不是短信
+   *
+   * 国际版**后端也接受短信**（实测 `/userapi/v1/agent-send-code` 在国际基址回
+   * `code=0 SUCCESS`），但国际版账号是**邮箱 + OAuth 创建、没绑手机号**
+   * （`account-profile.json`: `phone: null`），且**没有绑手机的端点**
+   * （`agent-bind-phone` / `bind-phone` 等全 404）⇒ 短信对国际账号不可用。
+   *
+   * ## `state` 的处理：**不生成，透传**
+   *
+   * 官方 `state` 是不透明串（`aosi.<base64url JWT>`，含 `dh` / `nh` 等字段），
+   * 由远端登录页生成。`dh = SHA256(deviceId)` 已破解，但 **`nh` 来源未知**。
+   *
+   * ⚠️ 实测：用**瞎编的** `state` 打 `/userapi/overseasv1/zai-oauth-login`，
+   *    服务端回 `631001 User login error`（= 进了登录逻辑、code 无效），
+   *    **不是**「state 无效」⇒ 服务端不硬校验 `state` 内容。
+   *
+   * ⇒ 本方法**只拼 `client_id` / `redirect_uri` / `response_type`**，
+   *   `state` 留给授权页填，回调时原样透传给 {@link loginWithZaiCode}。
+   *
+   * @param redirectUri - 回调地址（`http://localhost:<port>/auth/callback-zai`）。
+   */
+  buildZaiAuthUrl(redirectUri) {
+    return buildAutoclawZaiAuthUrl(redirectUri);
+  }
+  /**
+   * 用 Z.ai 授权码换 token 并落盘（仅国际版）。
+   *
+   * ⚠️ 与 {@link loginWithCode}（短信）并列的**第二条登录腿**：
+   *    - 短信：国内版；国际版短信端点通但账号没绑手机。
+   *    - OAuth：国际版唯一可用路径。
+   *
+   * @param code - 回调 URL 里的 `code`。
+   * @param state - 回调 URL 里的 `state`（**原样透传**，不解析）。
+   * @param navigateUri - 与授权时**完全相同**的回调地址。
+   * @param refName - 凭据 ref 名（登录成功后写它）。
+   */
+  async loginWithZaiCode(code, state, navigateUri, refName) {
+    const res = await exchangeAutoclawZaiCode(code, state, navigateUri, {
+      product: this.product,
+      fetchImpl: this.fetchImpl
+    });
+    if (res.ok && res.credential) {
+      const ref = credentialRef19(refName);
+      await this.ctx.credentials.set(ref, JSON.stringify(res.credential));
+      try {
+        await claimAutoclawDailyQuota(res.credential, { product: this.product });
+      } catch (error) {
+        this.ctx.logger?.warn?.(
+          `[autoclaw] OAuth \u767B\u5F55\u540E\u81EA\u52A8\u9886\u53D6\u6BCF\u65E5\u79EF\u5206\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u767B\u5F55\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    return res;
   }
 };
 
@@ -87800,6 +89566,7 @@ var AutoclawAdapter = class extends LlmAdapter14 {
     }));
   }
   async listModels(_provider) {
+    if (this.options.providerClosed?.() === true) return [];
     const disabled = this.options.disabledModels?.() ?? /* @__PURE__ */ new Set();
     const credential = await this.probeCredential();
     if (!credential) return [];
@@ -88025,7 +89792,7 @@ var AutoclawAdapter = class extends LlmAdapter14 {
       model: upstreamModel,
       messages: wireMessages,
       stream: true,
-      // ⚠️⚠️ `max_tokens` **双向夹取**（2026-10-17 审计 P0/P1 修复）。
+      // ⚠️⚠️ `max_tokens` **双向夹取 + 强制保底**（2026-10-20 新增）。
       //   下限 10000：**不是**原先的 16384 —— `docs/autoclaw-models.md:53-55`
       //   明写官方约束是「`>= 10000` **或完全不传递**，传 `< 10000`（如 IDE
       //   默认的 4096）回 406」⇒ 抬到 16384 属**编造上游没承诺的数字**
@@ -88034,6 +89801,17 @@ var AutoclawAdapter = class extends LlmAdapter14 {
       //   下限，宿主请求 500000 时会原样发出，而 `zai_auto` 声明仅 393216
       //   ⇒ 超上限且宿主不转可读错误。
       //   ⚠️ 两者都取不到时**不发该字段**（网关默认），绝不编造数值。
+      //
+      //   ⚠️⚠️ **国际站对 `max_tokens` 的要求与国内站完全一致**（2026-10-20 实测）。
+      //     本行曾一度被改成「`wireMaxTokens === undefined` 时强制补 10000」，
+      //     依据是「国际站不发该字段会回 406」—— **那条依据是错的**：
+      //     当时手动复现同时加了 10 个客户端头，把真正起决定作用的
+      //     `X-Version`（缺它 → 500）误判成了 `max_tokens` 的问题。
+      //     二分实测（带 `X-Version`、同一 body）：
+      //       不发 max_tokens → 200 / =10000 → 200 / =512 → 406
+      //     ⇒ 国际站同样接受「不发」，保底既**没必要**、又**违反**
+      //       「绝不编造数字」的 P0 红线，已撤销。真修复见 `buildAutoclawHeaders`
+      //       的 `X-Version`。
       ...wireMaxTokens === void 0 ? {} : { max_tokens: wireMaxTokens },
       ...options.temperature !== void 0 ? { temperature: options.temperature } : {},
       // ⚠️⚠️ **档位必须先过 `autoclawEffortForRequest` 本地校验**（2026-10-18 审计 P0）。
@@ -88483,8 +90261,15 @@ function toAccioWireMessages(messages) {
     }
   }
   const wire = [];
+  const pending2 = [];
+  const flushToolImages = () => {
+    if (pending2.length === 0) return;
+    wire.push({ role: "user", content: [{ type: "text", text: TOOL_RESULT_IMAGE_TEXT3 }, ...pending2] });
+    pending2.length = 0;
+  };
   for (const message2 of normalized2) {
     if (message2.role === "assistant") {
+      flushToolImages();
       const content2 = Array.isArray(message2.content) ? message2.content : [];
       const toolCalls = content2.filter((block) => typeof block === "object" && block !== null && block.type === "tool-call").filter((block) => keepCallIds.has(String(block.id))).map((block) => ({
         id: String(block.id),
@@ -88526,7 +90311,6 @@ function toAccioWireMessages(messages) {
       };
     };
     if (hasOwn && !deferred) wire.push(ownFrame());
-    const pending2 = [];
     for (const result of toolResults) {
       const id = String(result.toolCallId);
       if (!keepResultIds.has(id)) continue;
@@ -88541,10 +90325,8 @@ function toAccioWireMessages(messages) {
       pending2.push(...embedded);
     }
     if (deferred && hasOwn) wire.push(ownFrame());
-    if (pending2.length > 0) {
-      wire.push({ role: "user", content: [{ type: "text", text: TOOL_RESULT_IMAGE_TEXT3 }, ...pending2] });
-    }
   }
+  flushToolImages();
   return wire;
 }
 function imageBlocksOf(content) {
@@ -89347,7 +91129,10 @@ var AstudioAdapter = class extends LlmAdapter16 {
     this.refreshImpl = options.refresh ?? (async () => this.options.auth === void 0 ? void 0 : await this.options.auth.refreshOnce());
     this.fetchRemoteModelsImpl = options.fetchRemoteModels ?? (this.options.auth === void 0 ? void 0 : () => this.options.auth.fetchCatalogModels());
     this.catalog = createModelCatalog(
-      {},
+      // ⚠️⚠️ **必须传 `accountPool`**（Gitee issue IKP8OF 审计发现）：此前是 `{}`，
+      //    而其余各家都传 `{ accountPool }` ⇒ 本家的黑名单过滤与「整体关闭」
+      //    全部被 `?.` 静默跳过（关闭模型无效、关闭供应商无效）。
+      this.options.accountPool === void 0 ? {} : { accountPool: this.options.accountPool },
       {
         product: this.product,
         loadCatalog: () => this.loadCatalogEntries(),
@@ -89877,6 +91662,7 @@ var ModelscopeAdapter = class extends LlmAdapter17 {
     return entries;
   }
   async listModels(_provider) {
+    if (this.options.providerClosed?.() === true) return [];
     if (!await providerCatalogVisible(this.options.accountPool, this.product.id)) return [];
     const slots = await this.options.slots();
     if (slots.length === 0) return [];
@@ -90864,6 +92650,7 @@ var OfficeAceAdapter = class extends LlmAdapter18 {
    * 与 AutoClaw 同一约定：空目录 = 隐藏，而不是报错）。
    */
   async listModels(_provider) {
+    if (this.options.providerClosed?.() === true) return [];
     const disabled = this.options.disabledModels?.() ?? /* @__PURE__ */ new Set();
     const credential = await this.probeCredential();
     if (credential === void 0) return [];
@@ -91968,6 +93755,7 @@ var OpencodeAdapter = class extends LlmAdapter19 {
     return OPENCODE_FALLBACK_MODELS.map((m) => ({ id: m.id, name: m.name, isFree: m.isFree }));
   }
   async listModels(_provider) {
+    if (this.options.providerClosed?.() === true) return [];
     const slots = await this.options.identitySlots();
     if (slots.length === 0) return [];
     const all = await this.catalog();
@@ -92497,7 +94285,7 @@ function buddyFamilyExpiry(product) {
     )
   };
 }
-function createProviderExpiry() {
+function createProviderExpiry(deps = {}) {
   return {
     // ⚠️ 两个 buddy 系产品：原语相同、product 不同（`CODEBUDDY` / `WORKBUDDY`）。
     buddy: buddyFamilyExpiry(CODEBUDDY),
@@ -92558,16 +94346,101 @@ function createProviderExpiry() {
         context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
       )
     },
-    // phone-port adapter: astudio-table-entry —— AStudio（讯飞，2026-10-20 本 fork 接入）：
-    //    与 modelscope / autoclaw **同格**（有余额即 NEVER、烧光即 UNUSABLE）。
-    //    ⚠️ 三处同改（本表 + WIRED_EXPIRY_PROVIDERS + 折算原语），漏任一处症状静默。
+    /**
+     * **AutoClaw 国际版**（`autoclawintl`，2026-10-20）。
+     *
+     * ⚠️⚠️ **product 必须传 `AUTOCLAW_INTL`**：`autoclawExpiry` 内部拿它调
+     *    `fetchAutoclawBalanceDetailed(cred, { product })` ⇒ 传国内版会用
+     *    **国内基址**查国际账号的余额 ⇒ `410000 未登录` ⇒ 折算恒 `UNUSABLE`
+     *    ⇒ 国际账号在聚合轮换列表里**静默不可见**。
+     *    这是「同一实现两个实例」最容易踩的一处（与 `provider-credits.ts` 同型）。
+     *
+     * ⚠️ 批次**实测带** `deductionEndTime`（国际站 3000 → 10/21、10000 → 10/27），
+     *    与 buddy 系同形 ⇒ 走 `sharedPackageExpiry` 正确的按到期折算，不是恒 NEVER。
+     */
+    autoclawintl: {
+      credentialExpiry: (c, context) => autoclawExpiry(
+        c,
+        AUTOCLAW_INTL,
+        context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
+      )
+    },
+    // ⚠️ **AStudio**（讯飞 AstronStudio，2026-10-20）：与 **buddy 系同形**
+    //    （三池各带 `*NextExpireTime` ⇒ 逐包真实到期时刻，`astudioExpiry` 走
+    //    `sharedPackageExpiry` 取最早那包）。
+    //    ⚠️ 三处必须同改（本表 + `WIRED_EXPIRY_PROVIDERS` + 折算原语）——
+    //    这是该陷阱的第 **5** 次复发（cline → accio → officeace → autoclaw → astudio），
+    //    漏任何一处的症状都是**静默**的（用户在聚合轮换列表里看不到该渠道，
+    //    零报错零日志）。
+    //    ⚠️ **必须走 `cachedBalance`**：与 buddy / trae / modelscope 同款 ——
+    //    聚合每轮折算会对同一账号反复提问，没有共享读数就白发大量重复请求。
     astudio: {
       credentialExpiry: (c, context) => astudioExpiry(
         c,
         ASTUDIO,
         context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
       )
-    }
+    },
+    /**
+     * ⚠️ **Qoder**（国际版 / 中国版，2026-10-20）：与 **buddy 系同形**
+     *    （`CreditPackage` 都带 `deductionEndTime`）⇒ 原语直接复用
+     *    `sharedPackageExpiry`；两站共用同一个原语（只换 product），
+     *    单独抽 `qoderFamilyExpiry` 是为了让「它们只差一个 product」一眼可见。
+     *
+     *    ⚠️⚠️ **与上面所有条目的关键差别：本家是「接入了，但上游不给逐包时刻」。**
+     *    实测（2026-10-20，两个真实 qodercn 账号）：`userQuota` 的顶层
+     *    `expiresAt = 253402214400000` 是**永久哨兵**（`9999-12-31T00:00:00Z`），
+     *    `addOnQuota` **只给聚合标量、零日期字段**，
+     *    `dedicatedResourcePackages`（唯一带真实逐包到期的字段）本机为 `undefined`
+     *    ⇒ `qoder-credits.ts` 对哨兵**不写** `deductionEndTime`
+     *    ⇒ 折算得 `NEVER`（长期）= 三档里「永久（未知到期）」那一桶。
+     *    ⚠️ **无 `dedicatedResourcePackages` 时临期桶恒为 0**，这是如实限制
+     *    （绝不为了凑出一档而编造日期）。
+     *    ⚠️ 国际版 `openapi.qoder.sh` 本机**网络不可达** ⇒ 取不到时
+     *    `fetchQoderCreditBalance` 返回 `null` ⇒ `UNUSABLE`（剔除），保守。
+     *
+     *    ⚠️ 三处必须同改（本表 + `WIRED_EXPIRY_PROVIDERS` + 折算原语）——
+     *    这是该陷阱的第 **7** 次复发（cline → accio → officeace → autoclaw
+     *    → astudio → minimax → qoder），漏任何一处的症状都是**静默**的
+     *    （用户在聚合轮换列表里看不到该渠道，零报错零日志）。
+     *    ⚠️ **必须走 `cachedBalance`**：与 buddy / trae / modelscope / astudio /
+     *    minimax 同款 —— 聚合每轮折算会对同一账号反复提问，没有共享读数就会
+     *    白发大量重复请求。
+     *    ⚠️ **两站各占一项**：`credentialExpiry` 的分派按 provider id，漏
+     *    `qodercn` 会让中国版单独恒 `UNUSABLE`（与 minimaxintl 同因）。
+     */
+    qoder: qoderFamilyExpiry(QODER),
+    qodercn: qoderFamilyExpiry(QODER_CN),
+    // ⚠️ **MiniMax Code**（中国版 / 国际版，2026-10-20）：两家共用同一个原语
+    //    （只换 product），与 buddy / workbuddy 同款 —— 单独抽 `minimaxFamilyExpiry`
+    //    是为了让「它们只差一个 product」一眼可见（同族各写一份判据 = 分叉的开始）。
+    //    ⚠️ 三处必须同改（本表 + `WIRED_EXPIRY_PROVIDERS` + 折算原语）——
+    //    这是该陷阱的第 **6** 次复发（cline → accio → officeace → autoclaw
+    //    → astudio → minimax），漏任何一处的症状都是**静默**的
+    //    （用户在聚合轮换列表里看不到该渠道，零报错零日志）。
+    //    ⚠️ **必须走 `cachedBalance`**：与 buddy / trae / modelscope / astudio 同款
+    //    —— 聚合每轮折算会对同一账号反复提问，没有共享读数就白发大量重复请求。
+    minimax: minimaxFamilyExpiry(MINIMAX, deps),
+    minimaxintl: minimaxFamilyExpiry(MINIMAX_INTL, deps)
+  };
+}
+function qoderFamilyExpiry(product) {
+  return {
+    credentialExpiry: (c, context) => qoderExpiry(
+      c,
+      product,
+      context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId)
+    )
+  };
+}
+function minimaxFamilyExpiry(product, deps) {
+  return {
+    credentialExpiry: (c, context) => minimaxExpiry(
+      c,
+      product,
+      context?.cachedBalance === void 0 ? void 0 : () => context.cachedBalance(context.accountId),
+      deps.minimaxXff?.()
+    )
   };
 }
 
@@ -92795,6 +94668,77 @@ function makeReadImageRequest(ctx) {
       return void 0;
     }
   };
+}
+async function autoclawSelfHeal(pool, ctx) {
+  let entries;
+  try {
+    entries = pool.listAccountsByProvider("autoclaw");
+  } catch (error) {
+    ctx.logger?.warn?.(
+      `[autoclaw] \u8D26\u53F7\u81EA\u6108\u8BFB\u6C60\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u542F\u52A8\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
+  if (entries.length < 2) return;
+  for (const entry of entries) {
+    try {
+      const raw = await ctx.credentials.resolve(credentialRef21(entry.credentialRef));
+      if (raw === void 0 || raw.value.length === 0) continue;
+      const cred = JSON.parse(raw.value);
+      if (isAutoclawUuidUserId(cred.user_id)) continue;
+      const token = typeof cred.access_token === "string" ? cred.access_token : "";
+      const device = typeof cred.device_id === "string" ? cred.device_id : "";
+      if (token === "" || device === "") continue;
+      const ts = Math.floor(Date.now() / 1e3).toString();
+      const sign = createHash16("md5").update(`${AUTOCLAW.appId}&${ts}&${AUTOCLAW.appKey}`).digest("hex");
+      const resp = await fetch(`${AUTOCLAW.apiBase}/userapi/v1/user-profile`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Auth-Appid": AUTOCLAW.appId,
+          "X-Auth-TimeStamp": ts,
+          "X-Auth-Sign": sign,
+          "X-Lang": "zh-CN",
+          "X-Channel": "official",
+          "Authorization": `Bearer ${token}`,
+          "X-Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ source_id: "autoclaw", device_id: device }),
+        signal: AbortSignal.timeout(8e3)
+      });
+      if (!resp.ok) {
+        ctx.logger?.warn?.(
+          `[autoclaw] \u8D26\u53F7 ${entry.id} \u8865\u9F50 user_id \u5931\u8D25\uFF08HTTP ${resp.status}\uFF09\uFF0C\u8DF3\u8FC7\u8BE5\u6761`
+        );
+        continue;
+      }
+      const json = await resp.json();
+      const userId = json.data?.user_id;
+      if (json.code !== 0 || typeof userId !== "string" || userId.trim() === "") {
+        ctx.logger?.warn?.(
+          `[autoclaw] \u8D26\u53F7 ${entry.id} \u8865\u9F50 user_id \u5931\u8D25\uFF08code=${json.code}\uFF09\uFF0C\u8DF3\u8FC7\u8BE5\u6761`
+        );
+        continue;
+      }
+      await ctx.credentials.set(
+        credentialRef21(entry.credentialRef),
+        JSON.stringify({ ...cred, user_id: userId.trim() })
+      );
+      ctx.logger?.info?.(
+        `[autoclaw] \u8D26\u53F7 ${entry.id} \u5DF2\u8865\u9F50 user_id\uFF08${userId.trim().slice(0, 8)}\u2026\uFF09`
+      );
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `[autoclaw] \u8D26\u53F7 ${entry.id} \u81EA\u6108\u5F02\u5E38\uFF08\u4E0D\u5F71\u54CD\u542F\u52A8\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  const removed = await pool.dedupeByCredentialField("autoclaw", "user_id");
+  if (removed > 0) {
+    ctx.logger?.warn?.(
+      `[autoclaw] \u5DF2\u6E05\u7406 ${removed} \u6761\u91CD\u590D\u8D26\u53F7\uFF08\u540C\u4E00\u8D26\u53F7\u88AB\u91CD\u590D\u6DFB\u52A0\u5BFC\u81F4\u79EF\u5206\u7D2F\u52A0\u7FFB\u500D\uFF09`
+    );
+  }
 }
 var probeById = {
   // CodeBuddy 系（buddy / workbuddy）→ BuddyAdapter，按各自 product 发请求。
@@ -93100,6 +95044,11 @@ function apply(ctx, config = {}) {
   );
   const service = new CodeArtsAuth(ctx);
   const pool = new AccountPool(ctx);
+  void autoclawSelfHeal(pool, ctx).catch((error) => {
+    ctx.logger?.warn?.(
+      `[autoclaw] \u8D26\u53F7\u81EA\u6108\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u542F\u52A8\uFF09\uFF1A${error instanceof Error ? error.message : String(error)}`
+    );
+  });
   const balanceCache = createBalanceCache({
     ttlMs: 12e4,
     failureTtlMs: 15e3,
@@ -93239,6 +95188,113 @@ function apply(ctx, config = {}) {
     void exhaustedOnly;
     return new Error(
       `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u6240\u6709\u8D26\u53F7\u7684\u300C${days} \u5929\u5185\u5230\u671F\u300D\u79EF\u5206\u90FD\u5DF2\u7528\u5C3D\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u89E3\u9501\u6C38\u4E45\u79EF\u5206\uFF0C\u6216\u7B49\u5F85\u8D44\u6E90\u5305\u5230\u671F\u540E\u91CD\u65B0\u53D1\u653E\u989D\u5EA6\u3002`
+    );
+  };
+  const qoderLockedError = (displayName) => (reason) => {
+    if (reason.kind === "unknown") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u90E8\u5206\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09\u3002\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u53EF\u6D88\u8017\u7684\u989D\u5EA6 \u2014\u2014 \u8BF7\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u68C0\u67E5\u51ED\u636E\u662F\u5426\u5931\u6548\uFF08Qoder \u7684\u51ED\u636E\u6709\u6709\u6548\u671F\uFF0C\u5931\u6548\u540E\u9700\u8981\u91CD\u65B0\u767B\u5F55\u8BE5\u8D26\u53F7\uFF09\u3002\u26A0\uFE0F \u56FD\u9645\u7248\uFF08\`openapi.qoder.sh\`\uFF09\u672C\u673A\u7F51\u7EDC\u4E0D\u901A\u65F6\u4F1A**\u6BCF\u6B21\u90FD**\u67E5\u4E0D\u5230\u4F59\u989D\uFF0C\u82E5\u4F60\u7528\u7684\u662F\u56FD\u9645\u7248\u8BF7\u5148\u786E\u8BA4\u8BE5\u57DF\u540D\u53EF\u8FBE\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "no-candidates") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u672C\u6B21**\u6CA1\u6709\u4EFB\u4F55\u5019\u9009\u8D26\u53F7**\uFF08\u8BE5 provider \u4E0B\u6CA1\u6709\u542F\u7528\u4E2D\u7684\u8D26\u53F7\uFF0C\u6216\u5168\u90E8\u8D26\u53F7\u90FD\u5728\u672C\u6B21\u8BF7\u6C42\u7684\u6A21\u578B\u4E0A\u53D7\u9650\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u786E\u8BA4\u8D26\u53F7\u5DF2\u542F\u7528\u3001\u4E14\u672A\u5168\u90E8\u5904\u4E8E\u9650\u6D41\u4E2D\uFF1B\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF0C\u6216\u89E3\u9501\u6C38\u4E45\u79EF\u5206\u540E\u91CD\u8BD5\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "credential-only") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u4F7F\u7528\u4EFB\u4F55\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u4F59\u989D\u5206\u6863**\u786E\u5B9E\u9009\u51FA\u4E86**\u6709\u53EF\u7528\u989D\u5EA6\u7684\u8D26\u53F7 \u2014\u2014 \u4F46\u5B83\u4EEC\u7684**\u51ED\u636E\u8BFB\u4E0D\u51FA\u6765**\uFF08\u51ED\u636E\u7F3A\u5931 / \u5DF2\u5931\u6548 / \u88AB\u5E76\u53D1\u7EED\u671F\u8986\u76D6\uFF09\u3002\u26A0\uFE0F \u8FD9\u4E0E\u300C\u989D\u5EA6\u7528\u5C3D\u300D\u662F\u4E24\u4EF6\u4E8B\uFF0C**\u4E0D\u8981\u53BB\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u89E3\u9501\u4F1A\u4E0D\u53EF\u64A4\u56DE\u5730\u6D88\u8017\u5B83\u4EEC\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u68C0\u67E5\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\uFF0C\u5FC5\u8981\u65F6\u91CD\u65B0\u767B\u5F55\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    const exhaustedOnly = reason;
+    void exhaustedOnly;
+    return new LlmError28(
+      `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u5F53\u524D\u8D26\u53F7\u7684\u989D\u5EA6\u90FD\u5C5E\u4E8E**\u957F\u671F / \u6C38\u4E45**\u90A3\u4E00\u7C7B\uFF08\u8981\u4E48\u4E0A\u6E38\u6CA1\u7ED9\u9010\u5305\u5230\u671F\u65F6\u523B\uFF0C\u8981\u4E48\u5230\u671F\u65E5\u8FD8\u5728\u300C\u4E34\u671F\u7A97\u53E3\u300D\u4E4B\u5916 \u2014\u2014 \u7A97\u53E3\u9ED8\u8BA4 15 \u5929\uFF0C\u53EF\u7531 \`DSH_BUDDY_EXPIRING_WINDOW_DAYS\` \u8C03\u6574\uFF09\u3002\u26A0\uFE0F \u9501\u5B9A\u6C38\u4E45\u79EF\u5206\u65F6\uFF0C**\u65E0\u6CD5\u8BC1\u660E\u6709\u4E34\u671F\u989D\u5EA6**\u7684\u8D26\u53F7\u4F1A\u88AB\u5224\u4E3A\u4E0D\u53EF\u7528\uFF08\u5B81\u53EF\u5C11\u7528\u4E00\u4E2A\u53F7\uFF0C\u4E5F\u4E0D\u8981\u628A\u957F\u671F\u989D\u5EA6\u8BEF\u5F53\u4E34\u671F\u70E7\u6389\uFF09\u2014\u2014 \u8FD9\u662F\u9501\u5B9A\u7684**\u9884\u671F\u6548\u679C**\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F**\u89E3\u9501**\u6C38\u4E45\u79EF\u5206\u540E\u7EE7\u7EED\u4F7F\u7528\uFF08\u89E3\u9501\u4F1A\u771F\u7684\u6D88\u8017\u90A3\u4E9B\u957F\u671F/\u6C38\u4E45\u989D\u5EA6\uFF09\uFF1B\u82E5\u4F60\u7684\u8D26\u53F7\u786E\u5B9E\u6709\u5E26\u5230\u671F\u65E5\u7684\u8D44\u6E90\u5305\uFF08\`dedicatedResourcePackages\`\uFF09\uFF0C\u7B49\u5B83\u8FDB\u5165\u4E34\u671F\u7A97\u53E3\u540E\u672C\u8D26\u53F7\u4F1A\u81EA\u52A8\u6062\u590D\u53EF\u7528\uFF0C\u65E0\u9700\u5176\u5B83\u64CD\u4F5C\u3002`,
+      "QUOTA_EXCEEDED"
+    );
+  };
+  const astudioLockedError = (displayName) => (reason) => {
+    const days = buddyExpiringWindowDays();
+    if (reason.kind === "unknown") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u90E8\u5206\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09\u3002\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u300C${days} \u5929\u5185\u5230\u671F\u300D\u7684\u79EF\u5206 \u2014\u2014 \u8BF7\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684 AStudio \u9762\u677F\u68C0\u67E5\u51ED\u636E\u662F\u5426\u5931\u6548\uFF08AStudio \u7684\u51ED\u636E\u662F\u672C\u673A\u5BA2\u6237\u7AEF\u4F1A\u8BDD\u7684\u62F7\u8D1D\uFF0C\u5BA2\u6237\u7AEF\u9000\u51FA\u767B\u5F55\u4F1A\u8BA9\u5B83\u5931\u6548\uFF09\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "no-candidates") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u672C\u6B21**\u6CA1\u6709\u4EFB\u4F55\u5019\u9009\u8D26\u53F7**\uFF08\u8BE5 provider \u4E0B\u6CA1\u6709\u542F\u7528\u4E2D\u7684\u8D26\u53F7\uFF0C\u6216\u5168\u90E8\u8D26\u53F7\u90FD\u5728\u672C\u6B21\u8BF7\u6C42\u7684\u6A21\u578B\u4E0A\u53D7\u9650\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u786E\u8BA4\u8D26\u53F7\u5DF2\u542F\u7528\u3001\u4E14\u672A\u5168\u90E8\u5904\u4E8E\u9650\u6D41\u4E2D\uFF1B\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF0C\u6216\u89E3\u9501\u6C38\u4E45\u79EF\u5206\u540E\u91CD\u8BD5\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "credential-only") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u4F7F\u7528\u4EFB\u4F55\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u4F59\u989D\u5206\u6863**\u786E\u5B9E\u9009\u51FA\u4E86**\u6709\u53EF\u7528\u79EF\u5206\u7684\u8D26\u53F7 \u2014\u2014 \u4F46\u5B83\u4EEC\u7684**\u51ED\u636E\u8BFB\u4E0D\u51FA\u6765**\uFF08\u51ED\u636E\u7F3A\u5931 / \u5DF2\u5931\u6548 / \u88AB\u5E76\u53D1\u7EED\u671F\u8986\u76D6\uFF09\u3002\u26A0\uFE0F \u8FD9\u4E0E\u300C\u79EF\u5206\u7528\u5C3D\u300D\u662F\u4E24\u4EF6\u4E8B\uFF0C**\u4E0D\u8981\u53BB\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u89E3\u9501\u4F1A\u4E0D\u53EF\u64A4\u56DE\u5730\u70E7\u6389\u5B83\u4EEC\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u68C0\u67E5\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\uFF1BAStudio \u6CA1\u6709 OAuth \u6388\u6743\u9875\uFF0C\u9700\u8981\u5728 AStudio \u5BA2\u6237\u7AEF\u767B\u5F55\u540E\u7528\u300C\u5BFC\u5165\u672C\u673A\u4F1A\u8BDD\u300D\u91CD\u5EFA\u51ED\u636E\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    const exhaustedOnly = reason;
+    void exhaustedOnly;
+    return new LlmError28(
+      `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u6240\u6709\u8D26\u53F7\u7684\u300C${days} \u5929\u5185\u5230\u671F\u300D\u79EF\u5206\u90FD\u5DF2\u7528\u5C3D\u3002\u26A0\uFE0F AStudio \u7684**\u4F1A\u5458 / \u8D2D\u4E70 / \u8D60\u9001\uFF08\u6D3B\u52A8\uFF09**\u4E09\u4E2A\u79EF\u5206\u6C60\u90FD\u4F1A\u5404\u81EA\u4E0B\u53D1\u5230\u671F\u65F6\u95F4\u3001\u90FD\u88AB\u8BA1\u5165\u4E34\u671F\u5224\u636E \u2014\u2014 \u4E0D\u9650\u4E8E\u8D60\u9001\u6C60\uFF0C\u8BF7\u5728\u8BE5\u8D26\u53F7\u7684\u300C\u8D44\u6E90\u5305\u300D\u660E\u7EC6\u91CC\u9010\u4E2A\u6838\u5BF9\uFF08\u800C\u4E0D\u662F\u53EA\u770B\u8D60\u9001\u6C60\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u89E3\u9501\u6C38\u4E45\u79EF\u5206\uFF08\u89E3\u9501\u540E\u957F\u671F\u6709\u6548\u7684\u90E8\u5206\u624D\u53EF\u7528\uFF09\uFF0C\u6216\u7B49\u5F85\u4E0B\u4E00\u6B21\u6D3B\u52A8\u79EF\u5206\u53D1\u653E\u3002`,
+      "QUOTA_EXCEEDED"
+    );
+  };
+  const minimaxLockedError = (displayName) => (reason) => {
+    const days = buddyExpiringWindowDays();
+    if (reason.kind === "unknown") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u90E8\u5206\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09\u3002\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u300C${days} \u5929\u5185\u5230\u671F\u300D\u7684\u79EF\u5206 \u2014\u2014 \u8BF7\u91CD\u8BD5\uFF0C\u6216\u5728 Jet Hub \u7684\u5BF9\u5E94\u9762\u677F\u68C0\u67E5\u51ED\u636E\u662F\u5426\u5931\u6548\u3002\u26A0\uFE0F **\u56FD\u9645\u7AD9**\u53E6\u6709\u5730\u7406\u5206\u6D41\u98CE\u9669\uFF1A\`agent.minimax.io\` \u4F1A\u6309\u51FA\u53E3 IP \u628A\u5927\u9646\u6765\u6E90 307 \u5230\u4E2D\u56FD\u7AD9\uFF0C\u800C\u4E2D\u56FD\u7AD9\u4E0D\u8BA4\u56FD\u9645\u7AD9 token \u21D2 \u8868\u73B0\u4E3A\u4F59\u989D\u67E5\u8BE2\u6052\u5931\u8D25\uFF08issue IKMEVG\uFF09\uFF1B\u53EF\u5728\u9762\u677F\u8BBE\u7F6E\u91CC\u586B \`X-Forwarded-For\`\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "no-candidates") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u672C\u6B21**\u6CA1\u6709\u4EFB\u4F55\u5019\u9009\u8D26\u53F7**\uFF08\u8BE5 provider \u4E0B\u6CA1\u6709\u542F\u7528\u4E2D\u7684\u8D26\u53F7\uFF0C\u6216\u5168\u90E8\u8D26\u53F7\u90FD\u5728\u672C\u6B21\u8BF7\u6C42\u7684\u6A21\u578B\u4E0A\u53D7\u9650\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u786E\u8BA4\u8D26\u53F7\u5DF2\u542F\u7528\u3001\u4E14\u672A\u5168\u90E8\u5904\u4E8E\u9650\u6D41\u4E2D\uFF1B\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF0C\u6216\u89E3\u9501\u6C38\u4E45\u79EF\u5206\u540E\u91CD\u8BD5\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "credential-only") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u4F7F\u7528\u4EFB\u4F55\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u4F59\u989D\u5206\u6863**\u786E\u5B9E\u9009\u51FA\u4E86**\u6709\u53EF\u7528\u79EF\u5206\u7684\u8D26\u53F7 \u2014\u2014 \u4F46\u5B83\u4EEC\u7684**\u51ED\u636E\u8BFB\u4E0D\u51FA\u6765**\uFF08\u51ED\u636E\u7F3A\u5931 / \u5DF2\u5931\u6548 / \u88AB\u5E76\u53D1\u7EED\u671F\u8986\u76D6\uFF09\u3002\u26A0\uFE0F \u8FD9\u4E0E\u300C\u79EF\u5206\u7528\u5C3D\u300D\u662F\u4E24\u4EF6\u4E8B\uFF0C**\u4E0D\u8981\u53BB\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u89E3\u9501\u4F1A\u4E0D\u53EF\u64A4\u56DE\u5730\u70E7\u6389\u5B83\u4EEC\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u68C0\u67E5\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\uFF0C\u5FC5\u8981\u65F6\u91CD\u65B0\u767B\u5F55\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    const exhaustedOnly = reason;
+    void exhaustedOnly;
+    return new LlmError28(
+      `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u6240\u6709\u8D26\u53F7\u7684\u300C${days} \u5929\u5185\u5230\u671F\u300D\u79EF\u5206\uFF08MiniMax \u7684**\u7B7E\u5230 / \u6D3B\u52A8\u53D1\u653E**\u989D\u5EA6\uFF0C\u6BCF\u6761\u660E\u7EC6\u81EA\u5E26 30 \u5929\u6709\u6548\u671F\uFF09\u90FD\u5DF2\u7528\u5C3D\u3002\u957F\u671F\u6709\u6548\u7684\u90E8\u5206\u5728\u9501\u5B9A\u72B6\u6001\u4E0B\u52A8\u4E0D\u5230\u5B83\u4EEC\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u89E3\u9501\u6C38\u4E45\u79EF\u5206\uFF0C\u6216\u7B49\u5F85\u4E0B\u4E00\u6B21\u7B7E\u5230 / \u6D3B\u52A8\u53D1\u653E\u3002`,
+      "QUOTA_EXCEEDED"
+    );
+  };
+  const autoclawLockedError = (displayName) => (reason) => {
+    const days = buddyExpiringWindowDays();
+    if (reason.kind === "unknown") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u786E\u8BA4\u662F\u5426\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u90E8\u5206\u8D26\u53F7\u7684\u4F59\u989D\u67E5\u8BE2\u5931\u8D25\uFF08${reason.errors.slice(0, 2).join("\uFF1B")}\uFF09\u3002\u8FD9\u4E9B\u8D26\u53F7**\u53EF\u80FD\u4ECD\u6709**\u300C${days} \u5929\u5185\u5230\u671F\u300D\u7684\u79EF\u5206 \u2014\u2014 \u8BF7\u91CD\u8BD5\u3002\u26A0\uFE0F \u82E5\u6301\u7EED\u5931\u8D25\uFF0C\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u68C0\u67E5\u51ED\u636E\u662F\u5426\u5931\u6548\uFF08AutoClaw \u7684 access_token \u662F**\u660E\u6587 JWT\u3001\u5BFF\u547D\u6052 24h**\uFF0C\u8FC7\u671F\u540E\u9700\u8981\u91CD\u65B0\u767B\u5F55\uFF09\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "no-candidates") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u672C\u6B21**\u6CA1\u6709\u4EFB\u4F55\u5019\u9009\u8D26\u53F7**\uFF08\u8BE5 provider \u4E0B\u6CA1\u6709\u542F\u7528\u4E2D\u7684\u8D26\u53F7\uFF0C\u6216\u5168\u90E8\u8D26\u53F7\u90FD\u5728\u672C\u6B21\u8BF7\u6C42\u7684\u6A21\u578B\u4E0A\u53D7\u9650\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u786E\u8BA4\u8D26\u53F7\u5DF2\u542F\u7528\u3001\u4E14\u672A\u5168\u90E8\u5904\u4E8E\u9650\u6D41\u4E2D\uFF1B\u6216\u6539\u7528\u5176\u5B83 provider / \u6A21\u578B\uFF0C\u6216\u89E3\u9501\u6C38\u4E45\u79EF\u5206\u540E\u91CD\u8BD5\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    if (reason.kind === "credential-only") {
+      return new LlmError28(
+        `${displayName}\uFF1A\u65E0\u6CD5\u4F7F\u7528\u4EFB\u4F55\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u4F59\u989D\u5206\u6863**\u786E\u5B9E\u9009\u51FA\u4E86**\u6709\u53EF\u7528\u79EF\u5206\u7684\u8D26\u53F7 \u2014\u2014 \u4F46\u5B83\u4EEC\u7684**\u51ED\u636E\u8BFB\u4E0D\u51FA\u6765**\uFF08\u51ED\u636E\u7F3A\u5931 / \u5DF2\u5931\u6548 / \u88AB\u5E76\u53D1\u7EED\u671F\u8986\u76D6\uFF09\u3002\u26A0\uFE0F \u8FD9\u4E0E\u300C\u79EF\u5206\u7528\u5C3D\u300D\u662F\u4E24\u4EF6\u4E8B\uFF0C**\u4E0D\u8981\u53BB\u89E3\u9501\u6C38\u4E45\u79EF\u5206**\uFF08\u89E3\u9501\u4F1A\u4E0D\u53EF\u64A4\u56DE\u5730\u6D88\u8017\u5B83\u4EEC\uFF09\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u68C0\u67E5\u8FD9\u4E9B\u8D26\u53F7\u7684\u51ED\u636E\uFF0C\u5FC5\u8981\u65F6\u91CD\u65B0\u767B\u5F55\u3002`,
+        "QUOTA_EXCEEDED"
+      );
+    }
+    const exhaustedOnly = reason;
+    void exhaustedOnly;
+    return new LlmError28(
+      `${displayName}\uFF1A\u6CA1\u6709\u53EF\u7528\u8D26\u53F7\u3002\u5DF2\u9501\u5B9A\u6C38\u4E45\u79EF\u5206\uFF0C\u800C\u6240\u6709\u8D26\u53F7\u7684\u300C${days} \u5929\u5185\u5230\u671F\u300D\u79EF\u5206\uFF08AutoClaw \u7684**\u5E26\u5230\u671F\u65F6\u95F4\u7684\u53D1\u653E\u6279\u6B21** \u2014\u2014 \u94B1\u5305\u6D41\u6C34\u91CC\u90A3\u4E9B\u5E26\u6709\u6548\u671F\u7684\u300C\u6BCF\u65E5\u7B7E\u5230 / \u767B\u5F55\u5956\u52B1\u300D\u7B49\u53D1\u653E\uFF09\u90FD\u5DF2\u7528\u5C3D\u3002**\u6C38\u4E45\u6876**\uFF08\u6D41\u6C34\u91CC**\u4E0D\u5E26\u5230\u671F\u65F6\u95F4**\u7684\u90A3\u4E9B\u53D1\u653E\uFF09\u5728\u9501\u5B9A\u72B6\u6001\u4E0B\u52A8\u4E0D\u5230\u5B83\u4EEC \u2014\u2014 \u8FD9\u662F\u9501\u5B9A\u7684\u9884\u671F\u6548\u679C\u3002\u8BF7\u5728 Jet Hub \u7684 ${displayName} \u9762\u677F\u89E3\u9501\u6C38\u4E45\u79EF\u5206\uFF0C\u6216\u7B49\u5F85\u4E0B\u4E00\u6B21\u7B7E\u5230 / \u6D3B\u52A8\u53D1\u653E\u3002`,
+      "QUOTA_EXCEEDED"
     );
   };
   const loomyLockedError = (reason) => {
@@ -93393,9 +95449,13 @@ function apply(ctx, config = {}) {
         balance: {
           kind: "buddy",
           selector: lobsteraiBalanceSelector,
-          lockedError: buddyLockedError("LobsterAI")
-          // ⚠️ LobsterAI **没有** `isFreeModel`（只有 buddy / trae 的适配器有）：
-          // 它的模型表不带倍率字段，判不出「免费」—— 缺省即「从不跳过锁定」。
+          lockedError: buddyLockedError("LobsterAI"),
+          // ⚠️ LobsterAI 的「免费」是**钱包**概念不是**模型**概念，没有模型级免费：
+          //   `lobsterai-credits.ts:340` 的 `/api/user/quota` 只给
+          //   `freeCreditsTotal=300`（免费**积分额度**），`lobsterai-errors.ts`
+          //   里的 `freecreditsused` 是**错误码**。模型表本身不带倍率字段
+          //   ⇒ 判不出、也不该判（见 `NO_FREE_MODEL` 的说明）。
+          isFreeModel: NO_FREE_MODEL
         },
         fallback: { kind: "ref", refName: LOBSTERAI.defaultCredentialRef },
         // 退到单凭据 ref 之前先证明失败原因（见 `throwIfAllAccountsRateLimited`
@@ -93418,6 +95478,25 @@ function apply(ctx, config = {}) {
     product: LOBSTERAI
   });
   const qoder = new QoderAuth(ctx);
+  const resolveQoderCredentialByRef = async (refName) => {
+    const resolved = await ctx.credentials.resolve(credentialRef21(refName));
+    if (!resolved) return void 0;
+    try {
+      return JSON.parse(resolved.value);
+    } catch {
+      return void 0;
+    }
+  };
+  const qoderBalanceSelector = new BuddyBalanceSelector({
+    product: QODER,
+    resolveCredential: resolveQoderCredentialByRef,
+    fetchBalance: (credential, product) => fetchQoderCreditBalance(credential, product)
+  });
+  const qoderCnBalanceSelector = new BuddyBalanceSelector({
+    product: QODER_CN,
+    resolveCredential: resolveQoderCredentialByRef,
+    fetchBalance: (credential, product) => fetchQoderCreditBalance(credential, product)
+  });
   const activeQoderAccountId = /* @__PURE__ */ new Map();
   const qoderAdapter = registerQoderLlm(ctx, {
     credentialRef: credentialRef21(QODER.defaultCredentialRef),
@@ -93448,6 +95527,28 @@ function apply(ctx, config = {}) {
           } catch {
             return void 0;
           }
+        },
+        // 优先按「快到期额度」分档选号（锁定永久积分时只挑有快到期额度的号）。
+        // ⚠️ `qoderLockedError` **本家独有**（不共用 buddy 系那份）：buddy 的
+        //    「临期」指资源包 `DeductionEndTime`，而本家逐包到期时刻拿不到 ——
+        //    照抄会让用户按一个不存在的判据去排查（见该函数的长注释）。
+        // ⚠️ `reportPickedAccount: true` 是**必须的**（与 minimax 两站同因）：
+        //    本家的旧闭包是纯池选号、账本**一直在回报**；接上 `balance` 后
+        //    「分档选中」那一支若不回报 ⇒ token 用量记不到本渠道上（静默）。
+        balance: {
+          kind: "buddy",
+          selector: qoderBalanceSelector,
+          lockedError: qoderLockedError("Qoder"),
+          reportPickedAccount: true,
+          // ⚠️ 免费模型**必须**跳过「锁定 + 临期积分」这道门（与 buddy / trae
+          //    同因，见 `credential-resolver.ts:359-365` 的长注释）：
+          //    锁定保护的是永久积分，而免费模型既不扣临时也不扣永久积分 ——
+          //    不传这个钩子，免费模型会和付费模型走同一条余额分档路，锁定期间
+          //    被 `allowPermanent=false` 一并拦下，报出「额度都属于永久」这种
+          //    与事实相反的错误（真实报障 2026-10-21）。
+          // ⚠️ 判据在适配器里（读远端目录的 `is_free`，远端/兜底同源），
+          //    本处只透传 —— 不要在这里另写一份。
+          isFreeModel: (modelId) => qoderAdapter.isFreeModel(modelId)
         },
         fallback: { kind: "ref", refName: QODER.defaultCredentialRef },
         // 区分「全部限流」与「没登录」（见该助手的说明）—— 否则用户会去
@@ -93502,6 +95603,17 @@ function apply(ctx, config = {}) {
           } catch {
             return void 0;
           }
+        },
+        // 同国际版：分档选号 + 本家独有文案 + 回报实际选中的账号。
+        // ⚠️ `displayName` **必须**逐站区分（两站账号不互通，用户要知道去哪个
+        //    面板解锁）；`selector` 也必须是中国版自己那一个（缓存不跨站共用）。
+        balance: {
+          kind: "buddy",
+          selector: qoderCnBalanceSelector,
+          lockedError: qoderLockedError("Qoder (\u4E2D\u56FD\u7248)"),
+          reportPickedAccount: true,
+          // 同国际版：免费模型不受「锁定永久积分」约束（判据在适配器里）。
+          isFreeModel: (modelId) => qoderCnAdapter.isFreeModel(modelId)
         },
         fallback: { kind: "ref", refName: QODER_CN.defaultCredentialRef },
         // 同国际版：区分「全部限流」与「没登录」（见该助手的说明，IKJOZ9）。
@@ -93737,11 +95849,20 @@ function apply(ctx, config = {}) {
         throwIfAllRateLimited: throwIfAllAccountsRateLimited
       }
     ),
-    refresh: async () => {
+    refresh: async (forCredential) => {
+      const target = forCredential === void 0 ? void 0 : await pool.findAccountIdByCredential(LOOMY.id, forCredential.access_token).catch(() => void 0);
+      const targetEntry = target === void 0 || target.length === 0 ? void 0 : pool.listAccountsByProvider(LOOMY.id).find((entry) => entry.id === target);
+      if (targetEntry !== void 0) {
+        await loomy.refreshAccountCredential(targetEntry.credentialRef, pool, targetEntry.id);
+        return;
+      }
       const available2 = await pool.getAvailableAccount(LOOMY.id, "");
       if (available2) await loomy.refreshAccountCredential(available2.entry.credentialRef, pool, available2.entry.id);
       else await loomy.refresh();
     },
+    // ⚠️ 必须注入：适配器在热路径上把「非终态探测失败」降级为告警而不是抛错，
+    // 没有这个出口就等于静默（本仓库反复记录过的失败形态）。
+    warn: (message2) => ctx.logger?.warn?.(message2),
     // 远端模型目录：GET /api/v1/models。
     // ⚠️ 必须用 **token 头**（业务端点），不是 Bearer —— 带错会得到
     // `100002 缺少 token`，表现为「模型列表永远停在兜底表」。
@@ -93822,6 +95943,25 @@ function apply(ctx, config = {}) {
     accountPool: pool,
     product: RACCOON
   });
+  const resolveMinimaxCredentialByRef = async (refName) => {
+    const resolved = await ctx.credentials.resolve(credentialRef21(refName));
+    if (!resolved) return void 0;
+    try {
+      return JSON.parse(resolved.value);
+    } catch {
+      return void 0;
+    }
+  };
+  const minimaxBalanceSelector = new BuddyBalanceSelector({
+    product: MINIMAX,
+    resolveCredential: resolveMinimaxCredentialByRef,
+    fetchBalance: (credential, product) => fetchMinimaxCreditBalance(credential, fetch, product)
+  });
+  const minimaxIntlBalanceSelector = new BuddyBalanceSelector({
+    product: MINIMAX_INTL,
+    resolveCredential: resolveMinimaxCredentialByRef,
+    fetchBalance: (credential, product) => fetchMinimaxCreditBalance(credential, fetch, product, pool.minimaxXff())
+  });
   const minimax = new MinimaxAuth(ctx);
   const minimaxAdapter = registerMinimaxLlm(ctx, {
     credentialRef: credentialRef21(MINIMAX.defaultCredentialRef),
@@ -93835,16 +95975,41 @@ function apply(ctx, config = {}) {
       } },
       {
         product: MINIMAX,
-        // ⚠️ 与 raccoon / gemini 同款：兜底是**裸 `JSON.parse`**（历史形态，
-        // 本 Task 逐字保留，不在此处加形状校验 —— 那会是行为变更）。
-        readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef21(refName));
-          if (!resolved) return void 0;
-          try {
-            return JSON.parse(resolved.value);
-          } catch {
-            return void 0;
-          }
+        // ⚠️ 与选号器**共用同一个**解析器（原先这里是一份内联的匿名箭头，
+        //    与下面 MINIMAX_INTL 那份逐字重复 ⇒ 改一处漏一处；已抽成
+        //    `resolveMinimaxCredentialByRef`）。历史形态是**裸 `JSON.parse`**，
+        //    逐字保留，不在此处加形状校验（那会是行为变更）。
+        readCredential: resolveMinimaxCredentialByRef,
+        /**
+         * ⚠️ **2026-10-20 新增**（用户报障：「MiniMax Code 积分也有到期时间，
+         * 也应当有相同功能」）。
+         *
+         * 此前本家**不传 `balance`** ⇒ 走 `getAvailableAccount` 的「手动序第一个
+         * 启用账号」，**与到期时间无关** ⇒ 既没有「临期优先」，也没有任何东西
+         * 可供「锁定永久积分」判断 ⇒ 锁上了也不知道该不该拦。
+         *
+         * ⚠️ 本家**没有**免费模型概念（`MinimaxAdapter` 不实现 `isFreeModel`），
+         * 故不传该字段 —— 缺省 `undefined` 走常规分档路径（正确行为）。
+         */
+        balance: {
+          kind: "buddy",
+          selector: minimaxBalanceSelector,
+          lockedError: minimaxLockedError("MiniMax Code (\u4E2D\u56FD\u7248)"),
+          // ⚠️ 本家没有模型级免费概念（产品表零 `isFree` 字段，上游目录也不返回）。
+          isFreeModel: NO_FREE_MODEL,
+          /**
+           * ⚠️⚠️ **刻意不写 `reportPickedAccount: false`**（与 buddy 系那两处**相反**）。
+           *
+           * `reportPickedAccount: false` 是**buddy 系旧闭包的历史不对称**
+           *（它们只在池兜底那一支回报），本 Task 逐字保留。而 MiniMax 的旧闭包
+           * 是**纯池选号**（本就无余额分档）⇒ 它的账本**一直在回报**。
+           * 若照抄 buddy 写 `false`，本节新增的 `balance` 会让「分档选中」那支
+           * 不再回报 ⇒ **账本归属静默丢失**（token 用量记不到这个渠道上）。
+           * 该形态由 `tests/unit/credential-resolver.spec.ts` 的
+           * 「<provider>：池命中时回报 token 账本」逐家驱动 `apply()` 守着 ——
+           * minimax / minimaxintl 正在那份名单里（它们此前**可达**）。
+           */
+          reportPickedAccount: true
         },
         fallback: { kind: "ref", refName: MINIMAX.defaultCredentialRef },
         // 区分「全部限流」与「没登录」（见该助手的说明，IKJOZ9）。
@@ -93891,14 +96056,23 @@ function apply(ctx, config = {}) {
       } },
       {
         product: MINIMAX_INTL,
-        readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef21(refName));
-          if (!resolved) return void 0;
-          try {
-            return JSON.parse(resolved.value);
-          } catch {
-            return void 0;
-          }
+        // ⚠️ 与中国版**共用同一个**解析器（见 `resolveMinimaxCredentialByRef` 的说明）。
+        //    两站凭据形状逐字相同（同一套 OAuth 实现，只换主机与 ref 前缀）。
+        readCredential: resolveMinimaxCredentialByRef,
+        // ⚠️ 与中国版**同因同日**新增（2026-10-20）：两站共用同一个
+        //    `fetchMinimaxCreditBalanceDetailed`。
+        //    ⚠️⚠️ 但**选号器必须是国际站那一个实例** —— 它透传 `pool.minimaxXff()`
+        //    （绕地理分流，issue IKMEVG）；误用国内站实例会让国际站余额查询
+        //    恒失败 ⇒ 该渠道在聚合轮换里被静默剔除。
+        balance: {
+          kind: "buddy",
+          selector: minimaxIntlBalanceSelector,
+          lockedError: minimaxLockedError("MiniMax Code (\u56FD\u9645\u7248)"),
+          // ⚠️ 本家没有模型级免费概念（产品表零 `isFree` 字段，上游目录也不返回）。
+          isFreeModel: NO_FREE_MODEL,
+          // ⚠️ 与中国版**同因**：本家旧闭包是纯池选号、账本一直在回报 ⇒
+          //    必须 `true`，写 `false` 会让 token 用量记不到国际站上（见中国版处说明）。
+          reportPickedAccount: true
         },
         fallback: { kind: "ref", refName: MINIMAX_INTL.defaultCredentialRef },
         throwIfAllRateLimited: throwIfAllAccountsRateLimited
@@ -93989,6 +96163,25 @@ function apply(ctx, config = {}) {
     },
     ...ctx.logger === void 0 ? {} : { logger: ctx.logger }
   });
+  const resolveAutoclawCredentialByRef = async (refName) => {
+    const resolved = await ctx.credentials.resolve(credentialRef21(refName));
+    if (!resolved) return void 0;
+    try {
+      return JSON.parse(resolved.value);
+    } catch {
+      return void 0;
+    }
+  };
+  const autoclawBalanceSelector = new BuddyBalanceSelector({
+    product: AUTOCLAW,
+    resolveCredential: resolveAutoclawCredentialByRef,
+    fetchBalance: (credential, product) => fetchAutoclawCreditBalance(credential, { product })
+  });
+  const autoclawIntlBalanceSelector = new BuddyBalanceSelector({
+    product: AUTOCLAW_INTL,
+    resolveCredential: resolveAutoclawCredentialByRef,
+    fetchBalance: (credential, product) => fetchAutoclawCreditBalance(credential, { product })
+  });
   const autoclaw = new AutoclawAuth(ctx);
   const autoclawAdapter = registerAutoclawLlm(ctx, {
     resolveCredential: createCredentialResolver(
@@ -93997,16 +96190,35 @@ function apply(ctx, config = {}) {
       } },
       {
         product: AUTOCLAW,
-        readCredential: async (refName) => {
-          const resolved = await ctx.credentials.resolve(credentialRef21(refName));
-          if (!resolved) return void 0;
-          try {
-            return JSON.parse(resolved.value);
-          } catch {
-            return void 0;
-          }
-        },
+        // ⚠️ 2026-10-21：改用上面共用的 `resolveAutoclawCredentialByRef`
+        //    （原先这里是一份内联的逐字重复实现，两站各一份）。
+        readCredential: resolveAutoclawCredentialByRef,
         fallback: { kind: "ref", refName: AUTOCLAW.defaultCredentialRef },
+        /**
+         * ⚠️ **必须接 `balance`**（2026-10-21，用户要求「补锁定开关」）。
+         *
+         * registry 里登记 `permanentLock: true` 只让**按钮渲染**、RPC 放行；
+         * 真正的拦截在 `credential-resolver.ts` 读
+         * `pool.permanentLocked(providerId)` ⇒ 传给 `pickBuddyAccount`
+         * 的 `allowPermanent`。**没有本段就是假开关**：按钮在、点了不拦。
+         *
+         * ⚠️ `reportPickedAccount: true` 是**必须的**（与 qoder / minimax 同因）：
+         * 本家的旧闭包是**纯池选号**、账本**一直在回报**（见下面
+         * `reportAccount` 那行）。接上 `balance` 后「分档选中」那一支若不回报
+         * ⇒ token 用量记不到本渠道上（静默）。
+         */
+        balance: {
+          kind: "buddy",
+          selector: autoclawBalanceSelector,
+          // ⚠️ 本家独有文案（池名是「钱包流水批次」而不是 buddy 的「资源包」）。
+          lockedError: autoclawLockedError("AutoClaw"),
+          // ⚠️⚠️ 本家**曾**标过 `isFree: true`，那是**错的**（2026-10-21 二轮审计订正）：
+          //   初版把「远端目录里没有它、但直接调用能用」误当成「不扣费」，而真机
+          //   实测它**每次都扣积分**（`docs/autoclaw-models.md:25`）。现有 4 个模型
+          //   全是 `isFree: false` ⇒ 本家确实没有模型级免费，显式表态即可。
+          isFreeModel: NO_FREE_MODEL,
+          reportPickedAccount: true
+        },
         // ⚠️ **必须接**（与 accio 同因）：本工厂的兜底是**固定 ref**
         //    （`AUTOCLAW_ACCESS_TOKEN`），而 Jet Hub 登录只写
         //    `AUTOCLAW_ACCOUNT_XXX` ⇒ 池被筛空时它会退到那个**从不被写入**的
@@ -94031,7 +96243,48 @@ function apply(ctx, config = {}) {
     //    静默丢图让用户以为模型看到了图）。
     //    ⚠️ 刻意**不接** `readImageRequest` 缩放桥接：智谱侧对单图字节上限
     //    无实测依据，编一个预算是凭空造数字（同 modelscope 的取舍）。
-    readImage: makeReadImage(ctx)
+    readImage: makeReadImage(ctx),
+    // ⚠️⚠️ **必须接 `disabledModels` 与 `providerClosed`**（2026-10-20，IKP8OF）：
+    //    本家手写 `listModels`、不走共享骨架，而这两条回调此前**一个都没传** ⇒
+    //    用户在 Jet Hub 里关掉的 autoclaw 模型**照样出现在选择器里**（实测形态与
+    //    modelscope 那条「接线层漏实参」逐字相同：字段与消费点都在，只缺实参）。
+    //    `providerClosed` 另外覆盖「关闭之后才新增的模型」（黑名单里没有它们）。
+    disabledModels: () => pool.disabledModelsFor(AUTOCLAW.id),
+    providerClosed: () => pool.providerClosedFor(AUTOCLAW.id)
+  });
+  const autoclawIntl = new AutoclawAuth(ctx, { product: AUTOCLAW_INTL });
+  const autoclawIntlAdapter = registerAutoclawLlm(ctx, {
+    resolveCredential: createCredentialResolver(
+      { pool, reportAccount: (id) => {
+        if (id !== void 0) reportLedgerAccount(AUTOCLAW_INTL.id, id);
+      } },
+      {
+        product: AUTOCLAW_INTL,
+        // ⚠️ 与国内版共用同一个解析器（两站凭据形状逐字相同）。
+        readCredential: resolveAutoclawCredentialByRef,
+        fallback: { kind: "ref", refName: AUTOCLAW_INTL.defaultCredentialRef },
+        // ⚠️ **必须接 `balance`**（与国内版同因同日，见那一段的长注释）。
+        //    ⚠️ `selector` 必须是**国际站自己**那个实例（缓存不跨站共用）；
+        //    `displayName` **必须**逐站区分（两站账号不互通，用户要知道去哪个面板解锁）。
+        balance: {
+          kind: "buddy",
+          selector: autoclawIntlBalanceSelector,
+          lockedError: autoclawLockedError("AutoClaw (\u56FD\u9645\u7248)"),
+          // ⚠️ 同国内版：本家无模型级免费（`isFree` 全为 false，见那处说明）。
+          isFreeModel: NO_FREE_MODEL,
+          reportPickedAccount: true
+        },
+        throwIfAllRateLimited: throwIfAllAccountsRateLimited
+      }
+    ),
+    // ⚠️ provider 实参必须是 AUTOCLAW_INTL：写死 AUTOCLAW 会让国际站永远
+    //    查不到自己的账号（本插件在 workbuddy 上踩过同类坑）。
+    product: AUTOCLAW_INTL,
+    readImage: makeReadImage(ctx),
+    // ⚠️⚠️ 同国内版（IKP8OF）：本家手写 `listModels`，两条回调必须显式接线。
+    //    两个站点各一条，漏一处即该站静默失效（本仓库的既有纪律）。
+    disabledModels: () => pool.disabledModelsFor(AUTOCLAW_INTL.id),
+    providerClosed: () => pool.providerClosedFor(AUTOCLAW_INTL.id)
   });
   const accio = new AccioAuth(ctx);
   const accioAdapter = registerAccioLlm(ctx, {
@@ -94104,12 +96357,115 @@ function apply(ctx, config = {}) {
     readImageRequest: makeReadImageRequest(ctx)
   });
   const astudio = new AstudioAuth(ctx);
+  const resolveAstudioCredentialByRef = async (refName) => {
+    const resolved = await ctx.credentials.resolve(credentialRef21(refName));
+    if (!resolved) return void 0;
+    try {
+      const parsed = JSON.parse(resolved.value);
+      return typeof parsed === "object" && parsed !== null && typeof parsed.access_token === "string" ? parsed : void 0;
+    } catch {
+      return void 0;
+    }
+  };
+  const astudioBalanceSelector = new BuddyBalanceSelector({
+    product: ASTUDIO,
+    resolveCredential: resolveAstudioCredentialByRef,
+    fetchBalance: (credential, product) => fetchAstudioCreditBalance(credential, product)
+  });
+  const astudioCredentialPlan = createCredentialResolver(
+    {
+      pool,
+      reportAccount: (id) => {
+        if (id !== void 0) reportLedgerAccount(ASTUDIO.id, id);
+      }
+    },
+    {
+      product: ASTUDIO,
+      // ⚠️ 必须传 ASTUDIO 自己的解析器（buddy 系那份虽然形状恰好兼容 ——
+      //    同样判 `access_token` 是字符串 —— 但两家凭据字段不同：astudio 带
+      //    `sso_session_id` / `login_method` / `source`，且将来任一方加校验就会分叉）。
+      readCredential: resolveAstudioCredentialByRef,
+      balance: {
+        kind: "buddy",
+        selector: astudioBalanceSelector,
+        // ⚠️ 本家**没有**免费模型概念（`AstudioAdapter` 只在 `listAllModels`
+        //    的返回类型里声明了 `isFree?`，兜底表零个 `isFree: true`，
+        //    上游目录也不返回该字段）⇒ 显式表态，不要删字段（见 `NO_FREE_MODEL`）。
+        isFreeModel: NO_FREE_MODEL,
+        lockedError: astudioLockedError("AStudio"),
+        // ⚠️⚠️ **必须是 `true`**（2026-10-21 合并审计发现：PR !119 原写的 `false`
+        //    让上面 `reportAccount` 成了**不可达的死接线**）。
+        //
+        // **原注释错在哪**：原文「与 buddy 系一致：本家旧闭包也没有回报」是**类比错误** ——
+        // buddy 系能写 `false` 是因为它们的**适配器自己回报**（`buddy-adapter.ts` /
+        // `trae-adapter.ts` / `lobsterai-adapter.ts` 都调 `reportLedgerAccount`），
+        // 而 **AStudio 适配器全文零回报**（grep 实测 0 处），且 master 上它压根没有
+        // `reportAccount` 接线 ⇒「旧闭包也没有回报」描述的是**一个缺陷状态**。
+        //
+        // **实测这行是死代码**（`credential-resolver.ts` 三条回报点：①免费短路 ——
+        // astudio 无 `isFreeModel` 不进；②分档选中 `:388` 被 `!== false` 拦住；
+        // ③池选号 `:454` —— ②里已 `return picked.credential`，走不到）：
+        // ```
+        // reportPickedAccount=false     → cred=true reports=[]     poolReached=false
+        // reportPickedAccount=true      → cred=true reports=["a1"] poolReached=false
+        // reportPickedAccount=undefined → cred=true reports=["a1"] poolReached=false
+        // ```
+        // ⇒ `false` 时**零回报**，而那正是 `reportAccount: (id) => reportLedgerAccount(...)`
+        // 唯一的调用来源 ⇒ 那行接线永不执行。
+        //
+        // **后果**：`token-ledger.ts` 拿不到 `accountId` ⇒ 整笔用量归到 `'-'`（未归属）桶
+        // ⇒ AStudio 账号卡片看不到自己的 token 用量，多账号时无法区分谁在烧。零报错零日志。
+        //
+        // **为什么改 `true` 是纯增益**：master 上 astudio 走 `auth.currentCredential()`
+        // （单凭据、从未回报归属）⇒「有归属」是新增能力不是回退，它**没有旧闭包要保真**
+        // （该分支在 master 上根本不存在）。⚠️ 与 buddy 系的取舍**不同源**，别照抄那两行。
+        reportPickedAccount: true
+      },
+      fallback: { kind: "ref", refName: ASTUDIO.defaultCredentialRef },
+      // 退到单凭据 ref 之前先证明失败原因：全被模型限流时报明确的限流错误，
+      // 而不是降级成误导性的 MISSING_CREDENTIAL（见 throwIfAllAccountsRateLimited）。
+      throwIfAllRateLimited: throwIfAllAccountsRateLimited
+    }
+  );
   const astudioAdapter = registerAstudioLlm(ctx, {
-    // ⚠️ AstudioAdapterOptions 只有 product / fetchImpl / auth / resolveCredential /
+    // ⚠️⚠️ **`accountPool` 必须传**（Gitee issue IKP8OF 审计发现，真实缺陷）：
+    //    本家此前是**唯一**把 `createModelCatalog` 的 deps 传成 `{}` 的适配器
+    //    （其余各家都传 `{ accountPool }`）⇒ 骨架里 `deps.accountPool?.disabledModelsFor`
+    //    与 `providerClosedFor?.(...)` 全部因 `?.` **静默跳过** ⇒
+    //    **用户在 Jet Hub 里关掉的 astudio 模型照样出现在选择器里**，
+    //    关闭整个供应商也无效。症状与 modelscope 那次「接线层漏实参」逐字相同。
+    // ⚠️ 仍**不传** `readImage`（实测六个模型的 input_modalities 全是 text，
+    //    图片通路不成立），且本家刻意不做请求级换号。
+    accountPool: pool,
+    // ⚠️ **2026-10-20 新增**：此前本家不传 `resolveCredential`，适配器走
+    //    `auth.currentCredential()` ⇒ **单凭据、无选号**，于是：
+    //    · 「锁定永久积分」开关即使打开也**毫无作用**（没有选号层可拦）；
+    //    · 多账号时永远只用池里「第一个可用」的那个，第二个号的临期额度用不上。
+    //    接上 `createCredentialResolver`（与 buddy/lobsterai/trae 同一套编排）后，
+    //    候选先按 `enabled` + 模型限流筛，再按「15 天内到期优先」分档。
+    //
+    // ⚠️⚠️ **必须包一层转成零参签名**：`createCredentialResolver` 返回的是
+    //    `(modelId?: string) => Promise<TCredential | undefined>`，而
+    //    `AstudioAdapterOptions.resolveCredential` 声明的是
+    //    `() => Promise<AstudioCredential | undefined>`（**零参**）。
+    //    直接把带参函数传过去会 TS2322（参数个数不兼容）。
+    //    ⚠️ 传 `''` 而不是省参数：空串意味着「不按模型筛候选」——
+    //    `candidatesOf` 对空 `modelId` 跳过 `modelRateLimits` 过滤，
+    //    这与本家适配器（`requestLevelRotation` 关闭、不按模型换号）的语义一致；
+    //    若将来接上请求级换号，这里应改为透传真实 modelId。
+    resolveCredential: () => astudioCredentialPlan(""),
+    // ⚠️ AstudioAdapterOptions 原本只有 product / fetchImpl / auth / resolveCredential /
     //    refresh / fetchRemoteModels / onCatalogLoaded / warn 八项 —— **没有**
-    //    accountPool 与 readImage（与上面 accio 那两处不同，多传必 TS2353：
-    //    本家适配器刻意不做请求级换号，且实测六个模型的 input_modalities 全是
-    //    text，图片通路不成立）。
+    //    accountPool 与 readImage。⚠️ **但 `accountPool` 已于 2026-10-20 补上**
+    //    （Gitee issue IKP8OF：缺它会让黑名单与「供应商整体关闭」静默失效，
+    //    见上面那一段），故本块与它**并存**、不是二选一。
+    //    仍**没有** `readImage`：实测六个模型的 input_modalities 全是 text，
+    //    图片通路不成立，多传必 TS2353。
+    //    ⚠️ 同样**没有** `credentialRef`：`registerAstudioLlm` 内部会用
+    //    `auth.currentCredential()` 作为「池里无账号」时的回退，不需要外部传 ref
+    //    （传了必 TS2353，2026-10-20 实测踩到）。
+    //    ⚠️ 但「请求级换号」与「按余额分档选号」是**两件事**：前者是 429 后换号
+    //    （本家确实没有），后者是「该用哪个号」（上面刚接上）。两者互不依赖。
     // ⚠️ **不传 onCatalogLoaded**：registerAstudioLlm 内部已注入唯一的
     //    broadcastCatalogChanged(ctx)，这里再传就是第二份广播。
     // ⚠️ 传 auth 即可拿到三个默认回调（currentCredential / refreshOnce /
@@ -94187,7 +96543,11 @@ function apply(ctx, config = {}) {
     //    **照样出现在模型选择器里**（实测：只开了 V4.1 Flash，选择器仍列全部 36 个）。
     //    ⚠️ 典型形态：适配器**支持**该能力（字段与消费点都在），只是**接线层漏了实参**
     //    ⇒ 无报错、无日志，纯静默。
-    disabledModels: () => pool.disabledModelsFor(MODELSCOPE.id)
+    disabledModels: () => pool.disabledModelsFor(MODELSCOPE.id),
+    // ⚠️⚠️ **必须接 `providerClosed`**（Gitee issue IKP8OF）：本家不走共享骨架
+    //    （`model-catalog.ts`），故「整个供应商关闭」这条判据必须在这里显式接线，
+    //    否则关闭后**新长出来的模型**仍会出现在选择器里（黑名单里没有它们）。
+    providerClosed: () => pool.providerClosedFor(MODELSCOPE.id)
   });
   void raccoon.repairAccountNicknames(pool, buildRaccoonNickname).then((repaired) => {
     if (repaired.length > 0) {
@@ -94480,6 +96840,8 @@ function apply(ctx, config = {}) {
   };
   const officeAceAdapter = registerOfficeAceLlm(ctx, {
     disabledModels: () => pool.disabledModelsFor(OFFICEACE.id),
+    // ⚠️⚠️ 同上（IKP8OF）：本家手写 `listModels`，不走共享骨架。
+    providerClosed: () => pool.providerClosedFor(OFFICEACE.id),
     // ⚠️ **按当前选中账号的 ref 取凭据**（2026-10-13）：凭据存在 DSH 凭据库里
     //    按 `credentialRef` 索引（与 gemini / raccoon 同款）。缺省会读兼容文件
     //    `session.json`，那份是**所有账号共用**的 ⇒ 号池轮换形同虚设。
@@ -94597,6 +96959,8 @@ function apply(ctx, config = {}) {
         signal: signal === void 0 ? AbortSignal.timeout(OPENCODE_CATALOG_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(OPENCODE_CATALOG_TIMEOUT_MS)])
       }),
       disabledModels: () => pool.disabledModelsFor(OPENCODE.id),
+      // ⚠️⚠️ 同上（IKP8OF）：本家手写 `listModels`，不走共享骨架。
+      providerClosed: () => pool.providerClosedFor(OPENCODE.id),
       markLimited: async (slotId, modelId, resetAtMs) => {
         await pool.updateModelRateLimit(slotId, modelId, resetAtMs);
       },
@@ -94773,6 +97137,10 @@ function apply(ctx, config = {}) {
     minimax: pruned(MINIMAX.id, minimaxAdapter),
     minimaxintl: pruned(MINIMAX_INTL.id, minimaxIntlAdapter),
     autoclaw: pruned(AUTOCLAW.id, autoclawAdapter),
+    // ⚠️ 国际版与国内版**同一套实现的两个实例**，但 provider id 不同 ⇒
+    //    必须各自一条（与 minimaxintl 同款）。键是 provider id `autoclawintl`
+    //    （全小写），值是变量 `autoclawIntlAdapter`（驼峰）。
+    autoclawintl: pruned(AUTOCLAW_INTL.id, autoclawIntlAdapter),
     accio: pruned(ACCIO.id, accioAdapter),
     gemini: pruned(GEMINI.id, geminiAdapter),
     zcode: pruned(ZCODE.id, zcodeAdapter),
@@ -94870,7 +97238,18 @@ function apply(ctx, config = {}) {
     geminiFetchFor: geminiFetchForAccount
   });
   const onboardingTable = createProviderOnboarding({ loomy, raccoon });
-  const expiryTable = createProviderExpiry();
+  const expiryTable = createProviderExpiry({
+    // ⚠️⚠️ **MiniMax 国际站的 XFF 必须在这里也接上**（2026-10-20，与 L3858 那处
+    //    `creditsTable` 的 `minimaxXff` **同因**）。
+    //
+    // `ProviderRuntime.credits` 与 `ProviderRuntime.expiry` 是**两个独立消费域**
+    //（前者喂积分面板，后者喂聚合候选排序），两者的 xff 通道**各走各的**：
+    // 只接 credits 那处的话，症状正是「面板能刷新、聚合候选却恒折算失败」
+    //（本仓库在 2026-10-17 审计里已对 `creditsTable` 记录过同型缺陷）。
+    //
+    // ⚠️ 惰性读（用户随时可能改设置），不能固化成字符串。
+    minimaxXff: () => pool.minimaxXff()
+  });
   const officeaceAuthService = { ...officeace_auth_exports };
   Object.assign(officeaceAuthService, {
     refreshAccountCredential: (refName, pool2, accountId) => refreshAccountCredential(refName, pool2, accountId, ctx.credentials),
@@ -94927,6 +97306,12 @@ function apply(ctx, config = {}) {
       // 收不到本循环的调用（实测症状：`续期没有分派到它自己的实例（实际：无）`）。
       ["officeace", officeaceAuthService],
       ["autoclaw", autoclaw],
+      // ⚠️ AutoClaw 国际版：与 `autoclaw` **共用同一个 `AutoclawAuth` 类**，
+      //    故键与值都是它自己那个实例（`autoclawIntl`）。写成 `autoclaw: autoclawIntl`
+      //    这类错位会让国际站账号的续期去刷国内站凭据（同族串接，本仓库复发过 6 次）。
+      //    漏加这一行 = 它不进注册表 ⇒ 续期/积分/探测三条链路**全部静默失效**
+      //    （`provider-runtime-wiring.spec.ts` 会点名 `autoclawintl 未注册`）。
+      ["autoclawintl", autoclawIntl],
       ["accio", accio],
       // AStudio（讯飞 AstronStudio）：值是 AstudioAuth 服务实例 —— 它已在构造时
       // provide 自己（服务名 astudioAuth），必须与 registerJetHubRpc 的 auths.astudio
@@ -95025,6 +97410,11 @@ function apply(ctx, config = {}) {
     //（纯函数集合 + 统一 auth 契约），不是 Service 实例。
     officeace: officeaceAuthService,
     autoclaw,
+    // ⚠️ 键是 **provider id** `autoclawintl`，值是变量 `autoclawIntl` ——
+    //    两者不同名（id 全小写、变量带驼峰），写成简写会引用不存在的变量。
+    //    ⚠️ 值必须是**国际版实例**：写成 `autoclaw` 会让国际站账号的续期
+    //    去刷国内站凭据（与 minimaxintl 的同类风险完全一致）。
+    autoclawintl: autoclawIntl,
     accio,
     astudio,
     // ⚠️ **本 fork 独有**（modelscope，2026-10-16）。漏加 = 客户端把它当
