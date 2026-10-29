@@ -262,4 +262,5 @@ jobs:
           git add README.md
           # 幂等：内容无变化不提交（防循环），有变化才 push。
           git diff --cached --quiet || git commit -m "docs: 更新 APK 下载链接（$TAG） [skip ci]"
-          git push
+          # ⚠️ 非快进/竞态时不红：本步只是文档收尾，产物已发布（开头那步已推送过 README）。
+          git push || { git pull --rebase --autostash || true; git push || true; }
