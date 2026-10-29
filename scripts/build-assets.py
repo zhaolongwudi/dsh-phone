@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / 'runtime'
 MODULES = DEPLOY / 'node_modules'
 ASSETS = ROOT / 'app/src/main/assets'
-BUNDLES = ('dsh-our-free-model', 'dsh-codearts-auth', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center')
+BUNDLES = ('dsh-our-free-model', 'dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center')
 
 
 def copy_bundle(name, destination, source=None):
@@ -28,8 +28,10 @@ def copy_bundle(name, destination, source=None):
     entries = ('LICENSE', 'LICENSE.openclaw', 'bin', 'sample-tools', 'lib', 'locale', 'vendor', 'agent-cards', 'knowledge-link', 'task-supervisor', 'subagent-scheduler', 'chat-files', 'chat-history', 'memory-isolation', 'mcp-manager', 'on-demand-tools', 'controlled-market', 'workflow-hub', 'cards-client.js', 'index.js', 'config.js', 'manager.js', 'bridge.mjs', 'cli.mjs', 'skills',
                   'index.mjs', 'protocol.mjs', 'relay.mjs', 'tunnel.mjs', 'proxy.mjs', 'ui-reuse.mjs', 'browser-session.mjs', 'config-sync.mjs', 'skill-import.js',
                   'account.js', 'messages-adapter.js', 'core-migration.js', 'plugin-compat.js', 'chatgpt.js', 'chatgpt-account.js', 'chatgpt-protocol.js',
-                  'chatgpt-adapter.js', 'chatgpt-page.html', 'persona.js', 'skills.js', 'phone-home.js', 'setup.js', 'qq-login.js', 'qq-download.py', 'code-access.js', 'workspace.js', 'skills.html', 'workspace.html', 'packs.js', 'replace-skills.js', 'bundled-packs', 'packs.html', 'skill-import.js', 'browser-compat.js', 'zip.js', 'runtime.js', 'runtime-catalog.json', 'runtime-preflight.js', 'web-fetch.js', 'runtime-upstream-MIT.txt', 'presentation.css', 'presentation.js', 'platforms.json', 'page.html', 'cordis.patch.yml')
+                  'chatgpt-adapter.js', 'chatgpt-page.html', 'persona.js', 'skills.js', 'phone-home.js', 'setup.js', 'qq-login.js', 'qq-download.py', 'code-access.js', 'workspace.js', 'skills.html', 'workspace.html', 'packs.js', 'replace-skills.js', 'bundled-packs', 'packs.html', 'skill-import.js', 'browser-compat.js', 'zip.js', 'runtime.js', 'runtime-catalog.json', 'runtime-preflight.js', 'web-fetch.js', 'runtime-upstream-MIT.txt', 'presentation.css', 'presentation.js', 'platforms.json', 'page.html', 'cordis.patch.yml', 'client.js', 'adapter', 'icon.svg')
     if name == '@zseven-w/dsh-noema':
+        entries += ('src',)
+    if name == 'dsh-our-free-model':
         entries += ('src',)
     if name == 'dsh-team':
         entries += ('client.js', 'page.js', 'upstream.json', 'README.md')
@@ -180,7 +182,14 @@ def main():
     validate_asset_version((ROOT/'app/build.gradle').read_text(), (ROOT/'app/src/main/java/com/dshphone/NodeRunner.kt').read_text())
     import subprocess
     subprocess.run(['node', str(ROOT/'scripts/build-agent-cards-client.mjs')], check=True)
-    subprocess.run(['node', str(ROOT/'scripts/build-model-picker.mjs')], check=True)
+    # §2.12（capsule）：上游新增的模型选择器 overlay —— 它需要 desktop-runtime 树里的
+    # 钉版 SDK（0.2.1-alpha.1），而手机版构建只装 runtime/ ⇒ 缺树时**跳过而非中断**
+    # （跳过 = 沿用宿主自带模型选择器，与合并前行为一致；判据只看那个 package.json）。
+    _model_picker_sdk = ROOT / 'desktop-runtime/node_modules/@deepseek-ai/dsh-client-ui-model-selection/package.json'
+    if _model_picker_sdk.is_file():
+        subprocess.run(['node', str(ROOT/'scripts/build-model-picker.mjs')], check=True)
+    else:
+        print('跳过 build-model-picker：本构建无 desktop-runtime 树（手机版沿用宿主模型选择器）')
     for extension in ('css', 'js'):
         shutil.copy2(ROOT/f'app/src/main/assets/dsh-phone.{extension}', ROOT/f'phone-qq/presentation.{extension}')
     shutil.copy2(ROOT/'app/src/main/assets/dsh-phone.compat.js', ROOT/'phone-qq/browser-compat.js')
@@ -200,7 +209,7 @@ def main():
     for overlay in (DEPLOY / 'overlays').rglob('*'):
         if overlay.is_file():
             shutil.copy2(overlay, MODULES / overlay.relative_to(DEPLOY / 'overlays'))
-    for name, source in [('dsh-codearts-auth', ROOT / 'vendor/dsh-codearts-auth'),
+    for name, source in [('dsh-providers-hub', ROOT / 'vendor/dsh-providers-hub'),
                          ('dsh-channel-qq', ROOT / 'vendor/dsh-channel-qq'),
                          ('dsh-phone-account', ROOT / 'phone-account'),
                          ('dsh-phone-qq', ROOT / 'phone-qq'),
@@ -215,6 +224,10 @@ def main():
         target = MODULES / name
         shutil.rmtree(target, ignore_errors=True)
         copy_bundle(name, target, source)
+    # rc.11 改名：runtime 的依赖键仍是旧名（改它会牵动 pnpm-lock 的 peer 解析哈希，
+    # 而本机无法忠实重算）⇒ pnpm 装出的是旧名目录；部署树只用新名，故清掉旧名副本
+    # （避免同一份插件在树里存两份，也避免被残留的旧 profile 条目解析到）。
+    shutil.rmtree(MODULES / 'dsh-providers-hub', ignore_errors=True)
     # ESM tests and local editing resolve the same hoisted dependency tree.
     if not (ROOT / 'node_modules').exists():
         (ROOT / 'node_modules').symlink_to('runtime/node_modules', target_is_directory=True)

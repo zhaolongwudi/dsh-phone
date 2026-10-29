@@ -3,7 +3,7 @@
  * 更新 dsh-providers-hub（Jet Hub）到 npm 最新发布版。
  *
  * 上游：https://registry.npmjs.org/dsh-providers-hub  （发布者 weiyou）
- *   同源项目另有一个旧包名 dsh-codearts-auth（同一发布者，早期版本线）。
+ *   同源项目另有一个旧包名 dsh-providers-hub（同一发布者，早期版本线）。
  *
  * 安装位置（两处逐文件一致，必须同步更新）：
  *   $DSH_HOME/profiles/phone/node_modules/dsh-providers-hub   ← profile 依赖，运行时加载

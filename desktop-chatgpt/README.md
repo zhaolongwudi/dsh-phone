@@ -4,7 +4,7 @@
 
 ```bash
 node scripts/install-desktop-chatgpt.mjs /path/to/.dsh/profiles/web /path/to/desktop/node_modules
-node scripts/install-desktop-jet-hub-chatgpt.mjs /path/to/desktop/dsh-codearts-auth
+node scripts/install-desktop-jet-hub-chatgpt.mjs /path/to/desktop/dsh-providers-hub
 ```
 
 重启电脑 DSH 后，打开「设置 → Jet Hub → ChatGPT 会员」，直接在会员账号面板点击 Continue with ChatGPT。完成官方授权后可管理账号、工作区和模型列表，与手机版使用同一套界面。登录需用户本人操作；模型与权限以官方账号返回为准。

@@ -210,13 +210,13 @@ spec** 覆盖的（zero-output-guard/catalog-broadcast/catalog-prewarm/backup-co
 > **用户报障**：装本轮 APK 后**「jethub 插件不见了」**。
 > **根因**（引擎源码逐行确认）：`dsh-app-boot/lib/index.js:286` 的
 > `evaluatePluginCompatibility` 用 `semver.satisfies(runtime, range, {includePrerelease:true})`
-> 校验插件的 `peerDependencies`；`vendor/dsh-codearts-auth/package.json` 把
+> 校验插件的 `peerDependencies`；`vendor/dsh-providers-hub/package.json` 把
 > `@deepseek-ai/dsh-llm` **精确**钉在 `0.2.1-alpha.1` ⇒ 对 alpha.2 判不兼容；
 > `loadProfileDirectory`（:1011）遇不兼容直接 **throw** ⇒ **整个 profile bundle 被跳过**。
 > **⚠️ 本轮验证为何全绿却漏掉**：tsc/747 spec/UI 契约/apply.sh/APK 产物验收
 > **全是编译期或静态证据**，而门禁**只在运行期生效**；`runtime/overlays` 改得再对，
 > 也管不到另一个文件的 `peerDependencies` 字段。⇒ **「构建绿」证明不了「能跑」**。
-> **修复一（用户完成，`46e2cb7f94`）**：新增 `overrides/vendor/dsh-codearts-auth/package.json`，
+> **修复一（用户完成，`46e2cb7f94`）**：新增 `overrides/vendor/dsh-providers-hub/package.json`，
 > peer + dev 同步 alpha.2；`apply.sh` 加 §5.95。实测 profile 声明的 6 个 bundle
 > **全部放行（0 个被跳过）**。
 > **修复二（本轮补做，`ff58bb8064`）**：泛化排查发现 **`dsh-channel-qq` 仍钉 alpha.1**

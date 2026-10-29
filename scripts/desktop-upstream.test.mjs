@@ -4,19 +4,19 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, cp, lstat } from 'node:fs/prom
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { installDesktopUpstream, restoreDesktopUpstream } from './install-desktop-upstream.mjs';
-const source = path.resolve('vendor/dsh-codearts-auth');
+const source = path.resolve('vendor/dsh-providers-hub');
 async function fixture(t, fail = false) {
   const root = await mkdtemp(path.join(tmpdir(), 'dsh-upstream-')); t.after(() => rm(root, { recursive: true, force: true }));
   const profile = path.join(root, 'profile'), desktop = path.join(root, 'desktop');
   await mkdir(path.join(profile, 'node_modules'), { recursive: true });
   const known = JSON.parse(await readFile('desktop-chatgpt/upstream-source-hashes.json'));
   for (const { path: file } of known.files) {
-    const target = path.join(profile, 'node_modules/dsh-codearts-auth', file); await mkdir(path.dirname(target), { recursive: true }); await cp(path.join(source, file), target);
+    const target = path.join(profile, 'node_modules/dsh-providers-hub', file); await mkdir(path.dirname(target), { recursive: true }); await cp(path.join(source, file), target);
   }
   for (const name of ['@zseven-w/dsh-noema', 'dsh-peer', 'dsh-desktop-chatgpt']) {
     const target = path.join(profile, 'node_modules', name); await mkdir(target, { recursive: true }); await writeFile(path.join(target, 'marker'), name);
   }
-  const manifest = JSON.stringify({ dependencies: {}, dsh: { profile: { bundles: ['dsh-codearts-auth', '@zseven-w/dsh-noema', 'dsh-peer', 'dsh-desktop-chatgpt'] } } });
+  const manifest = JSON.stringify({ dependencies: {}, dsh: { profile: { bundles: ['dsh-providers-hub', '@zseven-w/dsh-noema', 'dsh-peer', 'dsh-desktop-chatgpt'] } } });
   await writeFile(path.join(profile, 'package.json'), manifest); await writeFile(path.join(profile, 'user-marker'), 'keep');
   await mkdir(path.join(desktop, 'node_modules/.bin'), { recursive: true }); await writeFile(path.join(desktop, 'node_modules/.bin/dsh'), 'original launcher', { mode: 0o755 });
   if (fail) await writeFile(path.join(desktop, 'node_modules/@deepseek-ai'), 'block swap');

@@ -2,7 +2,7 @@
 // Model selection happens before creation; prepared LLM requests are immutable.
 export function installNativeSelection(ctx,scheduler){
  const service=ctx.get('subagents'),restore=[];
- try { for(const method of ['start','startContinuable','sendMessage']){
+ try { for(const method of ['startActivation','sendMessage']){
   const original=service[method],descriptor=Object.getOwnPropertyDescriptor(service,method);
   if(method==='sendMessage'&&typeof original!=='function')continue;
   if(typeof original!=='function')throw Error('当前SDK缺少原生子代理入口：'+method);

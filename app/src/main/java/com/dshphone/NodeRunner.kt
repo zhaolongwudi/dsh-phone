@@ -90,7 +90,7 @@ object NodeRunner {
             val profile = dsh.optJSONObject("profile") ?: JSONObject().also { dsh.put("profile", it) }
             val bundles = profile.optJSONArray("bundles") ?: JSONArray().also { profile.put("bundles", it) }
             val dependencies = packageJson.optJSONObject("dependencies") ?: JSONObject().also { packageJson.put("dependencies", it) }
-            listOf("dsh-codearts-auth", "dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema", "dsh-our-free-model", "dsh-team", "dsh-appearance-center", "dsh-knowledge-link").forEach { bundle ->
+            listOf("dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema", "dsh-our-free-model", "dsh-team", "dsh-appearance-center", "dsh-knowledge-link").forEach { bundle ->
                 if ((0 until bundles.length()).none { bundles.optString(it) == bundle }) bundles.put(bundle)
                 dependencies.put(bundle, "file:./node_modules/$bundle")
             }
@@ -239,8 +239,64 @@ object NodeRunner {
     }
 
     @Synchronized
+    /**
+     * 已退役插件的**残留清理**（H2，2026-10-17）：幂等剥除 + 豁免标记 + 告警。
+     *
+     * 老 Jet Hub（`dsh-providers-hub`，更早叫 `dsh-providers-hub`）已退役、能力并入
+     * dsh-our-free-model。§2.8 堵住了「升级迁移塞回来」，但**恢复退役前的快照**
+     * （RecoveryManager 对 profiles 是整目录替换）或手工编辑仍会把它写回 profile ⇒
+     * 它与 OFM 在三个槽位重复注册（设置页多一个 Jet Hub 入口、输入区并排两枚余额
+     * 胶囊、多一枚活动模型胶囊）。§2.8 的清理只在 ASSET_VERSION 变化时跑，兜不住
+     * 上面这两条路径，故这里做**每次启动**的幂等清理。
+     *
+     * ⚠️ 豁免标记：README 第五节记录「回滚到 Jet Hub」是**受支持**操作。故存在
+     *     `dsh-home/KEEP-RETIRED-BUNDLES`（**放在 profiles 之外**）时**只告警、不剥除**，把「回到过去」
+     *     的意图留给用户；没有该标记才自动剥除，并在日志里说明如何回滚。
+     *     **无变化时不写盘**（幂等：避免每次启动都改文件/改 mtime）。
+     *
+     * ⚠️ 标记路径为什么是 `dsh-home/KEEP-RETIRED-BUNDLES` 而**不是** profiles 之下：
+     *     RecoveryManager 的 scopes 含 `dsh-home/profiles`，restore 对每个 scope 做
+     *     **整目录 move 替换**（见 RecoveryManager.kt 的 restore）⇒ 标记若放在
+     *     `profiles/phone/` 里，会被"先建标记、再恢复快照"的流程**自己删掉**，
+     *     豁免形同虚设。故必须放在 profiles 之外。
+     */
+    private fun pruneRetiredBundles(ctx: Context) {
+        val manifest = File(homeDir(ctx), "profiles/phone/package.json")
+        if (!manifest.isFile) return
+        val raw = runCatching { manifest.readText() }.getOrNull() ?: return
+        val hit = RETIRED_BUNDLES.filter { raw.contains("\"$it\"") }
+        if (hit.isEmpty()) return
+        val names = hit.joinToString("、")
+        if (File(homeDir(ctx), "KEEP-RETIRED-BUNDLES").isFile) {
+            Log.w(TAG, "profile 仍引用已退役插件 $names —— 检测到 dsh-home/KEEP-RETIRED-BUNDLES 豁免标记，按你的回滚意图保留（不剥除）。")
+            return
+        }
+        val root = runCatching { JSONObject(raw) }.getOrNull()
+            ?: run { Log.w(TAG, "profile package.json 解析失败，跳过退役清理"); return }
+        val profile = root.optJSONObject("dsh")?.optJSONObject("profile")
+        val bundles = profile?.optJSONArray("bundles")
+        if (profile != null && bundles != null) {
+            /* ⚠️ 重建数组，**不用** JSONArray.remove(int)：本机无 gradle、无法验证该重载，
+               与 §2.8 同一理由；length / optString / put / remove(String) 均已编译通过。 */
+            val kept = JSONArray()
+            for (i in 0 until bundles.length()) {
+                val name = bundles.optString(i)
+                if (!RETIRED_BUNDLES.contains(name)) kept.put(name)
+            }
+            profile.put("bundles", kept)
+        }
+        root.optJSONObject("dependencies")?.let { deps -> for (name in RETIRED_BUNDLES) deps.remove(name) }
+        runCatching { manifest.writeText(root.toString(2)) }
+            .onFailure { Log.w(TAG, "退役清理写盘失败：" + it.message) }
+        Log.w(TAG, "已自动剥除已退役插件残留：$names。如需**有意**回滚到 Jet Hub，请先创建 dsh-home/KEEP-RETIRED-BUNDLES（放在 profiles 之外，否则会被快照恢复覆盖）再恢复旧快照。")
+    }
+
+    /** 已退役插件的包名（新旧两种写法都要看：老快照里都可能出现）。 */
+    private val RETIRED_BUNDLES = listOf("dsh-providers-hub", "dsh-providers-hub")
+
     fun start(ctx: Context): Process {
         ensureExtracted(ctx)
+        pruneRetiredBundles(ctx)
         makeHomeLink(ctx)
         val bin = binJs(ctx)
         require(bin.exists()) { "bin.js missing: $bin" }

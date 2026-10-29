@@ -9,7 +9,7 @@
  *
  *   1. 拉 gitee master 的 src/（fetch-gitee-src.mjs）
  *   2. 补 gitee 用 HTTP 451 屏蔽的文件 —— 从 npm 上游发布版
- *      （dsh-codearts-auth）的编译产物里取；上游自己的 index.ts 也引用它
+ *      （dsh-providers-hub）的编译产物里取；上游自己的 index.ts 也引用它
  *   3. 从**当前已装的 OFM** 里带过 channel-fetch.ts（上游没有这个文件）
  *   4. 施加 OFM 的本地适配（patch-channelpack-port.mjs）
  *   5. 用 OFM 的官方构建脚本打包成单文件 pack.js（WASM 版 esbuild）
@@ -34,7 +34,7 @@ const OFM_DIR = path.join(DSH_HOME, 'profiles/phone/node_modules/dsh-our-free-mo
 const CHANNEL_PACK = path.join(OFM_DIR, 'vendor/channel-pack');
 const GITEE_SRC = path.join(BUILD, 'gitee-src/src');
 const WORK_SRC = path.join(BUILD, 'repo/vendor/channel-pack/src');
-const NPM_PKG = 'dsh-codearts-auth';
+const NPM_PKG = 'dsh-providers-hub';
 /** gitee 对含 "proxy" 的文件名返回 451（Unavailable For Legal Reasons）。 */
 const BLOCKED_FILE = 'opencode-proxy.js';
 

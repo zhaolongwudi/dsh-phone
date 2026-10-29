@@ -13,9 +13,9 @@
  * @module @zseven-w/dsh-noema
  */
 import type { Context } from '@deepseek-ai/cordis';
-import { Config, type NoemaMemorySettings } from './settings.js';
+import { Config, type NoemaMemoryConfig } from './settings.js';
 export { PLUGIN_NAME, NOEMA_TOOL_NAMES, NOEMA_MEMORY_SETTINGS_NAMESPACE, NOEMA_STATUS_ROUTE } from './names.js';
-export { NOEMA_MEMORY_SETTINGS_NS, NOEMA_MEMORY_SETTINGS_SCHEMA, NOEMA_MEMORY_SETTINGS_DEFAULTS, type NoemaMemorySettings } from './settings.js';
+export { NOEMA_MEMORY_SETTINGS_NS, NOEMA_MEMORY_SETTINGS_SCHEMA, NOEMA_MEMORY_SETTINGS_DEFAULTS, type NoemaMemoryConfig, type NoemaMemorySettings, type VolatileNoemaMemorySettings } from './settings.js';
 export { McpStdioClient, McpStdioError, MCP_PROTOCOL_VERSION } from './mcp-stdio.js';
 export { DSH_NOEMA_VERSION } from './version.js';
 export { NoemaServerManager, resolveNoemaLaunch, tokenizeCommand, type NoemaServerStatus } from './server-manager.js';
@@ -35,4 +35,4 @@ export { Config };
  * autoStart is enabled; start failures degrade to tool-call errors instead of
  * breaking profile boot.
  */
-export declare function apply(ctx: Context, config?: Partial<NoemaMemorySettings>): Promise<() => Promise<void>>;
+export declare function apply(ctx: Context, config?: Partial<NoemaMemoryConfig>): Promise<() => Promise<void>>;

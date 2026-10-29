@@ -55,7 +55,7 @@ const PLUGIN_DIRS = [LOCAL, INSTALLED];
  */
 const PILL_SRC = [
   path.join(HERE, 'capsule-src/client/active-model-pill.js'),
-  '/data/data/com.dshphone/files/tmp/capsule-repo/files/vendor/dsh-codearts-auth/plugin-src/client/active-model-pill.js',
+  '/data/data/com.dshphone/files/tmp/capsule-repo/files/vendor/dsh-providers-hub/plugin-src/client/active-model-pill.js',
 ].find((p) => fs.existsSync(p));
 
 const E_MARK_INJECT = 'patch E: inject';

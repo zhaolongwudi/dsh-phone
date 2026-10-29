@@ -24,7 +24,7 @@
    - 只想要快反馈时，**手动 dispatch `.github/workflows/typecheck.yml`**（**约 30 秒**，只跑 vitest 胶囊 spec + tsc + esbuild，不出包/不发布/不改 README）—— 这是 9.16 新增的正式快环，已实测全绿。
    - `port-gitee` 分支已落后于 main（仅历史留存）；旧的手动 dispatch 流程只在那条分支上还有意义。
    - ⚠️ 改了 `.github/capsule/rebuild-vendor.sh` 的 vitest 名单才跑得到新 spec —— 新增胶囊 spec **必须同时登记**（否则静默不跑）。
-3. 🚨 **用户报"实测无变化"时，第一步查设备是否真加载了新代码**：`files/dsh.version` 与 `tree/node_modules/dsh-codearts-auth/lib/*.js` 的 mtime。装新包 vendor 不更新曾是老坑（`ASSET_VERSION` 恒 65），已修（构建时注入 versionCode+run_number），但这条排查永远优先。
+3. 🚨 **用户报"实测无变化"时，第一步查设备是否真加载了新代码**：`files/dsh.version` 与 `tree/node_modules/dsh-providers-hub/lib/*.js` 的 mtime。装新包 vendor 不更新曾是老坑（`ASSET_VERSION` 恒 65），已修（构建时注入 versionCode+run_number），但这条排查永远优先。
 4. **Gitee 动态核对**（每轮移植前）：`https://gitee.com/iJetLi/deepseek-harness-codearts.git/info/refs?service=git-upload-pack`（UA `git/2.40`，绕 API 限流，一次拿全部分支/PR refs）；raw 拉文件 UA 必须 `Mozilla/5.0`。**`refs/pull/N/MERGE` 存在 ≠ 已合并**，要以内容 sha1 比对为准。
 5. **上游同步已停**：`sync-upstream.yml` 只剩 `workflow_dispatch`（可手动补同步，9.16 已演练）；恢复每日同步 = 把 `schedule` 段加回。
 6. 🚨 **两条验证红线（9.17 新踩，都会把结论写反）**：
@@ -100,7 +100,7 @@
 ## 一、项目背景（30 秒版）
 
 - **手机版仓库**：GitHub `zhaolongwudi/dsh-phone`（分支 main）。⚠️ **2026-10-11 起已停止**从上游 `jwoo1982217-eng/dsh-phone` 的每日 07:30 自动 sync（改为**仅手动** dispatch，见 9.9 / 9.16 演练）。
-- **真正原作者**：Gitee `iJetLi/deepseek-harness-codearts`（**桌面版 JetHub 插件本体仓库**，结构 = 手机版 `vendor/dsh-codearts-auth/` 去掉 vendor 包装：`src/` ↔ `src/`、`plugin-src/client/` ↔ 同路径）。
+- **真正原作者**：Gitee `iJetLi/deepseek-harness-codearts`（**桌面版 JetHub 插件本体仓库**，结构 = 手机版 `vendor/dsh-providers-hub/` 去掉 vendor 包装：`src/` ↔ `src/`、`plugin-src/client/` ↔ 同路径）。
 - **本机部署工具**：`ghp_REDACTED_revoked`（⚠️ 一直在对话中暴露，移植完成后应提醒用户撤销换新）。
 - **本地工作区**：`/storage/emulated/0/Download/dsh/ai/dsh-phone-gh/`（部分 checkout：`.github/capsule/`、workflow、README 等，其余在 GitHub 上）。
 - **缓存资产**（可复用）：`/storage/emulated/0/Download/dsh/ai/.scratch/baseline/` 下有 Gitee 全树 `gitee-tree.json`、已拉文件缓存 `gitee-files/`（46 个）、上游 274bf823 tarball 解压 `upstream/`。
@@ -117,12 +117,12 @@
 ├── update-readme.py      # README 下载区块（构建开始时更新链接，[skip ci] 防循环）
 ├── files/                # 全新增文件（胶囊组件、spec 等）
 └── overrides/            # 覆盖文件（基线 = 上游某版本 + 接线），当前 6 个：
-    ├── vendor/dsh-codearts-auth/src/aggregate-adapter.ts   # 含已移植的 contextWindowFor
-    ├── vendor/dsh-codearts-auth/src/auto-adapter.ts
-    ├── vendor/dsh-codearts-auth/src/jet-hub-rpc.ts         # 已重定基线到 274bf823（保留上游 zcode 增强）
-    ├── vendor/dsh-codearts-auth/src/types.ts
-    ├── vendor/dsh-codearts-auth/plugin-src/client/index.js # 胶囊挂载接线
-    └── vendor/dsh-codearts-auth/plugin-src/client/jet-hub-styles.js
+    ├── vendor/dsh-providers-hub/src/aggregate-adapter.ts   # 含已移植的 contextWindowFor
+    ├── vendor/dsh-providers-hub/src/auto-adapter.ts
+    ├── vendor/dsh-providers-hub/src/jet-hub-rpc.ts         # 已重定基线到 274bf823（保留上游 zcode 增强）
+    ├── vendor/dsh-providers-hub/src/types.ts
+    ├── vendor/dsh-providers-hub/plugin-src/client/index.js # 胶囊挂载接线
+    └── vendor/dsh-providers-hub/plugin-src/client/jet-hub-styles.js
 ```
 
 **基线版本**：overrides 当前对齐上游 **274bf823**（上游最新）。`aggregate-adapter.ts` 额外含移植自 Gitee 的 `contextWindowFor`（聚合上下文窗口动态化，build-20261010-1854 已发布验证）。
@@ -273,7 +273,7 @@ const r = await fetch('https://gitee.com/iJetLi/deepseek-harness-codearts/raw/ma
 ### 9.3 上下文窗口 200K→1M（本轮已完成的前置小任务）
 
 - 病根：上游 `resolveModel`（GUI 显示路径）硬编码 `contextWindow: 200_000`（prepareCall 派发路径已是动态 1M）。手机仓库 overrides 已改为 `contextWindowFor` 动态版（与 Gitee 04de37c1 口径一致），**但用户未装新构建**。
-- 临时措施（已执行）：直接改 App 私有目录两份 lib 产物 `files/tree/node_modules/dsh-codearts-auth/lib/aggregate-adapter.js` 与 `files/dsh-home/profiles/phone/node_modules/dsh-codearts-auth/lib/aggregate-adapter.js`，各替换 2 处 `contextWindow: 200_000` → `1_000_000`（node --check 语法 OK），原文件备份为同目录 `*.orig-200k`。**需重启 App 生效**（运行中进程持旧模块）。装新构建后此临时改动自然被覆盖。
+- 临时措施（已执行）：直接改 App 私有目录两份 lib 产物 `files/tree/node_modules/dsh-providers-hub/lib/aggregate-adapter.js` 与 `files/dsh-home/profiles/phone/node_modules/dsh-providers-hub/lib/aggregate-adapter.js`，各替换 2 处 `contextWindow: 200_000` → `1_000_000`（node --check 语法 OK），原文件备份为同目录 `*.orig-200k`。**需重启 App 生效**（运行中进程持旧模块）。装新构建后此临时改动自然被覆盖。
 - auto-adapter 的 `resolveModel` 硬编码 200_000：Gitee 04de37c1 也未改，本轮保持一致不动。
 
 ### 9.4 Phase 1 设计决议（比原计划更精确）
@@ -325,7 +325,7 @@ const r = await fetch('https://gitee.com/iJetLi/deepseek-harness-codearts/raw/ma
   - **用户实测佐证机制正常**：另一台设备用聚合 auto 显示 **262K**（=256K 真实声明，非任何硬编码值）——动态取候选真实声明的路径工作正确。
   - auto-adapter 的 resolveModel 仍为上游原值 200_000（Gitee 未做动态化）；如需 auto 也动态取候选真实声明，待用户确认后另立项。
 - 🚨 **重大发现：装新 APK 后 vendor 从不更新（验收循环失效的元凶，2026-10-11 09:00 定位并修复）**：
-  - 机制：`NodeRunner.ensureExtracted` 仅在 `files/dsh.version != ASSET_VERSION` 时解压 assets（`dsh-tree.tar` → `files/tree/`，vendor 在其中）。ASSET_VERSION 是源码常量（上游恒 `"65"`），自动构建从不改它 ⇒ 装 0010/0023/0039 后 `tree/node_modules/dsh-codearts-auth/*` 的 mtime **始终不变**，设备跑的一直是首次解压时的旧 vendor。**本设备实测一直是 2026-10-11 01:31 解压的 vendor（另叠加了 03:24 的手工临时补丁）**。
+  - 机制：`NodeRunner.ensureExtracted` 仅在 `files/dsh.version != ASSET_VERSION` 时解压 assets（`dsh-tree.tar` → `files/tree/`，vendor 在其中）。ASSET_VERSION 是源码常量（上游恒 `"65"`），自动构建从不改它 ⇒ 装 0010/0023/0039 后 `tree/node_modules/dsh-providers-hub/*` 的 mtime **始终不变**，设备跑的一直是首次解压时的旧 vendor。**本设备实测一直是 2026-10-11 01:31 解压的 vendor（另叠加了 03:24 的手工临时补丁）**。
   - 上游设计：`scripts/build-assets.py` 的 `validate_asset_version` 强制断言 `versionCode == ASSET_VERSION`（防"APK 更新后保留陈旧运行时资源"），靠发布时**人为把这一对值一起 +1** 触发解压。自动构建必须自己注入。
   - 修复（`00e66530`/#34 → Release **build-20261011-0053**）：workflow 新增「注入资源版本」步骤，`VCODE = 基线 versionCode + github.run_number`（本次 65+34=99），同时 sed 进 `app/build.gradle` 的 `versionCode` 与 `NodeRunner.kt` 的 `ASSET_VERSION`（二者相等、单调递增、每包唯一）。capsule 模板已同步。
   - 中间踩坑：#33（`ca510301`）首版只改 ASSET_VERSION，被上游断言拦下 → 改为两者同步注入后 #34 全绿。
@@ -333,7 +333,7 @@ const r = await fetch('https://gitee.com/iJetLi/deepseek-harness-codearts/raw/ma
   - 副作用提醒：注入使每个新包首次启动都重解压程序树（用户数据保留）；手工改 `files/tree/` 下的文件（如临时补丁）会在下次装包时被清除。
 - ✅ **2026-10-11 09:10 结案：上下文窗口问题解决，Phase 1–5 首次真正上线**。
   - 用户装 **build-20261011-0053** 后实测：聚合分组下用三个不同模型开三个新对话，**全部显示 1M**（此前恒 200K）。
-  - 本设备远程验证全绿：`files/dsh.version` = **99**；`tree/node_modules/dsh-codearts-auth/lib/aggregate-adapter.js` mtime 刷新为 08:53（profile 侧 09:03）；Phase 1–5 新文件 `provider-registry.js` / `zero-output-guard.js` / `catalog-prewarm.js` 全部就位；固化修复标记 `widest !== undefined` 存在。
+  - 本设备远程验证全绿：`files/dsh.version` = **99**；`tree/node_modules/dsh-providers-hub/lib/aggregate-adapter.js` mtime 刷新为 08:53（profile 侧 09:03）；Phase 1–5 新文件 `provider-registry.js` / `zero-output-guard.js` / `catalog-prewarm.js` 全部就位；固化修复标记 `widest !== undefined` 存在。
   - **结论**：1M 只可能来自动态路径**解析到的真实声明**（兜底恒 200K，不可能是 1M）⇒ 渠道声明链本来就是通的（codearts `CONTEXT_WINDOWS` 的 `glm-5.3-flash=1M`/`deepseek-v4.1-flash=1M`、buddy 产品表 1M）。历史现象是双重 bug 叠加的假象：①固化 bug；②vendor 从不更新使①的修复到不了设备。两者在 0053 首次同时生效。
   - 注：`[jet-hub] 窗口解析` 诊断日志未落 `files/dsh-console.log`（该文件只含 dsh web 启动行），logger 走 App 的 Logcat；本次已无需日志（行为已自证）。日志代码保留在 `aggregate-adapter.ts` 供将来排查。
   - **遗留待用户定夺**：海量单渠道第三方模型（doubao/qwen/gpt-5/6 等，zcode/autoclaw 渠道，目录无窗口数据）仍走兜底 200K。已提议「二层规则」——候选全部无声明时用**聚合池内已知最大声明**做动态兜底（全池统一、随目录演进、不写死值），等用户确认后实施。
@@ -583,7 +583,7 @@ Release **build-20261011-0152**；`versionCode 101` 与 `ASSET_VERSION="101"` �
 4. 未新增源文件、未改 `apply.sh`/workflow/README。
 
 **验证（都在本机真跑过）**
-- **真 tsc**：用设备树自带 `typescript 5.9.3`，对 **main 全量 `vendor/dsh-codearts-auth/src`（159 文件）** 搭两棵树（基线 / 应用后override），`tsc -p tsconfig.json --noEmit` ⇒ **两份错误输出逐字节一致**（唯一那条 `qoder-wasm.ts(474,43)` 是设备 TS 版本差异造成的既有报错，与 9.11 同一条）。
+- **真 tsc**：用设备树自带 `typescript 5.9.3`，对 **main 全量 `vendor/dsh-providers-hub/src`（159 文件）** 搭两棵树（基线 / 应用后override），`tsc -p tsconfig.json --noEmit` ⇒ **两份错误输出逐字节一致**（唯一那条 `qoder-wasm.ts(474,43)` 是设备 TS 版本差异造成的既有报错，与 9.11 同一条）。
 - **行为探针 21/21 通过**（把应用后的树 `tsc --outDir probe-out` 编译成 JS 后直接驱动）：
   - `httpErrorCode`：`maximum context length`→溢出；`extError.context_length_exceeded`→溢出；网关措辞→溢出；普通 400→仍 `INVALID_REQUEST`；空报文→仍 `INVALID_REQUEST`；**401/403 + 超限文案→仍 `AUTH`**（状态码优先）；429/500/418 未变。
   - `consumeOpenAiSse`：三种错误帧形态的超限文案均→`CONTEXT_WINDOW_EXCEEDED`；普通失败三种形态→仍 `SERVER`；**额度帧→仍 `QUOTA_EXCEEDED`**；**正常流照常产出**；**排队帧→仍 `QUEUE`**。

@@ -1,11 +1,10 @@
 import { access, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { existsSync, unwatchFile, watchFile } from "node:fs";
+import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { homedir } from "node:os";
 import chokidar from "chokidar";
 import z from "@deepseek-ai/schemastery";
 import { parse } from "yaml";
-import { canonicalizeWatchPath, resolveDshHome } from "@deepseek-ai/dsh-home-paths";
+import { canonicalizeWatchPath, resolveAgentsHome, resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { BUNDLED_SKILL_RANK, isSkillName } from "@deepseek-ai/dsh-skill";
 //#region lib/types/index.js
 /**
@@ -42,6 +41,23 @@ const Config = z.object({
 	watchFollowSymlinks: z.boolean().default(true),
 	bundledSkillDir: z.string()
 });
+/**
+* Whether the phone pack replacement record owns skill discovery.
+* The record is written non-atomically by the QQ pack replacement, so a torn,
+* truncated, or unrelated file must fall back to the default roots instead of
+* silently disabling every filesystem skill root (bundled skills included).
+* @param path - the `storage/phone-selected-skills.json` record path.
+* @returns true only for a valid `phone-packs` replacement record.
+*/
+function phonePackSelectionReplacesSkills(path) {
+	try {
+		if (!existsSync(path)) return false;
+		const value = JSON.parse(readFileSync(path, "utf8"));
+		return value?.source === "phone-packs" && Array.isArray(value.packages) && value.packages.length > 0;
+	} catch {
+		return false;
+	}
+}
 /** Register the local filesystem skill provider on `ctx.skills`. */
 function apply(ctx, config = {}) {
 	let provider;
@@ -75,7 +91,7 @@ var FileSystemSkillProvider = class {
 		this.name = config.providerName ?? "filesystem";
 		this.includeDefaultRoots = config.includeDefaultRoots ?? true;
 		this.dshHome = resolveDshHome(config.dshHome);
-		this.agentsHome = resolve(config.agentsHome ?? process.env.DSH_AGENTS_HOME ?? join(homedir(), ".agents"));
+		this.agentsHome = resolveAgentsHome(config.agentsHome);
 		this.customSkillDirs = (config.customSkillDirs ?? []).map((root) => resolve(root));
 		this.watchManager = new SkillWatchManager(ctx, control.invalidate, resolveWatchConfig(config));
 		control.signal.addEventListener("abort", () => {
@@ -148,7 +164,10 @@ var FileSystemSkillProvider = class {
 		return this.disposal;
 	}
 	async roots(cwd) {
-		if (process.env.DSH_PHONE_ANDROID === "1" && existsSync(join(this.dshHome, "storage/phone-selected-skills.json"))) return [];
+		// ⚠️ Issue F-12：旧判据只看标志文件**是否存在**，文件半写坏（写入方用非原子 writeFileSync）、
+		// 内容不符、或用户事后停用 QQ，都会让 roots() 直接返回 [] —— 连带跳过随包内置技能，
+		// 用户静默失去全部技能（无日志、无 UI 提示、无恢复开关）。改为校验记录内容。
+		if (process.env.DSH_PHONE_ANDROID === "1" && phonePackSelectionReplacesSkills(join(this.dshHome, "storage/phone-selected-skills.json"))) return [];
 		const roots = [];
 		if (this.includeDefaultRoots && cwd !== void 0) {
 			const projectRoot = await findProjectRoot(resolve(cwd), optionalFileSystem(this.ctx));
@@ -383,13 +402,24 @@ var SkillWatchManager = class {
 			usePolling: this.config.usePolling,
 			interval: this.config.pollIntervalMs
 		});
-		const handle = {
-			mode,
-			close: () => watcher.close()
-		};
 		let ready = false;
 		const readiness = Promise.withResolvers();
 		const signal = this.lifecycle.signal;
+		const onError = (error) => {
+			if (!ready) {
+				readiness.reject(error);
+				return;
+			}
+			this.handleWatcherError(state, error);
+		};
+		const handle = {
+			mode,
+			close: () => {
+				const closing = watcher.close();
+				watcher.on("error", onError);
+				return closing;
+			}
+		};
 		if (signal.aborted) {
 			await this.closeWatcher(handle);
 			signal.throwIfAborted();
@@ -398,13 +428,6 @@ var SkillWatchManager = class {
 			readiness.reject(signal.reason);
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
-		const onError = (error) => {
-			if (!ready) {
-				readiness.reject(error);
-				return;
-			}
-			this.handleWatcherError(state, error);
-		};
 		watcher.on("error", onError);
 		watcher.once("ready", () => {
 			ready = true;

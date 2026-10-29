@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <sub>npm: <a href="https://www.npmjs.com/package/@zseven-w/dsh-noema"><code>@zseven-w/dsh-noema</code></a> · 当前插件版本：<code>0.1.0-rc.1</code> · 已通过 DSH <code>0.1.0-rc.6</code> 测试</sub>
+  <sub>npm: <a href="https://www.npmjs.com/package/@zseven-w/dsh-noema"><code>@zseven-w/dsh-noema</code></a> · 当前插件版本：<code>0.1.0-rc.4</code> · 已通过 DSH <code>0.1.5-rc.1</code> 测试</sub>
 </p>
 
 <p align="center">
@@ -22,6 +22,13 @@
   <a href="https://github.com/ZSeven-W/dsh-noema/stargazers"><img src="https://img.shields.io/github/stars/ZSeven-W/dsh-noema?style=flat&color=cfb537" alt="Stars" /></a>
   <a href="https://github.com/ZSeven-W/dsh-noema/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ZSeven-W/dsh-noema?color=64748b" alt="License" /></a>
 </p>
+
+<br />
+
+<p align="center">
+  <img src="./docs/images/dsh-noema-overview.png" alt="DSH Noema —— 记忆设置页" width="100%" />
+</p>
+<p align="center"><sub>Noema 记忆设置页 —— 导入来源、记忆管理与实时服务器状态</sub></p>
 
 ## 为什么选择 DSH Noema
 
@@ -40,7 +47,7 @@ DSH Noema 将 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness
 
 ### 📥 从其他工具导入
 
-`noema_import` 读取其他九种 AI 编码工具的记忆文件 —— Codex、Claude Code、opencode、Cursor、Grok、WorkBuddy、Antigravity、Trae、Qoder —— 将其拆分为章节，并把每一节保存为一条持久记忆。以内容为键的账本会在多次运行之间以及共享文件的工具之间进行去重。
+`noema_import` 读取其他十种 AI 编码工具的记忆文件 —— Codex、Claude Code、opencode、Cursor、Grok、WorkBuddy、Antigravity、Trae、Qoder、Hermes —— 将其拆分为章节，并把每一节保存为一条持久记忆。以内容为键的账本会在多次运行之间以及共享文件的工具之间进行去重。
 
 </td>
 </tr>
@@ -72,7 +79,7 @@ Noema 的抽取引擎将 jieba 分词与高精度信号 —— 英文专有名�
 
 ### ⚡ 热重载
 
-首次启动后，插件就再也无需重启：`npm run build` 通过 Cordis HMR 热重载宿主插件，`npm run build:client` 则通过 client-hmr 的 SSE 通道热替换浏览器包。
+首次启动后，插件就再也无需重启：`pnpm run build` 通过 Cordis HMR 热重载宿主插件，`ppnpm run build:client` 则通过 client-hmr 的 SSE 通道热替换浏览器包。
 
 </td>
 </tr>
@@ -132,6 +139,7 @@ dsh web
 | `antigravity` | `~/.antigravity/AGENTS.md`、`~/.config/antigravity/AGENTS.md`、`~/Library/Application Support/Antigravity/AGENTS.md`（尽力而为；目前尚无文档化的全局记忆存储） | `AGENTS.md`、`AGENTS.local.md` |
 | `trae` | `~/.trae/AGENTS.md`、`~/.trae/memory/`、`~/.trae/rules/`（以及 `~/.trae-cn` 变体） | `AGENTS.md`、`.trae/rules/` |
 | `qoder` | `~/.qoder-cn/AGENTS.md`、`~/.qoder-cn/rules/`、自动记忆根目录 `~/.qoder-cn/memory/` 和 `~/.qoder-cn/projects/*/memory/`（以及 `~/.qoder` 变体） | `AGENTS.md`、`AGENTS.local.md`、`.qoder/rules/` |
+| `hermes` | `~/.hermes/memories/`（`MEMORY.md` + `USER.md`）以及全局 `~/.hermes/SOUL.md` | `.hermes.md`、`HERMES.md`、`AGENTS.md`、`CLAUDE.md` |
 
 - `source` 参数用于选择某个工具，省略它则会运行设置中启用的所有来源。
 - `path` 参数用于选择项目级文件的工作区根目录（默认使用会话工作区；只有在开启 Import workspace files 设置时，工作区文件才会被加载）。
@@ -164,7 +172,7 @@ dsh web
 
 插件加载过一次之后，DSH 的 HMR 机制即可完全使用：
 
-- **宿主插件** —— 在 profile patch 中启用 Cordis HMR 条目，并将其监听根目录指向本包的 `lib/` 输出目录，同时保留 `link:` 依赖。运行 `npm run build` 后，正在运行的 DSH 会自动重载插件入口（重载会重启 Noema 服务器子进程）—— 无需重启服务器。
+- **宿主插件** —— 在 profile patch 中启用 Cordis HMR 条目，并将其监听根目录指向本包的 `lib/` 输出目录，同时保留 `link:` 依赖。运行 `pnpm run build` 后，正在运行的 DSH 会自动重载插件入口（重载会重启 Noema 服务器子进程）—— 无需重启服务器。
 
   ```yaml
   # ~/.dsh/profiles/<profile>/cordis.patch.yml
@@ -175,7 +183,7 @@ dsh web
         - /path/to/dsh-noema/lib
   ```
 
-- **客户端包** —— `npm run build:client` 会重写 `lib/client.js`；client-hmr 的 node 端会轮询每个 graph 包的 stat（默认 500ms），并通过 `/plugins/events` SSE 通道广播 `rebuilt` 帧，浏览器便可在不刷新页面的情况下热替换模块。
+- **客户端包** —— `ppnpm run build:client` 会重写 `lib/client.js`；client-hmr 的 node 端会轮询每个 graph 包的 stat（默认 500ms），并通过 `/plugins/events` SSE 通道广播 `rebuilt` 帧，浏览器便可在不刷新页面的情况下热替换模块。
 - **设置** —— 在 Noema Memory 设置页上所做的每项更改都会通过设置服务实时生效。
 
 热重载唯一做不到的是加载一个从未出现在启动树中的插件：运行中的组合既不监听 profile patch 层（Web 应用未接入 `watchUserPatches`），也不暴露加载器变更 API（插件清单 RPC 是只读的）。因此，一个全新插件恰好需要重启一次服务器，之后上述循环便完全可热重载。
@@ -183,12 +191,19 @@ dsh web
 ## 开发
 
 ```sh
-npm install
-npm run build     # host tsc + client tsdown bundle
-npm test          # build + node --test tests/
+pnpm install
+pnpm run build     # host tsc + client tsdown bundle
+pnpm test          # build + node --test tests/
 ```
 
 e2e 测试会在存在 `noema/target/debug/noema-mcp` 时针对它运行（否则会被跳过）。
+
+## 生态
+
+- [DSH Android](https://github.com/ZSeven-W/dsh-android) —— 在对话中运行 Android 模拟器或 USB 真机，全部由 adb 驱动
+- [DSH Crew](https://github.com/ZSeven-W/dsh-crew) —— 从 Claude Code / Codex 把任务派给 DSH agent
+- [DSH iOS](https://github.com/ZSeven-W/dsh-ios) —— 在对话中运行 iOS 模拟器与 USB 连接的真机
+- [DSH OpenPencil](https://github.com/ZSeven-W/dsh-openpencil) —— 在对话中查看和编辑 `.op` 设计文档
 
 ## 许可证
 

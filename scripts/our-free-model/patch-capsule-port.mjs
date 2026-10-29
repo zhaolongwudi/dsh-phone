@@ -56,7 +56,7 @@ export const CARRY_FILES = [
       `${process.env.DSH_HOME || '/data/data/com.dshphone/files/dsh-home'}`
         + '/profiles/phone/node_modules/dsh-our-free-model/vendor/channel-pack/src/active-route.ts',
       path.join(HERE, 'capsule-src/src/active-route.ts'),
-      '/data/data/com.dshphone/files/tmp/capsule-repo/files/vendor/dsh-codearts-auth/src/active-route.ts',
+      '/data/data/com.dshphone/files/tmp/capsule-repo/files/vendor/dsh-providers-hub/src/active-route.ts',
     ].filter((p) => p !== undefined),
     note: '进程内读数表（零依赖；已装副本 → 工作区固化 → /tmp 兜底）',
   },

@@ -1,8 +1,9 @@
 /**
  * Foreign-agent memory importers: Codex, Claude Code, opencode, Cursor,
- * Grok, and WorkBuddy. Each importer declares the global and per-workspace
- * memory files its tool reads, plus how to display them. The import service
- * owns reading, chunking, dedup, and submission.
+ * Grok, WorkBuddy, Antigravity, Trae, Qoder, and Hermes. Each importer
+ * declares the global and per-workspace memory files its tool reads, plus
+ * how to display them. The import service owns reading, chunking, dedup,
+ * and submission.
  * @module @zseven-w/dsh-noema/importers
  */
 import { homedir } from 'node:os';
@@ -171,6 +172,31 @@ const QODER = {
         { path: join(root, '.qoder', 'rules'), label: '.qoder/rules', kind: 'markdown-dir' },
     ],
 };
+/**
+ * Hermes Agent (Nous Research): the built-in curated memory lives in
+ * ~/.hermes/memories/ (MEMORY.md agent notes + USER.md user profile) and the
+ * global ~/.hermes/SOUL.md personality file. Project instructions are
+ * .hermes.md / HERMES.md (highest priority), AGENTS.md, and CLAUDE.md.
+ * Named profiles keep separate homes under ~/.hermes/profiles/<name>/; only
+ * the default home is collected to avoid pulling in seeded skills.
+ */
+const HERMES = {
+    id: 'hermes',
+    label: 'Hermes',
+    globalCandidates: () => {
+        const home = homedir();
+        return [
+            { path: join(home, '.hermes', 'memories'), label: '~/.hermes/memories', kind: 'markdown-dir' },
+            { path: join(home, '.hermes', 'SOUL.md'), label: '~/.hermes/SOUL.md', kind: 'markdown' },
+        ];
+    },
+    workspaceCandidates: (root) => [
+        { path: join(root, '.hermes.md'), label: '.hermes.md', kind: 'markdown' },
+        { path: join(root, 'HERMES.md'), label: 'HERMES.md', kind: 'markdown' },
+        { path: join(root, 'AGENTS.md'), label: 'AGENTS.md', kind: 'markdown' },
+        { path: join(root, 'CLAUDE.md'), label: 'CLAUDE.md', kind: 'markdown' },
+    ],
+};
 /** Cursor rules: global and per-project .mdc rule files plus legacy .cursorrules. */
 const CURSOR = {
     id: 'cursor',
@@ -188,7 +214,7 @@ const CURSOR = {
     ],
 };
 /** All importers in stable display order. */
-export const IMPORTERS = [CODEX, CLAUDE_CODE, OPENCODE, CURSOR, GROK, WORKBUDDY, ANTIGRAVITY, TRAE, QODER];
+export const IMPORTERS = [CODEX, CLAUDE_CODE, OPENCODE, CURSOR, GROK, WORKBUDDY, ANTIGRAVITY, TRAE, QODER, HERMES];
 export const IMPORTER_IDS = IMPORTERS.map(importer => importer.id);
 /** Resolve an importer by id, or undefined for an unknown/absent id. */
 export function importerById(id) {

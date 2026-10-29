@@ -66,6 +66,10 @@ export const FLAVOR_WEB = 'web'
  * the identical wire; what the gate keeps out are processes no DSH kernel is
  * running in — a profile context no kernel would mint.
  *
+ * The Android phone shell (`dsh --profile phone`, the kernel mints profile name
+ * `phone`) is a web host by the same argument — same kernel, same plugin
+ * process, same wire — so it is admitted here rather than left dark.
+ *
  * `profileName` comes from the kernel's own profile context service, read
  * opportunistically by the caller; older kernel lines may not provide it,
  * which the Tauri branch does not depend on.
@@ -76,7 +80,7 @@ export function detectSealedHost({ env = process.env, execPath = process.execPat
     && /resources[\\/]+node[\\/]+node\.exe$/i.test(String(execPath ?? ''))
     && (Array.isArray(argv) ? argv : []).includes('web-desktop')) return FLAVOR_AIO
   if (profileName === 'web' || profileName === 'web-desktop') return FLAVOR_WEB
-  if (profileName === 'desktop') return FLAVOR_HARNESS
+  if (profileName === 'desktop' || profileName === 'tauri') return FLAVOR_HARNESS
   return null
 }
 

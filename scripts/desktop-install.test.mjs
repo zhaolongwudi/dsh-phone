@@ -19,7 +19,7 @@ test('fresh desktop install works without an existing engine and preserves overr
   const first = await installDesktop({ home });
   assert.equal(first.fresh, true);
   const manifest = JSON.parse(await readFile(path.join(profile, 'package.json'), 'utf8'));
-  for (const name of ['dsh-codearts-auth', '@zseven-w/dsh-noema', 'dsh-peer', 'dsh-desktop-chatgpt']) {
+  for (const name of ['dsh-providers-hub', '@zseven-w/dsh-noema', 'dsh-peer', 'dsh-desktop-chatgpt']) {
     assert.ok(manifest.dsh.profile.bundles.includes(name));
     assert.ok(await realpath(path.join(profile, 'node_modules', name)));
   }

@@ -41,7 +41,7 @@ async function installDesktopUpstreamUnlocked(desktop, profile) {
   if (!Array.isArray(manifest.dsh?.profile?.bundles)) throw Error('请选择包含 dsh.profile.bundles 的 Web profile');
   manifest.dependencies ??= {};
   const expected = JSON.parse(await readFile(path.join(root, 'desktop-chatgpt/upstream-source-hashes.json'), 'utf8'));
-  const currentJetHub = path.join(profile, 'node_modules/dsh-codearts-auth');
+  const currentJetHub = path.join(profile, 'node_modules/dsh-providers-hub');
   let hasJetHub = false;
   try { await lstat(currentJetHub); hasJetHub = true; }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -78,12 +78,12 @@ async function installDesktopUpstreamUnlocked(desktop, profile) {
   };
   try {
     // 核心会优先从自身安装目录解析组合包，部署时同步已审核的本地程序。
-    for (const [name, source] of [['dsh-codearts-auth', 'vendor/dsh-codearts-auth'], ['@zseven-w/dsh-noema', 'vendor/dsh-noema'], ['dsh-peer', 'peer']]) {
+    for (const [name, source] of [['dsh-providers-hub', 'vendor/dsh-providers-hub'], ['@zseven-w/dsh-noema', 'vendor/dsh-noema'], ['dsh-peer', 'peer']]) {
       for (const entry of ['package.json', 'cordis.patch.yml', 'lib', 'src', 'locale', 'vendor', 'agent-cards', 'task-supervisor', 'chat-history', 'memory-isolation', 'mcp-manager', 'subagent-scheduler', 'controlled-market', 'workflow-hub', 'index.mjs', 'protocol.mjs', 'relay.mjs', 'tunnel.mjs', 'proxy.mjs', 'ui-reuse.mjs', 'browser-session.mjs', 'config-sync.mjs', 'page.html', 'presentation.css', 'presentation.js', 'browser-compat.js', 'skill-import.js']) {
         const file = path.join(root, source, entry);
         try { await lstat(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
         const deployed = path.join(modules, name, entry);
-        if (name === 'dsh-codearts-auth') {
+        if (name === 'dsh-providers-hub') {
           const temporary = deployed + '.jethub-' + randomUUID();
           try {
             await cp(file, temporary, { recursive: true });
@@ -104,7 +104,7 @@ async function installDesktopUpstreamUnlocked(desktop, profile) {
     for (const name of await readdir(path.join(root, 'runtime/overlays/@deepseek-ai'))) {
       await cp(path.join(root, 'runtime/overlays/@deepseek-ai', name), path.join(modules, '@deepseek-ai', name), { recursive: true });
     }
-    for (const name of ['dsh-codearts-auth', '@zseven-w/dsh-noema']) {
+    for (const name of ['dsh-providers-hub', '@zseven-w/dsh-noema']) {
       await swap(path.join(profile, 'node_modules', name), path.join(modules, name));
       manifest.dependencies[name] = 'file:' + path.join(modules, name);
       if (!manifest.dsh.profile.bundles.includes(name)) manifest.dsh.profile.bundles.push(name);

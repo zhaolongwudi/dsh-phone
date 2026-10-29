@@ -1,0 +1,169 @@
+{
+  "$comment": "跨层类名契约登记（Issue F-19）：app 层（dsh-phone.js / dsh-phone.css）依赖的、由**插件侧**产出的每个 .dim-jh-* 选择器。",
+  "purpose": "本层有两类自有类名，此前被当成一类：① `.dsh-phone-*` 由本层自己 createElement 造出来、自己消费，改一处只影响自己；② `.dim-jh-*` 由插件（dsh-providers-hub 的 plugin-src/client）产出、**由本层 app 层消费**。后者是跨层契约，而它此前没有任何登记：无版本号、无断言、无测试锁 —— 插件侧改名或删除时，本层选择器静默不命中（页面照常渲染、构建通过、类型检查通过、单测通过），只有人眼可能发现「手机上某个东西不好用了」。F-15（徽标读数在手机上不可见）与 F-16（账号拖拽在触屏无效）正是因此长期无人发现：手机可用性完全由本层注入的 DOM 与覆盖样式维持，而这根链条没有任何一处会被构建拦下。本表把该依赖变成可机检资产：scripts/check-plugin-contract.mjs 在构建期做门禁。",
+  "howToRefresh": [
+    "1. 插件侧新增/改名的类名，先在本表登记（owner / pluginFile / semantic / sinceIssue），再在本层引用它；",
+    "2. 本层引用而未登记的类名 ⇒ 门禁报「未登记」（防新写规则绕过登记）；",
+    "3. 本层不再引用的条目 ⇒ 门禁报「死条目」（防表里留无主条目，那会让下一个维护者以为它还在用）；",
+    "4. 插件侧不再产出已登记的类名 ⇒ 门禁报「契约失效」，并点名是哪个插件文件、什么语义、本层哪几个文件在消费；",
+    "5. 插件包版本与下面的 pluginVersion 不一致 ⇒ 门禁报「需复核」（改名多发生在插件发版时，这条把版本漂移变成一次显式确认）。"
+  ],
+  "pluginPackage": "dsh-providers-hub",
+  "pluginVersion": "0.2.0-rc.11",
+  "pluginDir": "overrides/vendor/dsh-providers-hub/plugin-src/client",
+  "appConsumers": [
+    "overrides/app/src/main/assets/dsh-phone.js",
+    "overrides/app/src/main/assets/dsh-phone.css"
+  ],
+  "classes": {
+    "dim-jh-page": {
+      "semantic": "Jet Hub 设置页根容器（本层给它 height:auto / min-height:100% 以适配窄屏滚动）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-header": {
+      "semantic": "设置页页头（窄屏下改纵向排列：标题一行、按钮组一行）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-headerActions": {
+      "semantic": "页头按钮组（窄屏下允许换行，避免按钮溢出到屏幕外点不到）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-layout": {
+      "semantic": "两栏布局容器；同时也是本层注入「供应商切换头」的定位锚（dsh-phone.js 在它下面插 .dsh-phone-provider 并切换 dsh-phone-choosing 类）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-rail": {
+      "semantic": "左侧供应商导航栏；本层在窄屏下把它变成「账号选择」屏（与 .dim-jh-panel 互斥显示）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-railGroup": {
+      "semantic": "rail 内的分组容器（窄屏下加大组间距）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-provider": {
+      "semantic": "单个供应商按钮（role=tab）；本层读它的 aria-selected 与子节点来渲染「当前选中」摘要",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-providerIcon": {
+      "semantic": "供应商图标容器（窄屏放大到 44px；成员类如 .codearts/.gemini 由插件按 provider 追加）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-providerLabel": {
+      "semantic": "供应商名容器（本层读其内部 strong 的 textContent 作为摘要文案）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-panel": {
+      "semantic": "右侧账号面板（窄屏下与 rail 互斥；本层把它的 padding/overflow 改为纵向流式）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-panelHead": {
+      "semantic": "面板标题区（窄屏下由 flex 行改为块级）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-panelTitle": {
+      "semantic": "面板标题（窄屏字号 17px）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-accountActions": {
+      "semantic": "账号卡片按钮行（窄屏下允许换行，否则末尾按钮被挤出可视区）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-btn": {
+      "semantic": "插件通用按钮（窄屏下统一提到 36px 高；本层在「选择供应商」按钮上也用它）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-iconBtn": {
+      "semantic": "纯图标按钮（触屏下本层兜底到 36×36 可点尺寸）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-46"
+    },
+    "dim-jh-empty": {
+      "semantic": "空态提示块（窄屏下加大内边距）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-modal": {
+      "semantic": "插件弹窗本体（窄屏下限制宽高到视口内，F-66 登记的 dvh 兜底也在这条）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-modalHead": {
+      "semantic": "弹窗头部（窄屏下允许换行）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-modelFilterBar": {
+      "semantic": "模型列表的搜索/筛选条（窄屏下允许换行）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-modelBulkBar": {
+      "semantic": "模型列表的批量操作条（窄屏下允许换行）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-modelSearch": {
+      "semantic": "模型搜索输入框（窄屏下占满整行）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-quotaArrow": {
+      "semantic": "Cline 额度翻页箭头（触屏下本层兜底到 36×36 可点尺寸）",
+      "pluginFile": "jet-hub.js",
+      "sinceIssue": "F-46"
+    },
+    "dim-jh-badge": {
+      "semantic": "用量徽标根节点；本层按它的位置算浮层夹取（--dsh-phone-popover-*）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-badgeBtn": {
+      "semantic": "徽标按钮（手机上必须限制宽度，否则 216px 会把右侧模型选择器挤没）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-15"
+    },
+    "dim-jh-badgeText": {
+      "semantic": "徽标读数行（渠道名 + 数字）。⚠️ 插件侧 @media(max-width:720px) 会把它整块 display:none，而手机上视口恒 ≤720px ⇒ 本层必须在窄屏下强制显示（F-15）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-15"
+    },
+    "dim-jh-badgePop": {
+      "semantic": "徽标弹出面板（本层按可用宽度夹取并限制高度）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-19"
+    },
+    "dim-jh-badgeRefresh": {
+      "semantic": "弹窗里的刷新按钮（触屏下本层兜底到 32×32 可点尺寸）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-46"
+    },
+    "dim-jh-badgeAuto": {
+      "semantic": "自动签到状态灯/开关（触屏下本层兜底到 32×32 可点尺寸）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-46"
+    },
+    "dim-jh-badgeAutoClose": {
+      "semantic": "自动签到状态文字的关闭键（触屏下本层兜底到 36×36 可点尺寸）",
+      "pluginFile": "usage-badge.js",
+      "sinceIssue": "F-46"
+    }
+  },
+  "knownGaps": {
+    "$comment": "本层引用、但**插件侧当前已不产出**的类名。与 ui-anchors.json 的 knownDead 同款：登记在案、不重复报警，但门禁会盯着它「复活」（复活即提示移出本表）。",
+    "dim-jh-brandName": "页头标题块已于 2026-10-07 从插件侧整块删除（jet-hub-styles.js 的注释记录了该决定）。本层 dsh-phone.css 仍留着 `.dim-jh-brandName{font-size:18px}` —— 该规则当前**不命中任何元素**，属本层死规则；删除属独立改动，本轮（F-19）只登记不删。"
+  }
+}

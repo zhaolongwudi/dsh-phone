@@ -56,7 +56,7 @@ Android 禁止从应用数据目录执行二进制 → `Permission denied`。
 构建区：`/data/data/com.dshphone/files/ofm-build/`（`node_modules/{esbuild,esbuild-wasm,jose,undici}`）。
 
 ### ② gitee 对 `src/opencode-proxy.ts` 返回 HTTP 451
-（文件含 "proxy" 被拦）。`update-channelpack.mjs` 自动从 npm 上游 `dsh-codearts-auth`
+（文件含 "proxy" 被拦）。`update-channelpack.mjs` 自动从 npm 上游 `dsh-providers-hub`
 的**编译产物**里取同名文件补齐。
 
 ### ③ 聚合的失效转移**只在一个块都没开时才换渠道**

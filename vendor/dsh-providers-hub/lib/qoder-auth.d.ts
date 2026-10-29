@@ -1,0 +1,300 @@
+/**
+ * Qoder 认证服务。
+ *
+ * 结构与 `src/lobsterai-auth.ts` / `src/buddy-auth.ts` **刻意保持一致**：
+ * 同样的 `RefreshScheduler` 续期语义、同样的登出竞态保护、同样的
+ * `refreshAll(pool)` 批量续期。这是本插件已被三个产品验证过的模式，
+ * 复用它可以减少一类「某个 provider 的续期行为与众不同」的意外。
+ *
+ * 与 LobsterAI 侧的实质差异只有两处：
+ *
+ * 1. **没有客户端版本号**。LobsterAI 的 exchange/续期/签到都要带 `version`，
+ *    Qoder 不需要，故本服务没有 `resolveClientVersion`。
+ * 2. **续期载荷是 `{refresh_token, machine_id}`**，`machine_id` 必须随凭据
+ *    持久化并原样回传（见 `qoderRefreshBody`）。
+ */
+import { Service, type Context } from '@deepseek-ai/cordis';
+import { type CredentialRef } from '@deepseek-ai/dsh-credentials';
+import { type QoderCredential } from './qoder.js';
+import { type QoderFallbackModel, type QoderProduct } from './qoder-product.js';
+import { type QoderLoginFlowOptions } from './qoder-oauth.js';
+import { AccountPool } from './account-pool.js';
+/**
+ * Qoder 的默认凭据 ref。
+ *
+ * 等价于 `QODER.defaultCredentialRef`，保留此导出仅为兼容既有导入方；
+ * 新代码请用 `QODER.defaultCredentialRef`。
+ */
+export declare const QODER_CREDENTIAL_REF = "QODER_ACCESS_TOKEN";
+/**
+ * 续期被后端判定为终态（refresh_token 失效）时抛出的错误。
+ *
+ * 与其它 provider 的同名类**刻意是各自独立的类**：
+ * `src/refresh.ts` 的 `isRefreshTokenExpired` 用 `error.name` 而非
+ * `instanceof` 作判据，正是因为这些类跨模块 identity 不同。
+ * 故这里也必须保证 `name` 恰为 `RefreshTokenExpiredError`。
+ */
+export declare class RefreshTokenExpiredError extends Error {
+    constructor(message: string);
+}
+/** 一次成功登录的结果。 */
+export interface QoderLoginResult {
+    /** 已存储的凭据 JSON 字符串。 */
+    access: string;
+    /** 凭据过期的毫秒时间戳（无法解析时为 0）。 */
+    expires: number;
+    /** 凭据值存储所用的凭据引用。 */
+    ref: CredentialRef;
+    /** 打开的登录 URL。 */
+    loginUrl: string;
+    /** 凭据是否携带 refresh_token。 */
+    refreshable: boolean;
+}
+/** 用于配置界面的只读登录状态。 */
+export interface QoderLoginStatus {
+    configured: boolean;
+    source?: string;
+    expiresAt?: number;
+    /** 存储的凭据是否可通过刷新令牌静默续期。 */
+    refreshable: boolean;
+    /** 最近一次刷新失败的原因（如有）。 */
+    refreshError?: string;
+}
+declare module '@deepseek-ai/cordis' {
+    interface Context {
+        /**
+         * Qoder 的认证服务实例。
+         *
+         * 与 `buddyAuth` / `workbuddyAuth` / `codeartsAuth` / `lobsteraiAuth` 并列：
+         * cordis 的 `Service` 构造时按名称注册，同名第二次注册会抛
+         * `service "..." has been registered`，故每个 provider 各占一个服务名。
+         */
+        qoderAuth: QoderAuth;
+        /**
+         * Qoder **中国版**的认证服务实例。
+         *
+         * 与 `qoderAuth` 是**两个独立实例**（同一 `QoderAuth` 类，不同 `product`），
+         * 正如 `buddyAuth` 与 `workbuddyAuth`。服务名由 `${product.id}Auth` 派生，
+         * 故不会与国际版撞名 —— 这也是 `id` 必须区分两站的原因。
+         *
+         * ⚠️ **键名必须由 product id 逐字拼出**：id 是 `qodercn`（**不带连字符、
+         * 全小写**），故服务名是 `qodercnAuth`。本声明一度按变量名的驼峰惯例拼成了
+         * 「Qoder + Cn + Auth」，与运行时注册名**大小写不符** ⇒ 按那个错名取服务
+         * 恒得 `undefined`，而正确的 `ctx.qodercnAuth` 在 TS 里**不可见**
+         * （2026-10-08 修正；因长期零读取者而未暴露）。
+         * ⚠️ 同类陷阱见 `AGENTS.md` 的「provider id 一律纯小写字母」。
+         */
+        qodercnAuth: QoderAuth;
+    }
+}
+/** `QoderAuth` 的构造选项。 */
+export interface QoderAuthOptions {
+    /** 注入的 fetch（测试用）。 */
+    fetcher?: typeof fetch;
+    /**
+     * **按账号**取出口代理的 fetcher（真实报障 2026-10-21）。
+     *
+     * ⚠️ 国际版 `openapi.qoder.sh` 在本机被 SNI 阻断（TLS ClientHello 被丢），
+     * 而**中国版**直连只要 160ms ⇒ 只能按账号配，不能用全局环境变量
+     * （那会让中国版也一起去挤代理）。
+     *
+     * ⚠️ 不传 ⇒ 恒直连（与既有行为逐字一致，所有单测不受影响）。
+     * ⚠️ 空账号 id（登录流程还没有账号）⇒ 由解析器去查
+     * `QODER_PENDING_PROXY_KEY`（见 `src/qoder-proxy.ts`），否则「墙外环境下
+     * 新建账号」是死锁：登录要代理，而代理要按已存在的账号配。
+     */
+    fetchFor?: (accountId: string) => typeof fetch;
+    /** 产品配置；默认 {@link QODER}。 */
+    product?: QoderProduct;
+    /** 服务名覆盖（默认由产品 id 派生为 `qoderAuth`）。 */
+    serviceName?: string;
+}
+/**
+ * Qoder 认证服务：PKCE 设备码登录 + refresh_token 静默续期。
+ */
+export declare class QoderAuth extends Service {
+    private readonly options;
+    /** 本实例所属的产品配置。 */
+    readonly product: QoderProduct;
+    /** 本实例默认读写的凭据 ref 名称（`QODER_ACCESS_TOKEN`）。 */
+    readonly credentialRefName: string;
+    private readonly scheduler;
+    /** refresh_token 已被后端判定失效；登录/刷新成功时重置。 */
+    private refreshTokenInvalid;
+    private lastRefreshError;
+    /** 登录会话是否仍处于活跃状态；logout()/stop() 置 false，防止在途刷新回写已登出凭据。 */
+    private active;
+    constructor(ctx: Context, options?: QoderAuthOptions);
+    /**
+     * 按**账号**取出口 fetcher（真实报障 2026-10-21）。
+     *
+     * ⚠️ 优先级与 `GeminiAdapter` 同款：`fetcher`（单测替身）> `fetchFor`（生产代理）
+     * > 全局 `fetch`。单测想拦上游时只需传 `fetcher`，不必关心代理。
+     *
+     * ⚠️ **每次调用现取**而不是构造期固化：续期循环会在账号之间移动
+     * （`refreshAll` 逐个账号），出口必须跟着换。
+     *
+     * ⚠️ `accountId` 允许为 `undefined`（登录流程还没有账号）：此时解析器会去查
+     * `QODER_PENDING_PROXY_KEY`，那是墙外环境下「新建账号」的唯一出路。
+     */
+    private fetcherForAccount;
+    /**
+     * 同 {@link fetcherForAccount}，但**没有专门出口时返回 `undefined`**。
+     *
+     * 存在的理由：登录流程的两个 `runQoderLoginFlow` / `startQoderLoginFlow`
+     * 调用点要把 fetcher **作为可选字段透传**（它们的 `fetcher` 缺省即全局
+     * fetch）。若这里硬塞一个 `globalThis.fetch`，那些「未传即用默认」的
+     * 分支会被改成「显式传入」，虽然行为等价，但会让替身注入的优先级
+     * 与 `GeminiAdapter` 的写法不再对称，也让单测里「没传 fetcher」这件事
+     * 变得不可表达。
+     */
+    private fetcherForAccountOrUndefined;
+    /** 标记 refresh_token 已失效：停止重试，并向 status() 暴露 refreshable: false。 */
+    private markRefreshTokenInvalid;
+    /**
+     * 运行完整登录流程并持久化凭据。
+     *
+     * `accountId` + `pool` 同时提供时，登录成功后自动把账号登记进账号池
+     * （Jet Hub 的「+ 新建账号」路径）。
+     */
+    login(flowOptions?: {
+        refName?: string;
+        accountId?: string;
+        pool?: AccountPool;
+    } & Partial<QoderLoginFlowOptions>): Promise<QoderLoginResult>;
+    /**
+     * **两步式登录**：立即返回登录 URL，由调用方先打开窗口。
+     *
+     * 与 CodeArts 的 `CodeArtsAuth.startLogin` / LobsterAI 的同名方法同因
+     * （真实缺陷）：Jet Hub 的「+ 新建账号」原先调用阻塞式 {@link login}，
+     * 而浏览器只在用户点击后的短暂窗口（transient activation，约 5 秒）内
+     * 允许 `window.open`。等阻塞调用返回时手势早已过期，`window.open` 被
+     * 弹窗拦截器拒绝并返回 `null`，前端兜底逻辑便执行
+     * `window.location.href = loginUrl`，把**整个设置页**跳转到登录页。
+     *
+     * 调用方拿到 `loginUrl` 后应当**立即** `window.open`，再 await `result`。
+     */
+    startLogin(flowOptions?: {
+        refName?: string;
+        accountId?: string;
+        pool?: AccountPool;
+    } & Partial<QoderLoginFlowOptions>): Promise<{
+        loginUrl: string;
+        result: Promise<QoderLoginResult>;
+        close: () => Promise<void>;
+    }>;
+    /**
+     * 持久化一次登录结果：写凭据、重置失效状态、武装续期、按需登记账号池。
+     *
+     * 抽成独立方法供 {@link login} 与 {@link startLogin} 共用 ——
+     * 两条路径的差别只在「何时返回 loginUrl」，落库逻辑必须完全一致。
+     */
+    private persistLogin;
+    /** 报告凭据是否已配置、过期时间、是否可刷新以及最近刷新错误。 */
+    status(): Promise<QoderLoginStatus>;
+    /**
+     * 静默续期：`refresh_token` + `machine_id` 换取新令牌。
+     *
+     * 终态判定：
+     * - HTTP 401/403、或响应缺 token → 抛 {@link RefreshTokenExpiredError}，
+     *   让调度器停止续期；
+     * - 其余错误（网络抖动、5xx、429）→ 抛普通 Error，走调度器的可重试路径。
+     */
+    refresh(): Promise<void>;
+    /**
+     * 按凭据 ref 续期**指定账号**的凭据。
+     *
+     * 与 {@link refresh} 的区别（与 `BuddyAuth.refreshAccountCredential` 同因）：
+     * `refresh()` 读写本实例的默认单凭据 ref（`QODER_ACCESS_TOKEN`），
+     * 而 Jet Hub 账号卡片对应的是 `QODER_ACCOUNT_XXX` ——
+     * 用 `refresh()` 刷账号池里的账号，实际刷的是另一个凭据。
+     *
+     * 同样**不触碰** `refreshTokenInvalid` / `lastRefreshError` / 调度器：
+     * 那些状态属于单凭据路径，被多账号操作污染会让 UI 显示错误的失效提示。
+     *
+     * ⚠️ **必须回写账号池的 `expiresAt`**（issue !IKIRTT 的真实缺陷）：
+     * UI 账号卡片的「有效期」读的正是池里的值，而不是凭据里 access_token 的真实
+     * 过期时间。早期这里只 `credentials.set`，于是调用 `account.refresh` 后凭据确实续好了、
+     * 界面却**一直显示「已过期」**，且没有任何自救手段（「重测」按钮的 refresh
+     * 是刻意的 no-op）。
+     *
+     * @param pool 账号池；提供时会把新 `expiresAt` / `refreshable` 写回。
+     * @param accountId 账号 id。**调用方已知时请显式传入** ——
+     *   否则只能按凭据内容反查（代价高，且反查会跳过已停用账号）。
+     */
+    refreshAccountCredential(refName: string, pool?: AccountPool, accountId?: string): Promise<void>;
+    /**
+     * 对一份凭据执行一次续期并返回新凭据（不触碰存储）。
+     *
+     * 抽出来供 `refresh()` 与 `refreshAll()` 共用，避免两处各写一遍
+     * 「发请求 → 判终态 → 合并字段」的逻辑而逐渐分叉。
+     *
+     * @param accountId 该凭据所属的账号 id（**决定走哪条出口代理**）。
+     *   不传 ⇒ 登录预置那条（`QODER_PENDING_PROXY_KEY`）或直连。
+     */
+    private refreshCredential;
+    /**
+     * 批量续期本产品的所有账号。
+     *
+     * **包含已停用账号**（只按 `refreshable` 过滤）：停用只应影响账号池的自动
+     * 选号，不该让凭据烂掉 —— 否则用户重新启用时只能重新登录。
+     * 详见 `BuddyAuth.refreshAll` 的注释（同一缺陷）。
+     * 单账号失败不影响其他账号（与 `BuddyAuth.refreshAll` 同语义）。
+     *
+     * ⚠️ **lead-time 过滤**（issue !IKIRTT）：早先这里是**无条件全量续期** ——
+     * 定时器每 30 分钟就把每个账号的 refresh_token 轮换一次，与「凭据还剩多久」
+     * 无关。现复用单凭据时代 `REFRESH_LEAD_MS` 的语义：**距过期不足 1 小时才刷**。
+     * 跳过的账号仍会做一次**有效期对账**（见 `refreshAccountWithReconcile`），
+     * 因为「不刷」与「不回写池值」正是 UI 假过期的两个来源，必须分开处理。
+     */
+    refreshAll(pool: AccountPool): Promise<void>;
+    /**
+     * 拉取**远端模型目录**（`/api/v2/model/list?Encode=1`）。
+     *
+     * ## 为什么由 auth 服务做，而不是让适配器自己解析凭据
+     *
+     * 适配器手上的取凭据入口是 `resolveCredential`，而它**有副作用**：
+     * 选中账号时会 `reportAccount(id)`（`index.ts` 的接线把它写成
+     * `activeQoderAccountId.set(...)`，用于额度报错时标记「本次实际使用的账号」）。
+     * 目录请求是**周期性**的（20 分钟刷新器 + 冷启动预热 + 每次列模型），
+     * 若走同一条路，它会在聊天请求选号之后把那个 Map **改写成目录用的账号**
+     * ⇒ 额度标记可能落到**无辜账号**上（`index.ts` 那段注释逐字警告过这个后果）。
+     *
+     * 故照其余 11 家的形态：目录取数只做**池的只读读取**
+     * （`getAvailableAccount`，不写任何账），池空时回退本实例的默认 ref。
+     *
+     * ## 语义
+     *
+     * - 失败 / 未登录 / 形状不符一律返回 **`[]`**，由调用方回退编译期兜底表
+     *   （与 `AccioAuth.fetchModels` / `TraeAuth.fetchModels` 同语义）；
+     * - 「没有凭据」**不打日志**（未登录用户每次列模型都会走到这里）；
+     * - 真正的失败（HTTP 非 2xx / 网络异常 / WASM trap）必须留痕 ——
+     *   否则「倍率不更新」这个症状没有任何可查的证据。
+     *
+     * ⚠️ **整段（含取凭据）都必须在 `try` 内**（缺陷，2026-10-20 对抗审计）：
+     * 原先只有「拉目录」被 `try` 罩住，而 `pool.getAvailableAccount` 的 `await`
+     * 在它**外面** —— 池读一旦 reject（存储损坏 / 并发写坏档），rejection 会
+     * **直接抛穿 `fetchModels`**，绕开「失败即回退兜底表」这条契约，把一次目录
+     * 读取失败升级成 `listModels` 抛错（DSH 侧表现为 provider 报错）。
+     * 变异验证：删掉那一行 `.catch(() => null)` 后 111 条用例**全绿** ⇒ 这条腿
+     * 当时**零守卫**；现已补「池读 reject」用例并把整段收进 `try`。
+     */
+    fetchModels(pool?: AccountPool): Promise<QoderFallbackModel[]>;
+    /**
+     * 移除已存储的凭据并停止任何待处理的刷新。
+     */
+    logout(): Promise<void>;
+    /** 停止刷新调度（不清理凭据）。 */
+    stop(): void;
+    /** 启动时若已有可刷新凭据则安排续期（由 apply 调用）。 */
+    scheduleRefresh(): void;
+    /** 从存储重载凭据，返回是否已过期（供 UI 判断是否需要提示重新登录）。 */
+    checkExpired(): Promise<boolean>;
+    /**
+     * 解析本实例默认凭据 ref 下的凭据；不可用时返回 undefined。
+     *
+     * 供 e2e 探针与 `account-probe` 使用。
+     */
+    resolveStoredCredential(): Promise<QoderCredential | undefined>;
+}
+//# sourceMappingURL=qoder-auth.d.ts.map

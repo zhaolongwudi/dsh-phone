@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 export const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json';
 const MAX_BYTES = 16 * 1024 * 1024;
-export const BUILTINS = new Set(['@zseven-w/dsh-noema', 'dsh-codearts-auth', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']);
+export const BUILTINS = new Set(['@zseven-w/dsh-noema', 'dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']);
 export const protectedName = name => BUILTINS.has(name) || name === '@deepseek-ai/dsh' || name?.startsWith('@deepseek-ai/dsh-');
 const text = (value, max = 2000) => typeof value === 'string' ? value.slice(0, max) : '';
 export const packageName = value => typeof value === 'string' && value.length <= 214 && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(value) ? value : null;

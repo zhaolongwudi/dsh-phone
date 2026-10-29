@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const sourceRoot = path.join(root, 'vendor/dsh-codearts-auth');
+const sourceRoot = path.join(root, 'vendor/dsh-providers-hub');
 const digest = data => createHash('sha256').update(data).digest('hex');
 const readOptional = async file => {
   try { return await readFile(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -14,7 +14,7 @@ const readOptional = async file => {
 export async function installDesktopJetHubChatGpt(directory) {
   directory = await realpath(path.resolve(directory));
   const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
-  if (manifest.name !== 'dsh-codearts-auth') throw Error('请选择电脑正在使用的 Jet Hub 插件目录');
+  if (manifest.name !== 'dsh-providers-hub') throw Error('请选择电脑正在使用的 Jet Hub 插件目录');
   const baseline = JSON.parse(await readFile(path.join(root, 'desktop-chatgpt/jet-hub-source-hashes.json'), 'utf8'));
   const names = [...Object.keys(baseline), 'plugin-src/client/chatgpt-plan-panel.js', 'plugin-src/client/chatgpt-plan-rpc.js'];
   const plan = new Map(), originals = new Map();
@@ -49,7 +49,7 @@ export async function installDesktopJetHubChatGpt(directory) {
   const output = path.join(directory, 'lib/client/jet-hub.js');
   originals.set(output, await readOptional(output));
   plan.set(output, Buffer.from(`window.__ModuleLoader__.load({
-  id: "dsh-codearts-auth",
+  id: "dsh-providers-hub",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

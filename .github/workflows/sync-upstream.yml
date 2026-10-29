@@ -48,9 +48,6 @@ jobs:
           if git merge upstream/main --no-edit; then
             git push origin main
             # 上游同步会覆盖本地修改的 .github/workflows/build-apk.yml：
-            # 从 capsule 模板恢复 + 重新应用外挂（apply.sh 幂等），[skip ci] 提交。
-            cp .github/capsule/build-apk.yml .github/workflows/build-apk.yml
-            bash .github/capsule/apply.sh
             git add .github/workflows/build-apk.yml
             git commit -m "chore: 恢复胶囊外挂配置 [skip ci]" || true
             git push || true
@@ -67,15 +64,15 @@ jobs:
           #    原实现 `--theirs` 会把我方那 47 行独有内容整份换掉（静默丢文档）。
           #    下载区块由 `.github/scripts/apk-link.py` 维护，本就该自动重建。
           #    若哪天要改为采纳上游文档，把这里的 `--ours` 换成 `--theirs` 即可。
-          # ② `vendor/dsh-codearts-auth/**` 的 **modify/delete**：本仓库在 `a586fdb6`
+          # ② `vendor/dsh-providers-hub/**` 的 **modify/delete**：本仓库在 `a586fdb6`
           #    里**有意删除**了 6 个「已被 rc.11 淘汰的孤儿模块」，而上游那条线仍在改它们。
-          #    功能已由 capsule 的 `src/zcode-entitlements.ts` 承接（apply.sh §4 有断言）
+          #    功能已由 `src/zcode-entitlements.ts` 承接（内联在 vendor/dsh-providers-hub 内）
           #    ⇒ 这类冲突**保留删除**。⚠️ 白名单只到该前缀，且逐个核对「在本仓库 HEAD 里
           #    确实不存在」，不满足即中止（不猜）。
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
           echo "冲突文件："
           echo "$CONFLICTS" | sed 's/^/  - /'
-          OTHER=$(echo "$CONFLICTS" | grep -v '^README\.md$' | grep -v '^vendor/dsh-codearts-auth/' || true)
+          OTHER=$(echo "$CONFLICTS" | grep -v '^README\.md$' | grep -v '^vendor/dsh-providers-hub/' || true)
           if [ -n "$OTHER" ]; then
             git merge --abort || true
             echo "::error::与上游存在**未知类**冲突，需人工处理（不自动猜）："
@@ -91,20 +88,18 @@ jobs:
             git add README.md
           fi
 
-          for f in $(echo "$CONFLICTS" | grep '^vendor/dsh-codearts-auth/' || true); do
+          for f in $(echo "$CONFLICTS" | grep '^vendor/dsh-providers-hub/' || true); do
             if git cat-file -e "HEAD:$f" 2>/dev/null; then
               git merge --abort || true
               echo "::error::$f 在本仓库 HEAD 里仍存在 —— 不属于「已删除的孤儿模块」，拒绝自动解决"
               exit 1
             fi
-            echo "  保留删除（孤儿模块，功能已由 capsule 的 zcode-entitlements.ts 承接）：$f"
+            echo "  保留删除（孤儿模块，功能已由 zcode-entitlements.ts 承接）：$f"
             git rm -q --ignore-unmatch "$f"
           done
 
           # 与成功路径同样的收尾：恢复胶囊 workflow + 跑一遍 apply.sh（顺带验证
           # 合并后胶囊的锚点仍然成立），然后提交、推送、触发构建。
-          cp .github/capsule/build-apk.yml .github/workflows/build-apk.yml
-          bash .github/capsule/apply.sh
           git add .github/workflows/build-apk.yml
           git commit --no-edit
           git push origin main

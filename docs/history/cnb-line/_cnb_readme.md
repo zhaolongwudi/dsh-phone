@@ -4,7 +4,7 @@
 
 **主项目来自 DeepSeek 官方开源的 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)**。本仓库在官方引擎和社区插件的基础上，增加 Android 启动与后台服务、手机界面适配、账号入口、QQ 安装及扫码引导，以及手机技能和文件管理功能。
 
-**特别感谢 Jet／iJetLi 开源 [deepseek-harness-codearts（dsh-codearts-auth / Jet Hub）](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-codearts-auth)**，为多供应商账号登录、模型接入和本机模型网关提供了基础。完整来源及许可见下方 [开源来源与致谢](#开源来源与致谢)。
+**特别感谢 Jet／iJetLi 开源 [deepseek-harness-codearts（dsh-providers-hub / Jet Hub）](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-providers-hub)**，为多供应商账号登录、模型接入和本机模型网关提供了基础。完整来源及许可见下方 [开源来源与致谢](#开源来源与致谢)。
 
 当前应用版本为 **0.1.56 / versionCode 59**，包名 `com.dshphone`，支持 **Android 9 及以上、arm64**。
 
@@ -100,7 +100,7 @@ OneBot `accessToken` 用于 QQ 连接鉴权，不是模型 API Key。
 | `peer/` | 加密中继、电脑远程界面、手机网关与 API 配置同步 |
 | `desktop-chatgpt/` | 电脑 ChatGPT 会员登录入口，复用官方会员适配器 |
 | `vendor/dsh-channel-qq/` | QQ 插件源码及对应编译代码，无私人配置 |
-| `vendor/dsh-codearts-auth/` | Jet Hub 插件源码及新版 SDK 的 RPC 兼容修复 |
+| `vendor/dsh-providers-hub/` | Jet Hub 插件源码及新版 SDK 的 RPC 兼容修复 |
 | `runtime/` | 固定版本依赖、Android 兼容桩与启动兼容源码 |
 | `home-template/` | 空白 phone profile，中文界面，无账号数据 |
 | `scripts/` | 可移植资源生成与个人配置导出脚本 |
@@ -163,7 +163,7 @@ node --test phone-account/*.test.js phone-qq/*.test.js scripts/*.test.mjs peer/*
 | 上游项目 | 本项目使用的基础与致谢 | 来源及许可 |
 | --- | --- | --- |
 | **DeepSeek 官方 DeepSeek Harness** | AI 助手主引擎、聊天界面、插件体系与账号协议；感谢 DeepSeek 开源 DSH。本项目固定使用 `@deepseek-ai/dsh@0.2.1-alpha.1` 预览版。 | [官方源码](https://github.com/deepseek-ai/deepseek-harness) · [官方文档](https://deepseek-harness.github.io/deepseek-harness/) · MIT；[保留的许可](phone-account/vendor/LICENSE.deepseek) |
-| **Jet／iJetLi：deepseek-harness-codearts** | `dsh-codearts-auth`／Jet Hub 的多供应商登录、模型接入及网关；感谢插件作者和贡献者。本仓库保留上游源码，并加入手机适配和兼容修复。 | [插件项目与使用说明](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-codearts-auth) · MIT；[保留的许可](vendor/dsh-codearts-auth/LICENSE) |
+| **Jet／iJetLi：deepseek-harness-codearts** | `dsh-providers-hub`／Jet Hub 的多供应商登录、模型接入及网关；感谢插件作者和贡献者。本仓库保留上游源码，并加入手机适配和兼容修复。 | [插件项目与使用说明](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-providers-hub) · MIT；[保留的许可](vendor/dsh-providers-hub/LICENSE) |
 | **ZSeven-W：dsh-noema／Noema** | DSH 长期记忆插件和记忆引擎；感谢 Noema 的开源实现。 | [DSH 插件](https://github.com/ZSeven-W/dsh-noema) · [记忆引擎](https://github.com/ZSeven-W/noema) · MIT；[保留的许可](vendor/dsh-noema/LICENSE) |
 | **Termux 与 NapCatQQ** | 手机 Linux 运行环境与 QQ 登录／OneBot 连接；感谢相关项目提供手机 QQ 登录端所需的基础。NapCat 由使用者按向导安装。 | [Termux](https://github.com/termux/termux-app) · [NapCatQQ](https://github.com/NapNeko/NapCatQQ) · [NapCat 安装说明](https://napneko.github.io/guide/boot/Shell) |
 
@@ -175,7 +175,7 @@ QQ 通道移植所保留的来源许可见 [OpenClaw 许可](vendor/dsh-channel-
 
 ### 0.1.10：AutoClaw 账号入口
 
-Jet Hub 增加 AutoClaw (智谱) 图标卡片。点击「+ 新建账号」后直接填写自己的手机号和短信验证码；无需依赖电脑上的 AutoClaw。登录成功后读取该账号的官方模型目录和积分，支持账号去重、自动续期及模型开关。ZCode 入口保留。操作与实现边界见 [AutoClaw 说明](vendor/dsh-codearts-auth/docs/autoclaw.md)。
+Jet Hub 增加 AutoClaw (智谱) 图标卡片。点击「+ 新建账号」后直接填写自己的手机号和短信验证码；无需依赖电脑上的 AutoClaw。登录成功后读取该账号的官方模型目录和积分，支持账号去重、自动续期及模型开关。ZCode 入口保留。操作与实现边界见 [AutoClaw 说明](vendor/dsh-providers-hub/docs/autoclaw.md)。
 
 验证码不写入本地存储；公开源码不含个人手机号、账号令牌或验证码。该入口已做离线协议与消息测试，真实短信登录和模型调用仍需使用者完成。新版首次打开会更新资源（ASSET_VERSION 14），保留原账号和会话。
 

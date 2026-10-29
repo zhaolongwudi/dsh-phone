@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { ChatGptAdapter, CHATGPT_PROVIDER, serializeChatGptRequest, translateChatGptResponse } from './chatgpt-adapter.js';
 import { RESOURCE, responseEvents, upstreamError } from './chatgpt-protocol.js';
 import { connected, completed, textOutput, frames, collect } from './chatgpt-fixtures.js';
-import { createOpenAiGateway } from '../vendor/dsh-codearts-auth/lib/openai-gateway/server.js';
+import { createOpenAiGateway } from '../vendor/dsh-providers-hub/lib/openai-gateway/server.js';
 
 const request = { provider: CHATGPT_PROVIDER, model: 'fixture-model', messages: [{ role: 'user', content: [{ type: 'text', text: '你好' }] }], maxTokens: 32, temperature: 0.5 };
 const profile = { id: 'fixture-connection' }, model = { id: 'fixture-model', inputModalities: ['text'] };

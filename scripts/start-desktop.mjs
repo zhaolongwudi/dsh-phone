@@ -38,7 +38,7 @@ export async function desktopLaunch({ home = process.env.DSH_HOME || path.join(h
   if (engine.version !== desktopVersion) throw Error('桌面核心版本不匹配，请重新安装 desktop-runtime');
   home = path.resolve(home);
   const manifest = JSON.parse(await readFile(path.join(home, 'profiles/web/package.json'), 'utf8'));
-  for (const name of ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-codearts-auth', 'dsh-peer', 'dsh-desktop-chatgpt']) {
+  for (const name of ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-providers-hub', 'dsh-peer', 'dsh-desktop-chatgpt']) {
     if (!manifest.dsh?.profile?.bundles?.includes(name)) throw Error('电脑版尚未安装完整，请先执行 node scripts/install-desktop.mjs');
   }
   return {

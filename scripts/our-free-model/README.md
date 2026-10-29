@@ -275,7 +275,7 @@ $OFM_BUILD_DIR/node_modules/
 因为 OFM 的发布清单限制 80 个文件，而渠道包源码有 197 个。
 
 **gitee 的 HTTP 451**：`src/opencode-proxy.ts` 因文件名含 "proxy" 被 gitee 拒绝访问。
-`update-channelpack.mjs` 自动从 npm 上游发布版（`dsh-codearts-auth`）的同名**编译产物**补齐。
+`update-channelpack.mjs` 自动从 npm 上游发布版（`dsh-providers-hub`）的同名**编译产物**补齐。
 
 ---
 

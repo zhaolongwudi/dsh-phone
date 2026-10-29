@@ -1,7 +1,7 @@
 # Jet Hub 插件更新报告
 
 日期：2026-10-07
-目标：把手机 DSH 内置插件 `dsh-codearts-auth`（显示名 "Jet Hub"）更新到 npm 最新版。
+目标：把手机 DSH 内置插件 `dsh-providers-hub`（显示名 "Jet Hub"）更新到 npm 最新版。
 
 ## 结果
 
@@ -9,9 +9,9 @@
 |---|---|
 | 更新前 | 0.1.0（APK 厂商私有构建） |
 | 更新后 | **1.0.261007**（npm 最新，= gitee `iJetLi/deepseek-harness-codearts` master） |
-| 安装位置 1 | `$DSH_HOME/profiles/phone/node_modules/dsh-codearts-auth` |
-| 安装位置 2 | `$TREE/node_modules/dsh-codearts-auth`（运行时实际加载的那份） |
-| 来源 | `https://registry.npmjs.org/dsh-codearts-auth/-/dsh-codearts-auth-1.0.261007.tgz` |
+| 安装位置 1 | `$DSH_HOME/profiles/phone/node_modules/dsh-providers-hub` |
+| 安装位置 2 | `$TREE/node_modules/dsh-providers-hub`（运行时实际加载的那份） |
+| 来源 | `https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-1.0.261007.tgz` |
 | 完整性 | `sha512-JA30yjsusRm12mJSd1Vm2WaR8ofbkqRVP+T82cgwTujuXqLrvOlypkr0WbKHUS+yeENTEe/8GrYKn7Dio5DOhw==`（与 registry 一致） |
 
 ## 验证（全部通过）
@@ -45,17 +45,17 @@ refresh-scheduler、dead-model-store、trae/lobsterai 积分等。
 回滚素材（已校验与线上 0.1.0 逐字节一致）：
 ```
 $DSH_HOME/jet-hub-update-backup/2026-10-07/
-├── dsh-codearts-auth-0.1.0-installed.tgz      # 更新前完整备份
-├── dsh-codearts-auth-1.0.261007.tgz           # 本次使用的新包
+├── dsh-providers-hub-0.1.0-installed.tgz      # 更新前完整备份
+├── dsh-providers-hub-1.0.261007.tgz           # 本次使用的新包
 └── prev/
-    ├── tree-dsh-codearts-auth/                # 旧版 tree 副本（原样）
-    └── profile-dsh-codearts-auth/             # 旧版 profile 副本（原样）
+    ├── tree-dsh-providers-hub/                # 旧版 tree 副本（原样）
+    └── profile-dsh-providers-hub/             # 旧版 profile 副本（原样）
 ```
 
 回滚步骤：
 1. 停止 DSH 服务
-2. 把 `prev/tree-dsh-codearts-auth` 覆盖回 `$TREE/node_modules/dsh-codearts-auth`
-3. 把 `prev/profile-dsh-codearts-auth` 覆盖回 `$DSH_HOME/profiles/phone/node_modules/dsh-codearts-auth`
+2. 把 `prev/tree-dsh-providers-hub` 覆盖回 `$TREE/node_modules/dsh-providers-hub`
+3. 把 `prev/profile-dsh-providers-hub` 覆盖回 `$DSH_HOME/profiles/phone/node_modules/dsh-providers-hub`
 4. 重新启动 DSH
 
 （`$TREE` = `/data/data/com.dshphone/files/tree`，

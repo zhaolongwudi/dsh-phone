@@ -35,10 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 胶囊外挂：把 .github/capsule/ 的文件复制/覆盖到工作区（等价构建期的第一步）。
-      # 自检项缺失会显式失败，保证「胶囊失效」永远可见。
-      - name: 应用胶囊外挂（Active Model Pill）
-        run: bash .github/capsule/apply.sh
 
       - uses: actions/setup-node@v4
         with:
@@ -57,7 +53,10 @@ jobs:
       # 接线后的 vendor 验证：vitest 胶囊 spec → tsc 类型检查 → esbuild 重建 bundle。
       # 上游自己从不跑 tsc，故移植引入的类型错误在这里显式失败。
       - name: vendor 验证（vitest + tsc + esbuild）
-        run: bash .github/capsule/rebuild-vendor.sh
+        run: |
+          cd vendor/dsh-providers-hub
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          pnpm run build:all
 
       # UI 层验证（2026-10-12 新增）。
       # 为什么单列一步而不是塞进 rebuild-vendor：UI 层是纯前端资产（assets/res），

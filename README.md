@@ -22,11 +22,11 @@
 | --- | --- | --- |
 | **DeepSeek 官方 DeepSeek Harness** | AI 助手主引擎、聊天界面、插件体系、账号协议 | [GitHub](https://github.com/deepseek-ai/deepseek-harness) · [官方文档](https://deepseek-harness.github.io/deepseek-harness/) · MIT |
 | **jwoo1982217-eng：dsh-phone** | 本仓库的上游基底：Android 手机壳、构建流水线与手机适配 | [GitHub](https://github.com/jwoo1982217-eng/dsh-phone) |
-| **Jet／iJetLi：deepseek-harness-codearts** | Jet Hub 多供应商账号登录、模型接入、本机模型网关 | [Gitee](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-codearts-auth) · MIT |
+| **Jet／iJetLi：deepseek-harness-codearts** | Jet Hub 多供应商账号登录、模型接入、本机模型网关 | [Gitee](https://gitee.com/iJetLi/deepseek-harness-codearts#dsh-providers-hub) · MIT |
 | **ZSeven-W：dsh-noema／Noema** | 长期记忆插件与记忆引擎 | [GitHub](https://github.com/ZSeven-W/dsh-noema) · MIT |
 | **Termux 与 NapCatQQ** | 手机 Linux 运行环境、QQ 登录／OneBot 连接 | [Termux](https://github.com/termux/termux-app) · [NapCatQQ](https://github.com/NapNeko/NapCatQQ) |
 
-各组件按各自上游许可使用和分发，原作者版权与许可声明全部保留：DeepSeek 许可见 [phone-account/vendor/LICENSE.deepseek](phone-account/vendor/LICENSE.deepseek)，Jet Hub 许可见 [vendor/dsh-codearts-auth/LICENSE](vendor/dsh-codearts-auth/LICENSE)，QQ 通道许可见 [vendor/dsh-channel-qq/LICENSE.openclaw](vendor/dsh-channel-qq/LICENSE.openclaw)，原生组件（Node/Bash/ripgrep/Noema）的固定版本与重建方法见 [原生引擎说明](native/README.md)。
+各组件按各自上游许可使用和分发，原作者版权与许可声明全部保留：DeepSeek 许可见 [phone-account/vendor/LICENSE.deepseek](phone-account/vendor/LICENSE.deepseek)，Jet Hub 许可见 [vendor/dsh-providers-hub/LICENSE](vendor/dsh-providers-hub/LICENSE)，QQ 通道许可见 [vendor/dsh-channel-qq/LICENSE.openclaw](vendor/dsh-channel-qq/LICENSE.openclaw)，原生组件（Node/Bash/ripgrep/Noema）的固定版本与重建方法见 [原生引擎说明](native/README.md)。
 
 ---
 

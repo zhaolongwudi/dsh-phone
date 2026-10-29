@@ -761,9 +761,20 @@ var SqliteSessionQueryEngine = class extends SessionQueryEngine {
 		super.forgetPermanently(ids);
 		return this._serialized(undefined, async () => {
 			if (!this._db) return;
+			/* ⚠️ Issue F-64：secure_delete 只在删除这一小段开启，结束后复原 —— 旧实现开了永不关，
+			   此后每次写入都要多一轮页清零（移动端写放大）。VACUUM 会全库重写且代价与删除量无关，
+			   同样不再每次执行（空闲页由 SQLite 复用）。 */
 			this._db.exec("PRAGMA secure_delete = ON;");
-			for (const id of ids) { this._deleteSession("persisted", id); this._deleteSession("live", id); }
-			this._db.exec("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);");
+			try {
+				for (const id of ids) { this._deleteSession("persisted", id); this._deleteSession("live", id); }
+			} finally {
+				this._db.exec("PRAGMA secure_delete = OFF;");
+			}
+			/* ⚠️ Issue F-64：删除直接改表，必须同步推进 generation —— 否则已发出的游标与按 generation
+			   判新的读仍把已删会话当作有效索引（旧实现只在 _reconcile 的写入路径推进它）。 */
+			this._globalGeneration += 1;
+			this._db.prepare("UPDATE search_state SET global_generation = ? WHERE singleton = 1").run(this._globalGeneration);
+			this._db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
 		});
 	}
 	_deleteSession(source, id) {

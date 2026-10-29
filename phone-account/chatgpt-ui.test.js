@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { applyChatGpt } from './chatgpt.js';
 import { CHATGPT_PROVIDER } from './chatgpt-adapter.js';
 import { USAGE_URL } from './chatgpt-protocol.js';
-import { createChatGptCall, chatGptAuthorizationUrl } from '../vendor/dsh-codearts-auth/plugin-src/client/chatgpt-plan-rpc.js';
+import { createChatGptCall, chatGptAuthorizationUrl } from '../vendor/dsh-providers-hub/plugin-src/client/chatgpt-plan-rpc.js';
 
 test('desktop account uses this computer OAuth identity and returns to its browser account page', async t => {
   const data = new Map(), routes = new Map(), disposers = []; let rpc;

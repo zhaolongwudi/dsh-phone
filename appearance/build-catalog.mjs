@@ -8,7 +8,7 @@ import {engine as openCode,names as openCodeNames} from './compat/opencode-engin
 const root = fileURLToPath(new URL('.', import.meta.url));
 const sources = process.argv[2];
 if (!sources) throw Error('Usage: node appearance/build-catalog.mjs <pinned upstream directory>');
-const require = createRequire(path.join(root, '../vendor/dsh-codearts-auth/package.json'));
+const require = createRequire(path.join(root, '../vendor/dsh-providers-hub/package.json'));
 const { transform } = require('esbuild');
 const pins = [
   ['dream','梦幻皮肤','RevolutionLA/dsh-dream-skin','8fd400696ed542217490a9aa5f4d74fd574ff1de','玻璃质感与渐变 · 8 套独立配色'],

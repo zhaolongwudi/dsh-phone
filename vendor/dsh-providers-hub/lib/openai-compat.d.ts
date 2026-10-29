@@ -1,0 +1,261 @@
+/**
+ * OpenAI 兼容协议层的共享实现：消息序列化 + SSE 消费 + 错误归类。
+ *
+ * ## 为什么单独成模块
+ *
+ * `src/buddy-adapter.ts` 与 `src/lobsterai-adapter.ts` 各自内联了一套**完全同源**
+ * 的逻辑（消息序列化约 200 行、SSE 消费约 230 行），差异只在 URL、请求头与
+ * 少数厂商特有字段上。第三个 OpenAI 兼容 provider（qoder）若再复制一份，
+ * 这三份实现会在后续修 bug 时逐渐分叉 —— 而它们处理的都是
+ * **OpenAI 协议层的通用陷阱**（工具配对、null 字段、分片合并），与厂商无关。
+ *
+ * 因此本模块把这部分抽出来给 **qoder 适配器**使用。
+ *
+ * ⚠️ **既有适配器（buddy / lobsterai）刻意不改用它**：那两份实现已被大量
+ * 单测与线上流量验证过，重构它们属于与本任务无关的高风险改动。若将来要
+ * 统一，应作为独立任务并配以逐条对拍测试。
+ *
+ * ## 本模块承载的实测教训（逐条都有真实缺陷背景）
+ *
+ * - **`typeof x === 'string'` 而非 `!== undefined`**：真实 SSE 里一个模型要么走
+ *   `content`、要么走 `reasoning_content`，**另一侧恒为 `null`**。只判 undefined
+ *   会让 `.length` 在 null 上崩溃（表现为每轮对话第一帧就报
+ *   `Cannot read properties of null`）。
+ * - **思考字段有两个名字**：`reasoning_content`（Qoder / buddy）与
+ *   `reasoning`（**Cline**，实测形如
+ *   `{"delta":{"reasoning":"The","reasoning_details":[…]}}`）。只认前者会让
+ *   Cline 的思考内容被静默丢弃（表现为「模型不思考」）。两者语义相同，
+ *   由同一分支经 `??` 合并处理。
+ * - **工具配对剔除**：孤儿 tool_call / tool_result 会让后端 400，且坏历史被每次
+ *   请求原样重放 —— 会话彻底报废。发出前剔除可让会话自愈。
+ * - **`function.name` 只允许非空覆盖**：后续分片带空串 `""` 会清空已解析出的
+ *   工具名 → `unknown tool ""`。
+ * - **残缺参数不补 `{}`**：那会伪造出合法外观，让 harness 报 schema 错误而非
+ *   重试；正确做法是判 `max-tokens` 让 dsh 重试。
+ */
+import { LlmError } from '@deepseek-ai/dsh-llm';
+import type { StreamChunk } from '@deepseek-ai/dsh-llm';
+/** 将消息内容载荷展平为纯文本字符串。 */
+export declare function contentToText(content: unknown): string;
+/** 工具结果内嵌图片的载体文本（与 buddy / lobsterai 适配器同名同义）。 */
+export declare const TOOL_RESULT_IMAGE_TEXT = "Attached image(s) from tool result:";
+/**
+ * 把 harness 内容块转成 OpenAI 多模态 parts。
+ *
+ * 图片必须转成 `{type:'image_url', image_url:{url}}` —— 这是服务端**唯一**接受的
+ * 形态：`{type:'image'}` 与裸 base64 字符串都返回 HTTP 500。
+ *
+ * 返回 `undefined` 表示「无图」；只要出现过图片块就一定返回数组（即便字节
+ * 解析失败也留 `[image unavailable]` 占位符），以免图片被静默吞掉。
+ *
+ * 与 {@link collectImages} 对称地**递归**处理 `tool-result` 内层：收集侧是任意
+ * 深度，序列化侧若只走一层，深层图片会被收进 refs 却在序列化时静默丢弃。
+ */
+export declare function userContentParts(content: readonly unknown[], imageUrls: ReadonlyMap<string, string>): Array<Record<string, unknown>> | undefined;
+/** 收集消息中的图片附件引用（含工具结果内嵌图片），按 attachmentId 去重。 */
+export declare function collectImages(content: readonly unknown[], refs: Map<string, unknown>): void;
+/**
+ * 将 harness 对话消息序列化为 OpenAI chat-completions 传输格式。
+ *
+ * 保留的**通用协议要求**：
+ * - 孤儿工具调用清理（见 `resolveToolPairing` 的说明，后端会 400）；
+ * - 正文为空且有 `tool_calls` 时 `content` 必须为 `null`（OpenAI 规范）；
+ * - 工具结果内嵌图片不能留在 `role:'tool'` 消息里（该角色 content 只能是
+ *   字符串，且必须紧跟其 assistant tool_call，中间插消息会 400），
+ *   故提升为其后的独立 user 消息。
+ *
+ * 图片：`imageUrls` 为 `undefined` 表示整个请求没有图片；非 undefined
+ * （**含空 Map**）时把 user 消息升级为多模态 parts。空 Map 不能降级为
+ * undefined —— 那会让「图片存在但字节读取失败」的 `[image unavailable]`
+ * 占位符也被跳过，图片静默消失。
+ *
+ * ⚠️ 入口先做 **DSH 0.1.7 消息形状归一化**（见 `message-shape.ts`）：0.1.7 把工具
+ * 结果改为一等 `role:'tool'` 消息，若不归一化，下面的 `type === 'tool-result'`
+ * 判据恒不命中 → 工具调用被 `resolveToolPairing` 整体剔除。
+ */
+export declare function serializeMessages(messages: readonly {
+    role: string;
+    content: unknown;
+}[], imageUrls?: ReadonlyMap<string, string>): Array<Record<string, unknown>>;
+/** 安全读取 Error.message。 */
+export declare function errorMessage(error: unknown): string;
+/**
+ * 读取错误体里 `detail` 字段的可读文本（字符串，或 `{message}` 嵌套对象）。
+ *
+ * ## 为什么单独成函数（Gitee issue IKLBSH A1）
+ *
+ * 上游代理的顶层 catch 常把异常包成
+ * `{"error":"acp-proxy failure","detail":"<真实原因>"}`：`error` 那条腿能取出的
+ * 只是**没有信息量的摘要**，而真正的原因（连接超时 / 鉴权细节 / 上游栈信息）
+ * 全在 `detail` 里。只认前者时用户只看到四个字，**根因完全不可见**。
+ *
+ * ⚠️⚠️ **本仓库有 6 份同义的 `errorDetail`**（`openai-compat` / `llm-adapter` /
+ * `buddy-adapter` / `lobsterai-adapter` / `trae-adapter` / `accio-adapter`）。
+ * 6 份各写一条判据必然漂移 —— 那正是本仓库首条红线「同一语义两套判据」的形态
+ * （`llm-adapter.ts` 的注释里就记着「两处改一处时**必须同时改另一处**」）。
+ * 故这条腿**只留一份实现**，其余 5 份 import 它。
+ *
+ * ⚠️ **证据强度如实标注：没有真实报文**。866 个真实会话（解压后 3.0 GB，
+ * 覆盖全部 `turn/end` 错误事件）里 `"detail"` **零命中**
+ * （`scripts/tmp-scan-iklbsh.mjs`）。该形态的依据是 ① 上游代理类实现的既有惯例、
+ * ② harness 自带的 `providerErrorDetail`（`dsh-llm-deepseek/lib/index.js`）
+ * 本身就**产出** `{message, detail}` 这一对字段。
+ * 属于「结构上必然可达、但未实测」的一条腿。
+ *
+ * ⚠️ **只加不减**（与 `errorDetail` 的既有纪律一致）：本函数只影响原先
+ * 「所有腿都落空 ⇒ 退回整段裸 JSON」那一种形态；它排在**最后**一条腿，
+ * 既有腿的优先级与产出**逐字节不变**。
+ */
+export declare function detailFieldText(value: unknown): string | undefined;
+/**
+ * 从错误体提取可读 detail 文本（**含**顶层 `detail` 字段）。
+ *
+ * ## ⚠️⚠️ 这个函数是**展示**出口；`httpErrorCode` 一类**分类**出口必须排除 detail 腿
+ *
+ * `detail` 对展示有价值，但它会**加长分类判据的输入** ⇒ 可能翻转错误码
+ * （真实净回归，两轮审计独立确证）：
+ *
+ * | 报文 | 只算既有腿 | 加上 detail 腿 |
+ * |---|---|---|
+ * | `{"message":"bad request","detail":"insufficient quota"}` | `INVALID_REQUEST` | **`QUOTA_EXCEEDED`** |
+ * | `{"message":"bad request","detail":"prompt is too long for this model"}` | `INVALID_REQUEST` | **`CONTEXT_WINDOW_EXCEEDED`** |
+ *
+ * 后者还会**触发 DSH 的上下文溢出压缩** —— 纯展示改进换来行为变更，且**零守卫**
+ * （我加的用例只断言返回值，没有一条锁分类结果）。
+ *
+ * ⇒ 处置：**默认保持含 detail（= 展示行为不变）**，只有**分类调用点**显式传
+ * `{ forClassify: true }` 把它排除。本仓库需要排除的只有 `llm-adapter.ts` 的
+ * **两处**（`httpErrorCode` 与 4xx 额度判据）—— 它们是 `errorDetail` 产物
+ * 的**唯一**分类消费者（buddy 的 `httpErrorCode` 刻意收**原始 body**，见其注释）。
+ */
+export declare function errorDetail(body: string): string;
+/**
+ * 从错误体提取**分类用**的可读文本 —— **不含**顶层 `detail` 字段。
+ *
+ * ⚠️ 分类调用点（`httpErrorCode` / `isSseQuotaExhaustedErrorCode` 一类）
+ * **必须**走本出口，理由与实测表见 {@link errorDetail}。
+ * 本出口保证分类输入与「加 detail 腿之前」**逐字节相同**。
+ */
+export declare function errorDetailForClassify(body: string): string;
+/**
+ * 判定一段上游报文是否表示**上下文超限**（应归 `CONTEXT_WINDOW_EXCEEDED`）。
+ *
+ * ⚠️ 判据只用**宿主**分类器 `isContextWindowExceededError` + 上面那条网关措辞，
+ * **不写任何本地措辞表**（本仓库红线：同一语义不得两套判据）。
+ *
+ * ⚠️ 判定看**完整报文**，展示才用 `errorDetail()` 的归一化文本 —— 后者在能提取到
+ * `error.*` / `message` 时会丢掉 `extError` / `displayMsg` 等字段，实测那些字段
+ * 恰恰是稳定命中的依据。
+ *
+ * ⚠️ **导出是给 `zcode-adapter.ts` 用的**（它的端点是 Anthropic 协议，原生超限
+ * 报文宿主认不出）。两处**必须同源**，否则会重演「只改了一条通道」的缺陷。
+ */
+/**
+ * **SSE 流内失败**的归码（手机版补）。
+ *
+ * ⚠️ 流内失败（HTTP 200 + SSE 错误帧）此前固定写 `SERVER`，而 `SERVER`
+ * **不触发** DSH 的压缩恢复链（`dsh-compaction-basic` 的 listener 第一行就是
+ * `if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE) return next()`）
+ * ⇒ 直连的长会话越过窗口后**每轮报废**。
+ *
+ * ⚠️ 与上面那个函数**同源**（都用 isContextOverflowBody 的判据），
+ * 不得各写一份（本仓库红线：同一语义不得两套判据）。
+ */
+export declare function sseFailureCode(text: string): string;
+export declare function isContextOverflowBody(body: string): boolean;
+export declare function httpErrorCode(status: number, body?: string): string;
+/**
+ * **模型排队**（Qoder 业务码 `10605`）—— 从 SSE 错误帧里透出来的专用错误。
+ *
+ * ## 为什么需要它（真实缺陷，用户报障 2026-09-27）
+ *
+ * Qoder 的排队错误有**两种**下发形态，第一版修复只覆盖了第一种：
+ *
+ * | 形态 | 第一版 | 说明 |
+ * |---|---|---|
+ * | HTTP **403** + 排队 JSON | ✅ 已覆盖 | 在适配器的 HTTP 状态分支里识别 |
+ * | HTTP **200** + **SSE 内嵌** `{code:"10605",…}` | ❌ **漏掉** | 走 `consumeOpenAiSse`，被一律归为 `SERVER` 抛出 |
+ *
+ * 真实症状：`失败原因：qoder: {"code":"10605",…} (403)` + harness 以
+ * `500/1000/2000/4000/8000`（约 15.5 秒）重试 5 次 —— 而服务端要求等 30 秒，
+ * 于是**永远等不到**。
+ *
+ * ⚠️ 该模块是**共享**的（qoder 适配器在用），故这里只**认码并透出信息**，
+ * 不在此处等待 —— 等待策略属于各 provider（只有 qoder 有排队语义）。
+ * 消费方捕获本类后自行按 `retryAfterMs` 内部重试。
+ *
+ * ⚠️ `code` 故意用 `'QUEUE'`（**不是** `SERVER`）：harness 的
+ * `DEFAULT_RETRYABLE_CODES` 不含 `QUEUE`，这样万一没人捕获，它会**直接失败**
+ * 并把「排队」这一语义暴露给用户，而不是被 harness 当作 `SERVER` 静默快重试。
+ */
+export declare class ModelQueuedError extends LlmError {
+    /** 解析出的排队信息（`isQueued` / `serviceAvailable` / `waitTime` 等）。 */
+    readonly queueInfo: Readonly<Record<string, unknown>>;
+    /** 服务端要求的等待时长（毫秒）；无法解析时为 undefined。 */
+    readonly retryAfterMs: number | undefined;
+    constructor(message: string, options: {
+        queueInfo: Readonly<Record<string, unknown>>;
+        retryAfterMs?: number;
+    });
+}
+/**
+ * 判断是否为传输级错误（可重试的 TRANSPORT）。
+ *
+ * 半开连接与 TCP 重置都会以这些特征出现。
+ */
+export declare function isTransportError(error: unknown): boolean;
+/** {@link consumeOpenAiSse} 的选项。 */
+export interface ConsumeOpenAiSseOptions {
+    /** provider 标签，仅用于错误消息前缀（如 `qoder`）。 */
+    label: string;
+    /** 等待首 token 的空闲超时（毫秒）。 */
+    firstTokenTimeoutMs: number;
+    /** 两次 chunk 之间的空闲超时（毫秒）。 */
+    chunkTimeoutMs: number;
+    /**
+     * 本次请求的输出额度（token），用于死循环错误文案里的「还剩多少」。
+     *
+     * ⚠️ **可选，且拿不到时绝不编造数字**（与 `maxOutputTokens` 的口径一致）：
+     * 文案会退化成「额度没有占满，可以直接继续」而不给具体数值。
+     */
+    maxTokens?: number;
+    /**
+     * 是否把正文里的 **DSML 工具调用块**解析为结构化 tool-call。
+     *
+     * ⚠️ **只在该通道确实用 DSML 时开启**（与注入 `buildDsmlSystemPrompt`
+     * **成对出现**）：适配器不把 `tools` 发给上游、改为把 schema 注入 system
+     * 提示，模型便以 `<｜DSML｜tool_calls>` 文本输出调用 —— 本消费器必须
+     * 把它解析回来，否则整段标签当正文显示，工具**永不执行**。
+     *
+     * 关闭时本消费器行为与从前**逐字节一致**（纯文本通道不受影响）。
+     */
+    dsmlToolMode?: boolean;
+    /**
+     * 每解析成功一帧就回调一次（**旁路观测**，不得影响流本身）。
+     *
+     * Cline 用它取网关下发的路由元数据（真正服务这笔请求的上游渠道），
+     * 见 `src/cline-routing.ts`。做成回调查而不是把字段塞进 `StreamChunk`：
+     * 那是**展示用的旁路信息**，不该污染 DSH 的 chunk 契约（也不该被
+     * 其它复用本消费器的 provider 无意中看到）。
+     *
+     * ⚠️ 回调**抛错会被吞掉**：观测失败绝不能把一次正常推理打死。
+     */
+    onFrame?: (data: Record<string, unknown>) => void;
+}
+export { fixDsmlMarkers, createDsmlMarkerNormalizer } from './sse.js';
+/**
+ * 消费 OpenAI 兼容的 SSE 响应并产出 `StreamChunk`。
+ *
+ * 三处兼容处理（都来自实测）：
+ * 1. **容忍 `data:` 后无空格** —— 靠 `line.slice(5).trim()` 天然兼容两种形态；
+ * 2. `reasoning_content` 单独成块；
+ * 3. `tool_calls` 按 `index` 合并（首片带 id/name，后续只带 arguments 片段）。
+ *
+ * 另外两条防坑规则（见模块头注释）：
+ * - `function.name` 只允许非空覆盖；
+ * - `finish_reason` 映射：`length` / 中途断流 / 参数残缺一律归为 `max-tokens`。
+ */
+export declare function consumeOpenAiSse(response: Response, options: {
+    signal?: AbortSignal;
+}, config: ConsumeOpenAiSseOptions): AsyncIterable<StreamChunk>;
+//# sourceMappingURL=openai-compat.d.ts.map

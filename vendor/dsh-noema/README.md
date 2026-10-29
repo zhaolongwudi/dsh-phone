@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <sub>npm: <a href="https://www.npmjs.com/package/@zseven-w/dsh-noema"><code>@zseven-w/dsh-noema</code></a> · Current plugin release: <code>0.1.0-rc.1</code> · Tested with DSH <code>0.1.0-rc.6</code></sub>
+  <sub>npm: <a href="https://www.npmjs.com/package/@zseven-w/dsh-noema"><code>@zseven-w/dsh-noema</code></a> · Current plugin release: <code>0.1.0-rc.4</code> · Tested with DSH <code>0.1.5-rc.1</code></sub>
 </p>
 
 <p align="center">
@@ -22,6 +22,13 @@
   <a href="https://github.com/ZSeven-W/dsh-noema/stargazers"><img src="https://img.shields.io/github/stars/ZSeven-W/dsh-noema?style=flat&color=cfb537" alt="Stars" /></a>
   <a href="https://github.com/ZSeven-W/dsh-noema/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ZSeven-W/dsh-noema?color=64748b" alt="License" /></a>
 </p>
+
+<br />
+
+<p align="center">
+  <img src="./docs/images/dsh-noema-overview.png" alt="DSH Noema — memory settings page" width="100%" />
+</p>
+<p align="center"><sub>The Noema Memory settings page — import sources, memory management, and live server status</sub></p>
 
 ## Why DSH Noema
 
@@ -40,7 +47,7 @@ Memories persist as inspectable Markdown files under `NOEMA_ROOT` (default `~/.a
 
 ### 📥 Import From Other Tools
 
-`noema_import` reads the memory files of nine other AI coding tools — Codex, Claude Code, opencode, Cursor, Grok, WorkBuddy, Antigravity, Trae, Qoder — splits them into sections, and saves each as a durable memory. A content-keyed ledger deduplicates across runs and across tools that share files.
+`noema_import` reads the memory files of ten other AI coding tools — Codex, Claude Code, opencode, Cursor, Grok, WorkBuddy, Antigravity, Trae, Qoder, Hermes — splits them into sections, and saves each as a durable memory. A content-keyed ledger deduplicates across runs and across tools that share files.
 
 </td>
 </tr>
@@ -72,7 +79,7 @@ Noema's extraction engine combines jieba word segmentation with high-precision s
 
 ### ⚡ Hot Reload
 
-After the first boot, the plugin never needs a restart again: `npm run build` hot-reloads the host plugin through Cordis HMR, and `npm run build:client` hot-swaps the browser bundle over the client-hmr SSE channel.
+After the first boot, the plugin never needs a restart again: `pnpm run build` hot-reloads the host plugin through Cordis HMR, and `ppnpm run build:client` hot-swaps the browser bundle over the client-hmr SSE channel.
 
 </td>
 </tr>
@@ -132,6 +139,7 @@ Each tool returns a uniform envelope `{ ok, tool, text }` where `text` carries t
 | `antigravity` | `~/.antigravity/AGENTS.md`, `~/.config/antigravity/AGENTS.md`, `~/Library/Application Support/Antigravity/AGENTS.md` (best-effort; no documented global memory store yet) | `AGENTS.md`, `AGENTS.local.md` |
 | `trae` | `~/.trae/AGENTS.md`, `~/.trae/memory/`, `~/.trae/rules/` (plus the `~/.trae-cn` variants) | `AGENTS.md`, `.trae/rules/` |
 | `qoder` | `~/.qoder-cn/AGENTS.md`, `~/.qoder-cn/rules/`, the auto-memory roots `~/.qoder-cn/memory/` and `~/.qoder-cn/projects/*/memory/` (plus `~/.qoder` variants) | `AGENTS.md`, `AGENTS.local.md`, `.qoder/rules/` |
+| `hermes` | `~/.hermes/memories/` (`MEMORY.md` + `USER.md`) and the global `~/.hermes/SOUL.md` | `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md` |
 
 - The `source` argument selects one tool, or omit it to run every source enabled in settings.
 - The `path` argument selects the workspace root for project-scoped files (defaults to the session workspace; workspace files only load when the Import workspace files setting is on).
@@ -164,7 +172,7 @@ The status card shows server health with restart/stop actions, and the import se
 
 DSH's HMR machinery is fully usable once the plugin has been loaded once:
 
-- **Host plugin** — enable the Cordis HMR entry in the profile patch with its watch root pointed at this package's `lib/` output, and keep the `link:` dependency. Run `npm run build` and the running DSH reloads the plugin entry automatically (the Noema server child is restarted by the reload) — no server restart.
+- **Host plugin** — enable the Cordis HMR entry in the profile patch with its watch root pointed at this package's `lib/` output, and keep the `link:` dependency. Run `pnpm run build` and the running DSH reloads the plugin entry automatically (the Noema server child is restarted by the reload) — no server restart.
 
   ```yaml
   # ~/.dsh/profiles/<profile>/cordis.patch.yml
@@ -175,7 +183,7 @@ DSH's HMR machinery is fully usable once the plugin has been loaded once:
         - /path/to/dsh-noema/lib
   ```
 
-- **Client bundle** — `npm run build:client` rewrites `lib/client.js`; the client-hmr node half stat-polls every graph bundle (default 500ms) and broadcasts a `rebuilt` frame over the `/plugins/events` SSE channel, and the browser hot-swaps the module without a page refresh.
+- **Client bundle** — `ppnpm run build:client` rewrites `lib/client.js`; the client-hmr node half stat-polls every graph bundle (default 500ms) and broadcasts a `rebuilt` frame over the `/plugins/events` SSE channel, and the browser hot-swaps the module without a page refresh.
 - **Settings** — every change made on the Noema Memory settings page applies live through the settings service.
 
 The one thing hot-reload cannot do is load a plugin that was never in the booted tree: the running composition neither watches the profile patch layer (the web app does not wire `watchUserPatches`) nor exposes a loader mutation API (the plugin inventory RPC is read-only). A fresh plugin therefore needs exactly one server restart, after which the loop above is fully hot.
@@ -183,12 +191,19 @@ The one thing hot-reload cannot do is load a plugin that was never in the booted
 ## Develop
 
 ```sh
-npm install
-npm run build     # host tsc + client tsdown bundle
-npm test          # build + node --test tests/
+pnpm install
+pnpm run build     # host tsc + client tsdown bundle
+pnpm test          # build + node --test tests/
 ```
 
 The e2e test runs against `noema/target/debug/noema-mcp` when present (it is skipped otherwise).
+
+## Ecosystem
+
+- [DSH Android](https://github.com/ZSeven-W/dsh-android) — a live Android emulator or USB device inside the conversation, driven entirely through adb
+- [DSH Crew](https://github.com/ZSeven-W/dsh-crew) — dispatch work to DSH agents from Claude Code / Codex
+- [DSH iOS](https://github.com/ZSeven-W/dsh-ios) — a live iOS Simulator and a USB-connected iPhone, inside the conversation
+- [DSH OpenPencil](https://github.com/ZSeven-W/dsh-openpencil) — inspect and edit `.op` design documents inside a conversation
 
 ## License
 

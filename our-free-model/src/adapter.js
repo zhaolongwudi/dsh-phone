@@ -23,15 +23,16 @@ import { CODE, UpstreamError, postStreamed } from './http.js'
 import { postSealedStreamed } from './eac.js'
 import { postKiloStreamed } from './kilo.js'
 import { postAggregateStreamed, isAggregateEntry } from './aggregate.js'
-import { finishReason, readStream, windowTokens } from './stream.js'
-import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, defaultEffortFor, effortPatchFor, effortsFor, resolveLevel } from './effort.js'
+import { finishReason, readStream, sanitizeUsage, windowTokens } from './stream.js'
+import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, defaultEffortFor, effortPatchFor, effortsFor, hasDeclaredEffortMenu, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
 import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, continuationMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
 import { isEacEntry, isKiloEntry } from './catalog.js'
 import { isComboEntry, comboChain } from './combos.js'
-import { applyTokenSavers, saverConfig } from './token-saver/index.js'
+import { applyTokenSavers, saverConfig } from './token-saver.js'
 import { classifyFailure, describeVerdict, shouldAdvance } from './route/classify.js'
 import { FALLBACK_IMAGE_PRICING } from './image-pricing.js'
+import { isSubscriptionEntry, subscriptionChunks } from './subscription-adapter.js'
 
 export const ROUTE_MAIN = 'our-free-model'
 export const ROUTE_REGION = 'our-free-model-region'
@@ -52,6 +53,7 @@ export class FreeModelAdapter {
    * @param {(record: object) => void} dependencies.recordUsage
    * @param {(record: object) => void} [dependencies.recordTurn]
    * @param {(message: string) => void} [dependencies.warn]
+   * @param {{complete: (request: object, onChunk: Function) => Promise<object>}} [dependencies.subscriptionRuntime]
    */
   constructor(dependencies) {
     this.deps = dependencies
@@ -231,7 +233,7 @@ export class FreeModelAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: 'our free model is switched off in its settings page', code: 'CONFIG_DISABLED' } } }
       return
     }
-    const candidates = comboChain(entry, snapshot.catalog)
+    const candidates = comboChain(entry, snapshot.catalog, snapshot.routing ?? {})
     if (candidates.length === 0) {
       rejectedTurn(0)
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `the chain "${entry.name}" has no model available on this egress`, code: CODE.server } } }
@@ -320,6 +322,9 @@ export class FreeModelAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `our free model does not serve "${options.model}" on this egress`, code: CODE.server } } }
       return { advance: false, verdict: null, ok: false }
     }
+    if (isSubscriptionEntry(entry)) return yield * this.runSubscription({
+      ...options, maxTokens: Math.min(options.maxTokens ?? settings.defaultMaxTokens ?? entry.maxOutput, entry.maxOutput),
+    }, entry, plan)
 
     const sealed = isEacEntry(entry)
     const kilo = isKiloEntry(entry)
@@ -341,6 +346,34 @@ export class FreeModelAdapter {
     let attemptBudget = budget
     let nextIndex = 0
     let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+    let rejectedInputUsage = false
+    const trustedOutcome = outcome => {
+      // Only this Kilo router has a confirmed inflated multimodal stamp.
+      // Other lanes may advertise a conservative/fallback window, so exceeding
+      // that metadata alone must not erase their otherwise valid accounting.
+      if (!kilo || entry.id !== 'kilo-auto/free' || outcome?.sawUsage !== true) return outcome
+      const usage = sanitizeUsage(outcome.usage, entry.contextWindow)
+      if (usage === outcome.usage) return outcome
+      rejectedInputUsage = true
+      return usage === undefined
+        ? { ...outcome, sawUsage: false, usage: { inputTokens: 0, outputTokens: 0 } }
+        : { ...outcome, usage }
+    }
+    const collectUsage = outcome => {
+      const trusted = trustedOutcome(outcome)
+      totalUsage = addUsage(totalUsage, trusted?.usage, trusted?.sawUsage)
+      // Once one attempt's input is unknown, no sum of the other attempts can
+      // restore an exact prompt/total. Keep decode counts but let the host use
+      // its local input estimate, including after an honest continuation.
+      if (rejectedInputUsage) {
+        totalUsage = {
+          inputTokens: 0,
+          outputTokens: totalUsage.outputTokens,
+          ...totalUsage.reasoningTokens === undefined ? {} : { reasoningTokens: totalUsage.reasoningTokens },
+        }
+      }
+      return trusted
+    }
     const blocks = createBlockTracker()
     let turnRecorded = false
     const finishTurn = (ok, recovered = false, attempts = 1) => {
@@ -364,17 +397,22 @@ export class FreeModelAdapter {
     // 一次逻辑回合的丢弃内容告警只由首个 payload 收集。检查点估算和续写段都要另建
     // 一份 payload，共用同一个数组会让 `image-dropped` 按 build 次数重复累积，还会
     // 让已经交出去的首段样本跟着后面的 build 一起变长。
-    const payloadFor = (input, ceiling, recovering, sink, savingsSink) => {
+    const payloadFor = (input, ceiling, sink, savingsSink) => {
       const payload = buildPayload(wire, entry.id, input, options, ceiling, resolveImage, sink)
       if (declared.length > 0) payload.tools = declared
       if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) payload.temperature = options.temperature
       if (wire !== 'responses' && Array.isArray(options.stop) && options.stop.length > 0) payload.stop = options.stop
-      if (recovering) payload.tool_choice = wire === 'messages' ? { type: 'none' } : 'none'
-      // Both absorbed channels carry a declared thinking menu whose level is
-      // the real control on the wire: the selected level rides the request as
-      // the model's own effort field (a JSON merge patch, ZCode's declaration
-      // shape). The free lane keeps its token-budget behaviour untouched.
-      if (sealed || kilo) {
+      // ⚠️ 续写回合**不再**下发 `tool_choice: 'none'`：v2 门禁见到 `none` 一律
+      // 403 FreeTierError（旧实现靠它压住工具调用）。压制手段改为续写指令本身
+      // ——`recoveryMessages()` 的正文里已经写着「Do not call tools」，这条提示
+      // 是 v1 时代就有的，不依赖 tool_choice。
+      // A declared thinking menu means the selected level is the real control
+      // on the wire: it rides the request as the model's own effort field (a
+      // JSON merge patch, ZCode's declaration shape). The free lane's own ids
+      // now declare menus too (see `src/catalog.js`), so the gate is the entry
+      // rather than the lane — an entry without a menu still keeps the free
+      // lane's token-budget behaviour, untouched.
+      if (sealed || kilo || hasDeclaredEffortMenu(entry)) {
         const patch = effortPatchFor(options.reasoningEffort, entry)
         if (patch !== null) Object.assign(payload, patch)
       }
@@ -398,12 +436,12 @@ export class FreeModelAdapter {
       const attemptStarted = Date.now()
       const recovering = attempt === 1
       const savingsSink = {}
-      const payload = payloadFor(attemptMessages, attemptBudget, recovering, recovering ? [] : warnings, savingsSink)
+      const payload = payloadFor(attemptMessages, attemptBudget, recovering ? [] : warnings, savingsSink)
       attemptSavings = savingsSink.report ?? null
       // The absorbed channels have no tool-name gate; their models see the
       // caller's tools exactly as declared, so the fingerprint pass is free-lane
       // only. The aggregate lane is somebody else's gateway entirely — renaming
-      // its tools to this lane's decoy quartet would break the caller's calls.
+      // its tools to this lane's gate placeholders would break the caller's calls.
       const renameMap = sealed || kilo || aggregate ? new Map() : applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
       const controller = new AbortController()
       const onAbort = () => controller.abort(options.signal?.reason)
@@ -432,7 +470,6 @@ export class FreeModelAdapter {
             })
             : postStreamed({
           path: endpointFor(entry.id), body: payload, session,
-          requestId: attempt === 0 ? recoveryId : mintRequestId(),
           attributionUserAgent: snapshot.attributionUserAgent,
           signal: controller.signal,
           onData: value => channel.push(value),
@@ -494,7 +531,7 @@ export class FreeModelAdapter {
       const advanceVerdict = (code, message, status) => {
         if (plan.allowAdvance !== true || options.signal?.aborted === true || sawAnswer) return { advance: false, verdict: null }
         const verdict = classifyFailure({ status, code, message })
-        return { advance: shouldAdvance(verdict), verdict }
+        return { advance: shouldAdvance(verdict) || code === CODE.client || code === CODE.region, verdict }
       }
       try {
         const reader = readStream(channel.read(), wire, renameMap, () => Date.now(), {
@@ -524,7 +561,7 @@ export class FreeModelAdapter {
           await reader.return()
         }
         nextIndex = outcome.nextIndex
-        totalUsage = addUsage(totalUsage, outcome.usage, outcome.sawUsage)
+        outcome = collectUsage(outcome)
         usageAdded = true
         if (options.signal?.aborted === true) {
           record(false, outcome, { aborted: true })
@@ -555,7 +592,7 @@ export class FreeModelAdapter {
             ? continuationMessages(messages, outcome.answerText)
             : recoveryMessages(messages, outcome.reasoningText)
           if (continuationBudget >= MIN_BUDGET
-            && checkpointFits(payloadFor(nextMessages, continuationBudget, true, []), entry, maxTokensCut ? outcome.answerText : outcome.reasoningText, continuationBudget)) {
+            && checkpointFits(payloadFor(nextMessages, continuationBudget, []), entry, maxTokensCut ? outcome.answerText : outcome.reasoningText, continuationBudget)) {
             record(false, outcome, { truncated: true, recoveryScheduled: true })
             this.deps.warn?.(maxTokensCut
               ? 'our-free-model: the answer hit the output token ceiling; continuing once from where it stopped'
@@ -597,20 +634,26 @@ export class FreeModelAdapter {
         record(true, outcome, recovering ? { recovered: reason.kind === 'stop' } : {})
         finishTurn(true, recovering && reason.kind === 'stop', attempt + 1)
         yield { type: 'usage', usage: totalUsage }
-        yield { type: 'finish', reason }
+        // Keep the provider token when the harness fallback maps an abnormal
+        // ending to stop. Strict consumers (manual tests) must not certify it.
+        yield { type: 'finish', reason, ...(reason.kind === 'stop' && !normalEnding ? { upstreamFinish: outcome.finish } : {}) }
         if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
         return { advance: false, verdict: null, ok: true, recovered: recovering && reason.kind === 'stop' }
       } catch (error) {
         if (error?.code === CODE.region) this.deps.onRegionBlocked?.(entry.id)
         const aborted = options.signal?.aborted === true
         let failure = toFailure(error)
+        if (sealed && failure.code === CODE.server) failure = { ...failure, code: 'EAC_UPSTREAM_FAILED' }
+        if ((delivered || partialOutcome?.sawToolCall === true) && this.providerRetryPolicy().retryableCodes.includes(failure.code)) {
+          failure = { ...failure, code: 'STREAM_CUT' }
+        }
         if (!aborted && (recovering || expired)) {
           failure = { ...failure, code: recovering || delivered || partialOutcome?.sawToolCall === true ? 'STREAM_CUT' : CODE.timeout,
             message: expired
               ? `our free model reached its ${Math.round(timeoutMs / 1000)}s time limit before its finish token${recovering ? ', during the continuation from its checkpoint' : ''}`
               : `our free model continuation failed: ${failure.message}` }
         }
-        if (!usageAdded) totalUsage = addUsage(totalUsage, partialOutcome?.usage, partialOutcome?.sawUsage)
+        if (!usageAdded) partialOutcome = collectUsage(partialOutcome)
         record(false, partialOutcome, { ...(recovering || expired) ? { truncated: true } : {}, ...aborted ? { aborted: true } : {} })
         finishTurn(false, false, attempt + 1)
         for (const chunk of blocks.close()) yield chunk
@@ -627,11 +670,90 @@ export class FreeModelAdapter {
         options.signal?.removeEventListener('abort', onAbort)
         controller.abort()
         await request
-        if (!recorded) record(false, partialOutcome, { aborted: true })
+        if (!recorded) record(false, trustedOutcome(partialOutcome), { aborted: true })
         if (!continuationScheduled && !turnRecorded) finishTurn(false, false, attempt + 1)
       }
     }
   }
+
+  /** The subscription helper owns physical usage; the caller owns the turn. */
+  async * runSubscription(options, entry, plan) {
+    let answered = false
+    let terminal = false
+    let ending
+    let stream
+    const blocks = createBlockTracker()
+    try {
+      const request = {
+        ...options, model: entry.id,
+        resolveImage: this.deps.resolveImage,
+        toolChoice: subscriptionToolChoice(options.toolChoice, options.tools),
+        maxTokens: Math.min(options.maxTokens ?? entry.maxOutput, entry.maxOutput),
+        messages: repairToolPairing(options.messages ?? []),
+        // A combo chain records one logical turn for the whole chain; letting
+        // the member record its own would count that turn twice.
+        recordTurn: plan.recordTurn !== false,
+      }
+      stream = subscriptionChunks(this.deps.subscriptionRuntime, request)
+      while (true) {
+        const row = await stream.next()
+        if (row.done) {
+          if (row.value?.error) throw Object.assign(new Error(row.value.error), row.value.failure)
+          break
+        }
+        const chunk = row.value
+        if (chunk.type === 'finish') {
+          // Wait for complete() to settle before certifying a successful turn.
+          ending = chunk
+          terminal = true
+          continue
+        }
+        if (commitsAnswer(chunk)) answered = true
+        blocks.accept(chunk)
+        yield chunk
+      }
+      if (!terminal) throw new UpstreamError('Subscription stream ended before completion', CODE.transport)
+      if (ending.reason?.kind === 'error' || ending.reason?.kind === 'aborted') {
+        throw Object.assign(new Error(ending.reason.failure?.message ?? 'Subscription completion failed'), ending.reason.failure, {
+          code: ending.reason.kind === 'aborted' ? CODE.aborted : ending.reason.failure?.code,
+        })
+      }
+      yield ending
+      return { advance: false, verdict: null, ok: true, recovered: false }
+    } catch (error) {
+      const aborted = options.signal?.aborted === true || error?.code === CODE.aborted
+      const failure = toFailure({
+        message: error?.message ?? 'Subscription completion failed',
+        code: error?.code,
+        status: error?.status ?? error?.statusCode,
+      })
+      const verdict = aborted ? null : classifyFailure(failure)
+      for (const chunk of blocks.close()) yield chunk
+      yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure } }
+      return {
+        ok: false,
+        advance: plan.allowAdvance === true && !aborted && !answered
+          && (shouldAdvance(verdict) || ['DISABLED', 'NOT_FOUND'].includes(failure.code)),
+        verdict,
+      }
+    } finally {
+      await stream?.return()
+    }
+  }
+}
+
+/** Validate subscription-only restrictions before account resolution or dispatch. */
+function subscriptionToolChoice(value, tools) {
+  if (value === undefined) return undefined
+  const names = new Set((Array.isArray(tools) ? tools : []).map(tool => tool?.name ?? tool?.function?.name).filter(name => typeof name === 'string'))
+  const named = value !== null && typeof value === 'object' && !Array.isArray(value)
+    && ((value.type === 'function' && (value.function?.name ?? value.name)) || (value.type === 'tool' && value.name)
+      || (value.type === undefined && value.name))
+  const validName = typeof named === 'string' && named.length > 0 && names.has(named)
+  if (value === 'auto' || value === 'none') return value
+  if ((value === 'required' || value === 'any') && names.size > 0) return value
+  if (validName) return { type: 'function', function: { name: named } }
+  throw new UpstreamError('Invalid subscription tool choice', 'INVALID_INPUT', { status: 400 })
 }
 
 /** The co-paid reasoning models can burn minutes in the thinking channel on
@@ -736,6 +858,7 @@ function toFailure(error) {
  * free lane splits its endpoints per model id.
  */
 function wireOf(entry) {
+  if (isSubscriptionEntry(entry)) return entry.wire ?? 'chat'
   if (isAggregateEntry(entry)) return entry.wire ?? 'chat'
   if (isEacEntry(entry) || isKiloEntry(entry)) return 'chat'
   return wireFor(entry.id)

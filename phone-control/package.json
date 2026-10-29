@@ -6,5 +6,5 @@
   "exports": { ".": "./index.mjs", "./bridge": "./bridge.mjs", "./package.json": "./package.json" },
   "bin": { "cli-anything-phone": "./cli.mjs" },
   "license": "MIT",
-  "engines": { "dsh": "0.2.1-alpha.1", "node": ">=22" }
+  "engines": { "dsh": "^0.2.1-alpha.1", "node": ">=22" }
 }

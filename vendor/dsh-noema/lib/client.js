@@ -27,7 +27,8 @@ const IMPORT_SOURCE_LABELS = [
 	["workbuddy", "WorkBuddy"],
 	["antigravity", "Antigravity"],
 	["trae", "Trae"],
-	["qoder", "Qoder"]
+	["qoder", "Qoder"],
+	["hermes", "Hermes"]
 ];
 const COPY = {
 	en: {

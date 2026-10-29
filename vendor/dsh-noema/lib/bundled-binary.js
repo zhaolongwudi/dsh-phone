@@ -64,7 +64,8 @@ export function tryResolveBundledNoemaBinary(options = {}) {
 export function resolveBundledNoemaBinary(options = {}) {
     if (process.env.DSH_PHONE_ANDROID === '1' && process.env.DSH_PHONE_NOEMA) {
         const binary = process.env.DSH_PHONE_NOEMA;
-        if (defaultIsFile(binary)) return binary;
+        if (defaultIsFile(binary))
+            return binary;
         throw new Error('手机版记忆引擎缺失，请重新安装完整 APK。');
     }
     const platform = options.platform ?? process.platform;

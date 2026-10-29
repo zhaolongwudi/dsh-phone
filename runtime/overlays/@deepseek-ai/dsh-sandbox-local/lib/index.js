@@ -170,6 +170,20 @@ function defaultProbeWindowsAcl(runnerInvocation, timeoutMs) {
 * mode vocabulary) over the Landlock launcher; darwin has exactly one
 * candidate, selected without any probe.
 */
+/*
+ * ⚠️ **Issue F-14（手机版事实登记，2026-10-15）**：下面 `android: ["landlock"]` 读起来像
+ * 「Android 上 Landlock 沙箱可用」，但**设备实测是 `unusable`** —— `chainVerdict()`
+ * 因此返回 `"unavailable"`，`selectRunner` 抛 `SandboxUnavailableError`，本机任何
+ * `workspace-write` 的 bash **都不会执行**（只能靠一次性 `danger-full-access` 授权）。
+ *
+ * ⇒ 手机版实际只有「完全访问」一种可用模式，**本行在本机是不可达代码**。
+ *    这不是崩溃，而是「补丁预期与现实之间的落差」。
+ *
+ * 可复跑探针（**只能在真机跑**，故刻意不接进 apply.sh/CI）：
+ *   `node .github/capsule/files/scripts/probe-android-landlock.mjs`
+ * 输出 `usable` / `unusable`（本机实测值）/ `unsupported`。
+ * ⚠️ 边界：结论只来自这一台设备，不保证覆盖所有 Android 机型/内核。
+ */
 const PLATFORM_CHAINS = {
 	android: ["landlock"],
 	linux: ["bwrap", "landlock"],

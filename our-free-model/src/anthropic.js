@@ -45,6 +45,8 @@
  * @module src/anthropic.js
  */
 
+import { carryFailure, forwardFailure } from './failure.js'
+
 /** The plugin ships no tokenizer; the estimate below charges one token per
  *  four characters, the usual English-prose ratio, and a flat cost for each
  *  image because a base64 payload carries no dimensions to price properly. */
@@ -302,11 +304,33 @@ export function fromAnthropicRequest(body) {
 
   const maxTokens = number(body.max_tokens)
   const temperature = number(body.temperature)
+  let toolChoice
+  if (body.tool_choice !== undefined) {
+    const choice = body.tool_choice
+    if (!isObject(choice) || !['auto', 'none', 'any', 'tool'].includes(choice.type)
+      || Object.keys(choice).some(key => !['type', 'name', 'disable_parallel_tool_use'].includes(key))) {
+      return { error: '`tool_choice` must select auto, none, any or a declared tool' }
+    }
+    if (choice.disable_parallel_tool_use !== undefined && choice.disable_parallel_tool_use !== false) {
+      return { error: 'serial-only tool use is not supported by this gateway' }
+    }
+    if (choice.type === 'tool') {
+      if (typeof choice.name !== 'string' || !tools.some(tool => tool.name === choice.name)) {
+        return { error: '`tool_choice.name` must name a declared tool' }
+      }
+      toolChoice = { type: 'function', name: choice.name }
+    } else {
+      if (choice.name !== undefined) return { error: '`tool_choice.name` requires type tool' }
+      if (choice.type === 'any' && tools.length === 0) return { error: '`tool_choice: any` requires a declared tool' }
+      toolChoice = choice.type === 'any' ? 'required' : choice.type
+    }
+  }
   return {
     model,
     messages,
     system,
     tools,
+    ...toolChoice === undefined ? {} : { toolChoice },
     // A non-positive ceiling is "no ceiling" to the adapter (`usableTokens`),
     // so it is reported as unset rather than passed along as 0.
     maxTokens: maxTokens !== undefined && maxTokens > 0 ? maxTokens : undefined,
@@ -575,7 +599,8 @@ export function anthropicFrames(chunk, state) {
         const carried = string(reason.failure?.message)
         const message = carried !== '' ? carried : reason.kind === 'aborted' ? 'request aborted' : 'our free model failed the turn'
         state.stopReason = null
-        frames.push(sseFrame('error', { type: 'error', error: { type: 'api_error', message } }))
+        const failure = carryFailure(reason.failure, reason.kind)
+        frames.push(sseFrame('error', { type: 'error', error: forwardFailure({ error: message, failure }, true).error }))
         frames.push(sseFrame('message_stop', { type: 'message_stop' }))
         break
       }
@@ -768,7 +793,10 @@ export function foldAnthropicOutcome(outcome, chunk) {
       break
     case 'finish':
       if (chunk.reason?.kind === 'max-tokens') outcome.truncated = true
-      if (chunk.reason?.kind === 'error' || chunk.reason?.kind === 'aborted') outcome.error = chunk.reason.failure?.message
+      if (chunk.reason?.kind === 'error' || chunk.reason?.kind === 'aborted') {
+        outcome.failure = carryFailure(chunk.reason.failure, chunk.reason.kind)
+        outcome.error = outcome.failure.message
+      }
       break
     default: break
   }

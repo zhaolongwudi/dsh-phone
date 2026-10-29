@@ -1,19 +1,75 @@
-/* Mobile presentation for the bundled dsh 0.2.1-alpha.1 settings shell.
-   Generated VOzbGW_* selectors come from SettingsRoot.module.css. */
-@media (max-width: 700px) {
+/* dsh 手机形态样式层（窄屏适配）。
+   基线：上游 dsh 0.2.1-alpha.1 的 settings shell。
+   ⚠️ 本文件**整体**属上游文件（与 jwoo1982217-eng/dsh-phone 逐字节相同），
+   因此改动须经 .github/capsule/overrides/ 投放，并纳入基线漂移检查。
+
+   ## 依赖面与分块地图
+   本文件用上游 CSS Module 的**构建期哈希类名**锚定元素。这类名字随上游升级
+   重新生成，失效时完全静默（页面照常渲染、构建与单测全绿）。为把该依赖变成
+   可维护资产，全部哈希已登记进 app/src/main/assets/ui-anchors.json，由
+   scripts/check-ui-anchors.mjs 在构建期做门禁（失效即报红并点名语义与上游包）。
+
+   分块（按上游组件，行号随编辑漂移，以选择器前缀为准）：
+     · 模型选择器   ._7KE1Ra_*      ← dsh-client-ui-model-selection
+     · 设置面板     .VOzbGW_*       ← dsh-client-ui-settings-general
+     · 左栏         .hHd-Xa_*       ← dsh-client-ui-sidebar
+     · 框架/列      .pI_x6G_*       ← dsh-client-ui-layout
+     · 会话头/输入区 .wSkVaW_* .uV2eYG_* ← dsh-client-ui-conversation
+     · 预设标签     .SVAs4q_*       ← dsh-client-ui-agent-preset
+     · 打开方式菜单 .OMoRSG_*       ← dsh-client-ui-open-in-app
+     · 自有         .dsh-phone-* / .dim-jh-* ← 本层注入，不依赖上游哈希
+
+   ## ⚠️ 跨层类名契约（Issue F-19）
+   上一条里的 .dim-jh-* 与「本层注入」不同：它们是**插件侧（dsh-codearts-auth
+   plugin-src/client）产出、本层消费**的类名。这类依赖此前是**无声契约** ——
+   无版本号、无断言、无测试锁：插件侧改名即静默失效（本层选择器不命中、页面照常
+   渲染、构建与单测全绿），F-15/F-16 正是因此长期无人发现。
+   现已在 app/src/main/assets/phone-plugin-contract.json 里显式登记（含插件侧
+   产出文件与语义），由 scripts/check-plugin-contract.mjs 在构建期做门禁：
+   本文件/本目录 dsh-phone.js 用到的每个 .dim-jh-* 都必须已登记、且插件侧仍在
+   产出它；插件包版本变化也会被点名要求复核。
+
+   另有 4 条规则锚定的类名在上游 0.2.1-alpha.1 已不存在（一直静默失效），
+   登记在 ui-anchors.json 的 knownDead，不重复报警；修掉后应移出该表。
+
+   ## 上游升级后的动作
+   跑 scripts/check-ui-anchors.mjs --tree <dsh树根>：报红的项即失效锚点，
+   按其 semantic 与 pkg 去对应上游包里找新类名，改本文件与该映射表。 */
+/* 自绘顶栏带高（抽屉/遮罩/右栏的统一起算线）。
+   取值推导：自绘菜单按钮 top:5px + min-height:34px + 下方留 5px = 44px。
+   改按钮尺寸时只改这一处，下列三条规则自动跟随。 */
+@media (max-width:767px) { :root { --dsh-phone-topbar: 44px; } }
+@media (max-width:767px) {
   /* The menu is anchored to the composer bounds, rather than the short
      model trigger. Its original right:0 lets long catalogs cross the sidebar. */
   ._7KE1Ra_menu { box-sizing:border-box !important; left:var(--dsh-phone-model-left,0px) !important; right:auto !important; width:var(--dsh-phone-model-width,260px) !important; min-width:0 !important; max-width:calc(100vw - 24px) !important; max-height:var(--dsh-phone-model-height,55dvh) !important; overflow-x:hidden !important; }
   ._7KE1Ra_groups { min-width:0 !important; overflow-x:hidden !important; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
   ._7KE1Ra_option, ._7KE1Ra_cell { width:100% !important; min-width:0 !important; min-height:46px !important; }
-  ._7KE1Ra_modelName, ._7KE1Ra_description { white-space:normal !important; overflow-wrap:anywhere !important; }
-  ._7KE1Ra_groupTitle { overflow-wrap:anywhere; }
+  ._7KE1Ra_modelName { white-space:normal !important; overflow-wrap:anywhere !important; }
   ._7KE1Ra_cellValue { max-width:65%; }
   .dim-jh-badgePop { box-sizing:border-box !important; left:var(--dsh-phone-popover-left,0px) !important; right:auto !important; width:var(--dsh-phone-popover-width,calc(100vw - 24px)) !important; min-width:0 !important; max-width:calc(100vw - 24px) !important; max-height:var(--dsh-phone-popover-height,55dvh) !important; overflow-x:hidden !important; overflow-y:auto !important; overscroll-behavior:contain; }
+  /* ⚠️ Issue F-15：插件侧 @media (max-width:720px) 会把徽标读数**整块隐藏**
+     （.dim-jh-badgeText、chevron、图标 svg 全部 display:none），而插件自己的注释
+     写明该断点是**桌面口径**（「徽标 216px + 模型选择器 ≥240px」的临界值）。
+     手机上视口恒 ≤720px ⇒ 用户明确定位为「止损工具」的读数一个字都看不到
+     （jet-hub.js 引用户原话：「必须要徽标，不然会导致不知道当前在用什么模型」），
+     屏幕上只剩一个 5px 圆点。
+     ⚠️ 必须 !important：插件样式是运行时注入 head 的，**晚于**本文件的 link，
+     同特异性下插件胜出（与上面 .dim-jh-badgePop 那条同款约定）。
+     ⚠️ 只恢复读数行（渠道名 + 数字），**不**恢复 chevron 与图标 svg —— 那两枚是
+     纯装饰，恢复它们会再吃掉约 20px 并挤压右侧模型选择器（插件注释里的原始理由
+     在窄屏仍然成立）。宽度由下面那条 max-width 收口：读数 flex:none 不参与收缩
+     ⇒ 数字恒定完整（与插件侧同一口径）。 */
+  .dim-jh-badgeText { display:flex !important; }
+  .dim-jh-badgeBtn { max-width:min(42vw,216px) !important; }
   /* Settings pages use flex/percentage heights. Give them a definite visible
-     viewport, including while loading, and let only the content area scroll. */
+     viewport, including while loading, and let only the content area scroll.
+     面板本体的稳定钩子是上游自带的 [data-shortcut-modal="settings"]（语义属性，
+     不随构建改名），与 [data-dsh-settings-dialog]（本层发布）并列作兜底；原
+     .VOzbGW_panel 哈希保留，三者指向同一元素，属「只增不减」的稳健化。
+     ⚠️ .VOzbGW_overlay 是外层遮罩，上游未给语义属性，暂只能继续用哈希。 */
   .VOzbGW_overlay { bottom:auto !important; height:var(--dsh-phone-viewport-height,100dvh) !important; }
-  .VOzbGW_panel { box-sizing:border-box; width:100vw !important; max-width:100vw !important; height:var(--dsh-phone-viewport-height,100dvh) !important; max-height:var(--dsh-phone-viewport-height,100dvh) !important; border-radius:0 !important; flex-direction:column !important; }
+  [data-shortcut-modal="settings"], [data-dsh-settings-dialog], .VOzbGW_panel { box-sizing:border-box; width:100vw !important; max-width:100vw !important; height:var(--dsh-phone-viewport-height,100dvh) !important; max-height:var(--dsh-phone-viewport-height,100dvh) !important; border-radius:0 !important; flex-direction:column !important; }
   .VOzbGW_nav { width:100% !important; min-width:0; padding:12px 12px 8px !important; gap:8px !important; border-bottom:1px solid var(--dsw-alias-border-default,#ddd); }
   .VOzbGW_navTitle { padding:0 !important; min-height:32px; display:flex; align-items:center; }
   .VOzbGW_navList { flex-direction:row !important; overflow-x:auto; flex-wrap:nowrap; gap:4px !important; padding-bottom:4px; }
@@ -35,10 +91,21 @@
   .dim-jh-brandName { font-size:18px; }
   .dim-jh-headerActions { flex-wrap:wrap !important; justify-content:flex-start !important; gap:6px !important; }
   .dim-jh-btn { min-height:36px; white-space:nowrap; font-size:13px; padding:6px 10px; }
+  /* ⚠️ Issue F-46：自有小控件在触屏上的可点尺寸兜底。
+     插件侧已按 @media (pointer: coarse) 放大过一轮，但该媒体特性在接了蓝牙鼠标/
+     触控板时会变成 fine，而这些控件照样会被手指点到 ⇒ 手机形态下再兜一层。
+     ⚠️ 用 min-width/min-height 而不是 width/height：min-* 在 CSS 里**恒定压过**
+     width/height（与源顺序、特异性无关）⇒ 不必 !important 也不会与插件侧
+     那两条 width/height 打架（最终取两者较大值）。
+     ⚠️ 刷新键与签到灯只给 32px：badge 弹窗头部一行还要放下状态点、渠道名与时间，
+     给 36px 在 220px 的窄弹窗里会顶出横向溢出（5 + 118 + 36 + 36 + 20 = 215）。
+     关闭键 / 额度翻页箭头 / 图标按钮所在行空间充足，直接给 36px。 */
+  .dim-jh-badgeRefresh, .dim-jh-badgeAuto { min-width:32px; min-height:32px; }
+  .dim-jh-badgeAutoClose, .dim-jh-quotaArrow, .dim-jh-iconBtn { min-width:36px; min-height:36px; }
   .dim-jh-layout { flex-direction:column !important; overflow:visible !important; }
-  body.dsh-phone-mobile .dim-jh-rail { display:none !important; width:100% !important; border:0 !important; padding:12px 0 !important; overflow:visible !important; }
-  body.dsh-phone-mobile .dsh-phone-choosing .dim-jh-rail { display:grid !important; }
-  body.dsh-phone-mobile .dsh-phone-choosing .dim-jh-panel { display:none !important; }
+  html[data-dsh-mobile-form] .dim-jh-rail { display:none !important; width:100% !important; border:0 !important; padding:12px 0 !important; overflow:visible !important; }
+  html[data-dsh-mobile-form] .dsh-phone-choosing .dim-jh-rail { display:grid !important; }
+  html[data-dsh-mobile-form] .dsh-phone-choosing .dim-jh-panel { display:none !important; }
   .dsh-phone-provider { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:12px 0; border-bottom:1px solid var(--dsw-alias-border-default,#ddd); }
   .dsh-phone-selected { display:flex; align-items:center; gap:8px; font-size:14px; font-weight:600; min-width:0; }
   .dsh-phone-provider > button { flex:none; }
@@ -61,20 +128,88 @@
 
 /* Mobile navigation is a temporary drawer; chat keeps the full screen width. */
 .dsh-phone-menu,.dsh-phone-sidebar-mask{display:none}
-@media(max-width:700px){
+@media (max-width:767px){
  html,body,#root{height:var(--dsh-phone-viewport-height,100dvh)!important;min-height:0!important}
- .pI_x6G_frame{height:var(--dsh-phone-viewport-height,100dvh)!important;min-height:0!important;max-height:var(--dsh-phone-viewport-height,100dvh)!important}
+ /* 框架根：优先用本层自有的 [data-dsh-frame]（由 dsh-phone.js 发布，不随上游改名），
+    同时保留原哈希选择器作跨版本兜底 —— 两者指向同一元素，任一生效即达成目的，
+    故这是「只增不减」的稳健化，不引入回归。上游若重命名 .pI_x6G_frame，本层照常工作。 */
+ [data-dsh-frame],.pI_x6G_frame{height:var(--dsh-phone-viewport-height,100dvh)!important;min-height:0!important;max-height:var(--dsh-phone-viewport-height,100dvh)!important}
  .pI_x6G_centerCol,.wSkVaW_root{min-height:0!important}
- .pI_x6G_frame{grid-template-columns:0px minmax(0,1fr) 0px!important}
+ [data-dsh-frame],.pI_x6G_frame{grid-template-columns:0px minmax(0,1fr) 0px!important}
  .pI_x6G_centerCol{grid-column:2;padding-top:0}
- .pI_x6G_sidebarCol{position:fixed;left:0;top:44px;bottom:0;width:min(280px,86vw)!important;z-index:14;visibility:hidden;transform:translateX(-100%);pointer-events:none;transition:transform .16s ease}
- .pI_x6G_sidebarCol>.hHd-Xa_root{width:100%!important;height:100%}
- .dsh-phone-menu-open .pI_x6G_sidebarCol{visibility:visible;transform:translateX(0);pointer-events:auto;box-shadow:8px 0 24px #0002}
- .pI_x6G_sidebarCol.dsh-phone-dialog-open{visibility:visible;transform:none;pointer-events:auto;transition:none}
- .dsh-phone-menu{display:block;position:fixed;top:5px;left:8px;z-index:15;min-height:34px;padding:4px 10px;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:10px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:14px system-ui}
- .dsh-phone-menu-open .dsh-phone-sidebar-mask{display:block;position:fixed;inset:44px 0 0;z-index:13;border:0;background:#0004}
+ [data-dsh-rail],.pI_x6G_sidebarCol{position:fixed;left:0;top:var(--dsh-phone-topbar,44px);bottom:0;width:min(280px,86vw)!important;z-index:14;visibility:hidden;transform:translateX(-100%);pointer-events:none;transition:transform .16s ease}
+ [data-dsh-rail]>.hHd-Xa_root,.pI_x6G_sidebarCol>.hHd-Xa_root{width:100%!important;height:100%}
+ /* ⚠️⚠️ z-index:21 **必须是打开态才抬**，且必须高于上游的 overlayLayer(20)。
+    真因（设备实测，2026-10-13）：三期把遮罩迁到槽位 `shell.overlay` 后，上游
+    `AppFrame` 把该槽渲染进它的覆盖层（`z-index:20;position:absolute`）——
+    于是遮罩被**困在那个 z=20 的堆叠上下文**里，它自身的 z-index:13 只在上下文内有效；
+    而侧栏本规则原来的 z-index:14 在**根**上下文。跨堆叠上下文时 z-index 不可比较
+    ⇒ 20 > 14，**遮罩整体盖住侧栏**：视觉上是半透明黑（#0004）压出一层「灰色」，
+    交互上遮罩吃掉点击 ⇒ 菜单弹出后**完全点不动**。
+    ⚠️ 这解释了「平板/横屏正常」：本节全部规则都在 `max-width:767px` 内，宽屏不生效。
+    ⚠️ 也解释了「迁移前没这问题」：本地遮罩那时挂在 body 上（z=13 与侧栏 14 同上下文）。
+    （该覆盖层的类名是上游哈希，按本仓库约定**不写进注释** —— 写了会被
+     锚点扫描当成「CSS 消费了未登记哈希」而误报，实测踩到过。）
+    取值依据（实测全局层级版图）：根上下文里该覆盖层=20 是最高常规层，
+    真正的模态在 900/1000/1001/1100 ⇒ 取 21 既压过遮罩、又不碰任何模态。 */
+ html[data-dsh-drawer-open] [data-dsh-rail],html[data-dsh-drawer-open] .pI_x6G_sidebarCol{visibility:visible;transform:translateX(0);pointer-events:auto;z-index:21;box-shadow:8px 0 24px #0002}
+  /* ⚠️⚠️ 抽屉打开期间**隐藏上游侧栏自带的折叠开关**（2026-10-13 用户报障「菜单与侧边栏
+     小按钮冲突」）。
+     冲突全貌（三层证据链，全部代码层可查）：
+       · 上游侧栏顶部**总是**渲染该开关（ui-sidebar 的 logoRow 里
+         「非 darwin 桌面即渲染 toggle」分支；安卓不是 darwin ⇒ 恒渲染），折叠态呈
+         36px 圆形小按钮 —— 即用户说的「侧边栏小按钮」；
+       · 本层把侧栏容器宽度强制为 min(280px,86vw)（上面那条），而上游折叠态会让
+         **文字叶节点全部消失**（真机实测 23 → 0，只剩一排无标签图标）
+         ⇒ 用户在抽屉里点一下小按钮，侧栏折叠 ⇒ 左侧变成「有宽度无文字」的空白带
+         （⚠️ 2026-10-13 真机度量订正：**不是**「容器 280px、内容 56px、差额 224px」
+         —— inner root 被上面那条 width:100%!important 撑满 280px，折叠只降密度不减宽度）
+         —— 与上轮「点一次菜单不出完整菜单」是**同一个空白**，只是换了触发路径
+         （那次是上升沿没接上，这次是用户手动折叠后无人再展开）；
+       · 更糟的是语义打架：抽屉开着（共享事实仍在）时菜单按钮显示「收起菜单」，
+         而侧栏实际是折叠的 ⇒ 两个控件对同一事物给出矛盾陈述。
+     修法（取最小改动）：抽屉是**临时抽屉**，其存在期间侧栏没有「折叠」可言 ——
+     关抽屉即隐藏整个侧栏。故打开态直接禁用它，用户想折叠可以关抽屉（宽屏下
+     侧栏是常驻列，折叠开关照常工作，不受影响）。
+     ⚠️ 用 !important：上游折叠态规则会为该按钮设 28/36px 尺寸与 display，不用
+     !important 压不住（同仓库既有先例：遮罩接管那条同法）。
+     ⚠️ 不删 JS 里「点小按钮不关抽屉」的排除判据 —— 那里的匹配防的是
+        「点小按钮误关抽屉」，与这里的隐藏是两道独立防线（隐藏失效时它仍兜底）。 */
+  html[data-dsh-drawer-open] [data-dsh-rail] .hHd-Xa_toggle,
+  html[data-dsh-drawer-open] .pI_x6G_sidebarCol .hHd-Xa_toggle{display:none!important}
+
+html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6G_sidebarCol{visibility:visible;transform:none;pointer-events:auto;transition:none}
+ /* ⚠️ 2026-10-18 视觉对齐（用户报障：尺寸·字体·圆角与邻居不搭）。
+    原 `min-height:34px;padding:4px 10px` + `font:14px system-ui` + `border-radius:10px`
+    ⇒ 自成一族（另一个字体、另一个圆角、比图标大一圈）。改为方形 32×32、8px 圆角、
+    `font:inherit`（继承 DSH 字体栈）。显式 `box-sizing:border-box` 才能让含边框的实际
+    占位正好 32px（否则 32+2 边框）。
+    ⚠️ 只改尺寸/字体/圆角，**不动** position/top/left —— 安全区与「设置面板顶部空档」
+    的适配依赖它（见下面 data-dsh-modal-open 那条）。
+    ⚠️ 与 .dsh-phone-menu-slot（槽位接管版）必须同规格：两处若各写一份，接管前后视觉漂移。 */
+  .dsh-phone-menu{display:block;position:fixed;top:5px;left:8px;z-index:15;box-sizing:border-box;width:32px;height:32px;padding:0;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:inherit}
+ /* 有页面级模态（设置面板等）在场时隐藏自绘菜单按钮。
+    真因：上游设置遮罩是 inset:var(--dsh-frame-chrome-top,0px) 0 0 —— 顶部那条
+    chrome 空档不被遮罩覆盖，而本按钮 position:fixed;top:5px 恰落在其中。它虽然被
+    z-index:1000 的 overlay 挡住而**点不动**，却仍**可见**（overlay 在那段是透明的）
+    ⇒ 用户看到「菜单」按钮，点它没反应，直观感受是卡死。这不是样式瑕疵而是交互
+    缺陷，故用一期发布的 html[data-dsh-modal-open] 事实来收口。
+    用事实而非 .VOzbGW_overlay 哈希：后者随上游改名即失效，且只覆盖设置这一种模态。 */
+ html[data-dsh-modal-open] .dsh-phone-menu{display:none!important}
+ /* 三期接管：槽位组件（DrawerMask）挂载后，本地遮罩必须彻底退让。
+    ⚠️ 仅靠 JS 设 hidden 不够 —— UA 的 [hidden]{display:none} 特异性 (0,0,1) 会被
+    html[data-dsh-drawer-open] .dsh-phone-sidebar-mask{display:block}（特异性 0,2,1）覆盖，
+    结果两个遮罩重叠（点击区域打架）。故用同源事实 + !important 显式收口。
+    注：!important 优先于非 important，与这两条规则的先后顺序无关。 */
+ html[data-dsh-mask-mounted] .dsh-phone-sidebar-mask{display:none!important}
+ /* 三期组件的遮罩本体。**规格与本地遮罩（.dsh-phone-sidebar-mask 那条）逐项对齐** ——
+    两套外观若各写一份，接管前后视觉会漂移。组件已按 data-dsh-drawer-open 条件渲染，
+    故此处不需要再写开合判断。 */
+ .dsh-phone-mask{display:none;position:fixed;inset:var(--dsh-phone-topbar,44px) 0 0;z-index:13;border:0;background:#0004}
+ html[data-dsh-drawer-open] .dsh-phone-mask{display:block}
+ html[data-dsh-drawer-open] .dsh-phone-sidebar-mask{display:block;position:fixed;inset:var(--dsh-phone-topbar,44px) 0 0;z-index:13;border:0;background:#0004}
  .pI_x6G_handle[data-side=sidebar]{display:none!important}
- .pI_x6G_frame:not([data-rightbar-collapsed]) .pI_x6G_rightbarCol{position:absolute;inset:44px 0 0;z-index:16;background:var(--dsw-alias-bg-base,#fff)}
+ [data-dsh-frame]:not([data-rightbar-collapsed]) [data-rightbar-col],[data-dsh-frame]:not([data-rightbar-collapsed]) .pI_x6G_rightbarCol,.pI_x6G_frame:not([data-rightbar-collapsed]) [data-rightbar-col],.pI_x6G_frame:not([data-rightbar-collapsed]) .pI_x6G_rightbarCol{position:absolute;inset:var(--dsh-phone-topbar,44px) 0 0;z-index:16;background:var(--dsw-alias-bg-base,#fff)}
 }
 
 .dsh-phone-upload-actions{display:flex;flex-direction:column;gap:4px;padding:6px;border-bottom:1px solid var(--dsw-alias-border-l2,#dce3ee)}
@@ -82,16 +217,32 @@
 .dsh-phone-upload-actions>button:hover,.dsh-phone-upload-actions>button:focus-visible{background:var(--dsw-alias-bg-layer-2,#f1f5f9)}
 .dsh-phone-upload-actions small{color:var(--dsw-alias-label-secondary,#555);font-size:11px}
 /* One header row for menu, session name, preset and session-log action. */
-@media(max-width:700px){
+@media (max-width:767px){
  .wSkVaW_header{position:relative;grid-template-columns:minmax(0,1fr)!important;padding:4px 8px 0!important}
- .wSkVaW_headerLeading{display:none!important}
+ [data-conversation-header-leading],.wSkVaW_headerLeading{display:none!important}
+ /* 抽屉开关的座位：**默认让位**（上游 leading 在本项目无先例，先按原样隐藏）。
+    三期接管：槽位组件真实挂载后由 dsh-phone.js 发布 html[data-dsh-toggle-mounted]，
+    此时把 header 改两列、leading 显示出来、旧的固定定位按钮隐藏。
+    ⇒ 接管失败时页面回到上面那一行，不会出现「两个开关」或空白座位。
+    （本段规格经设备实测 10/10：开关 [8,5,22,34]、标题 [30,4,417,36]、不重叠、侧栏滑入。） */
+ html[data-dsh-toggle-mounted] .wSkVaW_header{grid-template-columns:auto minmax(0,1fr)!important}
+ html[data-dsh-toggle-mounted] [data-conversation-header-leading],
+ html[data-dsh-toggle-mounted] .wSkVaW_headerLeading{display:flex!important;grid-area:1/1!important;align-items:center;justify-content:flex-start}
+ /* 接管后：标题改从第 2 列起，左内边距收回 4px（原先 70px 是给固定按钮手工留位的魔法数字） */
+ html[data-dsh-toggle-mounted] .wSkVaW_titleRow{grid-column:2!important;padding-inline:4px 32px!important}
+ /* 接管后隐藏旧自绘按钮（否则两个开关并存，且其固定定位会压住新开关） */
+ html[data-dsh-toggle-mounted] .dsh-phone-menu{display:none!important}
+ /* 槽位开关本体：与旧按钮**同规格**（2026-10-18 与上面 .dsh-phone-menu 一起方形化，
+     理由见那条注释）—— 接管前后必须是同一枚按钮，否则视觉漂移。 */
+ .dsh-phone-menu-slot{box-sizing:border-box;width:32px;height:32px;padding:0;border:1px solid var(--dsw-alias-border-l1,#e2e8f0);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18243b);font:inherit;white-space:nowrap}
+ html[data-dsh-drawer-open] .dsh-phone-menu-slot{background:var(--dsw-alias-bg-layer-2,#eef2f7)}
  .wSkVaW_titleRow{grid-column:1!important;box-sizing:border-box;min-width:0;min-height:36px!important;padding-inline:70px 32px!important;gap:4px!important}
  .wSkVaW_titleCluster{gap:4px!important;min-width:0}
  .wSkVaW_titleCluster>:first-child{min-width:0;max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .wSkVaW_titleCluster>span{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  .wSkVaW_headerActions,.wSkVaW_headerUtilities{gap:2px!important;margin-left:2px!important}
  .wSkVaW_headerUtilities .OMoRSG_menuAnchor{display:none!important}
- .wSkVaW_headerCorner{grid-area:auto!important;position:absolute;left:auto!important;right:8px;top:8px}
+ [data-conversation-header-corner],.wSkVaW_headerCorner{grid-area:auto!important;position:absolute;left:auto!important;right:8px;top:8px}
  .wSkVaW_titleCluster .SVAs4q_label{display:inline-flex!important;max-width:84px;font-size:11px}
  .dsh-phone-log-button{font-size:0!important;padding:5px!important;width:30px!important;min-width:30px!important;max-width:30px!important;flex:0 0 30px!important;height:30px}
  .dsh-phone-log-button svg{width:18px;height:18px}
@@ -99,11 +250,10 @@
  .wSkVaW_tab{padding-bottom:6px!important;font-size:12px!important}
  .wSkVaW_root{--dsh-composer-side-clearance:8px;--dsh-composer-dock-inset:4px}
  .wSkVaW_composerStack{--dsh-composer-stack-gap:2px}
- .wSkVaW_composerSeat{--dsh-composer-text-max-height:160px}
+ [data-composer-seat],.wSkVaW_composerSeat{--dsh-composer-text-max-height:160px}
  .uV2eYG_root{padding-bottom:4px!important}
- .uV2eYG_card{gap:4px!important;padding-top:6px!important;border-radius:16px!important;font-size:14px!important;line-height:20px!important}
- .uV2eYG_input,.uV2eYG_mirror,.uV2eYG_backdrop{padding:4px 12px!important}
- .uV2eYG_hero .uV2eYG_mirror{min-height:36px!important}
+ [data-composer-card],.uV2eYG_card{gap:4px!important;padding-top:6px!important;border-radius:16px!important;font-size:14px!important;line-height:20px!important}
+ .uV2eYG_input{padding:4px 12px!important}
  .uV2eYG_row{flex-wrap:nowrap!important;gap:4px!important;padding:0 6px 4px!important}
  .uV2eYG_tools{gap:4px!important;flex:none}
  .uV2eYG_trailing{gap:4px!important;flex:1!important;min-width:0!important}
@@ -116,9 +266,40 @@
  .dsh-phone-composer-more{position:relative;flex:none}
  .dsh-phone-composer-more>summary{list-style:none;cursor:pointer;display:grid;place-items:center;min-width:28px;min-height:32px;font-size:20px;border-radius:8px;color:var(--dsw-alias-label-secondary,#52627a)}
  .dsh-phone-composer-more>summary::-webkit-details-marker{display:none}
- .dsh-phone-composer-options{position:absolute;bottom:38px;left:var(--dsh-phone-popover-left,0px);z-index:20;box-sizing:border-box;width:var(--dsh-phone-popover-width,min(270px,calc(100vw - 24px)));max-height:var(--dsh-phone-popover-height,55dvh);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid #dce3ee;border-radius:12px;background:var(--dsw-alias-bg-base,#fff);box-shadow:0 6px 24px #0002}
+ .dsh-phone-composer-options{position:absolute;bottom:38px;left:var(--dsh-phone-popover-left,0px);z-index:20;box-sizing:border-box;width:var(--dsh-phone-popover-width,min(270px,calc(100vw - 24px)));max-height:var(--dsh-phone-popover-height,55dvh);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid var(--dsw-alias-border-l2,#dce3ee);border-radius:12px;background:var(--dsw-alias-bg-base,#fff);box-shadow:0 6px 24px #0002}
  .dsh-phone-composer-options:empty{display:none}
  .dsh-phone-chatgpt-plan{display:block!important;padding:8px 0 0!important;font-size:12px;white-space:normal}
- .dsh-peer-badge{position:fixed;top:40px;right:8px;z-index:16;max-width:45vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:8px;background:#eef4ff;color:#2151a4;padding:3px 7px;font:11px system-ui}
+ .dsh-peer-badge{position:fixed;top:40px;right:8px;z-index:16;max-width:45vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:8px;background:var(--dsw-alias-button-primary-dimmed,#eef4ff);color:var(--dsw-alias-button-info-fill,#2151a4);padding:3px 7px;font-family:inherit;font-size:11px}
  body.dsh-peer-remote .wSkVaW_titleRow{padding-right:0}
+}
+
+/* 宽屏（≥768px）：让上游侧栏自带的折叠/展开开关**独占**侧栏开关这一职责。
+   ⚠️ 2026-10-18 用户确认「同一功能两个按钮」：窄屏时本层槽位开关（.dsh-phone-menu-slot）
+   管抽屉；宽屏时 dsh-phone.js 把它代理给上游开关（语义变成「切换侧栏显隐」），
+   而上游侧栏顶部**总是**渲染自己的开关（折叠态是 36px 圆形按钮）⇒ 宽屏下屏幕上
+   同时有两枚做同一件事的按钮。
+   取最小改法：宽屏隐藏本层那枚，由上游开关单独接管（它折叠/展开两态都在，
+   2026-10-13 真机实测可点、有效）。
+   ⚠️ 只隐藏视觉，**不删** dsh-phone.js 里的宽屏代理代码：万一这条隐藏未命中
+   （上游改结构等），代理仍在 ⇒ 那枚按钮至少还是「能用的按钮」，而不是
+   「点了没反应的死按钮」（2026-10-13 报障过的形态）。
+   ⚠️ 本规则必须写在 @media (max-width:767px) 之外（窄屏断点内不需要它）。 */
+@media (min-width:768px){
+ .dsh-phone-menu-slot{display:none!important}
+ /* IME 弹出（可视高度被压缩）时跟随收缩。发布条件见 dsh-phone.js：宽屏**仅**在
+    `visualViewport.height < innerHeight` 时发布该事实 ⇒ **无键盘时本段整体不命中**，
+    宽屏行为与上游原样一致（PC 浏览器同理）。
+    ⚠️ 为什么需要：原生是给根视图加 IME padding、**不缩 WebView 的布局视口**
+    （MainActivity.kt:436-445 注释明说两种形态都走这条），上游高度链照旧按整屏算
+    ⇒ 不接管的话输入区会被顶到可视区外（用户报障「打字时被挤或看不到」，2026-10-18）。
+    ⚠️ 必须同时给 min-height:0：上游 frame/centerCol 是 grid/flex 链，默认
+    min-height:auto 不肯收缩，只改 height 仍会把输入区顶出去（窄屏段同因，早已加）。
+    ⚠️ 用属性选择器而非无条件规则，是为了让「事实未发布」时**不产生任何影响**。 */
+ html[style*="--dsh-phone-viewport-height"],
+ html[style*="--dsh-phone-viewport-height"] body,
+ html[style*="--dsh-phone-viewport-height"] #root{height:var(--dsh-phone-viewport-height)!important;min-height:0!important}
+ html[style*="--dsh-phone-viewport-height"] [data-dsh-frame],
+ html[style*="--dsh-phone-viewport-height"] .pI_x6G_frame{height:var(--dsh-phone-viewport-height)!important;min-height:0!important;max-height:var(--dsh-phone-viewport-height)!important}
+ html[style*="--dsh-phone-viewport-height"] .pI_x6G_centerCol,
+ html[style*="--dsh-phone-viewport-height"] .wSkVaW_root{min-height:0!important}
 }

@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 import { createRelay } from './relay.mjs';
 import { ConfigSync } from './config-sync.mjs';
 import { apply } from './index.mjs';
-import { createOpenAiGateway } from '../vendor/dsh-codearts-auth/lib/openai-gateway/server.js';
+import { createOpenAiGateway } from '../vendor/dsh-providers-hub/lib/openai-gateway/server.js';
 import { installDesktopPeer } from '../scripts/install-desktop-peer.mjs';
 import { startHomeRelay } from '../scripts/start-home-relay.mjs';
 

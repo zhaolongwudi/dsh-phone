@@ -28,10 +28,10 @@ test('desktop installation and reinstall preserve existing bundles and account-i
 
 test('Jet Hub rebuild and reinstall preserve server and settings files; unknown source is refused before writes', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'dsh-jet-hub-chatgpt-')); t.after(() => rm(root, { recursive: true, force: true }));
-  const source = fileURLToPath(new URL('../vendor/dsh-codearts-auth/', import.meta.url));
+  const source = fileURLToPath(new URL('../vendor/dsh-providers-hub/', import.meta.url));
   await cp(path.join(source, 'plugin-src'), path.join(root, 'plugin-src'), { recursive: true });
   await mkdir(path.join(root, 'lib/client'), { recursive: true });
-  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'dsh-codearts-auth' }));
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'dsh-providers-hub' }));
   await symlink(path.join(source, 'node_modules'), path.join(root, 'node_modules'), 'dir');
   await writeFile(path.join(root, 'lib/index.js'), 'existing server');
   await writeFile(path.join(root, 'settings-marker'), 'existing settings');

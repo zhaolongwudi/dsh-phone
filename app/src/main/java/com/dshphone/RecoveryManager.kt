@@ -17,7 +17,7 @@ import java.util.zip.ZipOutputStream
 
 /** App-private environment snapshots. Conversations, credentials and workspaces are never replaced. */
 object RecoveryManager {
-    private val protectedBundles = setOf("@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-codearts-auth", "dsh-phone-account", "dsh-phone-qq", "dsh-phone-control", "dsh-phone-cloud-tools", "dsh-peer", "@zseven-w/dsh-noema")
+    private val protectedBundles = setOf("@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-providers-hub", "dsh-phone-account", "dsh-phone-qq", "dsh-phone-control", "dsh-phone-cloud-tools", "dsh-peer", "@zseven-w/dsh-noema")
     private val scopes = listOf("tree", "dsh-home/profiles", "dsh-home/node_modules", "dsh-home/settings.yaml", "dsh.version")
     private const val MAX_FILES = 120_000
     private const val MAX_BYTES = 4L * 1024 * 1024 * 1024

@@ -10,7 +10,7 @@
 自己的 CNB 版没有跟上这批。
 
 方法：下载双方 main 分支 tar 包全量 `diff -qr`。共 **132 项差异**（内容不同 98、仅 GitHub 有 21、仅 CNB 有 13），
-其中约 90 项集中在 Jet Hub 插件 `vendor/dsh-codearts-auth/`。完整清单见 `.scratch/dshdiff/diff-all.txt`，
+其中约 90 项集中在 Jet Hub 插件 `vendor/dsh-providers-hub/`。完整清单见 `.scratch/dshdiff/diff-all.txt`，
 两份解压源码在 `.scratch/dshdiff/gh` 与 `.scratch/dshdiff/cnb`。
 
 ---
@@ -21,7 +21,7 @@
 - **语义变化**：旧版（CNB 版现状）是"两个以上账号时，每次请求按列表顺序循环使用"；
   新版（GitHub）改为"**同一模型持续使用当前可用账号，额度不足或账号限流时才由下一个可用账号接续；已有输出的请求不会换号重放**"。
   依据：`docs/jethub-upstream-sync-20261008.md` 末节「2026-10-09 后续修正」（CNB 版的这份文件没有这一节）。
-- 新模块 `vendor/dsh-codearts-auth/src/account-failover.ts`：只对明确的额度/限流错误换号
+- 新模块 `vendor/dsh-providers-hub/src/account-failover.ts`：只对明确的额度/限流错误换号
   （`QUOTA_EXCEEDED`、`INSUFFICIENT_BALANCE`、`RATE_LIMITED` 及中文"额度用尽/余额不足"消息匹配）；
   内容拒绝、上下文超限、HTTP 401/403、网络错误**不**换号；`3009/14003` 错误码特判排除。
 - 接线范围：`account-rotation.ts`、`autoclaw.ts`、`opencode-adapter.ts`、`zcode-source-stream.ts`。
@@ -42,7 +42,7 @@
   （`data-composer-send` 发送按钮规则）；`runtime/overlays/README.md` 增加对应条目。
 
 ### 4. Jet Hub 面板大改
-- `vendor/dsh-codearts-auth/lib/client/jet-hub.js` 一个文件就差 **2121 行**（供应商排序、ZCode 来源选择 UI、
+- `vendor/dsh-providers-hub/lib/client/jet-hub.js` 一个文件就差 **2121 行**（供应商排序、ZCode 来源选择 UI、
   发送按钮等 10-09 全部面板改动）；另有 `plugin-src/client/{jet-hub,index,badge-model,usage-badge,jet-hub-styles}.js` 同步更新。
 
 ### 5. 版本号推进
@@ -61,7 +61,7 @@
 1. **云构建流水线**：`.cnb.yml` + `ci/`（每天 08:00/20:00 检查 applecabal/dsh-phone 上游 → 合并 → push → build-apk → 邮件通知，见 `ci/README.md`）。
 2. `scripts/prepare-node-android.py` + `native/termux-node.json`（构建期 node 准备）。
 3. `scripts/prepare-native.py` 的 curl 加固：`--connect-timeout 30 --max-time 300 --retry 5 --retry-delay 5`（比 GitHub 版的 `--retry 3` 更稳）。
-4. `vendor/dsh-codearts-auth/` 内 5 个孤立文件：`src/active-route.ts`（+lib 产物）、
+4. `vendor/dsh-providers-hub/` 内 5 个孤立文件：`src/active-route.ts`（+lib 产物）、
    `plugin-src/client/active-model-pill.js`、`plugin-src/client/build-wasm.mjs` + 测试 `active-route.spec.ts`、`active-model-pill.spec.ts`。
    **全仓库 grep 无任何引用**——是"在用模型实时读数胶囊"的未接线半成品（有实现、有测试、无接线）；
    两侧 `package.json` 一致且 `qoder:wasm` 实际指向 `scripts/extract-qoder-wasm.mjs`，`build-wasm.mjs` 同为孤儿。
@@ -75,7 +75,7 @@
 - 你的 CI 定时任务跟的是 `applecabal/dsh-phone`（CNB 镜像）；这批修正目前只在 GitHub 仓库。
   等镜像同步即可自动获得；急用则手动拉 GitHub 版做一次三方合并。
 - 建议合并策略：
-  - 以 GitHub 版为主干：`vendor/dsh-codearts-auth/`、`phone-account/`、`app/`（版本号与 ASSET_VERSION）、
+  - 以 GitHub 版为主干：`vendor/dsh-providers-hub/`、`phone-account/`、`app/`（版本号与 ASSET_VERSION）、
     两处 css、`runtime/overlays/`、`scripts/composer-newline.test.mjs`、`docs/github-public-config.md`；
   - 保留 CNB 版：`.cnb.yml`、`ci/`、`scripts/prepare-native.py`（加固版）、`scripts/prepare-node-android.py`、
     `native/termux-node.json`、`gemini-oauth.ts` 的内置密钥兜底、active-route/active-model-pill/build-wasm 孤儿文件。
@@ -86,10 +86,10 @@
 | 结论 | 证据 |
 |---|---|
 | 10-09 修正清单 | `gh/docs/jethub-upstream-sync-20261008.md` 末节（cnb 版无此节） |
-| 故障转移判据 | `gh/vendor/dsh-codearts-auth/src/account-failover.ts:1-16` |
-| ZCode 来源 | `gh/vendor/dsh-codearts-auth/src/zcode-sources.ts:1-50` |
+| 故障转移判据 | `gh/vendor/dsh-providers-hub/src/account-failover.ts:1-16` |
+| ZCode 来源 | `gh/vendor/dsh-providers-hub/src/zcode-sources.ts:1-50` |
 | ChatGPT 轮换改 Map | `phone-account/chatgpt-account.js` diff（rotationLast 单值 → Map） |
-| OAuth 密钥差异 | 两侧 `vendor/dsh-codearts-auth/src/gemini-oauth.ts:85-96` |
+| OAuth 密钥差异 | 两侧 `vendor/dsh-providers-hub/src/gemini-oauth.ts:85-96` |
 | CI 流程 | `cnb/ci/README.md` |
 | 版本号 | 两侧 `app/build.gradle`、`app/src/main/java/com/dshphone/NodeRunner.kt` |
 | 孤儿文件验证 | `grep -rln active-model-pill cnb/` 仅命中自身与测试 |

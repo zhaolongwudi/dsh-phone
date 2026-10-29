@@ -3,7 +3,7 @@ import {createRequire} from 'node:module';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import path from 'node:path';
 const root = fileURLToPath(new URL('../', import.meta.url));
-const require = createRequire(path.join(root, 'vendor/dsh-codearts-auth/package.json'));
+const require = createRequire(path.join(root, 'vendor/dsh-providers-hub/package.json'));
 const {transform} = require('esbuild');
 export async function buildModelPicker() {
 const relative = '@deepseek-ai/dsh-client-ui-model-selection/lib/client.js';

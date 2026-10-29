@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const report = process.argv[2] ?? path.join(os.tmpdir(), 'dsh-composer-newline');
 await mkdir(report, { recursive: true });
-const require = createRequire(path.join(root, 'vendor/dsh-codearts-auth/package.json'));
+const require = createRequire(path.join(root, 'vendor/dsh-providers-hub/package.json'));
 const { build } = require('esbuild');
 const playwright = process.env.DSH_PLAYWRIGHT_MODULE ?? path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs');
 const { chromium } = await import(pathToFileURL(playwright));
@@ -17,7 +17,7 @@ const source = await readFile(path.join(root, 'runtime/overlays/@deepseek-ai/dsh
 assert.equal(source.split('return module.exports;').length, 2);
 const tested = source.replace('return module.exports;', 'module.exports.test = { InputBar, DraftEditorRuntime, registerComposerKeymap, enterCommand: cn$1 }; return module.exports;');
 const referenceSource = await readFile(path.join(root,'runtime/overlays/@deepseek-ai/dsh-client-ui-reference/lib/client.js'),'utf8');
-const bundled = await build({ stdin: { resolveDir: path.join(root, 'vendor/dsh-codearts-auth'), loader: 'js', contents: `
+const bundled = await build({ stdin: { resolveDir: path.join(root, 'vendor/dsh-providers-hub'), loader: 'js', contents: `
 import React from 'react'; import * as jsx from 'react/jsx-runtime';
 import * as ReactDOM from 'react-dom'; import { createRoot } from 'react-dom/client';
 window.__ModuleLoader__ = { load({id:moduleId,factory}) {

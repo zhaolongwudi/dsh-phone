@@ -273,7 +273,7 @@ CSS 结构、图层健康、兼容下限、槽位清单、遮罩接管、产物�
 ### 7.3 顺带订正一条此前的认知
 
 第五轮报告 §2.4 写「手机版没有 `provider-registry.ts`」——**不准确**。
-该文件在 `files/vendor/dsh-codearts-auth/src/` 下（胶囊全新增路径）。
+该文件在 `files/vendor/dsh-providers-hub/src/` 下（胶囊全新增路径）。
 同理「手机版没有 `loop-recovery.ts`」也不准确：它在 `vendor/` **上游镜像**里
 （旧版）。⇒ 判断「手机版有没有某文件」必须同时查
 `overrides/` + `files/` + `vendor/` 三处。

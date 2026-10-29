@@ -90,7 +90,7 @@ OneBot `accessToken` 用于 QQ 连接鉴权，不是模型 API Key。
 | `peer/` | 加密中继、电脑远程界面、手机网关与 API 配置同步 |
 | `desktop-chatgpt/` | 电脑 ChatGPT 会员登录入口，复用官方会员适配器 |
 | `vendor/dsh-channel-qq/` | QQ 插件源码及对应编译代码，无私人配置 |
-| `vendor/dsh-codearts-auth/` | Jet Hub 插件源码及新版 SDK 的 RPC 兼容修复 |
+| `vendor/dsh-providers-hub/` | Jet Hub 插件源码及新版 SDK 的 RPC 兼容修复 |
 | `runtime/` | 固定版本依赖、Android 兼容桩与启动兼容源码 |
 | `home-template/` | 空白 phone profile，中文界面，无账号数据 |
 | `scripts/` | 可移植资源生成与个人配置导出脚本 |
@@ -152,7 +152,7 @@ node --test phone-account/*.test.js phone-qq/*.test.js scripts/*.test.mjs peer/*
 
 ### 0.1.10：AutoClaw 账号入口
 
-Jet Hub 增加 AutoClaw (智谱) 图标卡片。点击「+ 新建账号」后直接填写自己的手机号和短信验证码；无需依赖电脑上的 AutoClaw。登录成功后读取该账号的官方模型目录和积分，支持账号去重、自动续期及模型开关。ZCode 入口保留。操作与实现边界见 [AutoClaw 说明](vendor/dsh-codearts-auth/docs/autoclaw.md)。
+Jet Hub 增加 AutoClaw (智谱) 图标卡片。点击「+ 新建账号」后直接填写自己的手机号和短信验证码；无需依赖电脑上的 AutoClaw。登录成功后读取该账号的官方模型目录和积分，支持账号去重、自动续期及模型开关。ZCode 入口保留。操作与实现边界见 [AutoClaw 说明](vendor/dsh-providers-hub/docs/autoclaw.md)。
 
 验证码不写入本地存储；公开源码不含个人手机号、账号令牌或验证码。该入口已做离线协议与消息测试，真实短信登录和模型调用仍需使用者完成。新版首次打开会更新资源（ASSET_VERSION 14），保留原账号和会话。
 

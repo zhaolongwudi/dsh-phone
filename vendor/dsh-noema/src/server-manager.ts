@@ -139,10 +139,19 @@ export class NoemaServerManager {
     if (!config.enabled || !config.keepAlive) return
     if (now - this.lastKeepAliveCheckAt < config.keepAliveIntervalMs) return
     this.lastKeepAliveCheckAt = now
-    if (this.client?.state !== 'exited') return
-    const sinceExit = now - (this.client.exitAt ?? now)
-    if (sinceExit < config.restartDelayMs) return
-    this.logger?.warn('dsh-noema keep-alive: memory server exited; restarting in the background')
+    // ⚠️ 本地修复（手机版）：原判据 `this.client?.state !== 'exited'` 在 **client 为 undefined**
+    //    时同样 return —— 于是「从未成功启动过」「启动失败」「被 stop() 清掉」三种情况都
+    //    永远不会被 keepAlive 拉起，表现为「记忆服务器每次启动都是停止的，只能手动重启」。
+    //    这里把「无 client」也纳入重试：仍遵守 restartDelayMs，避免启动失败时高频重试。
+    const state = this.client?.state
+    if (state === 'starting' || state === 'running') return
+    const sinceStop = state === 'exited'
+      ? now - (this.client?.exitAt ?? now)
+      : now - this.lastStopAt
+    if (sinceStop < config.restartDelayMs) return
+    this.logger?.warn(state === 'exited'
+      ? 'dsh-noema keep-alive: memory server exited; restarting in the background'
+      : 'dsh-noema keep-alive: memory server not running; starting it in the background')
     await this.ensureRunning()
     this.logger?.info('dsh-noema keep-alive: memory server restarted')
   }
@@ -230,6 +239,9 @@ export class NoemaServerManager {
       }
     } catch (error) {
       server = { error: error instanceof Error ? error.message : String(error) }
+    }
+    if (this.client !== client || client.state !== 'running') {
+      return { ok: false, state: 'stopped', lastError: 'Noema memory server stopped during the status request' }
     }
     return {
       ok: true,

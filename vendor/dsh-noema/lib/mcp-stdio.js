@@ -152,6 +152,14 @@ export class McpStdioClient {
         });
         this.child = child;
         this.state = 'starting';
+        // Writable streams emit `error` as well as invoking the write callback.
+        // An exiting child can close stdin between the state check and write;
+        // handling only its callback still leaves an uncaught EPIPE event.
+        child.stdin.on('error', error => {
+            this.rejectPending(new McpStdioError('Noema MCP stdin failed: ' + error.message, { cause: error }));
+            this.state = 'exited';
+            void this.dispose().catch(() => { });
+        });
         this.exitCode = undefined;
         this.exitSignal = undefined;
         await new Promise((resolve, reject) => {
@@ -268,17 +276,37 @@ export class McpStdioClient {
                     reject(error);
                 },
             });
-            this.send({ jsonrpc: '2.0', id, method, params });
+            try {
+                this.send({ jsonrpc: '2.0', id, method, params }, error => {
+                    // A write to a closed stdin (server exited mid-request) surfaces
+                    // through the write callback, never as an uncaught EPIPE throw.
+                    if (!this.pending.delete(id))
+                        return;
+                    clearTimeout(timer);
+                    signal?.removeEventListener('abort', onAbort);
+                    reject(new McpStdioError('Noema MCP ' + method + ' failed: ' + error.message, { cause: error }));
+                });
+            }
+            catch (error) {
+                if (!this.pending.delete(id))
+                    return;
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+                reject(error instanceof Error ? error : new McpStdioError(String(error)));
+            }
         });
     }
     notify(method, params) {
         this.send({ jsonrpc: '2.0', method, ...(params === undefined ? {} : { params }) });
     }
-    send(message) {
+    send(message, onWriteError) {
         const child = this.child;
         if (child === undefined)
             throw new McpStdioError('Noema memory server is not running');
-        child.stdin.write(JSON.stringify(message) + '\n');
+        child.stdin.write(JSON.stringify(message) + '\n', error => {
+            if (error !== null && error !== undefined)
+                onWriteError?.(error);
+        });
     }
     rejectPending(error) {
         for (const [, pending] of this.pending)

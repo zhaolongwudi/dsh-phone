@@ -2,7 +2,21 @@
 (() => {
   if (window.__dshPhonePresentation) return;
   window.__dshPhonePresentation = true;
-  const media = window.matchMedia('(max-width: 700px)');
+  // 手机形态断点：**本层自己的形态阈值**，与 dsh-phone.css 的 @media 必须一致。
+  // 原先写死 700px，会在 701-767px 区间出现「本层 JS 已按手机排、但其它消费方没按」
+  // 的半态（横屏手机、小尺寸平板）。
+  //
+  // ⚠️ 2026-10-13 订正：原注释称「对齐上游框架自己的阈值（右栏在 768px 以下转全屏滑入）」，
+  //    实测**该依据不成立**：
+  //      · 上游布局层的唯一宽度阈值是 SIDEBAR_AUTO_COLLAPSE = **1024**，语义是
+  //        「侧栏自动折叠」，不是「手机形态」；
+  //      · 上游的 rightbarFullscreen 是 openRightbar(track, fullscreen) 的**入参**，
+  //        不按视口宽度自动判断；
+  //      · 上游前端 CSS 的 max-width 断点是 170/320/360/480，**没有 767/768**。
+  //    故 767 是**本层自定**的形态阈值（取 768-1 以落在常见 768 桌面断点内侧），
+  //    与上游无对齐关系。保留该值：它在实测中 JS 与 CSS 两侧行为完全一致（见 §9.18）。
+  const MOBILE_FORM_MAX_WIDTH = 767;
+  const media = window.matchMedia(`(max-width: ${MOBILE_FORM_MAX_WIDTH}px)`);
   const fileReceivers = new WeakMap();
   // These two same-origin settings documents have a natural-height body.
   // Measure that body, not documentElement.scrollHeight (which is at least
@@ -73,34 +87,123 @@
       if (notice) { notice.style.display = 'block'; notice.textContent = error.message; }
     }
   }, true);
+  // ===== 形态标记层（单一真源）=====
+  // 上游组件的 CSS Module 类名是构建期哈希（如 .pI_x6G_frame），随上游升级整块
+  // 失效且**静默**（页面照常渲染，只是样式不再命中）。本层把「当前是什么形态/
+  // 什么状态」发布成稳定的 data-dsh-* 事实，样式只消费这些事实，不再逐块去猜
+  // 上游哈希。事实由本文件自己写、自己维护，上游改哈希不影响它们的语义。
+  //
+  // 发布的事实（消费方见 dsh-phone.css 与 ui-anchors.json）：
+  //   html[data-dsh-mobile-form]        窄屏形态（镜像 MOBILE_FORM_MAX_WIDTH）
+  //   [data-dsh-frame]                  上游框架根（其右栏带 data-rightbar-col）
+  //   html[data-dsh-modal-open]         有页面级模态在场
+  //   [data-dsh-rail]                   侧栏（抽屉容器；上游只给哈希类名）
+  //   [data-dsh-settings-dialog]        设置面板本体
+  //   html[data-dsh-settings-open]      设置面板在场（窄屏下需钉住抽屉）
+  // 发布「存在性」属性的容错工具。
+  // ⚠️ 不用 toggleAttribute：那是 Chrome 69+ 的 API，本层兼容面没问题，但**上游既有
+  //    测试的 document 垫片**（phone-qq/presentation.test.js）只给了 { style }，
+  //    没有该方法 ⇒ 本层一调就抛错，把上游测试打红（实测）。改用 has/set/remove
+  //    三元组合，对最简垫片也成立；并且整段做容错，垫片缺方法也不影响主流程。
+  const syncFlag = (el, name, on) => {
+    if (!el) return
+    try {
+      if (on) { if (el.setAttribute) el.setAttribute(name, '') }
+      else { if (el.removeAttribute) el.removeAttribute(name) }
+    } catch { /* 极简垫片下静默跳过：事实发布失败不应影响主流程 */ }
+  }
+
+  const FRAME_TAG = 'data-dsh-frame';
+  const SETTINGS_TAG = 'data-dsh-settings-dialog';
+  const RAIL_TAG = 'data-dsh-rail';
+  let markedFrame = null, markedDialog = null, markedRail = null;
+  // 抽屉「上一轮的打开状态」。adapt() 会被 MutationObserver 高频重入，只有跨调用
+  // 记住上一态才能识别**上升沿**（刚被打开），从而只在那一次展开折叠侧栏 ——
+  // 否则用户手动折叠侧栏后会被立刻弹回来（见 adapt() 内注释）。
+  let drawerWasOpen = false;
+  const markForm = () => syncFlag(document.documentElement, 'data-dsh-mobile-form', media.matches);
+  const markDom = () => {
+    // 框架根：上游只给右栏稳定的 data-rightbar-col，框架根自身没有钩子，
+    // 故由右栏反查父元素；框架重挂时重新打标。
+    const frame = document.querySelector('[data-rightbar-col]')?.parentElement ?? null;
+    if (frame !== markedFrame) { try { markedFrame?.removeAttribute(FRAME_TAG) } catch {} ; markedFrame = frame; try { frame?.setAttribute(FRAME_TAG, '') } catch {} }
+    // 侧栏同样打标：上游只给它哈希类名（无语义属性），而本层有 4 条规则锚在它上面。
+    // 与框架根同法（只增不减：保留哈希选择器兜底），上游改名后本层照常工作。
+    const rail = frame?.querySelector('[data-dsh-rail], .pI_x6G_sidebarCol') ?? null;
+    if (rail !== markedRail) { try { markedRail?.removeAttribute(RAIL_TAG) } catch {} ; markedRail = rail; try { rail?.setAttribute(RAIL_TAG, '') } catch {} }
+    // 设置面板：上游给它稳定的 data-shortcut-modal="settings"（0.2.1-alpha.1 实测），
+    // 比按「含 :scope > nav」猜结构更可靠；保留结构判据作跨版本兜底。
+    //
+    // ⚠️ 识别刻意**不**受下方的覆盖层过滤影响：设置面板是否渲染在 [data-shell-overlay]
+    // 之内是实现细节（当前是 portal 到 body，但上游可改），若把它一并过滤掉，
+    // settings-open 会静默地永不发布 —— 那种失效没有报错，只有窄屏下抽屉不被钉住。
+    // 故先在文档全体里按稳定标记找设置面板，再单独算「页面级模态」。
+    const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')];
+    const settings = document.querySelector('[data-shortcut-modal="settings"]')
+      ?? dialogs.find(d => d.querySelector(':scope > nav') !== null) ?? null;
+    if (settings !== markedDialog) { try { markedDialog?.removeAttribute(SETTINGS_TAG) } catch {} ; markedDialog = settings; try { settings?.setAttribute(SETTINGS_TAG, '') } catch {} }
+    // 「页面级模态」= 不在框架自有覆盖层里的对话框。框架覆盖层里的浮层（本层自己
+    // 的导出结果弹窗、上游的浮层）不是盖住侧栏的模态，不能用来钉抽屉。
+    const pageDialogs = dialogs.filter(d => d.closest('[data-shell-overlay]') === null);
+    syncFlag(document.documentElement, 'data-dsh-modal-open', pageDialogs.length > 0);
+    syncFlag(document.documentElement, 'data-dsh-settings-open', settings !== null);
+  };
   const adapt = () => {
+    markForm(); markDom();
     // Some WebViews resize only the visual viewport when an IME opens. Keep
     // the chat frame inside that visible area; native insets handle Android's
     // edge-to-edge window. Ignore pinch zoom so it does not reflow the app.
+    //
+    // ⚠️ 2026-10-18（UI 实用性审查 U-02）：这段原先**只在窄屏**发布该事实，于是宽屏
+    //    （折叠屏展开/平板；本机实测视口 1212×655）在键盘弹出时没有任何消费方 ——
+    //    而原生是给根视图加 IME padding、**不缩 WebView 的布局视口**（MainActivity.kt:436-445
+    //    注释明说两种形态都走这条），上游高度链照旧按整屏算 ⇒ 输入区被顶到可视区外。
+    //    用户报障「打字时被挤或看不到」正是此形态。
+    //    反证已查：上游**完全不处理** visualViewport（全引擎树 0 命中）⇒ 这层只能由本层补。
+    // 发布条件（宽屏刻意收紧）：窄屏照旧「总是发布」（页面高度由本层接管）；
+    //    宽屏**只在可视高度确实被压缩时**发布 ⇒ 无键盘时不发布，宽屏行为与上游原样一致
+    //    （PC 浏览器同理：那里 innerHeight 与 visualViewport.height 相等，不会发布）。
     const viewport = window.visualViewport;
-    const height = viewport && Math.abs(viewport.scale - 1) < 0.05
-      ? Math.min(window.innerHeight, viewport.height) : window.innerHeight;
-    if (media.matches && height > 0) document.documentElement.style.setProperty('--dsh-phone-viewport-height', height + 'px');
+    const zoomOk = viewport && Math.abs(viewport.scale - 1) < 0.05;
+    const height = zoomOk ? Math.min(window.innerHeight, viewport.height) : window.innerHeight;
+    const imeShrunk = zoomOk && viewport.height < window.innerHeight - 1;
+    if (height > 0 && (media.matches || imeShrunk)) document.documentElement.style.setProperty('--dsh-phone-viewport-height', height + 'px');
     else document.documentElement.style.removeProperty('--dsh-phone-viewport-height');
     fitSettingsEmbeds();
-    const frame = document.querySelector('.pI_x6G_frame'), rail = frame?.querySelector('.pI_x6G_sidebarCol');
+    // 框架根：优先读一期发布的 [data-dsh-frame] 事实（adapt 内先跑标记层，此时已就位），
+    // 保留哈希作跨版本回退 —— 两者指向同一元素，任一命中即可。
+    const frame = document.querySelector('[data-dsh-frame], .pI_x6G_frame'),
+      rail = frame?.querySelector('[data-dsh-rail], .pI_x6G_sidebarCol');
     if (frame && rail) {
+      // 三期接管判断：槽位组件（DrawerMask）挂载成功后会在 html 上发布
+      // data-dsh-mask-mounted 事实。此时本层**让出遮罩职责** —— 不创建本地遮罩，
+      // 并把已存在的本地遮罩隐藏（它在 DOM 里仍是可点击区域，会与组件遮罩重叠）。
+      //
+      // 组件没渲染 ⇒ 事实缺失 ⇒ 本地实现照常工作。两种结果都安全，
+      // 这是「不确认槽通道可用就不删本地实现」的落地方式（见 client-source.js 注释）。
+      const maskTakenOver = document.documentElement.hasAttribute('data-dsh-mask-mounted');
+      const localMask = document.querySelector('.dsh-phone-sidebar-mask');
+      if (localMask) localMask.hidden = maskTakenOver;   // 接管后隐藏；未接管保持原状
+
       let menu = document.querySelector('.dsh-phone-menu');
       if (!menu) {
         menu = document.createElement('button'); menu.className = 'dsh-phone-menu'; menu.type = 'button';
-        menu.textContent = '☰ 菜单'; menu.setAttribute('aria-label', '展开菜单'); menu.setAttribute('aria-expanded', 'false');
+        // 2026-10-18 用户报障「与邻居尺寸·字体·圆角不搭」：可见文字只留符号（原 '☰ 菜单'），
+        // 按钮退成方形图标（规格见 dsh-phone.css 的 .dsh-phone-menu）。可访问名不靠可见
+        // 文字 —— 仍由 aria-label 提供，故去掉文字不影响读屏与既有测试判据。
+        menu.textContent = '☰'; menu.setAttribute('aria-label', '展开菜单'); menu.setAttribute('aria-expanded', 'false');
         rail.id ||= 'dsh-phone-sidebar'; menu.setAttribute('aria-controls', rail.id);
-        const mask = document.createElement('button'); mask.className = 'dsh-phone-sidebar-mask'; mask.type = 'button'; mask.setAttribute('aria-label', '收起菜单');
+        const mask = document.createElement('button'); mask.className = 'dsh-phone-sidebar-mask'; mask.type = 'button';
+        // 若槽位组件已接管，本地遮罩直接保持隐藏（不参与交互）。
+        if (maskTakenOver) mask.hidden = true; mask.setAttribute('aria-label', '收起菜单');
         const show = open => {
-          document.body.classList.toggle('dsh-phone-menu-open', open);
-          const dialog = !!rail.querySelector('.VOzbGW_overlay');
-          rail.classList.toggle('dsh-phone-dialog-open', dialog);
+          // 抽屉开合的唯一真源：html 上的 DOM 事实（槽位组件与后续迁移的控件都读它）。
+          syncFlag(document.documentElement, 'data-dsh-drawer-open', open);
+          const dialog = document.documentElement.hasAttribute('data-dsh-settings-open');
           rail.inert = !open && !dialog; rail.setAttribute('aria-hidden', String(!open && !dialog));
           menu.setAttribute('aria-expanded', String(open)); menu.setAttribute('aria-label', open ? '收起菜单' : '展开菜单');
-          const collapsed = frame.hasAttribute('data-sidebar-collapsed');
-          if (open && collapsed) rail.querySelector('.hHd-Xa_toggle')?.click();
         };
-        menu.onclick = () => show(!document.body.classList.contains('dsh-phone-menu-open'));
+        menu.onclick = () => show(!document.documentElement.hasAttribute('data-dsh-drawer-open'));
         mask.onclick = () => show(false);
         rail.addEventListener('click', event => {
           const target = event.target.closest('button,a,.YDXeBa_sessionRow');
@@ -109,11 +212,72 @@
         document.addEventListener('keydown', event => { if (media.matches && event.key === 'Escape') show(false); });
         document.body.append(menu, mask);
       }
-      const open = media.matches && document.body.classList.contains('dsh-phone-menu-open');
-      const dialog = media.matches && !!rail.querySelector('.VOzbGW_overlay');
-      rail.classList.toggle('dsh-phone-dialog-open', dialog);
+      const open = media.matches && document.documentElement.hasAttribute('data-dsh-drawer-open');
+      const dialog = media.matches && document.documentElement.hasAttribute('data-dsh-settings-open');
       menu.hidden = !media.matches; rail.inert = media.matches && !open && !dialog;
-      if (media.matches) rail.setAttribute('aria-hidden', String(!open && !dialog)); else { rail.removeAttribute('aria-hidden'); document.body.classList.remove('dsh-phone-menu-open'); }
+      if (media.matches) rail.setAttribute('aria-hidden', String(!open && !dialog)); else { rail.removeAttribute('aria-hidden'); document.documentElement.removeAttribute('data-dsh-drawer-open'); }
+
+      // ⚠️ 打开抽屉时，必须一并**展开**上游那个处于折叠态的侧栏。
+      //
+      // 症状（用户报障）：窄屏点「菜单」后，抽屉确实打开了（背景已灰化、图标列出现），
+      // 但内容停在**折叠态** —— 左边只有图标条，右边一大片空白，得再点一次侧栏里那个
+      // 小图标才出完整菜单。
+      //
+      // 真因：本层 CSS 把侧栏宽度强制成 min(280px,86vw)，而上游折叠态只渲染 ~56px 的
+      // 图标列 ⇒ 容器 280px、内容 56px，差额就是那片空白。
+      // 而「展开」这段原先只写在**旧自绘按钮专属**的开合函数里；三期把开关迁进槽位后，
+      // 槽位组件只翻转 data-dsh-drawer-open 事实、不碰上游折叠状态 ⇒ 走新开关时
+      // 这段永不执行。
+      //
+      // 修法：挂到「抽屉刚被打开」这个**边沿**上（而非某个按钮的点击），两种开关与
+      // 后续任何写入者都自动覆盖 —— 符合本层既有契约（状态只有一个写入者，副作用
+      // 按状态统一施加）。
+      // 用**上升沿**而非「open && collapsed」持续条件：后者会在用户手动折叠侧栏时
+      // 立刻把它弹回来，形成「点了没反应」的新死按钮（同一个坑，不再踩第二次）。
+      // 判据用上游成文属性 data-sidebar-collapsed，而非容器的折叠类名
+      // （后者是 CSS Module 构建期哈希，随上游改名即失效 —— 且按本仓库约定，
+      //   哈希类名不写进注释：写了会被 check-ui-anchors 当成「未登记哈希」而误报）。
+      if (open && !drawerWasOpen && frame.hasAttribute('data-sidebar-collapsed')) {
+        const railToggle = rail.querySelector('.hHd-Xa_toggle');
+        if (railToggle && typeof railToggle.click === 'function') railToggle.click();
+      }
+      drawerWasOpen = open;
+
+      // 三期：开关若已迁入槽位（header.leading），由**本层**统一同步它的 aria 状态。
+      // 为什么不让组件自己同步：开合可来自三处（旧按钮 / 遮罩 / Escape / 槽位按钮），
+      // 若每个写入者都各自更新自己的 aria，就会出现「点了遮罩、开关的 aria 没翻」
+      // 这类不一致。沿用既有契约——**状态的唯一写入者是形态层**，组件只翻转事实。
+      const slotToggle = document.querySelector('.dsh-phone-menu-slot');
+      if (slotToggle) {
+        // ⚠️ 宽屏下这枚开关原本是**死按钮**（用户报障：「全屏以后，菜单按键完全是
+        //    不好使的」）。真因：它的 onClick 只翻转 data-dsh-drawer-open（见
+        //    client-source.js 的 DrawerToggle），而上面那行在非窄屏会立即把该属性
+        //    清掉（「抽屉」这个概念只存在于窄屏）⇒ 翻转被**当场撤销**，视觉上毫无
+        //    反应。设备实测：点击后属性日志为「(无)→有 ×2 →(有)→无 ×2」，确证。
+        //    上游在宽屏把侧栏当**常驻列**，并自带 .hHd-Xa_toggle 负责折叠/展开
+        //    （设备实测可点、有效）。故宽屏下把这枚按钮**代理**给上游开关，
+        //    语义统一为「切换侧栏显隐」——两种宽度下都名副其实，而不是删掉了事。
+        // 只在宽屏代理：窄屏必须走 data-dsh-drawer-open 事实通道，不能被劫持。
+        // 捕获阶段 + stopPropagation：免得槽位组件的 onClick 再翻一次属性
+        // （宽屏下那次翻转纯属噪声，且违背「状态只有一个写入者」的契约）。
+        if (!media.matches && !slotToggle.__dshWideProxy) {
+          slotToggle.__dshWideProxy = true;
+          slotToggle.addEventListener('click', event => {
+            if (media.matches) return;
+            event.stopPropagation();
+            const railToggle = rail.querySelector('.hHd-Xa_toggle');
+            if (railToggle && typeof railToggle.click === 'function') railToggle.click();
+          }, true);
+        }
+        // aria 必须如实描述**当前**行为：窄屏管抽屉、宽屏管侧栏显隐。
+        // 若沿用旧的「只按 open 判断」，宽屏下会恒为「展开菜单」——侧栏明明是展开的，
+        // 屏幕阅读器读到的却是「展开」，等于说谎。
+        const slotExpanded = media.matches ? open : !frame.hasAttribute('data-sidebar-collapsed');
+        slotToggle.setAttribute('aria-expanded', String(slotExpanded));
+        slotToggle.setAttribute('aria-label', media.matches
+          ? (slotExpanded ? '收起菜单' : '展开菜单')
+          : (slotExpanded ? '收起侧边栏' : '展开侧边栏'));
+      }
     }
     document.querySelectorAll('[data-composer-card]').forEach(card => {
       const tools = card.querySelector('.uV2eYG_tools'), input = card.querySelector('textarea,[role=textbox][contenteditable]');
@@ -121,10 +285,16 @@
       const button = document.createElement('button'), picker = document.createElement('input');
       button.type = 'button'; button.className = 'dsh-phone-feed'; button.textContent = '投喂技能';
       button.title = '选择技能 ZIP、Markdown 或 TXT，自动导入共享技能';
-      button.style.cssText = 'border:0;border-radius:8px;padding:4px 7px;background:#eaf2ff;color:#2563eb;font:12px system-ui;white-space:nowrap';
+      // 2026-10-18 配色/字体收口（用户报障「尺寸·字体·圆角与邻居不搭」的同类遗留）：
+      // 原先写死 `background:#eaf2ff;color:#2563eb;font:12px system-ui` —— 暗色主题下仍是
+      // 浅蓝底深蓝字，且 system-ui 与本层/上游的字体栈不同族。改用 DSH 主题 token
+      // （保留原值作 fallback，与本文件既有写法一致），字号仍锁 12px：输入区工具行
+      // 有 max-width:36px 的收口（见 dsh-phone.css），放大字号会把「上传」顶出布局。
+      // 同批还有：下面 notice 的文字色、ChatGPT 会员提示、dsh-phone.css 的远程徽标。
+      button.style.cssText = 'border:0;border-radius:8px;padding:4px 7px;background:var(--dsw-alias-button-primary-dimmed,#eaf2ff);color:var(--dsw-alias-button-info-fill,#2563eb);font-family:inherit;font-size:12px;white-space:nowrap';
       picker.type = 'file'; picker.className = 'dsh-phone-skill-picker'; picker.accept = '.zip,.md,.txt,application/zip,application/x-zip-compressed,text/plain,text/markdown'; picker.hidden = true;
       const notice = document.createElement('small'); notice.setAttribute('role', 'status');
-      notice.style.cssText = 'display:none;padding:4px 14px;color:#2563eb;overflow-wrap:anywhere';
+      notice.style.cssText = 'display:none;padding:4px 14px;color:var(--dsw-alias-button-info-fill,#2563eb);overflow-wrap:anywhere';
       card.append(notice); tools.append(button, picker);
       const uploadButton = document.createElement('button'), uploadPicker = document.createElement('input');
       uploadButton.type = 'button'; uploadButton.className = 'dsh-phone-upload'; uploadButton.textContent = '上传';
@@ -293,16 +463,15 @@
       badge.textContent = '电脑 · ' + (window.__dshPeerName || '家里的电脑'); badge.title = badge.textContent + '，任务在电脑执行；点击返回手机';
       badge.href = 'http://127.0.0.1:3080/'; document.body.append(badge); document.body.classList.add('dsh-peer-remote');
     }
-    document.body.classList.toggle('dsh-phone-mobile', media.matches);
     document.querySelectorAll('[data-composer-card]').forEach(card => {
       const usingPlan = card.querySelector('._7KE1Ra_trigger')?.title.includes(' · ChatGPT 会员');
       let notice = card.querySelector('.dsh-phone-chatgpt-plan');
       if (!usingPlan) { notice?.remove(); return; }
       if (notice) { const target = media.matches ? card.querySelector('.dsh-phone-composer-options') || card : card; if (notice.parentElement !== target) target.append(notice); return; }
       notice = document.createElement('small'); notice.className = 'dsh-phone-chatgpt-plan';
-      notice.style.cssText = 'display:block;padding:4px 14px;color:#626b78';
+      notice.style.cssText = 'display:block;padding:4px 14px;color:var(--dsw-alias-label-secondary,#626b78)';
       const usage = document.createElement('a'); usage.href = 'https://chatgpt.com/settings/usage'; usage.textContent = '管理用量';
-      usage.style.cssText = 'color:#2563eb;margin-left:10px';
+      usage.style.cssText = 'color:var(--dsw-alias-button-info-fill,#2563eb);margin-left:10px';
       notice.append(document.createTextNode('正在使用你的 ChatGPT 会员方案'), usage);
       (media.matches ? card.querySelector('.dsh-phone-composer-options') || card : card).append(notice);
     });
@@ -324,6 +493,11 @@
     });
     // Jet Hub's right-aligned quota panel crosses the left edge when its
     // trigger sits beside the upload button. Fit it to the visible composer.
+    // ⚠️ Issue F-19：下面这段（以及本文件与 dsh-phone.css 里全部 .dim-jh-* 选择器）
+    // 依赖的是**插件侧产出**的类名（dsh-providers-hub 的 plugin-src/client）。
+    // 这类跨层依赖已显式登记在 app/src/main/assets/phone-plugin-contract.json，
+    // 由 scripts/check-plugin-contract.mjs 做构建期门禁 —— 插件侧改名/删除会报红，
+    // 而不是像 F-15/F-16 那样静默失效。**新增任何 .dim-jh-* 依赖时先登记再引用。**
     document.querySelectorAll('.dim-jh-badge,.dsh-phone-composer-more').forEach(root => {
       const prefix = '--dsh-phone-popover-';
       if (!media.matches) { ['left','width','height'].forEach(key => root.style.removeProperty(prefix+key)); return; }
@@ -369,7 +543,14 @@
   };
   let pending = false;
   const queue = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; adapt(); }); };
-  new MutationObserver(queue).observe(document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['aria-selected','title'] });
+  // 观察根节点而非 body：设置面板与模态可能以 portal 形式挂在 body 之外，
+  // 且开关常表现为属性变化（aria-modal / data-shortcut-modal），故一并纳入过滤。
+  new MutationObserver(queue).observe(document.documentElement, {
+    childList:true, subtree:true, attributes:true,
+    // data-dsh-drawer-open 必须纳入观察：三期之后**槽位组件**也会写它
+    // （点遮罩关闭），若 adapt() 不重跑，rail.inert / aria-hidden /
+    // menu[aria-expanded] 会与视觉状态错位（实测分析得出）。
+    attributeFilter:['aria-selected','title','aria-modal','data-shortcut-modal','data-dsh-drawer-open'] });
   media.addEventListener('change', queue); window.addEventListener('resize',queue); document.addEventListener('focusin',queue);
   window.visualViewport?.addEventListener('resize',queue); window.visualViewport?.addEventListener('scroll',queue); adapt();
 })();

@@ -856,7 +856,7 @@ scripts/build-agent-cards-client.mjs 的产出表：
 两者都由同一份 peer/agent-cards/client-source.js 生成
 
 profile bundles（实际加载清单）：
-  @deepseek-ai/dsh-base / dsh-web-app / dsh-codearts-auth
+  @deepseek-ai/dsh-base / dsh-web-app / dsh-providers-hub
   dsh-phone-account / dsh-phone-qq / @zseven-w/dsh-noema
 ```
 
@@ -1644,7 +1644,7 @@ header `40px` 高（未变）。
   `"DeepSeek V4.1 Flash · 最低 免费 · 高"`，证明页面确实知道模型）。
 - 上游 schema 里该字段是有的（`dsh-api-remotes` 的 zod：`modelSelection.lastUsed/next`
   含 `provider` + `model`），但当前会话的 projection 面**没有填充**它。
-- 唯一现成来源是本层自己的 provider 表（`dsh-codearts-auth` 的 `PROVIDERS` 含
+- 唯一现成来源是本层自己的 provider 表（`dsh-providers-hub` 的 `PROVIDERS` 含
   `{ id: "chatgpt-plan", label: "ChatGPT 会员" }`），但它未暴露到前端可读面。
 - ⇒ 现有实现（读 title）虽锚哈希但**能工作**；换成拿不到事实的新座位会更糟。
   该哈希已在 `ui-anchors.json` 登记并受门禁保护。

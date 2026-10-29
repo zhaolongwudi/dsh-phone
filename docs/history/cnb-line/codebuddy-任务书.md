@@ -513,7 +513,7 @@ Gemini OAuth 密钥兜底等，清单内有逐项说明）。
 两点注意：
 
 1. 清单内文件收不到上游对它们的更新；需要跟进时人工对照上游改动手工合并。
-2. 清单外的文件（如 `vendor/dsh-codearts-auth/` 下的 Jet Hub 源码）正常
+2. 清单外的文件（如 `vendor/dsh-providers-hub/` 下的 Jet Hub 源码）正常
    三方合并：上游改、本地没改的部分自动取上游；双方都改过的文件若冲突，
    同步任务会失败并列出文件，**人工合并时不要简单 `checkout --ours`**，
    否则会丢掉上游功能（例如「在用模型」胶囊定制与上游面板大改重叠时，
@@ -704,7 +704,7 @@ python3 -m py_compile ci/notify-mail.py && echo "notify-mail.py 语法正确"
 #   * 每行一个路径，相对仓库根；可写目录（如 ci/），整目录生效。
 #   * # 开头为注释行，空行忽略。
 #   * 只放「本仓库自有、不跟随上游」的定制；想继续接收上游更新的文件
-#     不要放进来（例如 vendor/dsh-codearts-auth/ 下的上游插件源码）。
+#     不要放进来（例如 vendor/dsh-providers-hub/ 下的上游插件源码）。
 #   * 清单内文件因此收不到上游对它们的更新；需要跟进时请人工对照上游
 #     改动手工合并，再更新本仓库版本。
 #
@@ -713,7 +713,7 @@ python3 -m py_compile ci/notify-mail.py && echo "notify-mail.py 语法正确"
 #   scripts/prepare-native.py      本仓库对 Termux 包下载加重试与超时的加固
 #   scripts/prepare-node-android.py、native/termux-node.json
 #                                  本仓库的 Android arm64 Node 运行时准备脚本
-#   vendor/dsh-codearts-auth/src/gemini-oauth.ts
+#   vendor/dsh-providers-hub/src/gemini-oauth.ts
 #                                  保留内置 Google OAuth 客户端兜底；GitHub
 #                                  公开上游已把该文件改为必须显式设置
 #                                  CMDC_PAK_GOOGLE_CLIENT_ID/SECRET 环境变量，
@@ -724,7 +724,7 @@ ci/
 scripts/prepare-native.py
 scripts/prepare-node-android.py
 native/termux-node.json
-vendor/dsh-codearts-auth/src/gemini-oauth.ts
+vendor/dsh-providers-hub/src/gemini-oauth.ts
 \`\`\`
 
 ### 提交要求

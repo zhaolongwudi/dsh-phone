@@ -132,6 +132,11 @@ const Config = z.object({
 * cached rows for a session header. Every durable write is fail-soft:
 * failures log a warning and the cache self-heals on the next write.
 */
+/** ⚠️ Issue F-63：内存里的永久删除标记上限（与 `dsh-api-session-controller` 同口径）。
+    `removePermanently` 只增不减，永久删除次数多了会让 Set 无界增长；
+    超出后按插入序淘汰最旧一条 —— 该集合只用于「删除窗口内抑制写入」，
+    淘汰旧条目不影响正确性（会话已不在 dirty 里，也不会再被 put）。 */
+const MAX_TRACKED_DELETED_IDS = 4096;
 var SessionProjectionCache = class extends Service {
 	config;
 	static inject = [
@@ -142,7 +147,14 @@ var SessionProjectionCache = class extends Service {
 	static Config = Config;
 	table;
 	deletedIds = new Set();
-	async removePermanently(id) { this.deletedIds.add(id); for (const [session] of this.dirty) if (session.id === id) { this.markClean(session); this.dirty.delete(session); } await this.requireTable().delete(id); }
+	async removePermanently(id) {
+		/* ⚠️ Issue F-63：先删后加保证插入序 = 最近写入序，淘汰最旧一条时才有确定语义。 */
+		this.deletedIds.delete(id);
+		this.deletedIds.add(id);
+		if (this.deletedIds.size > MAX_TRACKED_DELETED_IDS) this.deletedIds.delete(this.deletedIds.values().next().value);
+		for (const [session] of this.dirty) if (session.id === id) { this.markClean(session); this.dirty.delete(session); }
+		await this.requireTable().delete(id);
+	}
 	dirty = /* @__PURE__ */ new Map();
 	constructor(ctx, config) {
 		super(ctx, "sessionProjectionCache");
@@ -312,6 +324,9 @@ var SessionProjectionCache = class extends Service {
 			}, this.config.writeIntervalMs);
 		});
 		this.ctx.on("session/created", (session) => {
+			/* ⚠️ Issue F-63：同 id 被删除后重建时，旧 tombstone 会让 put() 永久短路该 id 的写入
+			   （该会话的投影缓存终身失效）。重建即撤销墓碑；删除窗口内的写入仍照旧被抑制。 */
+			this.deletedIds.delete(session.id);
 			this.flushSoft(session, "create");
 		});
 		this.ctx.on("session/disposed", (session) => {
