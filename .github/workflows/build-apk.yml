@@ -149,7 +149,10 @@ jobs:
       - name: 组装运行时资源
         run: |
           cd runtime
-          pnpm install --frozen-lockfile --ignore-scripts
+          # ⚠️ 用 --no-frozen-lockfile：包名从 dsh-codearts-auth 改为 dsh-providers-hub 后，
+          #    lockfile 里的别名形态会让 pnpm 装出的目录名与期待不一致（CI 实测缺 dsh-providers-hub/）。
+          #    这里让 pnpm 依 runtime/package.json 重算（workspace 内的 lock 由 CI 生成，不入库）。
+          pnpm install --no-frozen-lockfile --ignore-scripts
           cd ..
           python3 scripts/build-assets.py
           ls -l app/src/main/assets/ | head

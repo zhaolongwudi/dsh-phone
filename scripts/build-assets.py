@@ -16,8 +16,19 @@ ASSETS = ROOT / 'app/src/main/assets'
 BUNDLES = ('dsh-our-free-model', 'dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center')
 
 
+def bundle_source(name):
+    """已装包优先；装出的目录名与包名不一致时回退到仓库内的源目录。"""
+    installed = MODULES / name
+    if (installed / 'package.json').is_file():
+        return installed
+    for candidate in (ROOT / 'vendor' / name, ROOT / name):
+        if (candidate / 'package.json').is_file():
+            return candidate
+    return installed
+
+
 def copy_bundle(name, destination, source=None):
-    source = source or MODULES / name
+    source = source or bundle_source(name)
     if name == 'dsh-our-free-model':
         destination.mkdir(parents=True)
         shutil.copytree(source, destination, dirs_exist_ok=True, ignore=shutil.ignore_patterns('node_modules', '.DS_Store', '._*'))
