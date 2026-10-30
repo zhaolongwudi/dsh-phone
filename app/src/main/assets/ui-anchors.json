@@ -122,6 +122,10 @@
       "semantic": "layout.sidebar-column",
       "pkg": "dsh-client-ui-layout"
     },
+    ".uV2eYG_activity": {
+      "semantic": "composer.activity-slot",
+      "pkg": "dsh-client-ui-conversation"
+    },
     ".uV2eYG_card": {
       "semantic": "composer.card",
       "pkg": "dsh-client-ui-conversation"
@@ -140,6 +144,10 @@
     },
     ".uV2eYG_row": {
       "semantic": "composer.row",
+      "pkg": "dsh-client-ui-conversation"
+    },
+    ".uV2eYG_standardControls": {
+      "semantic": "composer.standard-controls",
       "pkg": "dsh-client-ui-conversation"
     },
     ".uV2eYG_tools": {

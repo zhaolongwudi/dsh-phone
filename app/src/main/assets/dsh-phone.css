@@ -261,11 +261,44 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
  .uV2eYG_root{padding-bottom:4px!important}
  [data-composer-card],.uV2eYG_card{gap:4px!important;padding-top:6px!important;border-radius:16px!important;font-size:14px!important;line-height:20px!important}
  .uV2eYG_input{padding:4px 12px!important}
- .uV2eYG_row{flex-wrap:nowrap!important;gap:4px!important;padding:0 6px 4px!important}
- .uV2eYG_tools{gap:4px!important;flex:none}
- .uV2eYG_trailing{gap:4px!important;flex:1!important;min-width:0!important}
- .uV2eYG_trailing ._7KE1Ra_root{min-width:0;flex:1}
+ /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-30)：输入区工具行窄屏改**两行网格**。
+    修的是用户报障「下面选择模型按钮已经被挤压没了」——此处原先的一行排布会把它
+    挤到 0 宽（真机实测 360px 视口：._7KE1Ra_root 宽 **0px**、trigger 12px、
+    label 宽 0 / 内容 173px ⇒ 模型名一个字都看不到）。
+    真因是「基准尺寸为 0 + 永不换行」的组合，不是空间不够：
+      · `.uV2eYG_trailing{flex:1}` 即 flex-basis:0 ⇒ 它按 0 宽参加行内摆放，
+        flex 永远判定「放得下」，于是不与右侧 Jet Hub 徽标争行，只在自身内部互挤；
+      · 尾部里徽标是 `flex:0 1 auto`（上限 min(42vw,216px)）、模型根是
+        `flex:1 1 0%` + `min-width:0` ⇒ 徽标按内容占满后，模型根正好被压到 0；
+      · 上游 `observeControlRow()` 的内容自适应兜底也救不了：它按 row.children 的
+        **实际宽度**求和（tools 114 + trailing 191 + gap 4 = 309 = 可用宽 309）
+        ⇒ 判定「放得下」，不置 data-model-compact（连图标态都不给）。
+    改法（只作用于手机形态，≥768px 不受影响）：让这一行长成两行网格 ——
+    第一行 工具 + 徽标，第二行 模型选择器 + 发送。`display:contents` 让 trailing /
+    standardControls 两个**纯布局壳**退箱（上游两者内部无自有语义与背景，退箱不改变
+    其子项的语义与事件），子项直接落到 row 网格上，从而可按格定位：
+      · 第一列 `minmax(0,1fr)`：模型选择器整格撑满（点击面），工具也让开它；
+      · 第二列 `auto`：徽标按内容自适应（上限仍是上游口径 42vw），发送右对齐。
+    实测（同源 iframe 逐宽度注入本段逐字节文本，前 → 后；模型选择器宽度 px）：
+      320：0 → 128.6（文案 100.5/173）｜360：0 → 151.8（文案 121.9/173）
+      400：0 → 184.4（文案 152.1/173）｜430：10.4 → 214.4（整条 173 可见）
+      520：26 → 304.4｜767：26 → 529.4（原先只剩 26px 图标）
+      行高 32 → 76、输入卡片 98 → 138；各档横向溢出均为 0；
+      768 / 1212：前后逐字段完全相同（本段在 `max-width:767px` 内，平板/桌面不受影响）。
+    真机（本机 live 页面，热修块生效）复核：360px 下模型选择器 153.8px、文案 123.8/173。
+    ⚠️ `._7KE1Ra_trigger{width:100%}` 必须保留：网格格子里它是撑满整格的点击面。
+    ⚠️ 本段新引用的两个哈希锚点（.uV2eYG_standardControls / .uV2eYG_activity）已同步
+       登记进 app/src/main/assets/ui-anchors.json，构建期 check-ui-anchors 可查。 */
+ .uV2eYG_row{display:grid!important;grid-template-columns:minmax(0,1fr) auto;gap:4px 6px!important;align-items:center!important;padding:0 6px 4px!important}
+ .uV2eYG_trailing,.uV2eYG_standardControls{display:contents!important}
+ .uV2eYG_tools{grid-area:1/1;gap:4px!important;min-width:0}
+ .uV2eYG_row .dim-jh-badge{grid-area:1/2;justify-self:end;min-width:0}
+ /* 活动槽（streaming 指示等按需渲染）默认空 ⇒ 自身 display:none；有内容时独占第三行，
+    不与会挤的徽标/模型选择器抢格。 */
+ .uV2eYG_activity{grid-area:3/1/4/3;min-width:0}
+ .uV2eYG_trailing ._7KE1Ra_root{grid-area:2/1;min-width:0}
  .uV2eYG_trailing ._7KE1Ra_trigger{max-width:100%!important;width:100%;min-width:0;font-size:12px}
+ .uV2eYG_primary{grid-area:2/2;justify-self:end}
  .uV2eYG_tools>button,.uV2eYG_tools>div>button{min-height:32px;max-width:36px}
  .uV2eYG_tools>.dsh-phone-upload{max-width:none;padding:4px 6px!important;font-size:11px!important}
  .uV2eYG_primary{height:32px!important;transform:none!important}

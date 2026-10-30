@@ -9,7 +9,7 @@
     "5. 插件包版本与下面的 pluginVersion 不一致 ⇒ 门禁报「需复核」（改名多发生在插件发版时，这条把版本漂移变成一次显式确认）。"
   ],
   "pluginPackage": "dsh-providers-hub",
-  "pluginVersion": "0.2.0-rc.11",
+  "pluginVersion": "0.2.1-rc.2",
   "pluginDir": "overrides/vendor/dsh-providers-hub/plugin-src/client",
   "appConsumers": [
     "overrides/app/src/main/assets/dsh-phone.js",
@@ -111,11 +111,6 @@
       "pluginFile": "jet-hub.js",
       "sinceIssue": "F-19"
     },
-    "dim-jh-modelBulkBar": {
-      "semantic": "模型列表的批量操作条（窄屏下允许换行）",
-      "pluginFile": "jet-hub.js",
-      "sinceIssue": "F-19"
-    },
     "dim-jh-modelSearch": {
       "semantic": "模型搜索输入框（窄屏下占满整行）",
       "pluginFile": "jet-hub.js",
@@ -160,10 +155,16 @@
       "semantic": "自动签到状态文字的关闭键（触屏下本层兜底到 36×36 可点尺寸）",
       "pluginFile": "usage-badge.js",
       "sinceIssue": "F-46"
+    },
+    "dim-jh-panelHost": {
+      "semantic": "Jet Hub 主槽面板宿主（窄屏下由本层改成滚动容器并让开手机标题栏）",
+      "pluginFile": "jet-hub-styles.js",
+      "sinceIssue": "F-47"
     }
   },
   "knownGaps": {
     "$comment": "本层引用、但**插件侧当前已不产出**的类名。与 ui-anchors.json 的 knownDead 同款：登记在案、不重复报警，但门禁会盯着它「复活」（复活即提示移出本表）。",
-    "dim-jh-brandName": "页头标题块已于 2026-10-07 从插件侧整块删除（jet-hub-styles.js 的注释记录了该决定）。本层 dsh-phone.css 仍留着 `.dim-jh-brandName{font-size:18px}` —— 该规则当前**不命中任何元素**，属本层死规则；删除属独立改动，本轮（F-19）只登记不删。"
+    "dim-jh-brandName": "页头标题块已于 2026-10-07 从插件侧整块删除（jet-hub-styles.js 的注释记录了该决定）。本层 dsh-phone.css 仍留着 `.dim-jh-brandName{font-size:18px}` —— 该规则当前**不命中任何元素**，属本层死规则；删除属独立改动，本轮（F-19）只登记不删。",
+    "dim-jh-modelBulkBar": "插件侧已于 2026-10-07 删除模型列表的「打开全部/关闭全部」工具条（jet-hub-styles.js:476 与 lib/client/jet-hub.js:531 都留了说明）。本层 dsh-phone.css:132 仍留着 `.dim-jh-modelBulkBar{flex-wrap:wrap}` —— 该规则当前不命中任何元素，属本层死规则；删除属独立改动，本轮只登记不删。原条目：模型列表的批量操作条（窄屏下允许换行）（pluginFile jet-hub.js）。"
   }
 }

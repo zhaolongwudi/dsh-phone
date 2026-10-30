@@ -168,7 +168,16 @@ jobs:
           #    判据改为「凡打包了 dsh-providers-hub 的 tar，必须同时带 lib/index.js
           #    与 lib/client/jet-hub.js」—— 前者是宿主 RPC（聚合目录就靠它），
           #    后者是 Jet Hub 设置页/徽标；缺任何一个都只剩半身，页面会静默失效。
-          for TAR in app/src/main/assets/dsh-tree.tar app/src/main/assets/dsh-home.tar; do
+          # ⚠️⚠️ 2026-10-30 修正（上一版判据自相矛盾，CI 实测红）：
+          #    dsh-providers-hub 是**profile bundle** —— 它随 dsh-home.tar 落在
+          #    profiles/phone/node_modules/ 下，而 build-assets.py 组装后**刻意**把它从
+          #    runtime 树里清掉（避免同一份插件在树里存两份、或被旧名副本解析到）。
+          #    故「必须在场」只对 dsh-home.tar 成立；dsh-tree.tar 不带它属**预期**。
+          #    实证：真机在跑的实例正是从 profiles/phone/node_modules/dsh-providers-hub
+          #    解析到宿主与客户端的（tree/node_modules 下并无该目录）。
+          #    判据仍是「文件齐不齐」：任一个 tar 只要带了 hub，就必须带全下面三件。
+          for ENTRY in 'home app/src/main/assets/dsh-home.tar' 'tree app/src/main/assets/dsh-tree.tar'; do
+            KIND=${ENTRY%% *}; TAR=${ENTRY#* }
             test -f "$TAR" || { echo "::error::找不到 $TAR —— 组装步骤未产出预期资源"; exit 1; }
             tar -tf "$TAR" > "$RUNNER_TEMP/tar-list.txt"
             if grep -q 'dsh-providers-hub/package\.json$' "$RUNNER_TEMP/tar-list.txt"; then
@@ -186,9 +195,11 @@ jobs:
                 exit 1
               fi
               echo "  ✓ $TAR：Jet Hub 运行时齐备（lib/index.js / lib/client/jet-hub.js / locale/zh.json）"
-            else
+            elif [ "$KIND" = home ]; then
               echo "::error::$TAR 未含 dsh-providers-hub —— 模型渠道宿主缺失，装包后 Jet Hub 与聚合目录全不可用"
               exit 1
+            else
+              echo "  ✓ $TAR：按设计不含 profile bundles（build-assets.py 组装后清理），跳过 hub 存在性判据"
             fi
           done
 
