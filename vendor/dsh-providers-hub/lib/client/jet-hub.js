@@ -1462,18 +1462,6 @@ var STYLES = `
    ⚠️ 本文件整体是模板字符串：注释里**绝不能出现反引号**（会提前闭合，
    esbuild 的报错会指向注释行、看起来像 CSS 写错）。本条注释就曾踩过。 */
 
-/* 手机版补：实时路由胶囊的样式（rc.11 无此组件，配套 files 层的 active-model-pill.js）。
-   宽度上限只写在**外层** root 上（32%）。内层 button 必须是 max-width: 100% ——
-   百分比是相对各自的包含块解析的：两层都写 32% 会让实际可用宽度变成 32% x 32%
-   （约视口的 10%），模型名会被砍到只剩几个字符。
-   ⚠️ 本段注释不得使用反引号：本文件整体是模板字符串（见上方同类警告）。 */
-.dim-jh-routePill { box-sizing: border-box; display: inline-flex; flex-direction: column; justify-content: center; gap: 0; min-width: 0; max-width: 100%; padding: 0 6px; border: none; border-radius: 8px; background: 0 0; font: inherit; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); }
-button.dim-jh-routePill { cursor: pointer; }
-button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { color: var(--dsw-alias-label-secondary); }
-/* 唯一的上限：让出宽度给官方 activity / usage 两枚胶囊（三枚共处一行）。 */
-.dim-jh-routePillRoot { display: inline-flex; min-width: 0; max-width: 32%; }
-/* 两行各自省略：行内 overflow 必须由行自己扛（容器是 column，overflow 会切成整块）。 */
-.dim-jh-routePillTop, .dim-jh-routePillBottom { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── 窄屏（手机 / 远程访问，max-width 720px）──
    POC（2026-10-17）：本插件此前**只有弹窗内部**有 3 处 media 查询，主布局
@@ -1611,6 +1599,93 @@ button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { c
    .dim-jh-zcSelect 一致。官方设置页的选择器**没有** outline 规则，故这里也不加，
    否则同一张插件页上本卡片会比其他控件多一圈描边。 */
 .dim-jh-cardSelector:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, #1677ff 30%, transparent); }
+
+/* ── 手机适配层（2026-10-30）────────────────────────────────────────────────
+   背景：本插件原先按**平板/桌面**的可用宽度设计（左栏 228px + 右面板；页头
+   一排 7 个按钮；账号卡按钮行 flex-wrap: nowrap）。手机宽度 400px 上下时，
+   前面那块 @media (max-width: 720px) 只把两栏改成上下两段，面板内部仍是
+   「桌面尺寸」：按钮被裁断、弹窗高度溢出、记账表横向溢出。
+
+   本块只做「窄屏几何 + 触控目标」，全部在媒体查询内 —— 桌面/平板逐像素不变。
+
+   约束（改之前先读）：
+   ① 断点用 **767px**，与手机外壳 app/src/main/assets/dsh-phone.css 的
+      MOBILE_FORM_MAX_WIDTH=767 对齐；若用 720，701~767px 会出现「外壳已是
+      手机形态、本插件还是桌面形态」的半态。
+   ② 高度用 dvh 并叠 env(safe-area-inset-*)：移动端地址栏收放会让 100vh 与
+      真实可视高度脱节，刘海/手势条会吃掉底部操作。
+   ③ 触控目标不小于 44x44，故 pointer: coarse 下单独放大按钮，而不是只缩字号。
+   ④ 本文件整体是**模板字符串**：本注释内不得出现反引号（会提前闭合）。 */
+
+@media (max-width: 767px) {
+  /* 面板与页头：把 24px 桌面留白收到 10~12px，横向全部让给内容。 */
+  .dim-jh-panelHost { padding: 12px 10px 10px; }
+  .dim-jh-panel { padding: 12px 10px 16px; }
+  .dim-jh-header { padding: 8px 0; gap: 8px; }
+  /* 页头按钮组：桌面一排 7 个按钮，窄屏必须能换行且不撑破。 */
+  .dim-jh-headerActions { gap: 6px; justify-content: flex-start; }
+  .dim-jh-panelHead { gap: 8px; margin-bottom: 12px; }
+  .dim-jh-panelHead > .dim-jh-headerActions { justify-content: flex-start; margin-left: 0; width: 100%; }
+  .dim-jh-panelTitle { font-size: 15px; }
+
+  /* 供应商横向标签条：加吸附、隐藏滚动条，否则 11 个渠道要一直横划。 */
+  .dim-jh-rail { padding: 6px 8px; gap: 6px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .dim-jh-rail::-webkit-scrollbar { display: none; }
+  .dim-jh-providerRow { scroll-snap-align: start; }
+  .dim-jh-provider { min-height: 42px; padding: 6px 10px; border-radius: 12px; }
+  .dim-jh-providerIcon { width: 26px; height: 26px; }
+  .dim-jh-providerIcon img { width: 18px; height: 18px; }
+
+  /* 账号卡：桌面 5 个按钮 nowrap ⇒ 窄屏必然裁断最后一个，改为可换行。 */
+  .dim-jh-accountCard { padding: 12px; border-radius: 12px; }
+  .dim-jh-accountActions { flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+  .dim-jh-accountName { font-size: 13.5px; }
+
+  /* 模型行与聚合面板：行高按手指尺寸放大，长 wire 名允许换行。 */
+  .dim-jh-modelRow { padding: 10px 8px; min-height: 44px; gap: 10px; }
+  .dim-jh-modelRow .dim-jh-modelName { white-space: normal; overflow-wrap: anywhere; }
+  .dim-jh-aggPanel { padding: 12px 10px; gap: 10px; }
+  .dim-jh-aggToolbar { gap: 6px; }
+  .dim-jh-aggCandidate { padding: 6px 8px 6px 12px; flex-wrap: wrap; gap: 6px; }
+  .dim-jh-aggModelHead { padding: 9px 8px; }
+
+  /* 弹窗：桌面「居中 560px + 24px 外边距」，窄屏改近乎全屏抽屉；max-height
+     换成 dvh 扣安全区，否则底部按钮被手势条挡住。 */
+  .dim-jh-modalOverlay { padding: 8px; align-items: stretch; }
+  .dim-jh-modal { width: 100%; max-width: none; min-height: 0; padding: 14px; border-radius: 12px; max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); }
+  .dim-jh-modal--ledger { width: 100%; max-height: calc(100dvh - 16px - env(safe-area-inset-bottom, 0px)); }
+  .dim-jh-modalHead { gap: 8px; }
+  .dim-jh-modalTitle { font-size: 14px; line-height: 20px; }
+  .dim-jh-modalBody { margin-top: 8px; overflow-x: auto; }
+  .dim-jh-modalActions { flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .dim-jh-modalActions .dim-jh-btn { flex: 1 1 auto; }
+
+  /* 记账表：桌面 8 列 fixed 布局在 400px 下必然挤压 ⇒ 允许横向滚动。 */
+  .dim-jh-ledgerTable { min-width: 560px; }
+
+  /* 输入控件 16px 起：移动端 WebView 对 < 16px 的输入框会在聚焦时自动缩放。 */
+  .dim-jh-input { font-size: 16px; padding: 8px 10px; }
+  .dim-jh-ledgerSearch, .dim-jh-ledgerSelect { font-size: 13px; }
+}
+
+/* 触控设备：可点元素放大到 44px 以上（与宽度无关，平板竖屏同样受益）。 */
+@media (pointer: coarse) {
+  .dim-jh-btn { min-height: 40px; padding: 8px 12px; font-size: 13px; }
+  .dim-jh-iconBtn { min-width: 44px; min-height: 44px; padding: 8px; }
+  .dim-jh-badgeRefresh, .dim-jh-badgeAuto { width: 28px; height: 28px; }
+  .dim-jh-modelRow { min-height: 46px; }
+  .dim-jh-checkRow { min-height: 44px; }
+  .dim-jh-cardSelector { height: 44px; }
+}
+
+/* 超窄屏（小屏手机 360px 及以下）：再收一档留白与字号。 */
+@media (max-width: 400px) {
+  .dim-jh-panelHost { padding: 10px 8px 8px; }
+  .dim-jh-panel { padding: 10px 8px 14px; }
+  .dim-jh-headerActions { gap: 4px; }
+  .dim-jh-headerActions .dim-jh-btn { padding: 6px 8px; font-size: 12px; }
+  .dim-jh-modal { padding: 12px; }
+}
 
 
 `;
@@ -14257,270 +14332,6 @@ function JetHubPanelEntryCard({ rpcCall }) {
   );
 }
 
-// plugin-src/client/active-model-pill.js
-var React8 = __toESM(require("react"), 1);
-var import_react_dom2 = require("react-dom");
-var ACTIVE_ROUTE_POLL_MS = 5e3;
-var ROUTER_PROVIDER_IDS = Object.freeze(["aggregate", "jet-hub-auto"]);
-var RESOLVE_RETRY_DELAYS2 = [300, 700, 1500, 2e3];
-var PERSISTENT_RETRY_MS = 5e3;
-var PENDING_LABEL = "等待首次请求";
-var PANEL_MARGIN = 12;
-var PANEL_GAP = 8;
-var MEASURE_STYLE = { visibility: "hidden", left: 0, top: 0 };
-function useAnchoredPosition(anchorRef, panelRef, open) {
-  const [pos, setPos] = React8.useState(null);
-  React8.useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return void 0;
-    }
-    if (typeof window === "undefined") return void 0;
-    const place = () => {
-      const anchor = anchorRef.current;
-      const panel = panelRef.current;
-      if (!anchor || !panel) return;
-      const a = anchor.getBoundingClientRect();
-      const p = panel.getBoundingClientRect();
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      let left = a.left + a.width / 2 - p.width / 2;
-      left = Math.max(PANEL_MARGIN, Math.min(left, vw - p.width - PANEL_MARGIN));
-      let top = a.top - p.height - PANEL_GAP;
-      if (top < PANEL_MARGIN) top = Math.min(a.bottom + PANEL_GAP, vh - p.height - PANEL_MARGIN);
-      setPos({ left: `${Math.round(left)}px`, top: `${Math.round(Math.max(PANEL_MARGIN, top))}px` });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open, anchorRef, panelRef]);
-  return pos;
-}
-function describeActiveRoute({ provider, model, route, providerLabel: providerLabel2 }) {
-  if (typeof provider !== "string" || provider.length === 0) return null;
-  const label = typeof providerLabel2 === "function" ? providerLabel2 : (id) => id;
-  if (ROUTER_PROVIDER_IDS.includes(provider)) {
-    const realProvider = route?.provider;
-    const realModel = route?.model;
-    if (typeof realProvider === "string" && realProvider.length > 0 && typeof realModel === "string" && realModel.length > 0) {
-      return { top: label(realProvider), bottom: realModel };
-    }
-    return { top: label(provider), bottom: PENDING_LABEL };
-  }
-  if (typeof model !== "string" || model.length === 0) return null;
-  return { top: label(provider), bottom: model };
-}
-function describeActiveRouteTitle({ route }) {
-  const at = route?.at;
-  if (typeof at !== "number" || !Number.isFinite(at)) return "当前实际使用的渠道与模型";
-  const time = new Date(at);
-  const pad = (value) => String(value).padStart(2, "0");
-  return `当前实际使用的渠道与模型（更新于 ${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}）`;
-}
-function describeActiveRouteDetails({ provider, model, route, providerLabel: providerLabel2 }) {
-  if (typeof provider !== "string" || provider.length === 0) return [];
-  const label = typeof providerLabel2 === "function" ? providerLabel2 : (id) => id;
-  const rows = [];
-  const isRouter = ROUTER_PROVIDER_IDS.includes(provider);
-  const realProvider = route?.provider;
-  const realModel = route?.model;
-  const hasReal = typeof realProvider === "string" && realProvider.length > 0 && typeof realModel === "string" && realModel.length > 0;
-  if (isRouter && hasReal) {
-    rows.push({ label: "渠道", value: label(realProvider) });
-    rows.push({ label: "模型", value: realModel });
-  } else if (isRouter) {
-    rows.push({ label: "渠道", value: PENDING_LABEL });
-    rows.push({ label: "模型", value: PENDING_LABEL });
-  } else {
-    rows.push({ label: "渠道", value: label(provider) });
-    rows.push({ label: "模型", value: typeof model === "string" && model.length > 0 ? model : "—" });
-  }
-  if (isRouter) {
-    rows.push({ label: "选择", value: label(provider) });
-    if (typeof model === "string" && model.length > 0) rows.push({ label: "虚拟模型", value: model });
-  }
-  const at = route?.at;
-  if (typeof at === "number" && Number.isFinite(at)) {
-    const time = new Date(at);
-    const pad = (value) => String(value).padStart(2, "0");
-    rows.push({
-      label: "更新于",
-      value: `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`
-    });
-  }
-  return rows;
-}
-function ActiveModelPill(props) {
-  const resolveDirectory = props.resolveDirectory;
-  const readActiveRoute = props.readActiveRoute;
-  const providerLabel2 = props.providerLabel;
-  const [directory, setDirectory] = React8.useState(null);
-  const resolvedRef = React8.useRef(false);
-  const [route, setRoute] = React8.useState(null);
-  React8.useEffect(() => {
-    if (typeof resolveDirectory !== "function") return void 0;
-    if (resolvedRef.current) return void 0;
-    let alive = true;
-    const timers = [];
-    let attempt = 0;
-    let gaveUpWarned = false;
-    const tryResolve = () => {
-      if (!alive || resolvedRef.current) return;
-      let resolved = null;
-      try {
-        resolved = resolveDirectory();
-      } catch {
-        resolved = null;
-      }
-      if (!alive) return;
-      if (resolved !== null && resolved !== void 0 && resolved.store !== void 0) {
-        resolvedRef.current = true;
-        setDirectory(resolved.store);
-        if (typeof resolved.load === "function") {
-          Promise.resolve(resolved.load()).catch(() => {
-          });
-        }
-        return;
-      }
-      attempt += 1;
-      if (attempt >= RESOLVE_RETRY_DELAYS2.length) {
-        if (!gaveUpWarned) {
-          gaveUpWarned = true;
-          console.warn("[jet-hub pill] 目录解析显式退避用尽，转常驻低频重试（每 5s）");
-        }
-        timers.push(setTimeout(tryResolve, PERSISTENT_RETRY_MS));
-        return;
-      }
-      timers.push(setTimeout(tryResolve, RESOLVE_RETRY_DELAYS2[attempt - 1]));
-    };
-    tryResolve();
-    return () => {
-      alive = false;
-      for (const timer of timers) clearTimeout(timer);
-    };
-  }, [resolveDirectory]);
-  const safe = (fn) => () => {
-    try {
-      return directory ? fn(directory) : void 0;
-    } catch {
-      return void 0;
-    }
-  };
-  const state = React8.useSyncExternalStore(
-    (onChange) => {
-      if (!directory) return () => {
-      };
-      try {
-        return directory.subscribe(onChange);
-      } catch {
-        return () => {
-        };
-      }
-    },
-    safe((d) => d.getSnapshot()),
-    safe((d) => d.getSnapshot())
-  );
-  const provider = state?.current?.provider;
-  const model = state?.current?.model;
-  const isRouter = typeof provider === "string" && ROUTER_PROVIDER_IDS.includes(provider);
-  React8.useEffect(() => {
-    if (!isRouter || typeof readActiveRoute !== "function") return void 0;
-    let alive = true;
-    let timer = null;
-    const refresh = () => {
-      Promise.resolve().then(() => readActiveRoute(provider)).then((value) => {
-        if (!alive) return;
-        setRoute(value && typeof value.provider === "string" ? value : null);
-      }).catch(() => {
-        if (alive) setRoute(null);
-      });
-    };
-    refresh();
-    timer = setInterval(refresh, ACTIVE_ROUTE_POLL_MS);
-    return () => {
-      alive = false;
-      if (timer !== null) clearInterval(timer);
-    };
-  }, [isRouter, provider, readActiveRoute]);
-  const text = describeActiveRoute({ provider, model, route, providerLabel: providerLabel2 });
-  const [open, setOpen] = React8.useState(false);
-  const rootRef = React8.useRef(null);
-  const panelRef = React8.useRef(null);
-  const pos = useAnchoredPosition(rootRef, panelRef, open);
-  React8.useEffect(() => {
-    if (!open) return void 0;
-    if (typeof document === "undefined") return void 0;
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    const onPointerDown = (event) => {
-      const target = event.target;
-      if (target instanceof Node && rootRef.current?.contains(target) !== true && panelRef.current?.contains(target) !== true) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
-  }, [open]);
-  React8.useEffect(() => {
-    setOpen(false);
-  }, [provider, model, route?.provider, route?.model]);
-  const rows = describeActiveRouteDetails({ provider, model, route, providerLabel: providerLabel2 });
-  if (text === null) return null;
-  return React8.createElement(
-    "span",
-    { ref: rootRef, className: "dim-jh-routePillRoot", "data-jet-hub-active-model": true },
-    React8.createElement(
-      "button",
-      {
-        type: "button",
-        className: "dim-jh-routePill",
-        "aria-haspopup": "dialog",
-        "aria-expanded": open,
-        "aria-label": describeActiveRouteTitle({ route }),
-        title: describeActiveRouteTitle({ route }),
-        onClick: () => setOpen(!open)
-      },
-      // 两行竖排：上行渠道、下行模型。
-      //
-      // ⚠️ 不渲染「在用」前缀 —— 第一版那个前缀加上「 · 」分隔符在窄屏上占掉
-      // 一大截宽度，而槽位本身（输入区最下方）已足以说明这是「当前」状态。
-      React8.createElement("span", { className: "dim-jh-routePillTop" }, text.top),
-      React8.createElement("span", { className: "dim-jh-routePillBottom" }, text.bottom)
-    ),
-    open && typeof document !== "undefined" && (0, import_react_dom2.createPortal)(
-      React8.createElement(
-        "div",
-        {
-          ref: panelRef,
-          className: "dim-jh-routePanel",
-          role: "dialog",
-          "aria-label": "当前实际使用的渠道与模型",
-          style: pos ?? MEASURE_STYLE
-        },
-        React8.createElement("div", { className: "dim-jh-routePanelTitle" }, "当前实际使用"),
-        React8.createElement(
-          "dl",
-          { className: "dim-jh-routePanelRows" },
-          ...rows.flatMap((row) => [
-            React8.createElement("dt", { key: `${row.label}-k` }, row.label),
-            React8.createElement("dd", { key: `${row.label}-v` }, row.value)
-          ])
-        )
-      ),
-      document.body
-    )
-  );
-}
-
 // plugin-src/client/index.js
 var name = "jet-hub-client";
 var inject = ["slots", "connection", "modelDirectories", "sessions", "remote", "remote.session"];
@@ -14610,53 +14421,6 @@ function apply(ctx) {
       claimCredits: (provider, runTasks, budgetMs) => rpcCall("credits.claimAll", { provider, runTasks, budgetMs })
     })
   }, UsageBadgeGuarded));
-  ctx.slots.inject("conversation.composer.dock", () => ctx.slots.register({
-    name: "conversation.composer.dock",
-    id: "jet-hub-active-model",
-    // ⚠️ 2 = 排在官方 activity(0) / usage(1) 之后（= 最下方一行）。
-    order: 2,
-    inject: (sessionId) => ({
-      resolveDirectory: () => {
-        const directory = ctx.modelDirectories.directoryFor(sessionId);
-        return {
-          store: directory.store,
-          load: () => directory.load()
-        };
-      },
-      providerLabel,
-      /**
-       * 取「本次实际发往的真实目标」。
-       *
-       * ⚠️ 宿主端点是**纯内存读**（零网络零余额查询），组件按 5 秒轮询它 ——
-       * 见 `active-model-pill.js` 的 ACTIVE_ROUTE_POLL_MS 注释。
-       *
-       * ## ⚠️⚠️ 为什么要有 `aggregate.activeProvider` 这条回落
-       *
-       * `router.activeRoute` 是**新端点**，而宿主代码**只在 DSH 启动时载入**
-       * （不热重载）。于是存在一个真实的中间态：**客户端 bundle 已更新、宿主还是旧的**
-       * —— 浏览器侧由 `dsh-client-hmr` 每 500ms 轮询 bundle 并自动 reload，而宿主侧
-       * 必须重启。旧宿主虽然没有新端点，但**已经有** `aggregate.activeProvider`
-       * （它自 c066b8ea 起就返回 `{ provider, model }`，模型后缀那批改动就靠它）。
-       * ⇒ 聚合这条路径完全可以先借用旧端点拿到真实读数，**不必等重启**。
-       *
-       * `jet-hub-auto` 没有对应的旧端点 ⇒ 它只能等重启，此时组件显示占位文案
-       * （不是不渲染）。
-       *
-       * ⚠️ 回落**只在**新端点抛错时走（`unknown method` / 未注册）；新端点一旦可用
-       * 就以它为准，避免两个数据源的判据分叉（新端点按**发起**时刻写，旧端点按
-       * **成功**时刻写，两者在请求进行中必然不同，见 `active-route.ts` 的对照表）。
-       */
-      readActiveRoute: async (provider) => {
-        try {
-          return await rpcCall("router.activeRoute", { provider });
-        } catch (error) {
-          if (provider !== "aggregate") throw error;
-          const fallback = await rpcCall("aggregate.activeProvider", {});
-          return fallback === null || typeof fallback !== "object" ? null : { provider: fallback.provider ?? null, model: fallback.model ?? null, at: null };
-        }
-      }
-    })
-  }, ActiveModelPill));
 }
 
     return module.exports;

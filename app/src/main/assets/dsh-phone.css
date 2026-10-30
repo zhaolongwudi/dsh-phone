@@ -103,6 +103,13 @@
   .dim-jh-badgeRefresh, .dim-jh-badgeAuto { min-width:32px; min-height:32px; }
   .dim-jh-badgeAutoClose, .dim-jh-quotaArrow, .dim-jh-iconBtn { min-width:36px; min-height:36px; }
   .dim-jh-layout { flex-direction:column !important; overflow:visible !important; }
+  /* DSH-PHONE PATCH (2026-10-30)：Jet Hub 以「主槽面板」形式打开时（.dim-jh-panelHost）
+     自身没有滚动容器 —— 桌面样式把高度锁成 100%，宿主 .pI_x6G_centerCol 又是 overflow:hidden
+     ⇒ 窄屏下 provider 列表（11 项 × 72px ≈ 800px）被整块裁掉，靠后的
+     「聚合（跨渠道）」等条目既滑不到、也点不开。这里把面板宿主本身变成滚动容器，
+     并让顶部让开手机标题栏（--dsh-phone-topbar）。 */
+  .dim-jh-panelHost { overflow-y:auto !important; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding: calc(var(--dsh-phone-topbar, 44px) + 8px) 12px calc(12px + env(safe-area-inset-bottom, 0px)) !important; }
+  .dim-jh-panelHost > .dim-jh-page { min-height:0 !important; }
   html[data-dsh-mobile-form] .dim-jh-rail { display:none !important; width:100% !important; border:0 !important; padding:12px 0 !important; overflow:visible !important; }
   html[data-dsh-mobile-form] .dsh-phone-choosing .dim-jh-rail { display:grid !important; }
   html[data-dsh-mobile-form] .dsh-phone-choosing .dim-jh-panel { display:none !important; }

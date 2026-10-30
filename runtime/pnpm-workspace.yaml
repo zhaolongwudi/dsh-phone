@@ -2,13 +2,13 @@ packages:
   - .
 nodeLinker: hoisted
 # 手机部署树：全 hoisted 实体目录（无符号链接，assets 解压即用）。
-# ① SDK 精确锁定 rc.2（2026-10-18 由 alpha.5 升级；alpha.5→rc.2 内核代码零漂移）。
+# ① SDK 精确锁定 rc.5（2026-10-30 从 rc.2 升级；overlays 仅 2 个文件需重放）。
 # ② koffi/node-pty/sharp 用万能桩（Android/Bionic 无原生变体）。
 overrides:
   http-cache-semantics: 4.2.0
-  '@deepseek-ai/dsh-llm': 0.2.1-rc.2
-  '@deepseek-ai/dsh-credentials': 0.2.1-rc.2
-  '@deepseek-ai/dsh-commands': 0.2.1-rc.2
+  '@deepseek-ai/dsh-llm': 0.2.1-rc.5
+  '@deepseek-ai/dsh-credentials': 0.2.1-rc.5
+  '@deepseek-ai/dsh-commands': 0.2.1-rc.5
   'koffi': file:./stubs/koffi
   'node-pty': file:./stubs/node-pty
   'sharp': file:./stubs/sharp

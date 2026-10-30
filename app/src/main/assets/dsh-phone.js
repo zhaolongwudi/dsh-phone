@@ -530,6 +530,9 @@
         rail.addEventListener('click', event => {
           if (!event.target.closest('.dim-jh-provider')) return;
           layout.classList.remove('dsh-phone-choosing'); toggle.setAttribute('aria-expanded', 'false'); toggle.textContent = '选择供应商';
+      /* DSH-PHONE PATCH (2026-10-30)：面板宿主是可滚动容器（见 phone.css），选中渠道后面板在下方，
+         不回到顶部会让用户以为「点了没反应」。 */
+      { const panelHost = layout.closest('.dim-jh-panelHost'); if (panelHost) panelHost.scrollTop = 0; }
         });
         layout.classList.add('dsh-phone-choosing'); toggle.setAttribute('aria-expanded', 'true'); toggle.textContent = '返回账号';
       }

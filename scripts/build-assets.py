@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / 'runtime'
 MODULES = DEPLOY / 'node_modules'
 ASSETS = ROOT / 'app/src/main/assets'
-BUNDLES = ('dsh-our-free-model', 'dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center')
+BUNDLES = ('dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center')
 
 
 def bundle_source(name):
@@ -231,7 +231,7 @@ def main():
                          ('dsh-team', ROOT / 'team'),
                          ('dsh-appearance-center', ROOT / 'appearance'),
                          ('@zseven-w/dsh-noema', ROOT / 'vendor/dsh-noema'),
-                         ('dsh-our-free-model', ROOT / 'our-free-model')]:
+                         ]:
         target = MODULES / name
         shutil.rmtree(target, ignore_errors=True)
         copy_bundle(name, target, source)

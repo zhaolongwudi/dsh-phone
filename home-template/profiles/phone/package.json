@@ -5,10 +5,10 @@
     "dsh-phone-account": "file:./node_modules/dsh-phone-account",
     "dsh-phone-qq": "file:./node_modules/dsh-phone-qq",
     "@zseven-w/dsh-noema": "file:./node_modules/@zseven-w/dsh-noema",
-    "dsh-our-free-model": "file:./node_modules/dsh-our-free-model",
     "dsh-team": "file:./node_modules/dsh-team",
     "dsh-appearance-center": "file:./node_modules/dsh-appearance-center",
-    "dsh-knowledge-link": "file:./node_modules/dsh-knowledge-link"
+    "dsh-knowledge-link": "file:./node_modules/dsh-knowledge-link",
+    "dsh-providers-hub": "file:./node_modules/dsh-providers-hub"
   },
   "dsh": {
     "profile": {
@@ -18,7 +18,7 @@
         "dsh-phone-account",
         "dsh-phone-qq",
         "@zseven-w/dsh-noema",
-        "dsh-our-free-model",
+        "dsh-providers-hub",
         "dsh-team",
         "dsh-appearance-center",
         "dsh-knowledge-link"

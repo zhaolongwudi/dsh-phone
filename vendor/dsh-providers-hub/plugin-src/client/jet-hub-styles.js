@@ -1407,18 +1407,6 @@ const STYLES = `
    ⚠️ 本文件整体是模板字符串：注释里**绝不能出现反引号**（会提前闭合，
    esbuild 的报错会指向注释行、看起来像 CSS 写错）。本条注释就曾踩过。 */
 
-/* 手机版补：实时路由胶囊的样式（rc.11 无此组件，配套 files 层的 active-model-pill.js）。
-   宽度上限只写在**外层** root 上（32%）。内层 button 必须是 max-width: 100% ——
-   百分比是相对各自的包含块解析的：两层都写 32% 会让实际可用宽度变成 32% x 32%
-   （约视口的 10%），模型名会被砍到只剩几个字符。
-   ⚠️ 本段注释不得使用反引号：本文件整体是模板字符串（见上方同类警告）。 */
-.dim-jh-routePill { box-sizing: border-box; display: inline-flex; flex-direction: column; justify-content: center; gap: 0; min-width: 0; max-width: 100%; padding: 0 6px; border: none; border-radius: 8px; background: 0 0; font: inherit; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary); }
-button.dim-jh-routePill { cursor: pointer; }
-button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { color: var(--dsw-alias-label-secondary); }
-/* 唯一的上限：让出宽度给官方 activity / usage 两枚胶囊（三枚共处一行）。 */
-.dim-jh-routePillRoot { display: inline-flex; min-width: 0; max-width: 32%; }
-/* 两行各自省略：行内 overflow 必须由行自己扛（容器是 column，overflow 会切成整块）。 */
-.dim-jh-routePillTop, .dim-jh-routePillBottom { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── 窄屏（手机 / 远程访问，max-width 720px）──
    POC（2026-10-17）：本插件此前**只有弹窗内部**有 3 处 media 查询，主布局
@@ -1556,6 +1544,93 @@ button.dim-jh-routePill:hover, button.dim-jh-routePill[aria-expanded="true"] { c
    .dim-jh-zcSelect 一致。官方设置页的选择器**没有** outline 规则，故这里也不加，
    否则同一张插件页上本卡片会比其他控件多一圈描边。 */
 .dim-jh-cardSelector:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, #1677ff 30%, transparent); }
+
+/* ── 手机适配层（2026-10-30）────────────────────────────────────────────────
+   背景：本插件原先按**平板/桌面**的可用宽度设计（左栏 228px + 右面板；页头
+   一排 7 个按钮；账号卡按钮行 flex-wrap: nowrap）。手机宽度 400px 上下时，
+   前面那块 @media (max-width: 720px) 只把两栏改成上下两段，面板内部仍是
+   「桌面尺寸」：按钮被裁断、弹窗高度溢出、记账表横向溢出。
+
+   本块只做「窄屏几何 + 触控目标」，全部在媒体查询内 —— 桌面/平板逐像素不变。
+
+   约束（改之前先读）：
+   ① 断点用 **767px**，与手机外壳 app/src/main/assets/dsh-phone.css 的
+      MOBILE_FORM_MAX_WIDTH=767 对齐；若用 720，701~767px 会出现「外壳已是
+      手机形态、本插件还是桌面形态」的半态。
+   ② 高度用 dvh 并叠 env(safe-area-inset-*)：移动端地址栏收放会让 100vh 与
+      真实可视高度脱节，刘海/手势条会吃掉底部操作。
+   ③ 触控目标不小于 44x44，故 pointer: coarse 下单独放大按钮，而不是只缩字号。
+   ④ 本文件整体是**模板字符串**：本注释内不得出现反引号（会提前闭合）。 */
+
+@media (max-width: 767px) {
+  /* 面板与页头：把 24px 桌面留白收到 10~12px，横向全部让给内容。 */
+  .dim-jh-panelHost { padding: 12px 10px 10px; }
+  .dim-jh-panel { padding: 12px 10px 16px; }
+  .dim-jh-header { padding: 8px 0; gap: 8px; }
+  /* 页头按钮组：桌面一排 7 个按钮，窄屏必须能换行且不撑破。 */
+  .dim-jh-headerActions { gap: 6px; justify-content: flex-start; }
+  .dim-jh-panelHead { gap: 8px; margin-bottom: 12px; }
+  .dim-jh-panelHead > .dim-jh-headerActions { justify-content: flex-start; margin-left: 0; width: 100%; }
+  .dim-jh-panelTitle { font-size: 15px; }
+
+  /* 供应商横向标签条：加吸附、隐藏滚动条，否则 11 个渠道要一直横划。 */
+  .dim-jh-rail { padding: 6px 8px; gap: 6px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .dim-jh-rail::-webkit-scrollbar { display: none; }
+  .dim-jh-providerRow { scroll-snap-align: start; }
+  .dim-jh-provider { min-height: 42px; padding: 6px 10px; border-radius: 12px; }
+  .dim-jh-providerIcon { width: 26px; height: 26px; }
+  .dim-jh-providerIcon img { width: 18px; height: 18px; }
+
+  /* 账号卡：桌面 5 个按钮 nowrap ⇒ 窄屏必然裁断最后一个，改为可换行。 */
+  .dim-jh-accountCard { padding: 12px; border-radius: 12px; }
+  .dim-jh-accountActions { flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+  .dim-jh-accountName { font-size: 13.5px; }
+
+  /* 模型行与聚合面板：行高按手指尺寸放大，长 wire 名允许换行。 */
+  .dim-jh-modelRow { padding: 10px 8px; min-height: 44px; gap: 10px; }
+  .dim-jh-modelRow .dim-jh-modelName { white-space: normal; overflow-wrap: anywhere; }
+  .dim-jh-aggPanel { padding: 12px 10px; gap: 10px; }
+  .dim-jh-aggToolbar { gap: 6px; }
+  .dim-jh-aggCandidate { padding: 6px 8px 6px 12px; flex-wrap: wrap; gap: 6px; }
+  .dim-jh-aggModelHead { padding: 9px 8px; }
+
+  /* 弹窗：桌面「居中 560px + 24px 外边距」，窄屏改近乎全屏抽屉；max-height
+     换成 dvh 扣安全区，否则底部按钮被手势条挡住。 */
+  .dim-jh-modalOverlay { padding: 8px; align-items: stretch; }
+  .dim-jh-modal { width: 100%; max-width: none; min-height: 0; padding: 14px; border-radius: 12px; max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); }
+  .dim-jh-modal--ledger { width: 100%; max-height: calc(100dvh - 16px - env(safe-area-inset-bottom, 0px)); }
+  .dim-jh-modalHead { gap: 8px; }
+  .dim-jh-modalTitle { font-size: 14px; line-height: 20px; }
+  .dim-jh-modalBody { margin-top: 8px; overflow-x: auto; }
+  .dim-jh-modalActions { flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .dim-jh-modalActions .dim-jh-btn { flex: 1 1 auto; }
+
+  /* 记账表：桌面 8 列 fixed 布局在 400px 下必然挤压 ⇒ 允许横向滚动。 */
+  .dim-jh-ledgerTable { min-width: 560px; }
+
+  /* 输入控件 16px 起：移动端 WebView 对 < 16px 的输入框会在聚焦时自动缩放。 */
+  .dim-jh-input { font-size: 16px; padding: 8px 10px; }
+  .dim-jh-ledgerSearch, .dim-jh-ledgerSelect { font-size: 13px; }
+}
+
+/* 触控设备：可点元素放大到 44px 以上（与宽度无关，平板竖屏同样受益）。 */
+@media (pointer: coarse) {
+  .dim-jh-btn { min-height: 40px; padding: 8px 12px; font-size: 13px; }
+  .dim-jh-iconBtn { min-width: 44px; min-height: 44px; padding: 8px; }
+  .dim-jh-badgeRefresh, .dim-jh-badgeAuto { width: 28px; height: 28px; }
+  .dim-jh-modelRow { min-height: 46px; }
+  .dim-jh-checkRow { min-height: 44px; }
+  .dim-jh-cardSelector { height: 44px; }
+}
+
+/* 超窄屏（小屏手机 360px 及以下）：再收一档留白与字号。 */
+@media (max-width: 400px) {
+  .dim-jh-panelHost { padding: 10px 8px 8px; }
+  .dim-jh-panel { padding: 10px 8px 14px; }
+  .dim-jh-headerActions { gap: 4px; }
+  .dim-jh-headerActions .dim-jh-btn { padding: 6px 8px; font-size: 12px; }
+  .dim-jh-modal { padding: 12px; }
+}
 
 
 `

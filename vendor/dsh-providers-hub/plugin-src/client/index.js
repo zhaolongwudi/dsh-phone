@@ -91,9 +91,6 @@ import { JetHubPanelEntryCard } from './settings-card.js'
 // 而 `plugins.bundle.config` 与 `conversation.input.right` 注册的是**裸组件**
 // —— 任一处渲染期异常仍会整块消失（插件详情卡片 / 用量徽标）。
 import { withErrorBoundary } from './error-boundary.js'
-// ⚠️ 手机版接线（apply.sh §4 断言）：输入区最下方的「当前实际在用哪个渠道/模型」胶囊。
-//    组件文件在 files/ 层（rc.11 无此文件），铺开后与本文件同目录。
-import { ActiveModelPill } from './active-model-pill.js'
 
 /**
  * ⚠️ **模块级常量，不要在 `apply()` 或 `inject` 回调里新建**（2026-10-25 审计 A3-3）。
@@ -278,54 +275,4 @@ export function apply(ctx) {
     }),
   }, UsageBadgeGuarded))
 
-  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
-    name: 'conversation.composer.dock',
-    id: 'jet-hub-active-model',
-    // ⚠️ 2 = 排在官方 activity(0) / usage(1) 之后（= 最下方一行）。
-    order: 2,
-    inject: (sessionId) => ({
-      resolveDirectory: () => {
-        const directory = ctx.modelDirectories.directoryFor(sessionId);
-        return {
-          store: directory.store,
-          load: () => directory.load(),
-        };
-      },
-      providerLabel,
-      /**
-       * 取「本次实际发往的真实目标」。
-       *
-       * ⚠️ 宿主端点是**纯内存读**（零网络零余额查询），组件按 5 秒轮询它 ——
-       * 见 `active-model-pill.js` 的 ACTIVE_ROUTE_POLL_MS 注释。
-       *
-       * ## ⚠️⚠️ 为什么要有 `aggregate.activeProvider` 这条回落
-       *
-       * `router.activeRoute` 是**新端点**，而宿主代码**只在 DSH 启动时载入**
-       * （不热重载）。于是存在一个真实的中间态：**客户端 bundle 已更新、宿主还是旧的**
-       * —— 浏览器侧由 `dsh-client-hmr` 每 500ms 轮询 bundle 并自动 reload，而宿主侧
-       * 必须重启。旧宿主虽然没有新端点，但**已经有** `aggregate.activeProvider`
-       * （它自 c066b8ea 起就返回 `{ provider, model }`，模型后缀那批改动就靠它）。
-       * ⇒ 聚合这条路径完全可以先借用旧端点拿到真实读数，**不必等重启**。
-       *
-       * `jet-hub-auto` 没有对应的旧端点 ⇒ 它只能等重启，此时组件显示占位文案
-       * （不是不渲染）。
-       *
-       * ⚠️ 回落**只在**新端点抛错时走（`unknown method` / 未注册）；新端点一旦可用
-       * 就以它为准，避免两个数据源的判据分叉（新端点按**发起**时刻写，旧端点按
-       * **成功**时刻写，两者在请求进行中必然不同，见 `active-route.ts` 的对照表）。
-       */
-      readActiveRoute: async (provider) => {
-        try {
-          return await rpcCall('router.activeRoute', { provider });
-        } catch (error) {
-          // 只有「端点不存在」才回落；其它错误（如未注册适配器）原样交给组件降级。
-          if (provider !== 'aggregate') throw error;
-          const fallback = await rpcCall('aggregate.activeProvider', {});
-          return fallback === null || typeof fallback !== 'object'
-            ? null
-            : { provider: fallback.provider ?? null, model: fallback.model ?? null, at: null };
-        }
-      },
-    }),
-  }, ActiveModelPill))
 }
