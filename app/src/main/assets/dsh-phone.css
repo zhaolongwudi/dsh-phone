@@ -232,7 +232,7 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
     此时把 header 改两列、leading 显示出来、旧的固定定位按钮隐藏。
     ⇒ 接管失败时页面回到上面那一行，不会出现「两个开关」或空白座位。
     （本段规格经设备实测 10/10：开关 [8,5,22,34]、标题 [30,4,417,36]、不重叠、侧栏滑入。） */
- html[data-dsh-toggle-mounted] .wSkVaW_header{grid-template-columns:auto minmax(0,1fr)!important}
+ html[data-dsh-toggle-mounted] .wSkVaW_header{grid-template-columns:min-content minmax(0,1fr)!important}
  html[data-dsh-toggle-mounted] [data-conversation-header-leading],
  html[data-dsh-toggle-mounted] .wSkVaW_headerLeading{display:flex!important;grid-area:1/1!important;align-items:center;justify-content:flex-start}
  /* 接管后：标题改从第 2 列起，左内边距收回 4px（原先 70px 是给固定按钮手工留位的魔法数字） */
@@ -260,6 +260,42 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
     ⚠️ 用属性选择器（[data-conversation-header-corner]）与本层既有约定一致：不新增哈希依赖。 */
  [data-conversation-header-corner],.wSkVaW_headerCorner{grid-area:auto!important;position:absolute;left:auto!important;right:0!important;margin-right:8px!important;top:8px}
  [data-conversation-header-corner] button,.wSkVaW_headerCorner button{min-width:28px!important;min-height:28px!important}
+ /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-31 第三轮)：会话头左侧**白占 108px**，标题被挤到只剩 16px。
+    真机实测（360×533，data-dsh-toggle-mounted 已发布）：
+      · header 网格 = `140.005px 203.995px` —— 第 1 列 140px 全部给了 leading；
+      · leading 里只有一枚 32×32 菜单钮（菜单钮实测 32@8..40），**右边 108px 是纯空白**；
+      · 第 2 列 204px 里，`.wSkVaW_titleCluster` 只有 134px，剩下的被绝对定位的角标吃掉；
+      · 状态胶囊（「1 个后台任务运行中」）是 `flex:0 0 auto` 且没有上限 ⇒ 独占 164.9px，
+        标题行（crumb 的当前段）被压到 **16px / 内容 114px**（会话名只剩「继…」）。
+    ⚠️ 本注释刻意不写上游哈希类名：锚点扫描把注释也当「本层消费」，写了会误报未登记。
+    为什么第 1 列会是 140：`.wSkVaW_tabs{padding-left:70px}` 是给**已废弃的固定定位按钮**
+    留位的魔法数字（70 + 内容 24 + 边距 = 140），上游 `auto` 列按**两行里最宽的那个**取整。
+    改法（三处，互相独立、可分别回滚）：
+      ① 第 1 列 `auto` → `min-content`，leading 内子项 `width:auto;flex:0 0 auto` ⇒ 列宽 = 菜单钮 32；
+      ② 接管后 tabs 左内边距 70 → 8（与 titleRow 的 `padding-inline:4px 32px` 对齐量级一致）；
+      ③ 动作区 `flex:0 1 auto; max-width:120px; min-width:0; overflow:hidden`，胶囊内文字单行省略；
+         标题簇 `flex:1 1 auto`、其首个子项 `max-width:52%` → `max-width:none`（标题优先于胶囊）。
+    实测（同源注入本段逐字节文本，前 → 后）：
+      标题可见 16 → **114/114（全文）**；网格 140/204 → 32/312；状态胶囊 98.9px 仍在（文字 69.9px 全见）；
+      菜单钮仍 32×32@8..40、角标仍 28×28@324..352、**越界元素 0**；
+      菜单↔页签间距 38 → 8（页签 24@48..72，与标题左沿 44 差 4，视觉成一组）。
+    ⚠️ 全部用 !important 且写成**不带 mounted 前缀**：本段在该媒体块内**靠后**，
+       同特异性下后者胜出，故接管前（leading 未显示）也无副作用 —— 那时第 1 列由
+       titleRow 的 `padding-inline:70px` 支撑，min-content 仍按内容算，不影响既有 10/10 的规格。
+    ⚠️ 只动网格列与动作区上限，**不动**角落按钮的定位（那条见上面 2026-10-30 第二轮）。 */
+ /* ⚠️ 这三条**必须**带 mounted 前缀：接管失败时（leading 未显示）上游仍是**单列** header，
+    且 tabs 的 `padding-left:70px` 是给固定定位旧按钮留位的 —— 无前缀改它会让页签钻到旧按钮下面。
+    带前缀（0,2,1）同时压过文件里同名的无前缀规则与上游规则，回退路径逐字节不变。 */
+ html[data-dsh-toggle-mounted] .wSkVaW_header{grid-template-columns:min-content minmax(0,1fr)!important}
+ html[data-dsh-toggle-mounted] [data-conversation-header-leading],
+ html[data-dsh-toggle-mounted] .wSkVaW_headerLeading,
+ html[data-dsh-toggle-mounted] .wSkVaW_headerLeading>*{width:auto!important;min-width:0!important;flex:0 0 auto!important}
+ html[data-dsh-toggle-mounted] .wSkVaW_tabs{padding-left:8px!important;grid-column:2!important}
+ .wSkVaW_titleCluster{flex:1 1 auto!important;min-width:0!important}
+ .wSkVaW_titleCluster>:first-child{flex:1 1 auto!important;min-width:0!important;max-width:none!important}
+ .wSkVaW_headerActions{flex:0 1 auto!important;min-width:0!important;max-width:120px!important;overflow:hidden!important}
+ .wSkVaW_headerActions button{min-width:0!important;max-width:100%!important}
+ .wSkVaW_headerActions span{display:block!important;max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
  .wSkVaW_titleCluster .SVAs4q_label{display:inline-flex!important;max-width:84px;font-size:11px}
  .dsh-phone-log-button{font-size:0!important;padding:5px!important;width:30px!important;min-width:30px!important;max-width:30px!important;flex:0 0 30px!important;height:30px}
  .dsh-phone-log-button svg{width:18px;height:18px}
