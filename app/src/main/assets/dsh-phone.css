@@ -249,7 +249,17 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
  .wSkVaW_titleCluster>span{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  .wSkVaW_headerActions,.wSkVaW_headerUtilities{gap:2px!important;margin-left:2px!important}
  .wSkVaW_headerUtilities .OMoRSG_menuAnchor{display:none!important}
- [data-conversation-header-corner],.wSkVaW_headerCorner{grid-area:auto!important;position:absolute;left:auto!important;right:8px;top:8px}
+ /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-30 第二轮)：会话头右上角按钮**被裁掉 8px**。
+    真机实测（360×533）：corner 盒 28×28 @340..368 —— 视口右界 360，右边 8px 被
+    `.wSkVaW_root{overflow:hidden}` 裁掉；其内 22×22 的图标按钮只露出 20px。
+    真因不是 `right:8px` 写错，而是上游给这枚角标带了 `margin-right:-16px`
+    （计算值实测 `margin:0px -16px 0px 8px`）⇒ 定位时按 `right:8 + (-16)` 反算，
+    盒子被推出视口 8px。故必须同时改写 right 与 margin-right，单改 right 无效
+    （候选 X1「right:8px!important;left:auto;transform:none」实测无变化）。
+    改后实测：corner 324..352（越界 -8 ⇒ 完全在视口内），内按钮同时补到 28×28 与角标同尺寸。
+    ⚠️ 用属性选择器（[data-conversation-header-corner]）与本层既有约定一致：不新增哈希依赖。 */
+ [data-conversation-header-corner],.wSkVaW_headerCorner{grid-area:auto!important;position:absolute;left:auto!important;right:0!important;margin-right:8px!important;top:8px}
+ [data-conversation-header-corner] button,.wSkVaW_headerCorner button{min-width:28px!important;min-height:28px!important}
  .wSkVaW_titleCluster .SVAs4q_label{display:inline-flex!important;max-width:84px;font-size:11px}
  .dsh-phone-log-button{font-size:0!important;padding:5px!important;width:30px!important;min-width:30px!important;max-width:30px!important;flex:0 0 30px!important;height:30px}
  .dsh-phone-log-button svg{width:18px;height:18px}
@@ -291,14 +301,24 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
        登记进 app/src/main/assets/ui-anchors.json，构建期 check-ui-anchors 可查。 */
  .uV2eYG_row{display:grid!important;grid-template-columns:minmax(0,1fr) auto;gap:4px 6px!important;align-items:center!important;padding:0 6px 4px!important}
  .uV2eYG_trailing,.uV2eYG_standardControls{display:contents!important}
- .uV2eYG_tools{grid-area:1/1;gap:4px!important;min-width:0}
- .uV2eYG_row .dim-jh-badge{grid-area:1/2;justify-self:end;min-width:0}
- /* 活动槽（streaming 指示等按需渲染）默认空 ⇒ 自身 display:none；有内容时独占第三行，
+ /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-30 第二轮)：徽标改为**跨两列独占第一行**（右对齐）。
+    为什么必须独占一行：网格列宽是**所有行共享**的 —— 徽标占第 2 列时，
+    第 2 列宽 = max(徽标 151.2, 发送 32) = 151.2 ⇒ 第 1 列只剩 151.8px。
+    真机实测（360×533，live 页面，徽标在挂）：触发器 151.8px、文案 121.9/173
+    （模型名被截成「DeepSeek V4.1 Fl」）、努力值 span `flex:0 1000 auto` 被压到**宽 0**
+    （「· 高」一个字都看不到）。徽标跨列后不再参与列宽计算 ⇒ 第 2 列 = 发送 32 ⇒
+    第 1 列 271px：文案 173.3/173 全文可见、努力值 17.3/17 可见、工具行也从 151.8 放宽到 271。
+    代价：多占一行（行高 76 → 97.2、输入卡 122 → 143.2）——比「截断模型名 + 丢失努力值」划算。
+    ⚠️ 四行分工：① 徽标（跨列右对齐）② 工具 ③ 模型选择器 + 发送 ④ 活动槽（有内容才占位）。
+    ⚠️ 全部在 `@media (max-width:767px)` 内：≥768px（平板/桌面）逐字段不变。 */
+ .uV2eYG_row .dim-jh-badge{grid-area:1/1/2/3;justify-self:end;min-width:0}
+ .uV2eYG_tools{grid-area:2/1;gap:4px!important;min-width:0}
+ /* 活动槽（streaming 指示等按需渲染）默认空 ⇒ 自身 display:none；有内容时独占第四行，
     不与会挤的徽标/模型选择器抢格。 */
- .uV2eYG_activity{grid-area:3/1/4/3;min-width:0}
- .uV2eYG_trailing ._7KE1Ra_root{grid-area:2/1;min-width:0}
+ .uV2eYG_activity{grid-area:4/1/5/3;min-width:0}
+ .uV2eYG_trailing ._7KE1Ra_root{grid-area:3/1;min-width:0}
  .uV2eYG_trailing ._7KE1Ra_trigger{max-width:100%!important;width:100%;min-width:0;font-size:12px}
- .uV2eYG_primary{grid-area:2/2;justify-self:end}
+ .uV2eYG_primary{grid-area:3/2;justify-self:end}
  .uV2eYG_tools>button,.uV2eYG_tools>div>button{min-height:32px;max-width:36px}
  .uV2eYG_tools>.dsh-phone-upload{max-width:none;padding:4px 6px!important;font-size:11px!important}
  .uV2eYG_primary{height:32px!important;transform:none!important}
