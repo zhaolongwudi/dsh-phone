@@ -21,6 +21,19 @@ class PhoneJetHubAliasTest {
             modules
         }
     }
+    private fun writeHub(modules: File) {
+        File(modules, "dsh-providers-hub").mkdirs()
+        File(modules, "dsh-providers-hub/package.json").writeText(
+            """{"name":"dsh-providers-hub","version":"0.2.1-rc.2"}""")
+    }
+    /** 复现 2026-11-02 新包布局：随包直接投放 dsh-providers-hub 实体，不带旧名目录。 */
+    private fun shippedLayout(root: File): List<File> =
+        listOf("tree/node_modules", "dsh-home/profiles/phone/node_modules").map {
+            val modules = File(root, it).apply { mkdirs() }
+            writeHub(modules)
+            modules
+        }
+
     @Test fun namesResolveToOnePhysicalPackageAndRepeatedPreparationIsSafe() {
         val root = root(); val modules = install(root)
         PhoneJetHubAlias.prepare(root); PhoneJetHubAlias.prepare(root)
@@ -48,5 +61,37 @@ class PhoneJetHubAliasTest {
         val root=root();val modules=install(root,false)
         PhoneJetHubAlias.prepare(root)
         for(dir in modules) assertFalse(Files.exists(File(dir,"dsh-providers-hub").toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS))
+    }
+
+    /** 新装：随包只有 dsh-providers-hub 实体，启动必须放行且不新建旧名目录。 */
+    @Test fun shippedCurrentOnlyLayoutIsAcceptedAndStaysSymlinkFree() {
+        val root=root();val modules=shippedLayout(root)
+        PhoneJetHubAlias.preflight(root)
+        PhoneJetHubAlias.prepare(root)
+        for(dir in modules){
+            assertFalse(Files.isSymbolicLink(File(dir,"dsh-providers-hub").toPath()))
+            assertFalse(Files.exists(File(dir,"dsh-codearts-auth").toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        }
+    }
+
+    /** 覆盖升级：旧实体残留在新实体旁时以新实体为准，不阻塞启动、不删旧目录。 */
+    @Test fun upgradeLeavingLegacyEntityBesideShippedOneIsAcceptedWithoutDeleting() {
+        val root=root();val modules=install(root)
+        for(dir in modules) writeHub(dir)
+        PhoneJetHubAlias.prepare(root)
+        for(dir in modules){
+            assertTrue(File(dir,"dsh-codearts-auth/package.json").isFile)
+            assertTrue(File(dir,"dsh-providers-hub/package.json").isFile)
+            assertFalse(Files.isSymbolicLink(File(dir,"dsh-providers-hub").toPath()))
+        }
+    }
+
+    /** 同名目录被无关内容占住时必须拒绝，且不改动原文件。 */
+    @Test fun foreignDirectoryUnderCurrentNameIsRejectedAndPreserved() {
+        val root=root();val modules=shippedLayout(root)
+        File(modules[0],"dsh-providers-hub/package.json").delete()
+        File(modules[0],"dsh-providers-hub/other.txt").writeText("keep")
+        assertTrue(runCatching { PhoneJetHubAlias.preflight(root) }.isFailure)
+        assertEquals("keep",File(modules[0],"dsh-providers-hub/other.txt").readText())
     }
 }
