@@ -17,15 +17,15 @@ internal object PhoneJetHubAlias {
     fun prepare(filesDir: File) {
         preflight(filesDir)
         for (modules in moduleDirectories(filesDir)) {
+            // 新布局随包直接投放 CURRENT 实体；已有合法实体或链接时无需再建。
+            val alias = File(modules, CURRENT).toPath()
+            if (Files.exists(alias, LinkOption.NOFOLLOW_LINKS)) continue
             val source = File(modules, LEGACY)
             val manifest = File(source, "package.json")
             if (!manifest.isFile) continue
             if (JSONObject(manifest.readText()).optString("name") != CURRENT) continue
             check(!Files.isSymbolicLink(source.toPath())) { "JetHub 主目录不能是其他位置的链接" }
-            val alias = File(modules, CURRENT).toPath()
-            if (!Files.exists(alias, LinkOption.NOFOLLOW_LINKS)) {
-                Files.createSymbolicLink(alias, File(LEGACY).toPath())
-            }
+            Files.createSymbolicLink(alias, File(LEGACY).toPath())
             check(alias.toRealPath() == source.toPath().toRealPath()) { "JetHub 名称兼容链接不一致" }
         }
     }
@@ -33,9 +33,17 @@ internal object PhoneJetHubAlias {
     private fun validateAlias(modules: File) {
         val alias = File(modules, CURRENT).toPath()
         if (!Files.exists(alias, LinkOption.NOFOLLOW_LINKS)) return
-        check(Files.isSymbolicLink(alias)) { "已有独立同名 JetHub，请先合并；原文件保持" }
-        val target = alias.parent.resolve(Files.readSymbolicLink(alias)).normalize()
-        check(target == File(modules, LEGACY).toPath().normalize()) { "已有 JetHub 链接指向其他位置；原文件保持" }
+        // 两种合法布局：① 旧布局由 prepare 建的新名链接；② 新布局随包直接投放实体目录
+        // （build-assets.py 自 2026-10-29 起只产出 dsh-providers-hub，并清掉旧名副本）。
+        if (Files.isSymbolicLink(alias)) {
+            val target = alias.parent.resolve(Files.readSymbolicLink(alias)).normalize()
+            check(target == File(modules, LEGACY).toPath().normalize()) { "已有 JetHub 链接指向其他位置；原文件保持" }
+            return
+        }
+        val manifest = File(modules, "$CURRENT/package.json")
+        check(manifest.isFile && JSONObject(manifest.readText()).optString("name") == CURRENT) {
+            "已有独立同名 JetHub，请先合并；原文件保持"
+        }
     }
 
     private fun moduleDirectories(filesDir: File) = listOf(
