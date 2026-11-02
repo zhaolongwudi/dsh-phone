@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
-const compat = await readFile(new URL('../phone-qq/browser-compat.js', import.meta.url), 'utf8');
+const compat = await readFile(new URL('../app/src/main/assets/dsh-phone.compat.js', import.meta.url), 'utf8');
 const runtime = createRequire(new URL('../desktop-runtime/package.json', import.meta.url));
 const client = await readFile(runtime.resolve('@deepseek-ai/dsh-client-ui-settings-models/client'), 'utf8');
 const start = client.indexOf('const PROBE_ROUTE =');
@@ -15,6 +15,7 @@ const store = client.slice(start, end);
 function legacyRealm() {
   const context = vm.createContext({});
   vm.runInContext(`
+    delete globalThis.structuredClone;
     delete Array.prototype.toSorted;
     delete Array.prototype.findLast;
     delete Array.prototype.findLastIndex;
@@ -22,6 +23,46 @@ function legacyRealm() {
   `, context);
   return context;
 }
+
+const draftStart = client.indexOf('function draftAt(');
+const draftEnd = client.indexOf('\n\t\t/**', draftStart);
+assert.ok(draftStart > 0 && draftEnd > draftStart);
+const editorDraft = client.slice(draftStart, draftEnd);
+
+test('the actual Models editor crashes on edit without structuredClone, then opens an independent draft with compatibility', () => {
+  const context = legacyRealm();
+  vm.runInContext(`${editorDraft}\nconst namespace = { user: { route: { models: [{ id: 'fixture' }], retries: 0, enabled: false } } }; const schema = { getPath: (value, path) => path.reduce((v, k) => v[k], value) };`, context);
+  assert.throws(() => vm.runInContext('draftAt(schema, namespace, ["route"])', context), /structuredClone/);
+  vm.runInContext(compat, context);
+  assert.equal(vm.runInContext(`(() => { const draft = draftAt(schema, namespace, ['route']); draft.models[0].id = 'edited'; return namespace.user.route.models[0].id === 'fixture' && draft.retries === 0 && draft.enabled === false; })()`, context), true);
+});
+
+test('configuration cloning keeps circular graphs, container aliases and shared binary buffers', () => {
+  const context = legacyRealm(); vm.runInContext(compat, context);
+  assert.equal(vm.runInContext(`(() => {
+    const shared = { value: undefined, huge: 123n }, date = new Date(42), buffer = new ArrayBuffer(8);
+    const source = { a: shared, b: shared, date, dateAgain: date, map: new Map(), set: new Set(), bytes: new Uint8Array(buffer), view: new DataView(buffer), sparse: new Array(3) };
+    source.map.set(shared, source); source.set.add(source); source.bytes[0] = 7; source.self = source;
+    Object.defineProperty(source, '__proto__', { enumerable: true, value: { literal: true } });
+    const copy = structuredClone(source); copy.bytes[0] = 9;
+    return copy !== source && copy.self === copy && copy.a === copy.b && copy.a !== shared && copy.a.huge === 123n && 'value' in copy.a
+      && copy.map.get(copy.a) === copy && copy.set.has(copy) && copy.date === copy.dateAgain && copy.date.getTime() === 42
+      && copy.bytes.buffer === copy.view.buffer && copy.view.getUint8(0) === 9 && source.bytes[0] === 7
+      && copy.sparse.length === 3 && !(0 in copy.sparse) && Object.getPrototypeOf(copy) === Object.prototype && copy.__proto__.literal;
+  })()`, context), true);
+});
+
+test('unsupported clones fail explicitly and repeated compatibility keeps an existing clone implementation', () => {
+  const context = legacyRealm(); vm.runInContext(compat, context);
+  for (const expression of ['({ callback() {} })', 'Symbol("x")', 'new WeakMap()', 'Promise.resolve(1)']) {
+    assert.throws(() => vm.runInContext(`structuredClone(${expression})`, context), error => error.name === 'DataCloneError');
+  }
+  assert.throws(() => vm.runInContext('structuredClone(new ArrayBuffer(2), { transfer: [new ArrayBuffer(1)] })', context), error => error.name === 'DataCloneError');
+  vm.runInContext('const retainedClone = structuredClone;', context); vm.runInContext(compat, context);
+  assert.equal(vm.runInContext('retainedClone === structuredClone', context), true);
+  const native = vm.createContext({ structuredClone: globalThis.structuredClone }); vm.runInContext(compat, native);
+  assert.equal(native.structuredClone, globalThis.structuredClone);
+});
 
 function models(context) {
   // Exercise the shipped upstream store with a fresh profile's available

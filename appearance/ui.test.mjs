@@ -31,13 +31,14 @@ let Native;window.__ModuleLoader__={load:({factory})=>{Native=factory(id=>shared
 ${nativeTheme}
 const effects=[],listeners=new Map(),calls=[];
 const ctx={effect(fn){const dispose=fn();if(typeof dispose==='function')effects.push(dispose);},on(event,fn){if(!listeners.has(event))listeners.set(event,new Set());listeners.get(event).add(fn);return()=>listeners.get(event).delete(fn);},emit(event,value){for(const fn of listeners.get(event)||[])fn(value);}};
-const host={getSnapshot:()=>({value:{preference:'system',fontSize:14}}),subscribe:()=>()=>{},set(key,value){calls.push({key,value});}};
+const section={preference:'system',fontSize:14};
+const host={getSnapshot:()=>({value:section}),subscribe:()=>()=>{},set(key,value){section[key]=value;calls.push({key,value});}};
 const theme=new Native.ThemeRuntime(ctx,host);ctx.theme=theme;
 const slots=new SlotCore();slots.register({name:'root',children:{'settings.section':{kind:'list'},'settings.general.item':{kind:'list'},'settings.plugins.tab':{kind:'list'}}},()=>null);
 const original=()=>React.createElement('div',null,'旧外观入口');
 slots.register({name:'settings.general.item',id:'appearance'},original);slots.register({name:'settings.general.item',id:'font-size'},original);
 const mount=shared['react-dom/client'].createRoot(document.getElementById('settings'));
-const render=()=>{const entry=slots.entriesOfSlot('settings.section').find(e=>e.options.id==='appearance');mount.render(React.createElement(entry.component));};
+const render=()=>{const entry=slots.entriesOfSlot('settings.section').find(e=>e.options.id==='appearance');if(entry)mount.render(React.createElement(entry.component));};
 ctx.slots={inject:(name,fn)=>{const dispose=fn();if(typeof dispose==='function')effects.push(dispose);return dispose;},entriesOfSlot:key=>slots.entriesOfSlot(key),register:(options,component)=>{const dispose=slots.register(options,component);render();effects.push(dispose);return dispose;}};
 slots.onMutate(key=>ctx.emit('slots/changed',key));
 ${legacyAdapter}
@@ -85,7 +86,7 @@ try{
   await frame.locator('select[name=codeFont]').selectOption('jetbrains');await frame.locator('select[name=codeSize]').selectOption('16');await frame.getByRole('button',{name:'保存调整',exact:true}).click();await frame.locator('#notice').filter({hasText:'外观已应用并保存'}).waitFor();
   assert.equal(await page.locator('pre code').evaluate(el=>getComputedStyle(el).fontSize),'16px');assert((await page.locator('pre code').evaluate(el=>getComputedStyle(el).fontFamily)).includes('JetBrains Mono'));
   await frame.getByRole('searchbox').fill('');await frame.locator('select[name=mode]').selectOption('dark');await frame.getByRole('button',{name:'保存调整',exact:true}).click();await page.waitForFunction(()=>window.fixture.theme.getTheme().active.colorScheme==='dark');
-  await page.reload();await page.waitForFunction(()=>window.ready);assert.equal(await page.evaluate(()=>window.fixture.theme.getTheme().active.colorScheme),'dark');
+  await page.reload();await page.waitForFunction(()=>window.ready&&window.fixture.theme.getTheme().active.colorScheme==='dark');
   const currentFrame=page.frameLocator('iframe[title="统一外观设置"]');await currentFrame.getByRole('button',{name:'恢复原版',exact:true}).click();await currentFrame.locator('[data-theme="local:original"][aria-pressed=true]').waitFor();await currentFrame.locator('#notice').filter({hasText:'外观已应用并保存'}).waitFor();assert.equal(await page.locator('html').getAttribute('data-dsh-skin'),null);assert.equal(await page.locator('body').getAttribute('data-dsh-catppuccin'),null);
   // Late legacy fetches cannot overwrite the unified selection.
   await page.evaluate(()=>document.documentElement.dataset.dshSkin='mint');await page.waitForFunction(()=>!document.documentElement.hasAttribute('data-dsh-skin'));
@@ -94,9 +95,10 @@ try{
   await currentFrame.getByRole('searchbox').fill('local:mint');await currentFrame.locator('[data-theme="local:mint"]').click();await currentFrame.locator('[data-theme="local:mint"][aria-pressed=true]').waitFor();await currentFrame.getByRole('searchbox').fill('');
   await currentFrame.locator('#notice').filter({hasText:'外观已应用并保存'}).waitFor();
   await page.evaluate(()=>window.__opencodePalette.setTheme('dracula'));assert.equal(await page.locator('style[data-plugin="dsh-opencode-palette"]').count(),0);
+  await currentFrame.locator('select[name=uiSize]').selectOption('18');await currentFrame.getByRole('button',{name:'保存调整',exact:true}).click();await page.waitForFunction(()=>window.fixture.theme.getTheme().fontSize===18);
   await page.screenshot({path:path.join(report,'appearance-'+viewport.width+'.png'),fullPage:true});
-  await page.evaluate(()=>window.fixture.dispose());assert.equal(await page.locator('style[data-plugin="dsh-opencode-palette"]').count(),1);assert.equal(await page.evaluate(()=>window.__opencodePalette.getState().theme),'dracula');assert.equal(await page.evaluate(()=>window.fixture.slots.entries('settings.section').filter(e=>e.options.id==='opencode-palette').length),1);
-  results.push({width:viewport.width,providerSwitches:7,draftPreserved:true,noStyleAccumulation:true,noOverflow:true,saveReload:true,restoreOriginal:true,lateLegacyIgnored:true,missingAssetRecovery:true,writeFailureRecovery:true});await context.close();
+  await page.evaluate(()=>window.fixture.dispose());assert.equal(await page.evaluate(()=>window.fixture.theme.getTheme().fontSize),14);assert.equal(await page.locator('style[data-plugin="dsh-opencode-palette"]').count(),1);assert.equal(await page.evaluate(()=>window.__opencodePalette.getState().theme),'dracula');assert.equal(await page.evaluate(()=>window.fixture.slots.entries('settings.section').filter(e=>e.options.id==='opencode-palette').length),1);
+  results.push({width:viewport.width,providerSwitches:7,draftPreserved:true,noStyleAccumulation:true,noOverflow:true,saveReload:true,restoreOriginal:true,lateLegacyIgnored:true,missingAssetRecovery:true,writeFailureRecovery:true,originalFontRestored:true});await context.close();
  }
  assert.deepEqual(errors,[]);
  await writeFile(path.join(report,'verification.json'),JSON.stringify({sdk:'0.2.1-alpha.1',actualThemeRuntime:true,actualSlotCore:true,pinnedReact:true,phonePresentation:phone,realComputedCodeFontAndSize:true,realLegacyOpenCode:true,legacySettingsPreserved:true,legacyRendererSuspended:true,legacyRendererAndNavigationRestored:true,results,pageErrors:errors},null,2));console.log(JSON.stringify({results,pageErrors:errors}));

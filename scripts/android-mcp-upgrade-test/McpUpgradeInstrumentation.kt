@@ -18,6 +18,9 @@ class McpUpgradeInstrumentation : Instrumentation() {
             val home=NodeRunner.homeDir(ctx)
             if(phase=="before") {
                 NodeRunner.ensureExtracted(ctx)
+                val independent=File(home,"profiles/phone/node_modules/dsh-providers-hub")
+                File(independent,"package.json").writeText("""{"name":"dsh-providers-hub","version":"2.5.3"}""")
+                File(independent,"user-update-marker").writeText("keep independent update")
                 val source=File(NodeRunner.treeDir(ctx),"media").apply{mkdirs()}
                 ctx.assets.open("fixture-server.mjs").use { input->File(source,"server.mjs").outputStream().use{input.copyTo(it)} }
                 File(source,"marker.mjs").writeText("export const marker='fixture-media-ok';")
@@ -44,6 +47,10 @@ class McpUpgradeInstrumentation : Instrumentation() {
                 check(File(ctx.filesDir,"dsh.version").readText()==ctx.assets.open("before-version.txt").bufferedReader().use{it.readText()})
                 java.nio.file.Files.delete(File(NodeRunner.treeDir(ctx),"media/outside").toPath())
                 NodeRunner.ensureExtracted(ctx)
+                val independent=File(home,"profiles/phone/node_modules/dsh-providers-hub")
+                check(JSONObject(File(independent,"package.json").readText()).getString("version")=="2.5.3")
+                check(File(independent,"user-update-marker").readText()=="keep independent update")
+                sendStatus(0,Bundle().apply{putString("stream","PRESERVED_NEWER_INDEPENDENT_PLUGIN\n")})
                 val row=JSONObject(config.readText()).getJSONArray("servers").getJSONObject(0)
                 check(row.getJSONArray("args").getString(0).startsWith("\$DSH_HOME/extensions/mcp/"))
                 check(!File(NodeRunner.treeDir(ctx),"media").exists())

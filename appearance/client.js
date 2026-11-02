@@ -6,8 +6,14 @@ function appearanceRequestId(){
   const hex=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
   return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
 }
-async function apply(ctx) {
+function apply(ctx) {
+  // Restoring an optional appearance must not hold the entire Web boot open.
+  let bootClosed=false;
+  const startupAbort=new AbortController();
+  ctx.effect(()=>()=>{bootClosed=true;startupAbort.abort();});
+  async function initialize(){
   const {createVisuals,composeTokens,recipeFor}=await import('/appearance-center/visuals.js');
+  if(bootClosed)return;
   const original=ctx.theme.getTheme();let current=null,recipe=null,layer=null,generation=0,closed=false;
   let palette,releasePalette,claiming=false,paletteQueued=false;
   const claimPalette=()=>{
@@ -63,20 +69,24 @@ async function apply(ctx) {
     props:{title:'统一外观设置',src:'/appearance-center','data-dsh-settings-embed':'',style:{width:'100%',height:'min(78dvh,880px)',minHeight:360,border:0,display:'block'}}};}
   ctx.slots.inject('settings.section',()=>ctx.slots.register({name:'settings.section',id:'appearance',priority:-100,order:20,label:'外观'},AppearanceSection));
   for(const id of ['appearance','font-size'])ctx.slots.inject('settings.general.item',()=>ctx.slots.register({name:'settings.general.item',id,priority:-100,order:id==='appearance'?10:11},()=>null));
-  const response=await fetch('/appearance-center/manage',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'status'}})});
-  const envelope=await response.json();if(!response.ok||!envelope.result?.ok)throw Error('外观设置读取失败');
+  const response=await fetch('/appearance-center/manage',{method:'POST',signal:startupAbort.signal,headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'status'}})});
+  const envelope=await response.json();if(bootClosed)return;if(!response.ok||!envelope.result?.ok)throw Error('外观设置读取失败');
   let initial=envelope.result.value;
   // Only a first migration may adopt the old browser-local OpenCode choice.
   const oldPalette=palette?.getState?.();
   if(initial.revision===0 && oldPalette?.enabled && initial.providers.find(p=>p.id==='opencode')?.themes.some(t=>t.id==='opencode:'+oldPalette.theme)){
-    const migration=await fetch('/appearance-center/manage',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'select',revision:0,theme:'opencode:'+oldPalette.theme}})}).then(r=>r.json());
+    const migration=await fetch('/appearance-center/manage',{method:'POST',signal:startupAbort.signal,headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'select',revision:0,theme:'opencode:'+oldPalette.theme}})}).then(r=>r.json());
+    if(bootClosed)return;
     if(migration.result?.ok)initial=migration.result.value;
-    else initial=await fetch('/appearance-center/manage',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'status'}})}).then(r=>r.json()).then(e=>e.result.value);
+    else initial=await fetch('/appearance-center/manage',{method:'POST',signal:startupAbort.signal,headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'status'}})}).then(r=>r.json()).then(e=>e.result.value);
   }
   await adopt(initial);
+  if(bootClosed)return;
   if(typeof BroadcastChannel!=='undefined')ctx.effect(()=>{const channel=new BroadcastChannel('dsh:appearance-center');channel.onmessage=()=>{
-    fetch('/appearance-center/manage',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'status'}})}).then(r=>r.json()).then(e=>e.result?.ok&&adopt(e.result.value)).catch(()=>{});
+    fetch('/appearance-center/manage',{method:'POST',signal:startupAbort.signal,headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:appearanceRequestId(),method:'manage',payload:{action:'status'}})}).then(r=>r.json()).then(e=>e.result?.ok&&adopt(e.result.value)).catch(()=>{});
   };return()=>channel.close();});
+  }
+  initialize().catch(error=>{if(!bootClosed)console.warn('[appearance-center] 外观恢复暂未完成，聊天仍可使用。',error);});
 }
 return {inject,apply};
 }});

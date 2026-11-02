@@ -8,10 +8,11 @@ android {
 
     defaultConfig {
         applicationId "com.dshphone"
+        manifestPlaceholders = [dshRemoteHost: providers.gradleProperty("dshRemoteHost").getOrElse("dsh-peer.invalid")]
         minSdk 28
         targetSdk 36
-        versionCode 104
-        versionName "0.2.1"
+        versionCode 118
+        versionName "0.2.13"
         ndk { abiFilters "arm64-v8a" }
     }
 
@@ -26,6 +27,8 @@ android {
             // 必须解压 .so 落盘：libnode.so 要作为可执行文件被 ProcessBuilder 直接
             // exec（墨枢同款模式），extractNativeLibs=false 只支持 dlopen 不支持 exec
             useLegacyPackaging = true
+            // Bun 的内嵌程序必须保留原始字节，不能被 strip 截断。
+            keepDebugSymbols += ["**/libdshopencode*.so"]
         }
     }
 
@@ -41,6 +44,7 @@ dependencies {
     // ZXing 4.3.0's published POM omits its AndroidX implementation dependencies.
     // CaptureManager uses these classes when opening the camera or requesting permission.
     implementation 'androidx.core:core:1.17.0'
+    implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'
     testImplementation 'junit:junit:4.13.2'

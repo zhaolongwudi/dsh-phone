@@ -8,12 +8,13 @@ import tarfile
 import tempfile
 import argparse
 import hashlib
+from contextlib import nullcontext
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / 'runtime'
 MODULES = DEPLOY / 'node_modules'
 ASSETS = ROOT / 'app/src/main/assets'
-BUNDLES = ('dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center')
+BUNDLES = ('dsh-providers-hub', 'dsh-phone-account', 'dsh-phone-qq', 'dsh-phone-control', 'dsh-phone-cloud-tools', 'dsh-peer', 'dsh-knowledge-link', '@zseven-w/dsh-noema', 'dsh-team', 'dsh-appearance-center', 'dsh-model-routing', 'dsh-knowledge-workbench')
 
 
 def bundle_source(name):
@@ -29,21 +30,19 @@ def bundle_source(name):
 
 def copy_bundle(name, destination, source=None):
     source = source or bundle_source(name)
-    if name == 'dsh-our-free-model':
-        destination.mkdir(parents=True)
-        shutil.copytree(source, destination, dirs_exist_ok=True, ignore=shutil.ignore_patterns('node_modules', '.DS_Store', '._*'))
-        return
     manifest = json.loads((source / 'package.json').read_text())
     destination.mkdir(parents=True)
     (destination / 'package.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    entries = ('LICENSE', 'LICENSE.openclaw', 'bin', 'sample-tools', 'lib', 'locale', 'vendor', 'agent-cards', 'knowledge-link', 'task-supervisor', 'subagent-scheduler', 'chat-files', 'chat-history', 'memory-isolation', 'mcp-manager', 'on-demand-tools', 'controlled-market', 'workflow-hub', 'cards-client.js', 'index.js', 'config.js', 'manager.js', 'bridge.mjs', 'cli.mjs', 'skills',
+    entries = ('LICENSE', 'LICENSE.openclaw', 'bin', 'sample-tools', 'lib', 'locale', 'vendor', 'agent-cards', 'knowledge-link', 'task-supervisor', 'subagent-scheduler', 'chat-files', 'chat-history', 'incoming-workspace', 'conversation-actions', 'memory-isolation', 'mcp-manager', 'on-demand-tools', 'controlled-market', 'workflow-hub', 'cards-client.js', 'index.js', 'config.js', 'manager.js', 'bridge.mjs', 'cli.mjs', 'skills',
                   'index.mjs', 'protocol.mjs', 'relay.mjs', 'tunnel.mjs', 'proxy.mjs', 'ui-reuse.mjs', 'browser-session.mjs', 'config-sync.mjs', 'skill-import.js',
-                  'account.js', 'messages-adapter.js', 'core-migration.js', 'plugin-compat.js', 'chatgpt.js', 'chatgpt-account.js', 'chatgpt-protocol.js',
+                  'account.js', 'messages-adapter.js', 'core-migration.js', 'core-transaction.js', 'compatibility-packages.js', 'private-sdk-v2.js', 'private-sdk-plan.js', 'private-sdk-baselines', 'private-sdk-patches.json', 'private-sdk-patches', 'plugin-compat.js', 'chatgpt.js', 'chatgpt-account.js', 'chatgpt-protocol.js',
                   'chatgpt-adapter.js', 'chatgpt-page.html', 'persona.js', 'skills.js', 'phone-home.js', 'setup.js', 'qq-login.js', 'qq-download.py', 'code-access.js', 'workspace.js', 'skills.html', 'workspace.html', 'packs.js', 'replace-skills.js', 'bundled-packs', 'packs.html', 'skill-import.js', 'browser-compat.js', 'zip.js', 'runtime.js', 'runtime-catalog.json', 'runtime-preflight.js', 'web-fetch.js', 'runtime-upstream-MIT.txt', 'presentation.css', 'presentation.js', 'platforms.json', 'page.html', 'cordis.patch.yml', 'client.js', 'adapter', 'icon.svg')
     if name == '@zseven-w/dsh-noema':
         entries += ('src',)
-    if name == 'dsh-our-free-model':
-        entries += ('src',)
+    if name in ('dsh-model-routing', 'dsh-knowledge-workbench'):
+        entries += ('src', 'client.js', 'page.js', 'style.css', 'README.md')
+    if name == 'dsh-purge':
+        entries += ('client.js',)
     if name == 'dsh-team':
         entries += ('client.js', 'page.js', 'upstream.json', 'README.md')
     if name == 'dsh-appearance-center':
@@ -139,12 +138,14 @@ def remove_foreign_packages(modules):
     return removed
 
 
-def validate_sdk(modules):
+def validate_sdk(modules, expected_version=None):
     """A packaged phone must not mix released DSH SDK generations."""
     scope = modules / '@deepseek-ai'
     core = json.loads((scope / 'dsh/package.json').read_text())
     if core.get('name') != '@deepseek-ai/dsh' or not core.get('version'):
         raise RuntimeError('Phone core manifest invalid')
+    if expected_version is not None and core['version'] != expected_version:
+        raise RuntimeError('Installed SDK does not match pinned deployment: ' + core['version'] + ' != ' + expected_version)
     for directory in scope.iterdir():
         if directory.name != 'dsh' and not directory.name.startswith('dsh-'):
             continue
@@ -186,21 +187,69 @@ def validate_peer_files(directory):
     return len(seen)
 
 
+def validate_private_sdk_plan(tree):
+    """Reject stale migration receipts before publishing any new SDK archives."""
+    tree = tree.resolve()
+    plugin = tree / 'node_modules/dsh-phone-qq'
+    plan = json.loads((plugin / 'private-sdk-patches.json').read_text())
+    version = json.loads((tree / 'node_modules/@deepseek-ai/dsh/package.json').read_text())['version']
+    if plan.get('version') != 2 or plan.get('sdkVersion') != version:
+        raise RuntimeError('Private SDK migration plan is not reviewed for packaged SDK ' + version)
+    if not plan.get('baselines') or not plan.get('files'):
+        raise RuntimeError('Private SDK migration plan is incomplete')
+    compatibility = plan.get('compatibilityPackages', [])
+    for row in [*plan['files'], *[r for package in compatibility for r in package.get('replacements', [])]]:
+        relative = row.get('relative', '')
+        if not relative or relative.startswith('/') or '..' in Path(relative).parts:
+            raise RuntimeError('Invalid private SDK target path')
+        source = row.get('source', '')
+        if source.startswith('tree:'):
+            base, rel = tree, source[5:]
+        elif source.startswith('plugin:'):
+            base, rel = plugin, source[7:]
+        else:
+            raise RuntimeError('Invalid private SDK source')
+        file = base / rel
+        if not rel or Path(rel).is_absolute() or '..' in Path(rel).parts or file.is_symlink() or not file.resolve().is_relative_to(base.resolve()) or not file.is_file():
+            raise RuntimeError('Private SDK source missing or outside deployment: ' + relative)
+        data = file.read_bytes()
+        if row.get('bytes') != len(data) or row.get('sha256') != hashlib.sha256(data).hexdigest():
+            raise RuntimeError('Private SDK source differs from reviewed migration plan: ' + relative)
+    target_hashes = {row['relative']: row['sha256'] for row in plan['files']}
+    for baseline in plan['baselines']:
+        for required in baseline.get('requiredPreservations', []):
+            receipt = next((r for r in plan.get('preservations', []) if r.get('relative') == required['relative'] and r.get('beforeSha256') == required['sha256'] and r.get('afterSha256') == target_hashes.get(required['relative']) and r.get('disposition') in ('merged','maintained-upstream') and r.get('verification')), None)
+            if receipt is None:
+                raise RuntimeError('Missing private SDK preservation receipt: ' + required['relative'])
+    return {'version': version, 'files': len(plan['files']), 'preservations': len(plan.get('preservations', []))}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--with-skills', action='store_true', help='Explicitly include the optional preset skill libraries and import archives')
+    parser.add_argument('--stage-directory', type=Path, help='Retain a new, empty staging directory for independent migration acceptance')
+    parser.add_argument('--stage-only', action='store_true', help='Prepare staging inputs only; do not publish APK archives')
     args = parser.parse_args()
+    if args.stage_only and args.stage_directory is None:
+        parser.error('--stage-only requires --stage-directory')
+    if args.stage_directory is not None:
+        args.stage_directory = args.stage_directory.expanduser().absolute()
+        if args.stage_directory.exists():
+            parser.error('--stage-directory must not already exist')
     validate_asset_version((ROOT/'app/build.gradle').read_text(), (ROOT/'app/src/main/java/com/dshphone/NodeRunner.kt').read_text())
     import subprocess
+    # OFM 已从本工具移除（2026-11-02）：不再随包、不再生成 APK 侧兼容规则。
+    # 回归时需同时恢复 our-free-model/、phone-compat/、scripts/build-ofm-compat.mjs 与打包条目。
     subprocess.run(['node', str(ROOT/'scripts/build-agent-cards-client.mjs')], check=True)
-    # §2.12（capsule）：上游新增的模型选择器 overlay —— 它需要 desktop-runtime 树里的
-    # 钉版 SDK（0.2.1-alpha.1），而手机版构建只装 runtime/ ⇒ 缺树时**跳过而非中断**
-    # （跳过 = 沿用宿主自带模型选择器，与合并前行为一致；判据只看那个 package.json）。
+    # 上游新增的模型选择器 overlay 需要 desktop-runtime 树里的钉版 SDK，而手机版构建只装
+    # runtime/ ⇒ 缺树时**跳过而非中断**（跳过 = 沿用宿主自带模型选择器）。
+    # 判据只看那个 package.json（DSH-PHONE PATCH 2026-11-02）。
     _model_picker_sdk = ROOT / 'desktop-runtime/node_modules/@deepseek-ai/dsh-client-ui-model-selection/package.json'
     if _model_picker_sdk.is_file():
         subprocess.run(['node', str(ROOT/'scripts/build-model-picker.mjs')], check=True)
     else:
         print('跳过 build-model-picker：本构建无 desktop-runtime 树（手机版沿用宿主模型选择器）')
+    subprocess.run(['node', str(ROOT/'scripts/build-conversation-actions.mjs')], check=True)
     for extension in ('css', 'js'):
         shutil.copy2(ROOT/f'app/src/main/assets/dsh-phone.{extension}', ROOT/f'phone-qq/presentation.{extension}')
     shutil.copy2(ROOT/'app/src/main/assets/dsh-phone.compat.js', ROOT/'phone-qq/browser-compat.js')
@@ -210,12 +259,20 @@ def main():
     shutil.copy2(ROOT/'phone-qq/skill-import.js', ROOT/'peer/skill-import.js')
     if not (MODULES / '@deepseek-ai/dsh/package.json').is_file():
         raise SystemExit('Run pnpm install --frozen-lockfile --ignore-scripts in runtime/ first.')
-    print('Validated phone SDK: ' + validate_sdk(MODULES))
+    sdk_version = validate_sdk(MODULES, json.loads((DEPLOY/'package.json').read_text())['dependencies']['@deepseek-ai/dsh'])
+    print('Validated phone SDK: ' + sdk_version)
     # Local file dependencies may still contain an earlier copied adapter.
-    for name in ('index.js', 'package.json'):
-        source, target = DEPLOY / 'stubs/sharp' / name, MODULES / 'sharp' / name
-        if not target.exists() or not source.samefile(target):
-            shutil.copy2(source, target)
+    if sdk_version == '0.2.1-alpha.1':
+        for name in ('index.js', 'package.json'):
+            source, target = DEPLOY / 'stubs/sharp' / name, MODULES / 'sharp' / name
+            if not target.exists() or not source.samefile(target):
+                shutil.copy2(source, target)
+    elif sdk_version == '0.2.1-rc.2':
+        sharp = json.loads((MODULES/'sharp/package.json').read_text())
+        if sharp.get('name') != 'sharp' or sharp.get('version') != '0.35.5' or not (MODULES/'@deepseek-ai/dsh-attachment-local/lib/android-sharp.cjs').is_file():
+            raise RuntimeError('Reviewed rc.2 Android image adapter/official sharp missing')
+    else:
+        raise RuntimeError('Unreviewed phone SDK version')
     # Restore the pinned Android boot/HMR and Windows ABI compatibility sources.
     for overlay in (DEPLOY / 'overlays').rglob('*'):
         if overlay.is_file():
@@ -229,21 +286,27 @@ def main():
                          ('dsh-peer', ROOT / 'peer'),
                          ('dsh-knowledge-link', ROOT / 'knowledge'),
                          ('dsh-team', ROOT / 'team'),
+                         ('dsh-model-routing', ROOT / 'model-routing'),
+                         ('dsh-knowledge-workbench', ROOT / 'knowledge-workbench'),
                          ('dsh-appearance-center', ROOT / 'appearance'),
                          ('@zseven-w/dsh-noema', ROOT / 'vendor/dsh-noema'),
-                         ]:
+                         ('dsh-purge', ROOT / 'vendor/dsh-purge-community')]:
         target = MODULES / name
         shutil.rmtree(target, ignore_errors=True)
         copy_bundle(name, target, source)
-    # rc.11 改名：runtime 的依赖键仍是旧名（改它会牵动 pnpm-lock 的 peer 解析哈希，
-    # 而本机无法忠实重算）⇒ pnpm 装出的是旧名目录；部署树只用新名，故清掉旧名副本
+    # runtime 的依赖键历史上是 dsh-codearts-auth（改它会牵动 pnpm-lock 的 peer 解析哈希，
+    # 而本机无法忠实重算）⇒ pnpm 可能仍装出旧名目录；部署树只用新名，故清掉旧名副本
     # （避免同一份插件在树里存两份，也避免被残留的旧 profile 条目解析到）。
     shutil.rmtree(MODULES / 'dsh-providers-hub', ignore_errors=True)
+    shutil.rmtree(MODULES / 'dsh-codearts-auth', ignore_errors=True)
     # ESM tests and local editing resolve the same hoisted dependency tree.
     if not (ROOT / 'node_modules').exists():
         (ROOT / 'node_modules').symlink_to('runtime/node_modules', target_is_directory=True)
     ASSETS.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='dsh-phone-assets-') as temporary:
+    if args.stage_directory is not None:
+        args.stage_directory.mkdir(mode=0o700, parents=True)
+    staging = nullcontext(args.stage_directory) if args.stage_directory is not None else tempfile.TemporaryDirectory(prefix='dsh-phone-assets-')
+    with staging as temporary:
         work = Path(temporary)
         tree, home = work / 'tree', work / 'home'
         tree.mkdir()
@@ -265,6 +328,21 @@ def main():
             validate_peer_files(base / 'dsh-appearance-center')
         shared = deduplicate_profile_resources(tree, home)
         print('Shared bundled resources stored once: ' + json.dumps(shared))
+        if args.stage_only:
+            print('Staged inputs only, NOT packaged or deployment-ready: ' + str(work))
+            return
+        # 私有 SDK 迁移方案按 **构建期内核版本** 复核。本仓库运行时钉 0.2.1-rc.5，
+        # 而随上游同步来的方案（phone-qq/private-sdk-patches.json）是 rc.2 的评审回执
+        # ⇒ 版本不匹配时不套用该方案（DSH-PHONE PATCH 2026-11-02）：
+        #   · 没有任何私有 SDK 时（.dsh-purge-runtime 不存在）该机制根本不触发，方案无关紧要；
+        #   · 有私有 SDK 时必须先按当前内核重新评审方案，否则宁可让构建失败也不发错包。
+        plan_file = ROOT / 'phone-qq/private-sdk-patches.json'
+        installed_sdk = json.loads((MODULES / '@deepseek-ai/dsh/package.json').read_text())['version']
+        plan_sdk = json.loads(plan_file.read_text()).get('sdkVersion') if plan_file.is_file() else None
+        if plan_sdk != installed_sdk:
+            print(f'跳过私有 SDK 方案校验：方案面向 {plan_sdk}，本构建内核 {installed_sdk}（无私有 SDK 时不触发该迁移）')
+        else:
+            validate_private_sdk_plan(tree)
         make_tar(tree, ASSETS / 'dsh-tree.tar')
         make_tar(home, ASSETS / 'dsh-home.tar')
     print('Built phone assets: ' + ('with optional preset skills' if args.with_skills else 'framework only, no preset skills/personas'))

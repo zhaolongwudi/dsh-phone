@@ -30,6 +30,8 @@
 
 ## 媒体等 stdio 扩展的覆盖升级
 
+维护升级须遵守 [手机端升级与兼容契约](../../docs/phone-upgrade-contract.md)。下述迁移机制的适用范围仍需逐次核对；目录保留、工具发现和实际调用分别验收。
+
 独立服务和完整依赖放在 `$DSH_HOME/extensions/mcp/<服务>/`，在「MCP 服务」中配置启动命令 `node`，参数例如 `["$DSH_HOME/extensions/mcp/media/server.mjs"]`，启动目录 `$DSH_HOME/extensions/mcp/media`。仅展开路径开头的 `$DSH_HOME` 或 `${DSH_HOME}`；不会执行 shell 替换。Android 内置 Node 每次按当前 APK 解析，旧配置里指向本应用 `/data/app/.../libnode.so` 的绝对路径也在启动时解析为当前 Node；Termux 或其他应用的 Node 保持原命令。凭据仍留在已有凭据库，环境变量继续按明确保存的内容传递。
 
 安卓更新在替换程序树和内置 profile 包前扫描已保存 stdio 的命令、文件参数和启动目录。新包未包含的独立目录被复制到持久扩展目录，配置经原子写入改为 `$DSH_HOME` 路径，旧配置留在私有 `storage/mcp-manager/upgrade-backups`。自装 profile 包本来会保留，继续原位置。只复制闭合目录，目录外符号链接、特殊文件、超过 512 MB/20000 项或无法独立搬运的单文件补丁会中止替换，保留原程序与连接配置，供整理为完整服务后重试。

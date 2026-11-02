@@ -1,11 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
 import {Context} from '@deepseek-ai/cordis';
-import {BasicCompactionEngine} from '../runtime/overlays/@deepseek-ai/dsh-compaction-basic/lib/index.js';
+const {BasicCompactionEngine} = await import(process.env.DSH_PHONE_COMPACTION_SOURCE
+  ? pathToFileURL(process.env.DSH_PHONE_COMPACTION_SOURCE)
+  : new URL('../runtime/overlays/@deepseek-ai/dsh-compaction-basic/lib/index.js', import.meta.url));
+import {estimateMessage} from '@deepseek-ai/dsh-token-meter/estimate';
 
-const agent = () => ({options:{provider:'fixture',model:'local'},session:{id:'fixture-session',requestHeader:()=>({config:{provider:'fixture',model:'local'}}),toolHistory:()=>[]}});
+const agent = () => ({options:{provider:'fixture',model:'local'},session:{id:'fixture-session',requestHeader:()=>({config:{provider:'fixture',model:'local'}}),toolHistory:()=>({tools:[],updates:[]})}});
 function fixture(config={}) {
   const ctx=new Context(), hooks={};
+  ctx.provide('tokenMeter',{estimateMessage});
   const on=ctx.on.bind(ctx);ctx.on=(name, fn)=>{hooks[name]=fn;return on(name,fn);};
   const engine=new BasicCompactionEngine(ctx,config);
   return {ctx,engine,hooks};
@@ -19,7 +24,7 @@ test('default summary is bounded while explicit output budget is preserved',()=>
 test('summary uses declared output capacity and low effort without changing main selection',async()=>{
   const {ctx,engine}=fixture({auto:false});let call;
   ctx.provide('llm',{
-    resolveModelInfo:async()=>({defaultMaxTokens:1024,reasoning:{efforts:[{id:'high'},{id:'low'}]}}),
+    resolveModelInfo:async()=>({context:{contextWindow:32768},defaultMaxTokens:1024,reasoning:{efforts:[{id:'high'},{id:'low'}]}}),
     async *stream(options){call=options;yield {type:'text-delta',index:0,text:'本地摘要：保留目标、结果、路径和待办。'};yield {type:'finish',reason:{kind:'stop'}};}
   });
   const a=agent(),before=structuredClone(a.options);

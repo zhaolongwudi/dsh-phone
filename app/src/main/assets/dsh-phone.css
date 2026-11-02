@@ -68,7 +68,8 @@
      不随构建改名），与 [data-dsh-settings-dialog]（本层发布）并列作兜底；原
      .VOzbGW_panel 哈希保留，三者指向同一元素，属「只增不减」的稳健化。
      ⚠️ .VOzbGW_overlay 是外层遮罩，上游未给语义属性，暂只能继续用哈希。 */
-  .VOzbGW_overlay { bottom:auto !important; height:var(--dsh-phone-viewport-height,100dvh) !important; }
+  /* Settings need an opaque theme surface above the conversation.（上游 2026-10-27）*/
+  .VOzbGW_overlay { bottom:auto !important; height:var(--dsh-phone-viewport-height,100dvh) !important; background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#fff)) !important; isolation:isolate; }
   [data-shortcut-modal="settings"], [data-dsh-settings-dialog], .VOzbGW_panel { box-sizing:border-box; width:100vw !important; max-width:100vw !important; height:var(--dsh-phone-viewport-height,100dvh) !important; max-height:var(--dsh-phone-viewport-height,100dvh) !important; border-radius:0 !important; flex-direction:column !important; }
   .VOzbGW_nav { width:100% !important; min-width:0; padding:12px 12px 8px !important; gap:8px !important; border-bottom:1px solid var(--dsw-alias-border-default,#ddd); }
   .VOzbGW_navTitle { padding:0 !important; min-height:32px; display:flex; align-items:center; }
@@ -80,7 +81,9 @@
   .VOzbGW_actions button { white-space:nowrap; font-size:12px; }
   .VOzbGW_close { min-width:36px; min-height:36px; }
   .VOzbGW_options { flex:1 1 0 !important; padding:12px !important; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
-  .VOzbGW_options iframe[data-dsh-settings-embed] { height:var(--dsh-phone-embed-height,min(72dvh,760px)) !important; min-height:100% !important; }
+  .VOzbGW_options iframe[data-dsh-settings-embed] { height:560px !important; height:var(--dsh-phone-embed-height,560px) !important; min-height:0 !important; }
+  .VOzbGW_panel[data-dsh-embed-natural] { height:auto !important; align-self:flex-start !important; }
+  .VOzbGW_panel[data-dsh-embed-natural] .VOzbGW_content, .VOzbGW_panel[data-dsh-embed-natural] .VOzbGW_options { flex:0 1 auto !important; }
   .VOzbGW_options [data-slot="settings.general.item"] > * { flex-wrap:wrap; gap:12px; }
   .dsh-phone-noema-row { flex-wrap:wrap !important; gap:10px !important; }
   .dsh-phone-noema-row input[type="text"], .dsh-phone-noema-row input[type="number"] { width:100% !important; max-width:none !important; }

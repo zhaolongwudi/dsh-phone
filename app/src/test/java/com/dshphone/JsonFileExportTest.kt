@@ -144,4 +144,22 @@ class JsonFileExportTest {
         exporter.request(page, ticket); result(); exporter.destroy(); queued!!.run(); shadowOf(Looper.getMainLooper()).idle()
         assertEquals(text, stream.toString("UTF-8")); assertFalse(page.scripts.any { it.contains("\"saved\"") })
     }
+    @Test fun markdownUsesSystemPickerAndPreservesUtf8() {
+        val content = "# 中文笔记\n\n模型路由说明 [[知识库]]"
+        supply("知识库说明.md", content)
+        exporter.request(page, ticket)
+        val picker = shadowOf(activity).nextStartedActivityForResult
+        assertEquals("text/markdown", picker.intent.type)
+        assertEquals("知识库说明.md", picker.intent.getStringExtra(Intent.EXTRA_TITLE))
+        val stream = ByteArrayOutputStream()
+        shadowOf(activity.contentResolver).registerOutputStream(uri, stream)
+        result(); assertStatus("saved"); assertEquals(content, stream.toString("UTF-8"))
+    }
+    @Test fun markdownRejectsTraversalAndOversizeWithoutWideningJsonLimits() {
+        for ((name, value) in listOf("../note.md" to "正文", "note.html" to "<p>正文</p>", "note.md" to "x".repeat(JsonFileExport.MAX_MARKDOWN_BYTES + 1))) {
+            supply(name, value); exporter.request(page, ticket); assertStatus("error")
+            assertNull(shadowOf(activity).nextStartedActivityForResult)
+        }
+        supply("note.md", "正文"); exporter.request(page, ticket); result(Activity.RESULT_CANCELED); assertStatus("cancelled")
+    }
 }

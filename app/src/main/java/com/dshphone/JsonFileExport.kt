@@ -16,21 +16,23 @@ class JsonFileExport(private val activity: Activity, private val worker: Executo
     companion object {
         const val REQUEST_CODE = 2403
         const val MAX_BYTES = 524288
+        const val MAX_MARKDOWN_BYTES = 2 * 1024 * 1024 + 1024
         fun trusted(url: String?): Boolean = runCatching {
             val uri = Uri.parse(url ?: return false)
             uri.scheme == "http" && uri.host == "127.0.0.1" && uri.userInfo == null && uri.port in listOf(3080, 3081)
         }.getOrDefault(false)
 
         fun payload(raw: String): Pair<String, ByteArray> {
-            check(raw.length <= MAX_BYTES * 6 + 1024) { "备份文件过大" }
+            check(raw.length <= MAX_MARKDOWN_BYTES * 6 + 1024) { "备份文件过大" }
             val value = JSONObject(raw)
             val name = value.getString("filename")
-            check(name.length in 1..160 && name.endsWith(".json") && !name.startsWith(".") &&
+            check(name.length in 1..160 && (name.endsWith(".json") || name.endsWith(".md")) && !name.startsWith(".") &&
                 name.none { it == '/' || it == '\\' || it.code < 32 || it.code == 127 }) { "备份文件名无效" }
             val text = value.getString("text")
             val bytes = text.toByteArray(Charsets.UTF_8)
-            check(bytes.size in 1..MAX_BYTES) { "备份文件超过手机保存上限（512 KB）" }
-            JSONObject(text) // Reject a missing, consumed or malformed payload before opening a picker.
+            val limit = if (name.endsWith(".md")) MAX_MARKDOWN_BYTES else MAX_BYTES
+            check(bytes.size in 1..limit) { "文件超过手机保存上限" }
+            if (name.endsWith(".json")) JSONObject(text) // Reject a missing, consumed or malformed payload before opening a picker.
             return name to bytes
         }
     }
@@ -51,19 +53,19 @@ class JsonFileExport(private val activity: Activity, private val worker: Executo
         view.evaluateJavascript("window.__dshPhoneJsonExport?.take(${JSONObject.quote(ticket)}) ?? null") { raw ->
             if (destroyed || pending !== job) return@evaluateJavascript
             try {
-                check(view.url == job.source && trusted(view.url)) { "页面已改变，请返回 Jet Hub 重试" }
+                check(view.url == job.source && trusted(view.url)) { "页面已改变，请返回原页面重试" }
                 val (name, bytes) = payload(raw)
                 job.bytes = bytes
                 activity.startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "application/json"
+                    type = if (name.endsWith(".md")) "text/markdown" else "application/json"
                     putExtra(Intent.EXTRA_TITLE, name)
                     putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI,
                         Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADownload"))
                     addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 }, REQUEST_CODE)
             } catch (_: Exception) {
-                finish(job, "error", "无法打开保存文件窗口，请返回 Jet Hub 重试")
+                finish(job, "error", "无法打开保存文件窗口，请返回原页面重试")
             }
         }
     }

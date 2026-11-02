@@ -18,12 +18,13 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 前台服务：保活 dsh（Node 子进程）。
- * - 进程死亡自动重启（5s 退避）；
+ * - 仅对确认退出的进程退避重启，连续失败暂停；慢请求不触发重启；
  * - stdout 汇入环形缓冲（UI 读取）并追加到 dsh-console.log；
  * - stopWithTask=false：划掉任务卡片服务不停止。
  */
 class DshService : Service() {
     companion object {
+        const val ACTION_START = "com.dshphone.START"
         const val ACTION_STOP = "com.dshphone.STOP"
         const val ACTION_RESTART = "com.dshphone.RESTART"
         const val ACTION_BACKUP = "com.dshphone.BACKUP"
@@ -40,6 +41,8 @@ class DshService : Service() {
         @Volatile var startedAt: Long = 0
         @Volatile var lastExitCode: Int? = null
         @Volatile var restartCount: Int = 0
+        @Volatile var restartPaused: Boolean = false
+            private set
         @Volatile var browserLaunchUrl: String? = null
             private set
         @Volatile var recoveryBusy = false
@@ -76,15 +79,40 @@ class DshService : Service() {
     private val work = Executors.newSingleThreadExecutor()
     @Volatile private var stopping = false
     @Volatile private var maintenance = false
+    private val restartPolicy = EngineRestartPolicy()
+    private var pendingRestart: Runnable? = null
+
+    private fun scheduleDeadRestart(reason: String) {
+        if (stopping || maintenance || pendingRestart != null || process?.isAlive == true) return
+        val delay = restartPolicy.failed()
+        restartPaused = restartPolicy.paused
+        if (delay == null) {
+            appendLog("$reason；连续退出，已暂停自动重启。请查看日志后从服务菜单选择启动服务")
+            return
+        }
+        appendLog("$reason；${delay / 1000} 秒后重试")
+        val retry = Runnable {
+            pendingRestart = null
+            if (!stopping && !maintenance && process?.isAlive != true) work.execute { startNode() }
+        }
+        pendingRestart = retry
+        handler.postDelayed(retry, delay)
+    }
+
+    private fun clearPendingRestart() {
+        pendingRestart?.let { handler.removeCallbacks(it) }
+        pendingRestart = null
+    }
     private val watchdog = object : Runnable {
         override fun run() {
             if (stopping || maintenance) return
             val p = process
             if (p != null && !p.isAlive) {
                 lastExitCode = runCatching { p.exitValue() }.getOrNull()
-                appendLog("node 已退出（exit=${lastExitCode}），5 秒后重启")
                 killNode()
-                handler.postDelayed({ if (!stopping && !maintenance) work.execute { startNode() } }, 5_000)
+                scheduleDeadRestart("node 已退出（exit=${lastExitCode}）")
+            } else if (p?.isAlive == true) {
+                restartPolicy.alive(android.os.SystemClock.elapsedRealtime())
             }
             handler.postDelayed(this, 5_000)
         }
@@ -106,6 +134,7 @@ class DshService : Service() {
         if (maintenance) return START_STICKY
         if (intent?.action in listOf(ACTION_BACKUP, ACTION_RESTORE, ACTION_DISABLE_PLUGINS, ACTION_INSTALL_PLUGIN)) {
             maintenance = true
+            clearPendingRestart()
             recoveryBusy = true
             recoveryMessage = "正在检查任务状态…"
             handler.removeCallbacksAndMessages(null)
@@ -162,7 +191,11 @@ class DshService : Service() {
                 } finally {
                     maintenance = false
                     recoveryBusy = false
-                    if (resume && !stopping && process?.isAlive != true) startNode()
+                    if (resume && !stopping && process?.isAlive != true) {
+                        restartPolicy.userRetry()
+                        restartPaused = false
+                        startNode()
+                    }
                     handler.post {
                         if (!stopping) handler.postDelayed(watchdog, 5_000)
                         if (!resume && process?.isAlive != true) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId) }
@@ -174,6 +207,7 @@ class DshService : Service() {
         if (intent?.action == ACTION_STOP) {
             com.dshphone.control.ControlRuntime.stop("DSH 服务已停止")
             stopping = true
+            clearPendingRestart()
             handler.removeCallbacksAndMessages(null)
             appendLog("收到停止指令")
             work.execute {
@@ -183,6 +217,11 @@ class DshService : Service() {
             return START_NOT_STICKY
         }
         stopping = false
+        if (intent?.action in listOf(ACTION_START, ACTION_RESTART)) {
+            clearPendingRestart()
+            restartPolicy.userRetry()
+            restartPaused = false
+        }
         startAsForeground()
         work.execute {
             if (stopping || maintenance) return@execute
@@ -225,16 +264,18 @@ class DshService : Service() {
 
     @Synchronized
     private fun startNode() {
+        if (stopping || maintenance || restartPolicy.paused || process?.isAlive == true) return
         com.dshphone.control.ControlRuntime.stop("DSH 服务重新启动")
-        if (stopping || maintenance) return
         val ctx = applicationContext
         killNode()
-        val p = runCatching { NodeRunner.start(ctx) }
+        val p = runCatching { NodeRunner.start(ctx) { stopping || maintenance } }
         process = p.getOrNull()
         if (p.isFailure) {
-            appendLog("node 启动失败: ${p.exceptionOrNull()?.message}")
+            handler.post { scheduleDeadRestart("node 启动失败: ${p.exceptionOrNull()?.message}") }
             return
         }
+        restartPolicy.started(android.os.SystemClock.elapsedRealtime())
+        restartPaused = false
         startedAt = System.currentTimeMillis()
         restartCount++
         appendLog("node 已启动（第 $restartCount 次）")
@@ -255,6 +296,7 @@ class DshService : Service() {
     override fun onDestroy() {
         com.dshphone.control.ControlRuntime.stop("DSH 服务已关闭")
         stopping = true
+        clearPendingRestart()
         handler.removeCallbacksAndMessages(null)
         killNode()
         work.shutdown()

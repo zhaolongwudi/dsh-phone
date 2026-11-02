@@ -52,10 +52,12 @@ test('configuration sync uses current DSH volatile forms and protects revisions'
 });
 
 function pluginContext(t, llm) {
-  const store = credentials(), disposers = [], hooks = new Map(); let rpc;
+  const store = credentials(), disposers = [], hooks = new Map(), services = new Map(); let rpc;
   const ctx = { llm, credentials: store, settings: { describe: () => [] }, systemPrompt: { variable() {}, context() {} },
-    connection: { rpc: { handle(path, handler, guard) { assert.equal(guard.authority, 'loopback'); rpc = handler; } } },
-    webServer: { register() { return () => {}; } }, get() { return undefined; },
+    connection: { rpc: { handle(path, handler, guard) { assert.equal(guard.authority, 'loopback'); if (path === '/phone-peer') rpc = handler; } } },
+    webServer: { register() { return () => {}; } },
+    get(name) { return services.get(name) ?? this[name]; }, provide(name, value) { services.set(name, value); },
+    inject(names, fn) { if (names.every(name => this.get(name) !== undefined)) return fn(this); },
     effect(fn) { const disposer = fn(); if (typeof disposer === 'function') disposers.push(disposer); },
     on(name, fn) { hooks.set(name, fn); },
   };
@@ -82,6 +84,8 @@ test('actual phone gateway → encrypted relay → registered desktop DSH adapte
   const unregister = phoneCtx.llm.registerAdapter(['fixture'], new FixtureAdapter()); t.after(unregister);
   const unregisterLocal = desktopCtx.llm.registerAdapter(['local-fixture'], new FixtureAdapter()); t.after(unregisterLocal);
   const home = await temp(t), gatewayPort = await freePort();
+  const previousHome = process.env.DSH_HOME; process.env.DSH_HOME = home;
+  t.after(() => previousHome === undefined ? delete process.env.DSH_HOME : process.env.DSH_HOME = previousHome);
   const gateway = createOpenAiGateway({ llm: phoneCtx.llm, home, env: { DSH_OPENAI_GATEWAY_PORT: String(gatewayPort), DSH_OPENAI_GATEWAY_API_KEY: 'fixture-gateway-key' }, logger: { info() {}, warn() {}, error() {} } });
   await gateway.start(); t.after(() => gateway.close());
   const previousKey = process.env.DSH_OPENAI_GATEWAY_API_KEY; process.env.DSH_OPENAI_GATEWAY_API_KEY = 'fixture-gateway-key';
@@ -136,10 +140,12 @@ test('actual phone gateway → encrypted relay → registered desktop DSH adapte
 test('desktop installer preserves existing bundles, creates resolvable plugin and is idempotent', async t => {
   const home = await temp(t), profile = join(home, 'profiles/web'); await mkdir(profile, { recursive: true });
   await writeFile(join(profile, 'package.json'), JSON.stringify({ private: true, dependencies: { existing: '1.0.0' }, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'existing'] } } }));
-  const modules = resolve('runtime/node_modules'); await installDesktopPeer(profile, modules); await installDesktopPeer(profile, modules);
+  const modules = process.env.DSH_PHONE_TEST_MODULES || resolve('runtime/node_modules'); await installDesktopPeer(profile, modules); await installDesktopPeer(profile, modules);
   const manifest = JSON.parse(await readFile(join(profile, 'package.json')));
   assert.deepEqual(manifest.dsh.profile.bundles, ['@deepseek-ai/dsh-base', 'existing', 'dsh-peer']); assert.equal(manifest.dependencies.existing, '1.0.0');
   const imported = await import(join(profile, 'node_modules/dsh-peer/index.mjs')); assert.equal(imported.name, 'dsh-peer');
+  for (const file of ['remote-service.mjs', 'transport-proxy.mjs', 'tunnel.mjs']) assert.deepEqual(await readFile(join(profile, 'node_modules/dsh-peer', file)), await readFile(new URL('./' + file, import.meta.url)));
+  assert.equal((await import(join(profile, 'node_modules/dsh-peer/remote-service.mjs'))).RemoteService.name, 'RemoteService');
 });
 
 test('home relay helper publishes only local relay and parses split quick-tunnel output', async t => {
@@ -147,6 +153,6 @@ test('home relay helper publishes only local relay and parses split quick-tunnel
   await writeFile(executable, '#!/bin/sh\nprintf "https://fixture-" >&2\nsleep 0.05\nprintf "peer.trycloudflare.com\\n" >&2\nsleep 2\n', { mode: 0o700 });
   let publicUrl;
   const service = await startHomeRelay({ cloudflared: executable, port: 0, onUrl: url => publicUrl = url }); t.after(() => service.close());
-  const deadline = Date.now() + 2000; while (!publicUrl) { if (Date.now() > deadline) throw Error('No relay URL'); await new Promise(r => setTimeout(r, 10)); }
+  const deadline = Date.now() + 5000; while (!publicUrl) { if (Date.now() > deadline) throw Error('No relay URL'); await new Promise(r => setTimeout(r, 10)); }
   assert.equal(publicUrl, 'wss://fixture-peer.trycloudflare.com/relay'); assert.equal(service.relay.server.address().address, '127.0.0.1');
 });

@@ -7,8 +7,8 @@
   Object.defineProperty(window, '__dshPhoneJsonExport', { value: Object.freeze({
     save(filename, text) {
       if (pending.size) return Promise.reject(new Error('请先完成当前文件的保存'));
-      if (typeof filename !== 'string' || typeof text !== 'string' || new TextEncoder().encode(text).length > maxBytes) {
-        return Promise.reject(new Error('备份文件超过手机保存上限（512 KB）'));
+      if (typeof filename !== 'string' || typeof text !== 'string' || new TextEncoder().encode(text).length > (filename.endsWith('.md') ? 2 * 1024 * 1024 + 1024 : maxBytes)) {
+        return Promise.reject(new Error('文件超过手机保存上限（JSON 512 KB，Markdown 2 MB）'));
       }
       const ticket = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
       return new Promise((resolve, reject) => {

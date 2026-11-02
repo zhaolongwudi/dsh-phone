@@ -32,6 +32,11 @@ import android.widget.Toast
 import android.widget.PopupMenu
 import android.util.Log
 import org.json.JSONObject
+import org.json.JSONArray
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 /**
  * WebView 壳：打开即是 dsh 的 Web 管理页（http://127.0.0.1:3080）——
@@ -42,24 +47,21 @@ import org.json.JSONObject
  */
 class MainActivity : Activity() {
     private companion object {
-        /** Logcat 标签（Issue F-27 的 asset 读取失败、F-29 的通知权限都要记日志）。 */
+        /** Logcat 标签（asset 读取失败、通知权限都要记日志）。 */
         const val TAG = "DshMainActivity"
 
-        /** Android 13+ 的运行时通知权限请求码（Issue F-29）。 */
+        /** Android 13+ 的运行时通知权限请求码。 */
         const val REQUEST_POST_NOTIFICATIONS = 2602
 
-        /** 旋转/重建时保存的「电脑模式」状态（Issue F-28）。 */
+        /** 旋转/重建时保存的「电脑模式」状态。 */
         const val STATE_REMOTE_MODE = "dsh_remote_mode"
         const val STATE_POCKET_URL = "dsh_pocket_url"
         const val STATE_PAGE_URL = "dsh_page_url"
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    /** ⚠️ Issue F-28：顶部栏与其中的按钮要能在**配置变化时重刷配色**（系统深色切换时
-        Activity 因 configChanges 不再重建，只在 onCreate 读一次颜色会让深色模式下
-        原生壳仍是浅色 token）。故提升为字段而非局部变量。 */
+    /** 顶部栏与其中用 accent 着色的按钮：配置变化时要能重刷配色（DSH-PHONE PATCH 2026-11-02）。 */
     private var topBar: LinearLayout? = null
-    /** 顶部栏里用 `ds_accent` 着色的按钮（与 topBar 一同重刷）。 */
     private val topBarAccentViews = mutableListOf<TextView>()
     private lateinit var statusDot: TextView
     private lateinit var statusText: TextView
@@ -71,25 +73,76 @@ class MainActivity : Activity() {
     private var loginOverlay: LinearLayout? = null
     private var loginWebView: WebView? = null
     private var showingLogs = false
+    private var startupSplash: com.dshphone.startup.StartupSplash? = null
     private var lastLoadedOk = false
     private val readinessWorker = Executors.newSingleThreadExecutor()
     private val jsonFileExport by lazy { JsonFileExport(this, readinessWorker) }
     private var probeRunning = false
     private var destroyed = false
-    private var fileCallback: ValueCallback<Array<Uri>>? = null
-    private val fileRequestCode = 2401
+    private val filePicker by lazy { FilePicker(this) }
+    private var workspaceRequestId: String? = null
+    private val workspacePicker by lazy {
+        com.dshphone.workspace.SafWorkspacePicker(this, { result ->
+            if (workspaceRequestId == result.requestId) workspaceRequestId = null
+            if (!destroyed && !pageRecovery.rendererGone && trustedWorkspacePage(webView.url)) {
+                val error = when (result.status) {
+                    com.dshphone.workspace.SafWorkspacePicker.Status.SELECTED,
+                    com.dshphone.workspace.SafWorkspacePicker.Status.CANCELLED,
+                    com.dshphone.workspace.SafWorkspacePicker.Status.CLOSED -> null
+                    else -> result.message ?: "文件夹选择未完成"
+                }
+                webView.evaluateJavascript("window.__dshPhoneDirectoryResult?.(${JSONObject.quote(result.requestId)},${result.path?.let { JSONObject.quote(it) } ?: "null"},${error?.let { JSONObject.quote(it) } ?: "null"});", null)
+                if (result.requestId.startsWith("native-") && result.path != null) {
+                    AlertDialog.Builder(this).setTitle("已选择本地工作区").setMessage(result.path)
+                        .setPositiveButton("复制路径") { _, _ ->
+                            (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("工作区",result.path))
+                        }.setNegativeButton("返回",null).show()
+                }
+                if (result.status == com.dshphone.workspace.SafWorkspacePicker.Status.PERMISSION_REQUIRED) {
+                    AlertDialog.Builder(this).setTitle("工作区文件访问").setMessage(result.message)
+                        .setPositiveButton("查看文件权限") { _, _ -> StorageAccess.show(this) }.setNegativeButton("取消",null).show()
+                }
+            }
+        })
+    }
+    private val pageRecovery = ForegroundPageRecoveryPolicy()
+    private var mainPageUrl: String? = null
+    private var mainLoadFailed = false
+    private var mainPageError: String? = null
     private val cardExportRequestCode = 2402
     private var pendingCardExport: ByteArray? = null
     private var cardExportBusy = false
     private var pendingQqInstall: String? = null
+    private data class IncomingBatch(
+        val id: String, val mode: com.dshphone.incoming.IncomingHandoffMode,
+        val uris: java.util.ArrayDeque<Uri>, var text: String?,
+        val files: MutableList<JSONObject> = mutableListOf(), var targetSession: String? = null
+    )
+    private val incomingBatches = java.util.ArrayDeque<IncomingBatch>()
+    private var incomingPaused = false
+    private var incomingDeliveryInFlight = false
+    private var incomingTextDeliveryInFlight = false
+    private var incomingDocumentEpoch = 0L
+    private var incomingReferenceDispatch = 0L
+    private var incomingTextDispatch = 0L
+    private var incomingUploadInFlight = false
+    private var incomingReferences: String? = null
+    private var incomingReferenceAttempt = 0
+    private var incomingCaptureDone = false
+    private var incomingCheckpointId = java.util.UUID.randomUUID().toString().replace("-","")
+    private var incomingRestoredNeedsReview = false
     private var remoteMode = false
     private var remotePageReady = false
     private var remoteLoadFailed = false
     private var pocketUrl: String? = null
-    private val pocketConnection by lazy {
+    private val pocketConnection: PocketConnection by lazy {
         PocketConnection(this, { url -> switchPage(true, url) }, {
             openLoginWindow("电脑连接").loadUrl("http://127.0.0.1:3080/phone-peer")
-        })
+        }, { peerConnection.openComputer() })
+    }
+    private val peerConnection: PeerConnection by lazy {
+        PeerConnection(this, { admitted -> switchPage(true, admission = admitted) }, { remoteMode && pocketUrl == null },
+            { bypassVpn() }, { pocketConnection.showConnections() })
     }
     private var recoveryDialog: AlertDialog? = null
     private var recoveryLabel: TextView? = null
@@ -102,7 +155,7 @@ class MainActivity : Activity() {
     // 即使服务已经启动也永远返回 false，导致启动遮罩一直挡住完整管理页。
     private val refresher = object : Runnable {
         override fun run() {
-            if (destroyed) return
+            if (destroyed || !pageRecovery.foreground) return
             recoveryLabel?.text = DshService.recoveryMessage.ifEmpty { "请选择操作" }
             if (DshService.recoveryBusy) { recoveryWasBusy = true; recoveryRequestPending = false }
             if (recoveryWasBusy && !DshService.recoveryBusy) {
@@ -113,11 +166,12 @@ class MainActivity : Activity() {
             recoveryButtons.forEach { it.isEnabled = !DshService.recoveryBusy && !recoveryRequestPending; it.alpha = if (it.isEnabled) 1f else .45f }
             if (!probeRunning) {
                 probeRunning = true
+                val generation = pageRecovery.generation
                 readinessWorker.execute {
                     val webReady = NodeRunner.webReady()
                     val gatewayReady = NodeRunner.portOpen(NodeRunner.GATEWAY_PORT)
                     handler.post {
-                        if (!destroyed) updateReadiness(webReady, gatewayReady)
+                        if (!destroyed && pageRecovery.accepts(generation)) updateReadiness(webReady, gatewayReady)
                         probeRunning = false
                     }
                 }
@@ -136,6 +190,8 @@ class MainActivity : Activity() {
         statusDot.text = if (pageReady) "●" else "○"
         statusDot.setTextColor(if (pageReady) getColor(R.color.ds_ok) else Color.GRAY)
         statusText.text = when {
+            mainPageError != null -> mainPageError!!
+            DshService.restartPaused -> "引擎连续退出，已暂停自动重启 · 服务→启动服务"
             remoteMode && remoteLoadFailed -> "电脑加载失败 · 服务→设备连接可重新扫码"
             remoteMode && !remotePageReady -> "正在打开电脑 / 等待访问密码…"
             remoteMode -> "电脑模式"
@@ -146,6 +202,7 @@ class MainActivity : Activity() {
             else -> "服务未运行"
         }
         modeButton.text = if (remoteMode) "手机" else "电脑"
+        if (pageRecovery.rendererGone || mainPageError != null) return
         // 主界面依赖 Web 服务，网关慢启动不应挡住聊天和设置。
         if (remoteMode && pocketUrl != null) {
             if (!showingLogs) bootOverlay.visibility = View.GONE
@@ -177,23 +234,15 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // ⚠️⚠️ **必须在任何 WebView 实例创建之前**（Issue F-01）——
-        // 故这两句刻意排在 `bypassVpn()` 与整个 UI 构造**之前**。
-        //
-        // ① 关闭 WebView 远程调试：本机 WebView 打开的是 `http://127.0.0.1:3080`，
-        //    而本文件把该源的 **Cookie 当本机服务凭据**使用 ⇒ 远程调试可用即等于
-        //    「物理接触 + adb 授权即可读走管理员凭据」。默认值随
-        //    `android:debuggable` 走，而分发包历史上正是 debug 变体
-        //    （见 build-apk.yml 的 `-I no-debuggable.gradle` 与
-        //    「门禁：产物必须不是 debuggable」两步）⇒ **不能依赖默认值**。
-        //
-        // ② Android 13+ 申请 `POST_NOTIFICATIONS`（Issue F-29）：本文件有 5 处
-        //    `startForegroundService(...)`，而 manifest 里虽已声明该权限、
-        //    **从未在运行期申请** ⇒ 前台服务通知被静默抑制，用户既看不到
-        //    「服务正在运行」，也无法从通知里停止服务。
-        //    声明缺失会在构建期报错；「声明了但没申请」则完全静默。
+        /* ⚠️⚠️ 必须在任何 WebView 实例创建之前（DSH-PHONE PATCH 2026-11-02）：
+           ① 本机 WebView 打开 http://127.0.0.1:3080，而本文件把该源 Cookie 当本机服务凭据
+              使用 ⇒ 远程调试可用即等于「物理接触 + adb 授权即可读走管理员凭据」。默认值
+              随 android:debuggable 走，分发包历史上正是 debug 变体，不能依赖默认值。
+           ② Android 13+ 申请 POST_NOTIFICATIONS：本文件多处 startForegroundService，
+              声明了但从未在运行期申请 ⇒ 前台服务通知被静默抑制。 */
         WebView.setWebContentsDebuggingEnabled(false)
         requestNotificationPermissionIfNeeded()
+        if (!restoreIncomingState(savedInstanceState)) captureIncomingIntent(intent)
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         if (android.os.Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         bypassVpn()
@@ -241,7 +290,7 @@ class MainActivity : Activity() {
         val serviceMenu = mini("服务", {})
         serviceMenu.setOnClickListener {
             PopupMenu(this, serviceMenu).apply {
-                listOf("设备连接", "手机工具箱", "远程 Hermes", "返回手机本机", "内置浏览器", "手机操作", "备份与恢复", "文件访问权限", "工具环境", "复制网关地址", "保活", "查看日志", "启动服务", "停止服务").forEach { menu.add(it) }
+                listOf("设备连接", "手机工具箱", "远程 Hermes", "返回手机本机", "内置浏览器", "手机操作", "虚拟屏工作台", "独立终端", "系统工作区目录", "检查增强版更新", "启动页管理", "文件来件模式", "备份与恢复", "文件访问权限", "工具环境", "复制网关地址", "保活", "查看日志", "重新加载界面", "启动服务", "停止服务").forEach { menu.add(it) }
                 setOnMenuItemClickListener { item ->
                     when (item.title.toString()) {
                         "设备连接" -> pocketConnection.showConnections()
@@ -250,6 +299,12 @@ class MainActivity : Activity() {
                         "内置浏览器" -> startActivity(Intent(this@MainActivity, com.dshphone.browser.BrowserActivity::class.java))
                         "返回手机本机" -> switchPage(false)
                         "手机操作" -> startActivity(Intent(this@MainActivity, com.dshphone.control.ControlActivity::class.java))
+                        "虚拟屏工作台" -> startActivity(Intent(this@MainActivity, com.dshphone.virtualscreen.VirtualScreenActivity::class.java))
+                        "独立终端" -> startActivity(Intent(this@MainActivity, com.dshphone.terminal.TerminalActivity::class.java))
+                        "系统工作区目录" -> beginWorkspacePick("native-" + java.util.UUID.randomUUID())
+                        "检查增强版更新" -> startActivity(Intent(this@MainActivity, com.dshphone.update.UpdateActivity::class.java))
+                        "文件来件模式" -> chooseIncomingMode()
+                        "启动页管理" -> startActivity(Intent(this@MainActivity, com.dshphone.startup.StartupSettingsActivity::class.java))
                         "备份与恢复" -> showRecovery()
                         "文件访问权限" -> StorageAccess.show(this@MainActivity)
                         "工具环境" -> readinessWorker.execute {
@@ -271,9 +326,14 @@ class MainActivity : Activity() {
                             showingLogs = !showingLogs
                             bootOverlay.visibility = if (showingLogs) View.VISIBLE else View.GONE
                         }
+                        "重新加载界面" -> {
+                            showingLogs = false
+                            pageRecovery.userReloadRequested()
+                            recoverMainPage()
+                        }
                         "启动服务" -> {
                             showingLogs = false
-                            startForegroundService(Intent(this@MainActivity, DshService::class.java))
+                            startForegroundService(Intent(this@MainActivity, DshService::class.java).setAction(DshService.ACTION_START))
                         }
                         "停止服务" -> {
                             startService(Intent(this@MainActivity, DshService::class.java).setAction(DshService.ACTION_STOP))
@@ -289,120 +349,7 @@ class MainActivity : Activity() {
         bar.addView(serviceMenu)
 
         // ── 主体：WebView + 启动遮罩 ──
-        webView = WebView(this).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.databaseEnabled = true
-            // 桌面站点适配：按桌面视口宽度渲染后整体缩放到屏宽（可双指缩放），
-            // 避免桌面布局在窄屏被压扁（侧栏只剩一条、按钮小到看不见）
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.builtInZoomControls = true
-            settings.displayZoomControls = false
-            settings.setSupportZoom(true)
-            settings.allowFileAccess = false
-            settings.allowContentAccess = true
-            settings.setSupportMultipleWindows(true)
-            webChromeClient = object : WebChromeClient() {
-                override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
-                    params: FileChooserParams): Boolean = chooseConfigFile(view, callback, params)
-                override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
-                    // ⚠️ 肯定按钮文案必须是「确定」（Issue F-02）。这里原先硬编码「更新」，
-                    // 于是删除账号的确认框（`确认删除此账号？关联的凭据也将被清除。`）在手机上
-                    // 显示成「更新 / 取消」—— 语义与操作**相反**，极易误确认不可逆的删除。
-                    // 桌面浏览器由系统渲染成「确定」，故该缺陷只在手机出现。
-                    // ⚠️ WebView 的 `onJsConfirm` 拿不到调用方上下文，无法按语义传文案，
-                    // 故统一用中性的「确定」（与登录 WebView 的既有口径一致）。
-                    AlertDialog.Builder(this@MainActivity).setMessage(message)
-                        .setPositiveButton("确定") { _, _ -> result.confirm() }
-                        .setNegativeButton("取消") { _, _ -> result.cancel() }
-                        .setOnCancelListener { result.cancel() }.show()
-                    return true
-                }
-                // ⚠️ 必须接管 `alert()`（Issue F-17）：主 WebView 原先**只覆写 `onJsConfirm`**，
-                // 而 `jet-hub.js` 有 `alert('轮换失败：' + …)` 这类失败提示 ⇒ 手机上提示
-                // 完全不显示，用户看到的是「点了没反应」。同一文件里备份面板早已因
-                // 「沙箱里 `prompt()` 直接抛 not supported」改成应用内两步确认，`alert` 是漏网。
-                // ⚠️ 必须调 `result.confirm()` 收尾：否则 WebView 的 JS 回调悬挂，
-                // 后续脚本执行会被阻塞（`alert` 是同步阻塞式 API）。
-                override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
-                    AlertDialog.Builder(this@MainActivity).setMessage(message)
-                        .setPositiveButton("确定") { _, _ -> result.confirm() }
-                        .setOnCancelListener { result.confirm() }.show()
-                    return true
-                }
-                override fun onCreateWindow(view: WebView, isDialog: Boolean,
-                    isUserGesture: Boolean, resultMsg: Message): Boolean {
-                    if (!isUserGesture) return false
-                    val login = openLoginWindow(sourceUrl = view.url)
-                    (resultMsg.obj as WebView.WebViewTransport).webView = login
-                    resultMsg.sendToTarget()
-                    return true
-                }
-            }
-            webViewClient = object : WebViewClient() {
-                override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-                    val uri = Uri.parse(url)
-                    if (remoteMode && PocketConnection.sameOrigin(url, pocketUrl)) {
-                        remotePageReady = false
-                        remoteLoadFailed = false
-                    } else if (uri.host == "127.0.0.1" && uri.port in listOf(NodeRunner.WEB_PORT, 3081)) {
-                        pocketUrl = null
-                        remoteMode = uri.port == 3081
-                        remotePageReady = false
-                        remoteLoadFailed = false
-                        modeButton.text = if (remoteMode) "手机" else "电脑"
-                    }
-                }
-                override fun onPageFinished(view: WebView, url: String) {
-                    val uri = Uri.parse(url)
-                    if (remoteMode && PocketConnection.sameOrigin(url, pocketUrl)) {
-                        view.evaluateJavascript("Boolean(window.__DSH_BOOT__)") { marker ->
-                            if (!destroyed && remoteMode && PocketConnection.sameOrigin(view.url, pocketUrl)) {
-                                remotePageReady = marker == "true"
-                            }
-                        }
-                        if (!showingLogs) bootOverlay.visibility = View.GONE
-                    } else if (uri.host == "127.0.0.1" && uri.port in listOf(NodeRunner.WEB_PORT, 3081)) {
-                        remoteMode = uri.port == 3081
-                        installMobilePresentation(view)
-                        if (remoteMode) view.evaluateJavascript("Boolean(window.__dshPeerRemote)") { marker ->
-                            if (!destroyed && view.url?.startsWith("http://127.0.0.1:3081/") == true) {
-                                remotePageReady = marker == "true"
-                                remoteLoadFailed = !remotePageReady
-                            }
-                        }
-                        if (lastLoadedOk && !showingLogs) bootOverlay.visibility = View.GONE
-                    }
-                }
-
-                override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
-                    if (handlePhoneAction(view, req)) return true
-                    // Existing provider login windows remain in place; ChatGPT uses the system browser.
-                    return false
-                }
-                override fun onReceivedError(view: WebView, req: WebResourceRequest, e: android.webkit.WebResourceError) {
-                    if (req.isForMainFrame && remoteMode && PocketConnection.sameOrigin(req.url.toString(), pocketUrl)) {
-                        remoteLoadFailed = true
-                        remotePageReady = false
-                    } else if (req.isForMainFrame && req.url.host == "127.0.0.1") {
-                        if (req.url.port == 3081) {
-                            remoteLoadFailed = true
-                            remotePageReady = false
-                        } else {
-                            lastLoadedOk = false
-                            if (!showingLogs) bootOverlay.visibility = View.VISIBLE
-                        }
-                    }
-                }
-                override fun onReceivedHttpError(view: WebView, req: WebResourceRequest, response: android.webkit.WebResourceResponse) {
-                    if (req.isForMainFrame && remoteMode && PocketConnection.sameOrigin(req.url.toString(), pocketUrl)) {
-                        remoteLoadFailed = true
-                        remotePageReady = false
-                    }
-                }
-            }
-        }
+        webView = createMainWebView()
         bootOverlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
@@ -450,26 +397,631 @@ class MainActivity : Activity() {
         root.addView(content, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
+        if (savedInstanceState == null) startupSplash = com.dshphone.startup.StartupSplash.show(this,content)
         root.requestApplyInsets()
 
-        startForegroundService(Intent(this, DshService::class.java))
-        handler.post(refresher)
+        if (com.dshphone.startup.StartupPreferences.autoStart(this)) startForegroundService(Intent(this, DshService::class.java))
+        peerConnection.consume(intent)
         handleChatGptReturn(intent)
     }
 
+    private fun createMainWebView(): WebView = WebView(this).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+            // 桌面站点适配：按桌面视口宽度渲染后整体缩放到屏宽（可双指缩放），
+            // 避免桌面布局在窄屏被压扁（侧栏只剩一条、按钮小到看不见）
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
+            settings.setSupportZoom(true)
+            settings.allowFileAccess = false
+            settings.allowContentAccess = true
+            settings.setSupportMultipleWindows(true)
+            webChromeClient = object : WebChromeClient() {
+                override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
+                    params: FileChooserParams): Boolean = filePicker.choose(view, callback, params)
+                override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                    /* ⚠️ 肯定按钮文案必须是「确定」（DSH-PHONE PATCH 2026-11-02）。原先硬编码
+                       「确认」时，删除账号的确认框（「确认删除此账号？关联的凭据也将被清除。」）
+                       在手机上显示成与操作相反的语义，极易误确认不可逆删除。WebView 的
+                       onJsConfirm 拿不到调用方上下文，故统一用中性的「确定」。 */
+                    AlertDialog.Builder(this@MainActivity).setMessage(message)
+                        .setPositiveButton("确定") { _, _ -> result.confirm() }
+                        .setNegativeButton("取消") { _, _ -> result.cancel() }
+                        .setOnCancelListener { result.cancel() }.show()
+                    return true
+                }
+                /* ⚠️ 必须接管 alert()（DSH-PHONE PATCH 2026-11-02）：原先只覆写 onJsConfirm，
+                   而 jet-hub.js 有 alert('轮换失败：' + …) 这类失败提示 ⇒ 手机上提示完全不
+                   显示，用户看到「点了没反应」。必须调 result.confirm() 收尾，否则 WebView
+                   的 JS 回调悬挂，后续脚本执行被阻塞（alert 是同步阻塞式 API）。 */
+                override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                    AlertDialog.Builder(this@MainActivity).setMessage(message)
+                        .setPositiveButton("确定") { _, _ -> result.confirm() }
+                        .setOnCancelListener { result.confirm() }.show()
+                    return true
+                }
+                override fun onCreateWindow(view: WebView, isDialog: Boolean,
+                    isUserGesture: Boolean, resultMsg: Message): Boolean {
+                    if (!isUserGesture) return false
+                    val login = openLoginWindow(sourceUrl = view.url)
+                    (resultMsg.obj as WebView.WebViewTransport).webView = login
+                    resultMsg.sendToTarget()
+                    return true
+                }
+            }
+            webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                    if (view !== webView) return
+                    invalidateIncomingDocument()
+                    filePicker.cancelFor(view)
+                    workspacePicker.cancel()
+                    mainPageUrl = url
+                    mainLoadFailed = false
+                    val uri = Uri.parse(url)
+                    if (remoteMode && PocketConnection.sameOrigin(url, pocketUrl)) {
+                        remotePageReady = false
+                        remoteLoadFailed = false
+                    } else if (uri.host == "127.0.0.1" && uri.port in listOf(NodeRunner.WEB_PORT, 3081)) {
+                        pocketUrl = null
+                        remoteMode = uri.port == 3081
+                        remotePageReady = false
+                        remoteLoadFailed = false
+                        modeButton.text = if (remoteMode) "手机" else "电脑"
+                    }
+                }
+                override fun onPageFinished(view: WebView, url: String) {
+                    if (view !== webView || pageRecovery.rendererGone) return
+                    if (mainLoadFailed) return
+                    pageRecovery.pageReady()
+                    mainPageError = null
+                    val uri = Uri.parse(url)
+                    if (remoteMode && PocketConnection.sameOrigin(url, pocketUrl)) {
+                        view.evaluateJavascript("Boolean(window.__DSH_BOOT__)") { marker ->
+                            if (!destroyed && remoteMode && PocketConnection.sameOrigin(view.url, pocketUrl)) {
+                                remotePageReady = marker == "true"
+                            }
+                        }
+                        if (!showingLogs) bootOverlay.visibility = View.GONE
+                    } else if (uri.host == "127.0.0.1" && uri.port in listOf(NodeRunner.WEB_PORT, 3081)) {
+                        remoteMode = uri.port == 3081
+                        installMobilePresentation(view)
+                        installWorkspacePicker(view)
+                        consumeIncomingFilesIfReady()
+                        if (remoteMode) view.evaluateJavascript("Boolean(window.__dshPeerRemote)") { marker ->
+                            if (!destroyed && view.url?.startsWith("http://127.0.0.1:3081/") == true) {
+                                remotePageReady = marker == "true"
+                                remoteLoadFailed = !remotePageReady
+                            }
+                        }
+                        if (lastLoadedOk && !showingLogs) bootOverlay.visibility = View.GONE
+                    }
+                }
+
+                override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
+                    if (handlePhoneAction(view, req)) return true
+                    // Existing provider login windows remain in place; ChatGPT uses the system browser.
+                    return false
+                }
+                override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                    if (view !== webView || pageRecovery.rendererGone) return true
+                    mainPageUrl = view.url ?: mainPageUrl
+                    invalidateIncomingDocument()
+                    filePicker.cancelFor(view)
+                    pageRecovery.rendererLost()
+                    workspacePicker.cancel()
+                    lastLoadedOk = false
+                    mainPageError = "界面渲染中断，正在恢复；本机任务继续运行"
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    runCatching { view.destroy() }
+                    bootOverlay.visibility = View.VISIBLE
+                    recoverMainPage()
+                    return true
+                }
+                override fun onReceivedError(view: WebView, req: WebResourceRequest, e: android.webkit.WebResourceError) {
+                    if (view !== webView || pageRecovery.rendererGone) return
+                    if (req.isForMainFrame) mainLoadFailed = true
+                    if (req.isForMainFrame && remoteMode && PocketConnection.sameOrigin(req.url.toString(), pocketUrl)) {
+                        remoteLoadFailed = true
+                        remotePageReady = false
+                    } else if (req.isForMainFrame && req.url.host == "127.0.0.1") {
+                        if (req.url.port == 3081) {
+                            remoteLoadFailed = true
+                            remotePageReady = false
+                        } else {
+                            lastLoadedOk = true
+                            mainPageError = "页面加载失败 · 服务→重新加载界面"
+                            if (!showingLogs) bootOverlay.visibility = View.VISIBLE
+                            if (pageRecovery.claimLoadErrorRetry()) {
+                                pageRecovery.requestReload()
+                                handler.postDelayed({ if (!destroyed) recoverMainPage() }, 1500)
+                            }
+                        }
+                    }
+                }
+                override fun onReceivedHttpError(view: WebView, req: WebResourceRequest, response: android.webkit.WebResourceResponse) {
+                    if (req.isForMainFrame) mainLoadFailed = true
+                    if (req.isForMainFrame && remoteMode && PocketConnection.sameOrigin(req.url.toString(), pocketUrl)) {
+                        remoteLoadFailed = true
+                        remotePageReady = false
+                    }
+                }
+            }
+        }
+
+    private fun recoverMainPage() {
+        if (destroyed) return
+        when (pageRecovery.takeRecovery()) {
+            ForegroundPageRecoveryPolicy.Recovery.NONE -> return
+            ForegroundPageRecoveryPolicy.Recovery.NATIVE_ERROR -> {
+                mainPageError = "界面反复退出，已停止自动重载 · 服务→重新加载界面"
+                statusText.text = mainPageError
+                bootOverlay.visibility = View.VISIBLE
+            }
+            ForegroundPageRecoveryPolicy.Recovery.RECREATE -> {
+                webView = createMainWebView()
+                content.addView(webView, 0, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                pageRecovery.rendererReplaced()
+                mainPageError = null
+                mainLoadFailed = false
+                lastLoadedOk = true
+                webView.loadUrl(mainPageUrl ?: if (remoteMode) pocketUrl ?: "http://127.0.0.1:3081/" else DshService.localStartUrl())
+            }
+            ForegroundPageRecoveryPolicy.Recovery.RELOAD -> {
+                mainPageError = null
+                mainLoadFailed = false
+                lastLoadedOk = true
+                webView.loadUrl(mainPageUrl ?: if (remoteMode) pocketUrl ?: "http://127.0.0.1:3081/" else DshService.localStartUrl())
+            }
+        }
+    }
+
+    private fun chooseIncomingMode() {
+        val preferences = com.dshphone.incoming.AndroidIncomingPreferences(this)
+        val modes = com.dshphone.incoming.IncomingHandoffMode.entries
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24,8,24,8) }
+        box.addView(TextView(this).apply { text = "仅影响之后分享的文件，不自动发送。临时工作区不是权限沙箱；已有会话与文件不按七天强删。共享文本仍加入当前输入框。" })
+        val choices = android.widget.RadioGroup(this)
+        for ((index,label) in arrayOf("加入当前聊天（保留原方式）","新建独立会话和临时工作区").withIndex()) {
+            choices.addView(android.widget.RadioButton(this).apply { id = index+1; text = label })
+        }
+        choices.check(modes.indexOf(preferences.mode())+1); box.addView(choices)
+        AlertDialog.Builder(this).setTitle("文件来件模式").setView(box)
+            .setPositiveButton("保存") { _,_ ->
+                val selected = choices.checkedRadioButtonId-1
+                if (selected !in modes.indices || !preferences.select(modes[selected])) Toast.makeText(this,"设置未保存，仍使用原方式",Toast.LENGTH_LONG).show()
+            }.setNegativeButton("取消",null).show()
+    }
+    /** Snapshot each explicit share independently; later intents never merge into an in-flight batch. */
+    private fun captureIncomingIntent(incoming: Intent?) {
+        if (incomingCaptureDone || incoming == null) return
+        val action = incoming.action ?: return
+        val uris = java.util.ArrayDeque<Uri>(); var text: String? = null
+        when (action) {
+            Intent.ACTION_VIEW -> incoming.data?.takeIf { isIncomingUri(it) }?.let { uris.add(it) }
+            Intent.ACTION_SEND -> {
+                @Suppress("DEPRECATION") val stream = incoming.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                if (stream != null && isIncomingUri(stream)) uris.add(stream)
+                else text = incoming.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                @Suppress("DEPRECATION") val streams = incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+                streams.filter { isIncomingUri(it) }.distinct().forEach { uris.add(it) }
+                if (uris.isEmpty()) text = incoming.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }
+            }
+            Intent.ACTION_PROCESS_TEXT -> text = incoming.getStringExtra(Intent.EXTRA_PROCESS_TEXT)?.takeIf { it.isNotBlank() }
+            else -> return
+        }
+        incomingCaptureDone = true
+        if (uris.isEmpty() && text == null) return
+        // Bound saved handoff state without changing the legacy multi-file mode's 17+ capacity.
+        if (uris.sumOf { it.toString().toByteArray(Charsets.UTF_8).size.toLong() } + (text?.toByteArray(Charsets.UTF_8)?.size?.toLong() ?: 0L) > 512*1024L) {
+            Toast.makeText(this,"本次来件描述过大，尚未上传；请拆分分享",Toast.LENGTH_LONG).show(); return
+        }
+        val mode = com.dshphone.incoming.AndroidIncomingPreferences(this).mode()
+        if (incomingBatches.size >= 16 || (mode == com.dshphone.incoming.IncomingHandoffMode.TEMPORARY_WORKSPACE && uris.size > 16)) {
+            Toast.makeText(this,"待处理批次已满，或临时工作区每批超过16个文件；未上传，请分批重新分享",Toast.LENGTH_LONG).show(); return
+        }
+        incomingBatches.add(IncomingBatch(java.util.UUID.randomUUID().toString().replace("-",""),mode,uris,text))
+    }
+    /** Save an opaque reference, not megabytes of URI/file metadata, in Binder state. */
+    private fun saveIncomingState(outState: Bundle) {
+        val queue = JSONArray()
+        incomingBatches.forEach { batch ->
+            queue.put(JSONObject().put("id",batch.id).put("mode",batch.mode.name)
+                .put("uris",JSONArray(batch.uris.map { it.toString() }))
+                .put("text",batch.text ?: JSONObject.NULL).put("files",JSONArray(batch.files))
+                .put("target",batch.targetSession ?: JSONObject.NULL))
+        }
+        val state = JSONObject().put("version",1).put("captured",incomingCaptureDone).put("queue",queue)
+            .put("references",incomingReferences ?: JSONObject.NULL)
+        val bytes = state.toString().toByteArray(Charsets.UTF_8)
+        val directory = java.io.File(cacheDir,"incoming-handoff")
+        val target = java.io.File(directory,"$incomingCheckpointId.json")
+        val temporary = java.io.File(directory,"$incomingCheckpointId-${java.util.UUID.randomUUID()}.tmp")
+        var temporaryOwned = false
+        try {
+            check(!java.nio.file.Files.isSymbolicLink(directory.toPath())) { "来件恢复目录不可用" }
+            check(directory.mkdirs() || directory.isDirectory) { "无法创建来件恢复目录" }
+            check(directory.canonicalFile == java.io.File(cacheDir.canonicalFile,"incoming-handoff")) { "来件恢复目录无效" }
+            check(bytes.size <= 16*1024*1024) { "来件恢复记录超出限额" }
+            java.nio.channels.FileChannel.open(temporary.toPath(),setOf(java.nio.file.StandardOpenOption.CREATE_NEW,java.nio.file.StandardOpenOption.WRITE,java.nio.file.LinkOption.NOFOLLOW_LINKS),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))).use { channel ->
+                temporaryOwned = true
+                val buffer = java.nio.ByteBuffer.wrap(bytes)
+                while (buffer.hasRemaining()) channel.write(buffer)
+                channel.force(true)
+            }
+            java.nio.file.Files.move(temporary.toPath(),target.toPath(),java.nio.file.StandardCopyOption.ATOMIC_MOVE,java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            outState.putString("dsh.incoming.checkpoint",incomingCheckpointId)
+        } catch (error: Exception) {
+            // Mark the old Intent as consumed even if the cache is unavailable; never mint a second session.
+            outState.putBoolean("dsh.incoming.restoreFailed",true)
+            Toast.makeText(this,"来件恢复记录未保存：${error.message}；原上传未删除，请保留页面或重新分享",Toast.LENGTH_LONG).show()
+        } finally {
+            if (temporaryOwned && !java.nio.file.Files.isSymbolicLink(directory.toPath()) && directory.canonicalFile == java.io.File(cacheDir.canonicalFile,"incoming-handoff")) temporary.delete()
+        }
+    }
+
+    private fun restoreIncomingState(state: Bundle?): Boolean {
+        if (state == null) return false
+        if (state.getBoolean("dsh.incoming.restoreFailed",false)) {
+            incomingCaptureDone = true
+            return true
+        }
+        val id = state.getString("dsh.incoming.checkpoint") ?: return false
+        incomingCaptureDone = true
+        if (!id.matches(Regex("[a-f0-9]{32}"))) return true
+        incomingCheckpointId = id
+        val directory = java.io.File(cacheDir,"incoming-handoff")
+        val file = java.io.File(directory,"$id.json")
+        var ownedCheckpoint = false
+        try {
+            check(!java.nio.file.Files.isSymbolicLink(directory.toPath()) && directory.canonicalFile == java.io.File(cacheDir.canonicalFile,"incoming-handoff")) { "来件恢复目录无效" }
+            check(!java.nio.file.Files.isSymbolicLink(file.toPath()) && file.isFile && file.length() <= 16*1024*1024) { "来件恢复记录已失效" }
+            ownedCheckpoint = true
+            val value = JSONObject(file.readText(Charsets.UTF_8))
+            check(value.getInt("version") == 1)
+            val items = value.getJSONArray("queue")
+            check(items.length() <= 16)
+            val restored = mutableListOf<IncomingBatch>(); val ids = mutableSetOf<String>()
+            for (index in 0 until items.length()) {
+                val item = items.getJSONObject(index); val batchId = item.getString("id")
+                check(batchId.matches(Regex("[a-f0-9]{32}")) && ids.add(batchId))
+                val mode = com.dshphone.incoming.IncomingHandoffMode.valueOf(item.getString("mode"))
+                val uris = java.util.ArrayDeque<Uri>(); val savedUris = item.getJSONArray("uris")
+                for (i in 0 until savedUris.length()) {
+                    val uri = Uri.parse(savedUris.getString(i)); check(isIncomingUri(uri)); uris.add(uri)
+                }
+                val files = item.getJSONArray("files"); val uploaded = mutableListOf<JSONObject>()
+                for (i in 0 until files.length()) {
+                    val entry = files.getJSONObject(i)
+                    check(validIncomingUploadPath(entry.getString("path")) && entry.getLong("size") >= 0)
+                    uploaded.add(entry)
+                }
+                if (mode == com.dshphone.incoming.IncomingHandoffMode.TEMPORARY_WORKSPACE) check(uris.size+uploaded.size <= 16)
+                val target = if (item.isNull("target")) null else item.getString("target")
+                check(target == null || target == "session-incoming-$batchId")
+                restored.add(IncomingBatch(batchId,mode,uris,if(item.isNull("text")) null else item.getString("text"),uploaded,target))
+            }
+            val references = if(value.isNull("references")) null else value.getString("references")
+            if (references != null) { check(restored.isNotEmpty()); check(JSONArray(references).length() <= restored.first().files.size) }
+            incomingBatches.addAll(restored)
+            incomingReferences = references
+            incomingCaptureDone = value.getBoolean("captured")
+            incomingRestoredNeedsReview = restored.isNotEmpty()
+        } catch (error: Exception) {
+            Toast.makeText(this,"来件恢复记录不可用：${error.message}；未重复导入，原上传仍保留，请重新分享",Toast.LENGTH_LONG).show()
+        } finally {
+            if (ownedCheckpoint && !java.nio.file.Files.isSymbolicLink(directory.toPath()) && directory.canonicalFile == java.io.File(cacheDir.canonicalFile,"incoming-handoff")) file.delete()
+        }
+        return true
+    }
+
+    private fun validIncomingUploadPath(raw: String): Boolean = runCatching {
+        val root = java.io.File(NodeRunner.homeDir(this),"uploads/chat-files").toPath().toAbsolutePath().normalize()
+        val file = java.nio.file.Paths.get(raw)
+        if (!file.isAbsolute || file != file.normalize() || !file.startsWith(root)) return@runCatching false
+        val relative = root.relativize(file)
+        relative.nameCount == 3 && relative.getName(0).toString().matches(Regex("[a-f0-9]{32}")) &&
+            relative.getName(1).toString() == "content" && relative.getName(2).toString().let { it.isNotEmpty() && it != "." && it != ".." && it.toByteArray(Charsets.UTF_8).size <= 220 }
+    }.getOrDefault(false)
+
+    private fun isIncomingUri(uri: Uri): Boolean = uri.scheme == "content" || uri.scheme == "file"
+    private fun consumeIncomingFilesIfReady() {
+        if (destroyed || remoteMode || !lastLoadedOk || pageRecovery.rendererGone || !trustedWorkspacePage(webView.url) || incomingUploadInFlight || incomingTextDeliveryInFlight || incomingPaused) return
+        if (incomingRestoredNeedsReview) {
+            incomingRestoredNeedsReview = false
+            incomingBatches.peekFirst()?.let { incomingFailed(it,IllegalStateException("页面已重建；本批来件与会话标识已保留。上次网络或输入框回执可能未收到，请确认后重试本批")) }
+            return
+        }
+        if (incomingReferences != null) { deliverIncomingReferences(); return }
+        val batch = incomingBatches.peekFirst() ?: return
+        if (batch.uris.isNotEmpty()) {
+            incomingUploadInFlight = true
+            val uri = batch.uris.first
+            readinessWorker.execute {
+                val result = runCatching { uploadIncomingFile(uri) }
+                handler.post {
+                    incomingUploadInFlight = false
+                    if (destroyed || incomingBatches.peekFirst() !== batch) return@post
+                    result.onSuccess { file ->
+                        batch.uris.removeFirst(); batch.files.add(file)
+                        if (batch.mode == com.dshphone.incoming.IncomingHandoffMode.ATTACH_CURRENT) {
+                            incomingReferences = JSONArray().put(incomingReference(file)).toString(); incomingReferenceAttempt = 0
+                        }
+                        consumeIncomingFilesIfReady()
+                    }.onFailure { incomingFailed(batch,it) }
+                }
+            }; return
+        }
+        if (batch.mode == com.dshphone.incoming.IncomingHandoffMode.TEMPORARY_WORKSPACE && batch.files.isNotEmpty() && batch.targetSession == null) {
+            incomingUploadInFlight = true
+            readinessWorker.execute {
+                val result = runCatching {
+                    incomingWorkspaceRequest(JSONObject().put("action","open").put("mode","temporary-workspace").put("batchId",batch.id)
+                        .put("files",JSONArray(batch.files.map { it.getString("path") })))
+                }
+                handler.post {
+                    incomingUploadInFlight = false
+                    if (destroyed || incomingBatches.peekFirst() !== batch) return@post
+                    result.onSuccess { receipt ->
+                        val target = receipt.optString("sessionId")
+                        if (target != "session-incoming-${batch.id}") { incomingFailed(batch,IllegalStateException("核心返回的来件会话不匹配")); return@onSuccess }
+                        batch.targetSession = target
+                        incomingReferences = JSONArray(batch.files.map { incomingReference(it) }).toString(); incomingReferenceAttempt = 0
+                        consumeIncomingFilesIfReady()
+                    }.onFailure { incomingFailed(batch,it) }
+                }
+            }; return
+        }
+        val text = batch.text
+        if (text != null) {
+            appendIncomingText(text,batch.targetSession) {
+                if (incomingBatches.peekFirst() === batch && batch.text == text) {
+                    batch.text = null
+                    incomingBatches.removeFirst()
+                    consumeIncomingFilesIfReady()
+                }
+            }
+        } else { incomingBatches.removeFirst(); consumeIncomingFilesIfReady() }
+    }
+    private fun incomingWorkspaceRequest(input: JSONObject): JSONObject {
+        val address = "http://127.0.0.1:${NodeRunner.WEB_PORT}"
+        val connection = (URL("$address/phone-incoming-workspaces/manage").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; doOutput = true; connectTimeout = 5000; readTimeout = 30_000; instanceFollowRedirects = false
+            setRequestProperty("Origin",address); setRequestProperty("Content-Type","application/json")
+            CookieManager.getInstance().getCookie(address)?.let { setRequestProperty("Cookie",it) }
+        }
+        try {
+            val bytes = input.toString().toByteArray(Charsets.UTF_8); connection.setFixedLengthStreamingMode(bytes.size)
+            connection.outputStream.use { it.write(bytes) }
+            val code = connection.responseCode
+            val content = (if(code in 200..299) connection.inputStream else connection.errorStream)?.use { String(it.readAtMost(64*1024),Charsets.UTF_8) }.orEmpty()
+            val value = runCatching { JSONObject(content) }.getOrNull()
+            check(code == 200 && value?.optBoolean("ok") == true) { value?.optString("error")?.takeIf { it.isNotBlank() } ?: "来件工作区未完成（HTTP $code）；可用同批次重试" }
+            return value!!.getJSONObject("value")
+        } finally { connection.disconnect() }
+    }
+    private fun incomingFailed(batch: IncomingBatch,error: Throwable) {
+        if (destroyed || incomingBatches.peekFirst() !== batch) return
+        incomingPaused = true
+        AlertDialog.Builder(this).setTitle("来件尚未完成").setMessage((error.message ?: "文件处理失败")+"\n原上传与已有会话保留；不会自动发送或改附其他会话。")
+            .setPositiveButton("重试本批") { _,_ -> incomingPaused = false; incomingReferenceAttempt = 0; consumeIncomingFilesIfReady() }
+            .setNegativeButton("取消本批") { _,_ ->
+                invalidateIncomingDocument()
+                incomingReferences = null; incomingPaused = false; incomingBatches.remove(batch)
+                if (batch.mode == com.dshphone.incoming.IncomingHandoffMode.TEMPORARY_WORKSPACE && batch.files.isNotEmpty()) readinessWorker.execute {
+                    runCatching { incomingWorkspaceRequest(JSONObject().put("action","cancel").put("batchId",batch.id)) }
+                }
+                consumeIncomingFilesIfReady()
+            }.setCancelable(false).show()
+    }
+
+    private fun uploadIncomingFile(uri: Uri): JSONObject {
+        val name = incomingFileName(uri)
+        val cookie = CookieManager.getInstance().getCookie("http://127.0.0.1:${NodeRunner.WEB_PORT}").orEmpty()
+        check(cookie.isNotBlank()) { "DSH 页面尚未登录，请打开手机聊天后重试" }
+        val connection = (URL("http://127.0.0.1:${NodeRunner.WEB_PORT}/phone-chat-files/upload").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 5000
+            readTimeout = 120000
+            setChunkedStreamingMode(64 * 1024)
+            setRequestProperty("Cookie", cookie)
+            setRequestProperty("Origin", "http://127.0.0.1:${NodeRunner.WEB_PORT}")
+            setRequestProperty("Content-Type", "application/octet-stream")
+            setRequestProperty("X-Dsh-File-Name", encodeHeaderValue(name))
+        }
+        return try {
+            val input = contentResolver.openInputStream(uri) ?: error("无法读取文件")
+            input.use { source -> connection.outputStream.use { output -> source.copyTo(output, 64 * 1024) } }
+            val body = readConnectionBody(connection, 1024 * 1024)
+            check(connection.responseCode in 200..299) {
+                runCatching { JSONObject(body).optString("error") }.getOrNull().takeUnless { it.isNullOrBlank() }
+                    ?: "上传服务返回 HTTP ${connection.responseCode}"
+            }
+            val response = JSONObject(body)
+            check(response.optBoolean("ok")) { response.optString("error", "文件未上传完成") }
+            response.getJSONObject("file")
+        } finally { connection.disconnect() }
+    }
+
+    private fun readConnectionBody(connection: HttpURLConnection, maxBytes: Int): String {
+        val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+            ?: error("上传服务没有返回结果")
+        return stream.use { input ->
+            val bytes = input.readAtMost(maxBytes)
+            String(bytes, Charsets.UTF_8)
+        }
+    }
+
+    private fun InputStream.readAtMost(maxBytes: Int): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val count = read(buffer)
+            if (count < 0) break
+            total += count
+            check(total <= maxBytes) { "上传服务返回内容过大" }
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+
+    private fun incomingFileName(uri: Uri): String {
+        val queried = runCatching {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        }.getOrNull()
+        return queried?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "共享文件"
+    }
+
+    private fun encodeHeaderValue(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
+
+    private fun incomingReference(file: JSONObject): JSONObject {
+        val metadata = JSONObject().put("name", file.optString("name")).put("stored", JSONObject().apply {
+            put("path", file.getString("path"))
+            put("size", file.getLong("size"))
+            file.optString("sha256").takeIf { it.isNotBlank() }?.let { put("sha256", it) }
+            file.optString("downloadUrl").takeIf { it.isNotBlank() }?.let { put("downloadUrl", it) }
+            file.optString("downloadExpiresAt").takeIf { it.isNotBlank() }?.let { put("downloadExpiresAt", it) }
+        })
+        return JSONObject().apply {
+            put("source", "reference")
+            put("ref", "dsh-phone-attachment:" + Uri.encode(metadata.toString()))
+            put("label", file.optString("name"))
+            put("appearance", "file")
+            put("clipboardText", "@" + file.getString("path"))
+        }
+    }
+
+    /** A navigation, including a same-URL reload, revokes replies from the old document. */
+    private fun invalidateIncomingDocument() {
+        incomingDocumentEpoch++
+        incomingReferenceDispatch++
+        incomingTextDispatch++
+        incomingDeliveryInFlight = false
+        incomingTextDeliveryInFlight = false
+    }
+
+    private fun incomingDocumentCurrent(view: WebView, epoch: Long): Boolean =
+        !destroyed && view === webView && epoch == incomingDocumentEpoch && !pageRecovery.rendererGone &&
+            !remoteMode && lastLoadedOk && trustedWorkspacePage(view.url)
+
+    private fun deliverIncomingReferences() {
+        val references = incomingReferences ?: return
+        val batch = incomingBatches.peekFirst() ?: return
+        if (destroyed || pageRecovery.rendererGone || remoteMode || !lastLoadedOk || incomingPaused || incomingDeliveryInFlight || !trustedWorkspacePage(webView.url)) return
+        val target = batch.targetSession
+        val navigation = if(target == null) "" else """
+            const id = ${JSONObject.quote(target)};
+            let state = window.__dshPhoneIncomingNavigation;
+            if (!state || state.id !== id) {
+                if (typeof window.__dshPhoneOpenIncomingSession !== 'function') return false;
+                state = { id, status: 'pending' }; window.__dshPhoneIncomingNavigation = state;
+                Promise.resolve(window.__dshPhoneOpenIncomingSession(id)).then(() => { state.status = 'ready'; }, error => { state.status = 'failed'; state.error = String(error?.message || error); });
+            }
+            if (state.status === 'failed') return { error: state.error };
+            if (state.status !== 'ready') return false;
+        """.trimIndent()
+        val selector = if(target == null) "[data-composer-card]" else "[data-conversation-session=\"$target\"] [data-composer-card]"
+        val script = """
+            (() => {
+                $navigation
+                const card = document.querySelector(${JSONObject.quote(selector)});
+                if (!card) return false;
+                const detail = { references: $references, accepted: false };
+                card.dispatchEvent(new CustomEvent('dsh:insert-file-references', { detail }));
+                return detail.accepted === true;
+            })();
+        """.trimIndent()
+        val view = webView
+        val epoch = incomingDocumentEpoch
+        val dispatch = ++incomingReferenceDispatch
+        incomingDeliveryInFlight = true
+        view.evaluateJavascript(script) { result ->
+            if (dispatch != incomingReferenceDispatch) return@evaluateJavascript
+            incomingDeliveryInFlight = false
+            if (!incomingDocumentCurrent(view,epoch) || incomingBatches.peekFirst() !== batch || incomingReferences !== references) return@evaluateJavascript
+            if (result == "true") {
+                incomingReferences = null; incomingReferenceAttempt = 0
+                Toast.makeText(this,if(target == null) "文件已加入聊天附件，请补充问题后发送" else "已加入独立来件会话，临时工作区已就绪；请补充问题后发送",Toast.LENGTH_LONG).show()
+                consumeIncomingFilesIfReady()
+            } else if (result.startsWith("{")) {
+                val error = runCatching { JSONObject(result).optString("error") }.getOrNull()
+                view.evaluateJavascript("delete window.__dshPhoneIncomingNavigation",null)
+                incomingFailed(batch,IllegalStateException(error ?: "来件页面导航失败"))
+            } else if (++incomingReferenceAttempt < 60) handler.postDelayed({
+                if (dispatch == incomingReferenceDispatch && incomingDocumentCurrent(view,epoch) && incomingBatches.peekFirst() === batch && incomingReferences === references) deliverIncomingReferences()
+            },500)
+            else incomingFailed(batch,IllegalStateException("文件已上传，但目标会话输入框尚未就绪"))
+        }
+    }
+
+    private fun appendIncomingText(text: String,target: String? = null,attempt: Int = 0,done: () -> Unit = {}) {
+        if (destroyed || pageRecovery.rendererGone || remoteMode || !lastLoadedOk || !trustedWorkspacePage(webView.url)) return
+        val script = """
+            (() => {
+                const scope = ${if(target == null) "document" else "document.querySelector("+JSONObject.quote("[data-conversation-session=\"$target\"]")+")"};
+                const input = scope?.querySelector('[data-composer-card] textarea,[data-composer-card] [role=textbox]');
+                if (!input) return false;
+                const value = ${JSONObject.quote(text)};
+                if (input instanceof HTMLTextAreaElement) {
+                    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+                    if (!setter) return false;
+                    setter.call(input, input.value ? input.value + '\n\n' + value : value);
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                } else {
+                    input.focus();
+                    const transfer = new DataTransfer(); transfer.setData('text/plain', value);
+                    input.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+                }
+                input.focus(); return true;
+            })();
+        """.trimIndent()
+        val view = webView
+        val epoch = incomingDocumentEpoch
+        val batch = incomingBatches.peekFirst()
+        val dispatch = ++incomingTextDispatch
+        incomingTextDeliveryInFlight = true
+        view.evaluateJavascript(script) { result ->
+            if (dispatch != incomingTextDispatch) return@evaluateJavascript
+            incomingTextDeliveryInFlight = false
+            if (!incomingDocumentCurrent(view,epoch) || (batch != null && incomingBatches.peekFirst() !== batch)) return@evaluateJavascript
+            if (result == "true") {
+                Toast.makeText(this,"共享文本已放入聊天输入框",Toast.LENGTH_LONG).show()
+                done()
+            } else if (attempt < 60) {
+                incomingTextDeliveryInFlight = true
+                handler.postDelayed({
+                    if (dispatch == incomingTextDispatch) {
+                        incomingTextDeliveryInFlight = false
+                        if (incomingDocumentCurrent(view,epoch) && (batch == null || incomingBatches.peekFirst() === batch)) appendIncomingText(text,target,attempt+1,done)
+                    }
+                },500)
+            } else if (batch != null && batch.text == text) {
+                incomingFailed(batch,IllegalStateException("未找到来件目标输入框；文本仍保留，可重试本批"))
+            } else {
+                Toast.makeText(this,"未找到来件目标输入框，文本未发送",Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     /**
-     * Android 13+ 的运行时通知权限申请（Issue F-29）。
-     *
-     * ⚠️ 只在系统版本够、且**尚未授予**时申请一次；被拒不重试、不阻断任何功能
-     * （前台服务照常运行，只是通知不可见）。见 `onCreate` 处的完整说明。
+     * Android 13+ 的运行时通知权限申请（DSH-PHONE PATCH 2026-11-02）。
+     * 只在系统版本够且尚未授予时申请一次；被拒不重试、不阻断任何功能。
      */
     private fun requestNotificationPermissionIfNeeded() {
         if (android.os.Build.VERSION.SDK_INT < 33) return
         // ⚠️ `==` 不得放在行首：Kotlin 不把「以运算符起头的下一行」当作续行，
-        //    第 461 行 `val granted = checkSelfPermission(...)` 在此已语法完整 ⇒
-        //    下一行以 `==` 开头会被解析成一条新语句，报
-        //    `Syntax error: Expecting an element`（CI 实测：compileDebugKotlin 失败）。
-        //    Kotlin 官方风格也是把运算符留在上一行尾。
+        //    上一行在此已语法完整 ⇒ 下一行以 == 开头会被解析成新语句（CI 实测编译失败）。
         val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (granted) return
@@ -477,59 +1029,48 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 配置变化（旋转 / 深色切换 / 字号密度变化）——**不再重建 Activity**（Issue F-28）。
-     *
-     * 修法分两半，缺一不可：
-     * - **manifest 侧**：`MainActivity` 加 `android:configChanges=…`
-     *   （见 `overrides/app/src/main/AndroidManifest.xml`）。没有它，本回调**根本不会被调用**，
-     *   Activity 会被销毁重建 ⇒ WebView 整页重载、`fileCallback`（网页 file input 的
-     *   回调）随旧 Activity 一起丢失、电脑模式被打回手机模式。
-     * - **代码侧**：本回调 + `onSaveInstanceState` / `onRestoreInstanceState`。
-     *   即便仍有重建路径（如进程被回收），模式与目标 URL 也能恢复。
-     *
-     * ⚠️ 这里**刻意不重新注入移动端样式**：`dsh-phone.js` 的 DOM 注入不是幂等的，
-     * 重复注入会产生重复节点。旋转时 WebView 本身不重载，已注入的样式与脚本
-     * 仍在生效，只需让系统栏/输入法内边距按新配置重算。
+     * 配置变化（旋转 / 深色切换 / 字号密度变化）——manifest 已加 configChanges，
+     * Activity 不再重建，故必须在这里重刷原生壳配色与系统栏内边距（DSH-PHONE PATCH 2026-11-02）。
+     * ⚠️ 刻意不重新注入移动端样式：dsh-phone.js 的 DOM 注入不是幂等的，重复注入会产生重复节点。
      */
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        // 旋转后系统栏（尤其横屏的左右挖孔）与 IME 高度都会变，重新触发一次 inset 分发。
         window.decorView.requestApplyInsets()
-        /* ⚠️ Issue F-28：`uiMode` 在本 manifest 的 configChanges 里 ⇒ 系统深色切换时
-           Activity **不会重建**，而顶部栏配色只在 onCreate 读一次 ⇒ 深色下原生壳仍是
-           浅色 token。这里按新配置重刷（`getColor` 会解析 values-night 下的同名资源）。 */
         topBar?.setBackgroundColor(getColor(R.color.ds_bg))
         for (view in topBarAccentViews) view.setTextColor(getColor(R.color.ds_accent))
         Log.i(TAG, "配置变化：orientation=${newConfig.orientation} uiMode=${newConfig.uiMode}")
     }
 
-    /** 保存「电脑模式」状态与目标 URL（Issue F-28），供 Activity 重建后恢复。 */
+    /**
+     * 保存「电脑模式」与目标 URL（DSH-PHONE PATCH 2026-11-02）：即便进程回收导致重建，
+     * 模式与页面也能恢复。上游此处只保存 incoming 状态，两者互不冲突。
+     */
     override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
+        saveIncomingState(outState)
         outState.putBoolean(STATE_REMOTE_MODE, remoteMode)
         pocketUrl?.let { outState.putString(STATE_POCKET_URL, it) }
-        // ⚠️ 只在 WebView 已初始化时读：本回调可能在 `onCreate` 早期（异常路径）被调用。
         if (this::webView.isInitialized) webView.url?.let { outState.putString(STATE_PAGE_URL, it) }
+        super.onSaveInstanceState(outState)
     }
 
-    /** 恢复「电脑模式」状态（Issue F-28）：`onCreate` 已按手机模式加载，这里改道到电脑模式。 */
+    /** 恢复「电脑模式」（DSH-PHONE PATCH 2026-11-02）：onCreate 已按手机模式加载，这里改道。 */
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
         if (!savedInstanceState.getBoolean(STATE_REMOTE_MODE, false)) return
         val pocket = savedInstanceState.getString(STATE_POCKET_URL)
         val page = savedInstanceState.getString(STATE_PAGE_URL)
-        // ⚠️ 复用 `switchPage`（它负责收尾弹窗导航回调、重置 remotePageReady 等全部状态），
-        // 不要自己再写一份切模式的逻辑 —— 那正是本仓库反复出静默漂移的形态。
-        // ⚠️ 目标 URL 必须**经参数传进去**：`switchPage` 内部是 `handler.post { … }`，
-        //    在它之后直接 `webView.loadUrl(page)` 会被那个 post **覆盖掉**（竞态）。
         val target = page?.takeIf { PocketConnection.sameOrigin(it, pocket) }
-        switchPage(true, pocket, target)
+        switchPage(true, pocket, targetUrl = target)
     }
 
-    private fun switchPage(computer: Boolean, pocket: String? = null, targetUrl: String? = null) {
+    /* ⚠️ targetUrl 只在「Activity 重建后恢复原页面」时非空（DSH-PHONE PATCH 2026-11-02）；
+       其余调用点保持旧行为。不能在外面补一句 webView.loadUrl(page)——内部是 handler.post，
+       那一句会被 post 覆盖掉（竞态）。 */
+    private fun switchPage(computer: Boolean, pocket: String? = null, admission: (() -> Boolean)? = null, targetUrl: String? = null) {
+        if (!computer || pocket != null) peerConnection.leave()
         // Finish the popup navigation callback before destroying its WebView.
         handler.post {
-            if (destroyed) return@post
+            if (destroyed || admission?.invoke() == false) return@post
             closeLoginWindow()
             remoteMode = computer
             pocketUrl = if (computer) pocket else null
@@ -537,11 +1078,17 @@ class MainActivity : Activity() {
             remoteLoadFailed = false
             modeButton.text = if (computer) "手机" else "电脑"
             statusText.text = if (computer) "正在打开电脑…" else "手机模式"
+            mainPageUrl = if (computer) pocketUrl ?: "http://127.0.0.1:3081/" else DshService.localStartUrl()
+            if (pageRecovery.rendererGone) {
+                pageRecovery.userReloadRequested()
+                recoverMainPage()
+                return@post
+            }
+            mainPageError = null
+            mainLoadFailed = false
             webView.stopLoading()
             lastLoadedOk = computer
             if (computer && !showingLogs) bootOverlay.visibility = View.GONE
-            // ⚠️ `targetUrl` 只在「Activity 重建后恢复原页面」时非空（Issue F-28）；
-            //    其余调用点保持旧行为逐字节不变。
             webView.loadUrl(targetUrl
                 ?: if (computer) pocketUrl ?: "http://127.0.0.1:3081/" else DshService.localStartUrl())
         }
@@ -550,6 +1097,10 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        incomingCaptureDone = false
+        captureIncomingIntent(intent)
+        consumeIncomingFilesIfReady()
+        peerConnection.consume(intent)
         handleChatGptReturn(intent)
     }
 
@@ -557,31 +1108,43 @@ class MainActivity : Activity() {
         val uri = intent?.data ?: return
         if (uri.scheme == "dsh-phone" && uri.host == "chatgpt" && uri.path == "/return") {
             closeLoginWindow()
-            webView.evaluateJavascript("window.dispatchEvent(new Event('dsh-chatgpt-return'))", null)
+            if (!pageRecovery.rendererGone) webView.evaluateJavascript("window.dispatchEvent(new Event('dsh-chatgpt-return'))", null)
         }
     }
 
+    private fun trustedWorkspacePage(url: String?): Boolean = runCatching {
+        val source = Uri.parse(url.orEmpty())
+        source.scheme == "http" && source.host == "127.0.0.1" && source.port == NodeRunner.WEB_PORT && source.userInfo == null
+    }.getOrDefault(false)
+
+    private fun beginWorkspacePick(id: String) {
+        if (workspaceRequestId == null || workspaceRequestId == id) workspaceRequestId = id
+        if (!workspacePicker.request(id) && workspaceRequestId == id) workspaceRequestId = null
+    }
+
+    private fun installWorkspacePicker(view: WebView) {
+        if (view !== webView || !trustedWorkspacePage(view.url)) return
+        runCatching { assets.open("dsh-workspace-picker.js").bufferedReader().use { it.readText() } }
+            .onSuccess { view.evaluateJavascript(it,null) }
+    }
+
+    /* ⚠️⚠️ 四个 asset 的读取必须包在 try/catch 里（DSH-PHONE PATCH 2026-11-02）：原先无保护，
+       任一文件缺失即抛 FileNotFoundException，而调用点是 onPageFinished 回调 ⇒ 整页白屏且无
+       提示。dsh-phone.compat.js / dsh-phone.export.js / dsh-settings-embed.js 都不在胶囊内
+       （是上游文件），上游一旦改名，手机端表现就是「页面打不开」而构建与单测全绿。
+       这里的 try/catch 是运行期最后一道防线：失败时至少让主页面可用。 */
     private fun installMobilePresentation(view: WebView) {
-        // ⚠️⚠️ **四个 asset 的读取必须包在 try/catch 里**（Issue F-27）。
-        // 这里原先是无保护的同步 `assets.open(...)`，任一文件缺失即抛
-        // `FileNotFoundException`，而调用点是 `onPageFinished` 回调 ⇒ **整页白屏且无提示**。
-        // 现状尤其危险：`dsh-phone.compat.js` 与 `dsh-phone.export.js` **不在胶囊内**
-        // （是上游文件），`apply.sh` 也没有对它们做 `test -f` 断言 ⇒ 上游一旦改名，
-        // 手机端表现就是「页面打不开」，而构建、类型检查、单测全绿。
-        // 构建期断言已同步补进 `apply.sh`；这里的 try/catch 是**运行期最后一道防线**：
-        // 失败时至少让主页面可用（丢的是移动端样式/导出能力，不是整个界面）。
         val css = try {
             assets.open("dsh-phone.css").bufferedReader().use { it.readText() }
         } catch (error: Exception) {
-            Log.e(TAG, "移动端样式 dsh-phone.css 读取失败，跳过注入", error)
-            null
+            Log.e(TAG, "移动端样式 dsh-phone.css 读取失败，跳过注入", error); null
         }
         val js = try {
             assets.open("dsh-phone.compat.js").bufferedReader().use { it.readText() } + "\n" +
-                assets.open("dsh-phone.js").bufferedReader().use { it.readText() }
+                assets.open("dsh-phone.js").bufferedReader().use { it.readText() } + "\n" +
+                assets.open("dsh-settings-embed.js").bufferedReader().use { it.readText() }
         } catch (error: Exception) {
-            Log.e(TAG, "移动端脚本读取失败，跳过注入", error)
-            null
+            Log.e(TAG, "移动端脚本读取失败，跳过注入", error); null
         }
         if (css != null) view.evaluateJavascript("""
             (() => {
@@ -599,13 +1162,12 @@ class MainActivity : Activity() {
     }
 
     private fun installJsonFileExport(view: WebView) {
-        // ⚠️ 与 `installMobilePresentation` 同因（Issue F-27）：该 asset 不在胶囊内，
-        // 缺失时不能让整个 `onPageFinished` 抛异常。
+        /* 与 installMobilePresentation 同因（DSH-PHONE PATCH 2026-11-02）：该 asset 不在胶囊内，
+           缺失时不能让整个 onPageFinished 抛异常。 */
         val script = try {
             assets.open("dsh-phone.export.js").bufferedReader().use { it.readText() }
         } catch (error: Exception) {
-            Log.e(TAG, "导出脚本 dsh-phone.export.js 读取失败，跳过注入", error)
-            return
+            Log.e(TAG, "导出脚本 dsh-phone.export.js 读取失败，跳过注入", error); return
         }
         if (JsonFileExport.trusted(view.url)) view.evaluateJavascript(script, null)
     }
@@ -635,10 +1197,22 @@ class MainActivity : Activity() {
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) { installJsonFileExport(view) }
+                override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                    if (view === loginWebView) {
+                        closeLoginWindow()
+                        Toast.makeText(this@MainActivity, "登录界面已退出，请重新打开账号入口；本机任务不受影响", Toast.LENGTH_LONG).show()
+                    }
+                    return true
+                }
                 override fun shouldOverrideUrlLoading(view: WebView,
                     request: WebResourceRequest): Boolean {
                     if (title == "腾讯云 OrcaTerm" && OrcaTermLogin.openWeChat(this@MainActivity, view, request)) return true
                     // 新弹窗首个请求的 view.url 可能为空，使用创建它的本机页面作为来源。
+                    if (EacLoginNavigation.shouldOpenExternally(
+                            sourceUrl, request.url.toString(), request.isForMainFrame)) {
+                        openEacBrowser(request.url)
+                        return true
+                    }
                     if (ProviderLoginNavigation.shouldOpenWorkBuddyExternally(
                             sourceUrl, request.url.toString(), request.isForMainFrame)) {
                         openWorkBuddyBrowser(request.url)
@@ -650,7 +1224,7 @@ class MainActivity : Activity() {
             webChromeClient = object : WebChromeClient() {
                 override fun onCloseWindow(window: WebView) { closeLoginWindow() }
                 override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
-                    params: FileChooserParams): Boolean = chooseConfigFile(view, callback, params)
+                    params: FileChooserParams): Boolean = filePicker.choose(view, callback, params)
                 override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
                     AlertDialog.Builder(this@MainActivity).setMessage(message)
                         .setPositiveButton("确认") { _, _ -> result.confirm() }
@@ -682,10 +1256,27 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun openEacBrowser(uri: Uri) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
+            loginWebView?.loadData("""
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <p style="font:18px sans-serif;padding:24px">请在系统浏览器完成 GitHub / Google 登录及 EAC 授权，然后点击上方「返回 DSH」查看授权状态。</p>
+            """.trimIndent(), "text/html", "UTF-8")
+        } catch (_: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, "请安装手机浏览器后继续 EAC 授权", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun handlePhoneAction(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url
         val source = Uri.parse(view.url.orEmpty())
         val local = request.isForMainFrame && source.scheme == "http" && source.host == "127.0.0.1" && source.port == NodeRunner.WEB_PORT
+        if (EacLoginNavigation.shouldOpenExternally(
+                view.url, uri.toString(), request.isForMainFrame)) {
+            openEacBrowser(uri)
+            return true
+        }
         if (ProviderLoginNavigation.shouldOpenWorkBuddyExternally(
                 view.url, uri.toString(), request.isForMainFrame)) {
             openWorkBuddyBrowser(uri)
@@ -697,6 +1288,18 @@ class MainActivity : Activity() {
         }
         if (uri.scheme == "dsh-phone" && uri.host == "cards" && uri.path == "/export") {
             if (request.isForMainFrame && source.scheme == "http" && source.host == "127.0.0.1" && source.port in listOf(NodeRunner.WEB_PORT, 3081)) exportAgentCards(source.port)
+            return true
+        }
+        if (uri.scheme == "dsh-phone" && uri.host == "conversation" && uri.path == "/share") {
+            val share = ConversationShare.intent(view.url, uri, request.isForMainFrame)
+            if (share != null) {
+                try { startActivity(share) }
+                catch (_: android.content.ActivityNotFoundException) {
+                    Toast.makeText(this, "没有可用的分享应用，请使用复制", Toast.LENGTH_LONG).show()
+                }
+            } else if (request.isForMainFrame) {
+                Toast.makeText(this, "无法分享：来源或正文大小无效", Toast.LENGTH_LONG).show()
+            }
             return true
         }
         val officialChatGpt = uri.scheme == "https" && uri.userInfo == null && (uri.port == -1 || uri.port == 443) &&
@@ -711,13 +1314,27 @@ class MainActivity : Activity() {
         }
         if (uri.scheme != "dsh-phone") return false
         if (!local) return true
+        if (uri.host == "workspace" && uri.path == "/pick") {
+            val id = uri.getQueryParameter("id").orEmpty()
+            if (id.matches(Regex("[a-f0-9]{32}"))) {
+                view.evaluateJavascript("Boolean(window.__dshPhoneDirectoryPicker?.isPending(${JSONObject.quote(id)}))") { active ->
+                    if (!destroyed && !pageRecovery.rendererGone && view === webView && trustedWorkspacePage(view.url) && active == "true") beginWorkspacePick(id)
+                }
+            }
+            return true
+        }
+        if (uri.host == "workspace" && uri.path == "/cancel") {
+            val id = uri.getQueryParameter("id").orEmpty()
+            if (id == workspaceRequestId && id.matches(Regex("[a-f0-9]{32}"))) workspacePicker.cancel()
+            return true
+        }
         if (uri.host == "orcaterm" && uri.path == "/login") {
             OrcaTermLogin.start(uri.getQueryParameter("account").orEmpty(),
                 uri.getQueryParameter("url") ?: "https://orcaterm.cloud.tencent.com/terminal",
                 { openLoginWindow("腾讯云 OrcaTerm") },
                 { !destroyed && loginWebView === it },
                 { payload ->
-                    webView.evaluateJavascript("window.__dshOrcaTermLogin && window.__dshOrcaTermLogin(${JSONObject.quote(payload)});", null)
+                    if (!pageRecovery.rendererGone) webView.evaluateJavascript("window.__dshOrcaTermLogin && window.__dshOrcaTermLogin(${JSONObject.quote(payload)});", null)
                     closeLoginWindow()
                 })
             return true
@@ -735,7 +1352,10 @@ class MainActivity : Activity() {
         if (uri.host == "market" && uri.path == "/recovery") { showRecovery(); return true }
         if (uri.host == "market" && uri.path == "/computer") {
             closeLoginWindow(); remoteMode = true; pocketUrl = null; remotePageReady = false; remoteLoadFailed = false
-            webView.loadUrl("http://127.0.0.1:3081/controlled-market"); return true
+            mainPageUrl = "http://127.0.0.1:3081/controlled-market"
+            if (pageRecovery.rendererGone) { pageRecovery.userReloadRequested(); recoverMainPage() }
+            else webView.loadUrl(mainPageUrl!!)
+            return true
         }
         if (uri.host == "storage" && uri.path == "/allow") {
             StorageAccess.show(this)
@@ -770,12 +1390,6 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        // ⚠️ 通知权限被拒**不阻断任何功能**（服务照常前台运行，只是通知不可见），
-        // 故只记日志、不弹错误提示 —— 反复提示一个「不影响使用」的权限只会打扰用户。
-        // （Issue F-29）
-        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
-            Log.i(TAG, "通知权限请求结果: ${grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED}")
-        }
         if (requestCode == StorageAccess.REQUEST_CODE) {
             Toast.makeText(this, if (StorageAccess.granted(this)) "已授权，请重新打开工作区目录选择"
                 else "未授权共享文件访问，仍可使用 DSH 内部工作区", Toast.LENGTH_LONG).show()
@@ -788,8 +1402,7 @@ class MainActivity : Activity() {
     }
 
     private fun closeLoginWindow() {
-        fileCallback?.onReceiveValue(null)
-        fileCallback = null
+        loginWebView?.let { filePicker.cancelFor(it) }
         loginOverlay?.let { content.removeView(it) }
         loginWebView?.destroy()
         loginOverlay = null
@@ -931,34 +1544,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 系统文件选择器只提供用户选中的 content URI，无需申请存储访问权限。 */
-    private fun chooseConfigFile(view: WebView, callback: ValueCallback<Array<Uri>>,
-        params: WebChromeClient.FileChooserParams): Boolean {
-        val page = Uri.parse(view.url.orEmpty())
-        if (page.host != "127.0.0.1" || page.port !in listOf(NodeRunner.WEB_PORT, 3081)) return false
-        fileCallback?.onReceiveValue(null)
-        fileCallback = callback
-        return try {
-            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                // Android document providers often label .md as octet-stream or
-                // an unknown MIME type. Accept files here; the importer checks
-                // extension, UTF-8, size and ZIP structure after selection.
-                type = if (params.acceptTypes.any { it.startsWith("image/") } &&
-                    params.acceptTypes.all { it.isBlank() || it.startsWith("image/") }) "image/*" else "*/*"
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
-            }
-            startActivityForResult(intent, fileRequestCode)
-            true
-        } catch (_: Exception) {
-            fileCallback = null
-            callback.onReceiveValue(null)
-            Toast.makeText(this, "无法打开文件选择器，请粘贴文件内容", Toast.LENGTH_SHORT).show()
-            true
-        }
-    }
-
     private fun exportAgentCards(port: Int) {
         if (cardExportBusy) return
         cardExportBusy = true
@@ -1007,6 +1592,7 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (workspacePicker.onActivityResult(requestCode, resultCode, data)) return
         if (pocketConnection.onActivityResult(requestCode, resultCode, data)) return
         if (jsonFileExport.onActivityResult(requestCode, resultCode, data)) return
         if (requestCode == cardExportRequestCode) {
@@ -1019,33 +1605,37 @@ class MainActivity : Activity() {
             }
             return
         }
-        if (requestCode == fileRequestCode) {
-            val result = if (resultCode == RESULT_OK) {
-                val uris = data?.clipData?.let { clip -> (0 until clip.itemCount).map { clip.getItemAt(it).uri } }
-                    ?: listOfNotNull(data?.data)
-                uris.filter { it.scheme == "content" }.onEach { uri ->
-                    if (data != null && data.flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION != 0) {
-                        runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-                    }
-                }.toTypedArray().takeIf { it.isNotEmpty() }
-            } else null
-            fileCallback?.onReceiveValue(result)
-            fileCallback = null
-        }
+        filePicker.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onResume() {
         super.onResume()
         bypassVpn()
+        peerConnection.resume()
+        pageRecovery.resume()
+        recoverMainPage()
+        handler.removeCallbacks(refresher)
+        handler.post(refresher)
+    }
+
+    override fun onPause() {
+        pageRecovery.pause()
+        handler.removeCallbacks(refresher)
+        super.onPause()
     }
 
     override fun onDestroy() {
         destroyed = true
+        peerConnection.close()
+        invalidateIncomingDocument()
+        startupSplash?.close()
+        workspacePicker.close()
         jsonFileExport.destroy()
+        filePicker.destroy()
         handler.removeCallbacks(refresher)
         readinessWorker.shutdownNow()
         closeLoginWindow()
-        webView.destroy()
+        if (!pageRecovery.rendererGone) webView.destroy()
         super.onDestroy()
     }
 
@@ -1053,7 +1643,7 @@ class MainActivity : Activity() {
         val login = loginWebView
         if (login != null) {
             if (login.canGoBack()) login.goBack() else closeLoginWindow()
-        } else if (this::webView.isInitialized && webView.canGoBack()) {
+        } else if (this::webView.isInitialized && !pageRecovery.rendererGone && webView.canGoBack()) {
             webView.goBack()
         } else super.onBackPressed()
     }

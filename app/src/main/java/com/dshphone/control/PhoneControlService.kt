@@ -7,10 +7,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
-import android.view.Gravity
-import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.widget.TextView
 import org.json.JSONObject
 import java.util.UUID
 
@@ -18,7 +15,7 @@ class PhoneControlService : AccessibilityService() {
     private data class Snapshot(val id: String, val hash: String, val packageName: String, val window: Int, val version: Long, val at: Long, val epoch: Long)
     private var snapshot: Snapshot? = null
     private var version = 0L
-    private var stopView: TextView? = null
+    private var stopOverlay: StopOverlay? = null
     private var gestureBusy = false
     private var lifecycle = 0L
     override fun onServiceConnected() { ControlRuntime.accessibilityConnected(this) }
@@ -148,16 +145,8 @@ class PhoneControlService : AccessibilityService() {
         }
     }
     fun showStop() {
-        if (stopView != null) return
-        val button = TextView(this).apply {
-            text = "■ 停止操作"; textSize = 14f; setTextColor(android.graphics.Color.WHITE)
-            setBackgroundColor(android.graphics.Color.rgb(153, 27, 27)); setPadding(20, 16, 20, 16)
-            filterTouchesWhenObscured = true; setOnClickListener { ControlRuntime.stop("用户停止") }
-        }
-        val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            android.graphics.PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END; y = 160 }
-        (getSystemService(WINDOW_SERVICE) as WindowManager).addView(button, params); stopView = button
+        val overlay = stopOverlay ?: StopOverlay(this, { ControlRuntime.stop("用户停止") }).also { stopOverlay = it }
+        overlay.show()
     }
-    private fun hideStop() { stopView?.let { runCatching { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } }; stopView = null }
+    private fun hideStop() { stopOverlay?.hide(); stopOverlay = null }
 }

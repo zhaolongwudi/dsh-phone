@@ -2,18 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {defineTool} from '@deepseek-ai/dsh-tools';
+import {createUserMessage} from '@deepseek-ai/dsh-llm';
 import {Catalog} from './catalog.mjs';
 import {DeviceLinks} from './devices.mjs';
 import {MemorySearch} from './memory.mjs';
 import {registerKnowledgeSkills} from './skills.mjs';
 import {check,save} from './files.mjs';
+import {attachAutomaticRecall} from './automatic-recall.mjs';
+import {withSharedRecall} from './shared-recall.mjs';
 export const name='dsh-knowledge-link';
 export const inject=['webServer','connection','credentials','tools','skills'];
 export async function apply(ctx){const home=fs.realpathSync(process.env.DSH_HOME||path.join(os.homedir(),'.dsh')),catalog=new Catalog(home,ctx),links=new DeviceLinks(home,catalog),memory=new MemorySearch(home);const ready=links.start().catch(e=>{links.error=e.message;});
  const invalidateSkills=registerKnowledgeSkills(ctx,home,links.inbox);
- ctx.provide('dshKnowledgeLink',{links,memory,catalog});ctx.on('dispose',()=>{memory.close();return links.close();});
+ const recall=attachAutomaticRecall(ctx,home,withSharedRecall(memory,()=>ctx.get('dshNoemaRecall')),createUserMessage);ctx.provide('dshKnowledgeLink',{links,memory,catalog,recall});ctx.on('dispose',()=>{memory.close();return links.close();});
  async function manage(p){await ready;switch(p.action){
   case 'status':return {...links.status(),memory:memory.status()};
+  case 'recall.status':return recall.status(p.sessionId);
+  case 'recall.sessions':{const controller=ctx.get('sessionController');check(controller,'对话服务尚未就绪');const {items}=await controller.list({});return items.filter(s=>!s.sessionId.startsWith('qq-')&&!s.sessionId.startsWith('cloud-')&&!s.projections?.values?.subagent?.parentSessionId).map(s=>({id:s.sessionId,cwd:s.cwd,title:typeof s.projections?.values?.title==='string'?s.projections.values.title:s.projections?.values?.title?.title||s.projections?.values?.title?.text||s.sessionId,updatedAt:s.updatedAt}));}
+  case 'recall.configure':{const ids= p.sessionId===undefined?[]:(await manage({action:'recall.sessions'})).map(s=>s.id);return recall.configure(p,ids);}
   case 'catalog':return catalog.public(await catalog.list());
   case 'preferences':check(typeof p.name==='string'&&p.name.trim()&&p.name.trim().length<=60,'名称需为1至60字');links.state.name=p.name.trim();links.persist();return links.identity();
   case 'invite':return links.invite(p.address);

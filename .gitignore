@@ -44,3 +44,7 @@ desktop-runtime/.install-lock/
 # Pinned pnpm distribution is source delivery, including its bundled dependencies.
 !runtime/tools/
 !runtime/tools/**
+
+# 固定哈希生成的 OpenCode 运行组件
+/native/opencode/
+/native/.opencode-cache/
