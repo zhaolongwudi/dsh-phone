@@ -33,8 +33,12 @@ def copy_bundle(name, destination, source=None):
     manifest = json.loads((source / 'package.json').read_text())
     destination.mkdir(parents=True)
     (destination / 'package.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    # ⚠️ 2026-11-02：上游新增「远程服务 / 传输代理」两个顶层模块，peer/index.mjs 直接引用，
+    # 但 copy_bundle 白名单没跟上 —— validate_peer_files 会在组装阶段拦下
+    # （Missing or escaped peer runtime reference: ./remote-service.mjs）。
+    # 漏项会让 tar 里缺文件、装包后 peer 一加载就 Cannot find module。两者已补进下面的元组。
     entries = ('LICENSE', 'LICENSE.openclaw', 'bin', 'sample-tools', 'lib', 'locale', 'vendor', 'agent-cards', 'knowledge-link', 'task-supervisor', 'subagent-scheduler', 'chat-files', 'chat-history', 'incoming-workspace', 'conversation-actions', 'memory-isolation', 'mcp-manager', 'on-demand-tools', 'controlled-market', 'workflow-hub', 'cards-client.js', 'index.js', 'config.js', 'manager.js', 'bridge.mjs', 'cli.mjs', 'skills',
-                  'index.mjs', 'protocol.mjs', 'relay.mjs', 'tunnel.mjs', 'proxy.mjs', 'ui-reuse.mjs', 'browser-session.mjs', 'config-sync.mjs', 'skill-import.js',
+                  'index.mjs', 'protocol.mjs', 'relay.mjs', 'tunnel.mjs', 'proxy.mjs', 'ui-reuse.mjs', 'browser-session.mjs', 'config-sync.mjs', 'skill-import.js', 'remote-service.mjs', 'transport-proxy.mjs',
                   'account.js', 'messages-adapter.js', 'core-migration.js', 'core-transaction.js', 'compatibility-packages.js', 'private-sdk-v2.js', 'private-sdk-plan.js', 'private-sdk-baselines', 'private-sdk-patches.json', 'private-sdk-patches', 'plugin-compat.js', 'chatgpt.js', 'chatgpt-account.js', 'chatgpt-protocol.js',
                   'chatgpt-adapter.js', 'chatgpt-page.html', 'persona.js', 'skills.js', 'phone-home.js', 'setup.js', 'qq-login.js', 'qq-download.py', 'code-access.js', 'workspace.js', 'skills.html', 'workspace.html', 'packs.js', 'replace-skills.js', 'bundled-packs', 'packs.html', 'skill-import.js', 'browser-compat.js', 'zip.js', 'runtime.js', 'runtime-catalog.json', 'runtime-preflight.js', 'web-fetch.js', 'runtime-upstream-MIT.txt', 'presentation.css', 'presentation.js', 'platforms.json', 'page.html', 'cordis.patch.yml', 'client.js', 'adapter', 'icon.svg')
     if name == '@zseven-w/dsh-noema':
