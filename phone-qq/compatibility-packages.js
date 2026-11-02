@@ -27,7 +27,9 @@ export async function prepareCompatibilityPackages(tree,home,plan,backup){
  const rows=[];if(plan?.version!==2||plan.compatibilityPackages===undefined)return rows;
  if(!Array.isArray(plan.compatibilityPackages)||plan.compatibilityPackages.length>8)throw Error('Invalid compatibility package plan');
  const core=JSON.parse(await readFile(path.join(tree,'node_modules/@deepseek-ai/dsh/package.json'),'utf8'));
- if(plan.sdkVersion!==core.version)throw Error('Compatibility package core version mismatch');
+ // 方案是特定内核的评审回执：内核不同则不套用（scripts/build-assets.py 同样按此意图跳过校验），
+ // 而不是让整个启动失败；原安装保持不动。
+ if(plan.sdkVersion!==core.version){console.warn('[dsh-phone-qq] 兼容包方案面向 '+plan.sdkVersion+'，当前内核 '+core.version+'，跳过不套用');return rows;}
  for(const p of plan.compatibilityPackages){
   if(p.mode!=='preserve-installed-with-replacements-v1'||! /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/.test(p.name)||p.target!=='profiles/phone/node_modules/'+p.name||!Array.isArray(p.baselines)||typeof p.version!=='string')throw Error('Invalid conditional compatibility package');
   const target=await contained(home,p.target);let stat;try{stat=await lstat(target);}catch(e){if(e.code==='ENOENT')continue;throw e;}
