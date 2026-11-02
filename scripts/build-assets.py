@@ -271,6 +271,16 @@ def main():
         sharp = json.loads((MODULES/'sharp/package.json').read_text())
         if sharp.get('name') != 'sharp' or sharp.get('version') != '0.35.5' or not (MODULES/'@deepseek-ai/dsh-attachment-local/lib/android-sharp.cjs').is_file():
             raise RuntimeError('Reviewed rc.2 Android image adapter/official sharp missing')
+    elif sdk_version == '0.2.1-rc.5':
+        # rc.5 沿用 alpha.1 的「stub + Android 图像 IPC」路线（官方 sharp 不参与）：
+        # 本层 overlay 的 attachment-local 已把图像能力接到应用内 ImageDecoder/Bitmap。
+        for name in ('index.js', 'package.json'):
+            source, target = DEPLOY / 'stubs/sharp' / name, MODULES / 'sharp' / name
+            if not target.exists() or not source.samefile(target):
+                shutil.copy2(source, target)
+        stub = json.loads((MODULES/'sharp/package.json').read_text())
+        if stub.get('name') != 'sharp-stub':
+            raise RuntimeError('Reviewed rc.5 Android image adapter missing')
     else:
         raise RuntimeError('Unreviewed phone SDK version')
     # Restore the pinned Android boot/HMR and Windows ABI compatibility sources.
