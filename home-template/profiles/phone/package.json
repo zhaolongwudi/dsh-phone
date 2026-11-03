@@ -8,9 +8,7 @@
     "dsh-providers-hub": "file:./node_modules/dsh-providers-hub",
     "dsh-team": "file:./node_modules/dsh-team",
     "dsh-appearance-center": "file:./node_modules/dsh-appearance-center",
-    "dsh-knowledge-link": "file:./node_modules/dsh-knowledge-link",
-    "dsh-model-routing": "file:./node_modules/dsh-model-routing",
-    "dsh-knowledge-workbench": "file:./node_modules/dsh-knowledge-workbench"
+    "dsh-knowledge-link": "file:./node_modules/dsh-knowledge-link"
   },
   "dsh": {
     "profile": {
@@ -23,9 +21,7 @@
         "dsh-providers-hub",
         "dsh-team",
         "dsh-appearance-center",
-        "dsh-knowledge-link",
-        "dsh-model-routing",
-        "dsh-knowledge-workbench"
+        "dsh-knowledge-link"
       ]
     }
   }
