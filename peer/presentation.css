@@ -308,7 +308,7 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
  .wSkVaW_composerStack{--dsh-composer-stack-gap:2px}
  [data-composer-seat],.wSkVaW_composerSeat{--dsh-composer-text-max-height:160px}
  .uV2eYG_root{padding-bottom:4px!important}
- [data-composer-card],.uV2eYG_card{gap:4px!important;padding-top:6px!important;border-radius:16px!important;font-size:14px!important;line-height:20px!important}
+ [data-composer-card],.uV2eYG_card{gap:6px!important;padding-top:8px!important;border-radius:18px!important;font-size:14px!important;line-height:20px!important}
  .uV2eYG_input{padding:4px 12px!important}
  /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-30)：输入区工具行窄屏改**两行网格**。
     修的是用户报障「下面选择模型按钮已经被挤压没了」——此处原先的一行排布会把它
@@ -338,7 +338,7 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
     ⚠️ `._7KE1Ra_trigger{width:100%}` 必须保留：网格格子里它是撑满整格的点击面。
     ⚠️ 本段新引用的两个哈希锚点（.uV2eYG_standardControls / .uV2eYG_activity）已同步
        登记进 app/src/main/assets/ui-anchors.json，构建期 check-ui-anchors 可查。 */
- .uV2eYG_row{display:grid!important;grid-template-columns:minmax(0,1fr) auto;gap:4px 6px!important;align-items:center!important;padding:0 6px 4px!important}
+ .uV2eYG_row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:6px 8px!important;align-items:center!important;padding:2px 8px 6px!important}
  .uV2eYG_trailing,.uV2eYG_standardControls{display:contents!important}
  /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-30 第二轮)：徽标改为**跨两列独占第一行**（右对齐）。
     为什么必须独占一行：网格列宽是**所有行共享**的 —— 徽标占第 2 列时，
@@ -356,10 +356,9 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
     不与会挤的徽标/模型选择器抢格。 */
  .uV2eYG_activity{grid-area:4/1/5/3;min-width:0}
  .uV2eYG_trailing ._7KE1Ra_root{grid-area:3/1;min-width:0}
- .uV2eYG_trailing ._7KE1Ra_trigger{max-width:100%!important;width:100%;min-width:0;font-size:12px}
+ .uV2eYG_trailing ._7KE1Ra_trigger{max-width:100%!important;width:100%;min-width:0;font-size:12px;padding:2px 8px!important;min-height:28px!important;height:28px!important;border-radius:8px!important}
  .uV2eYG_primary{grid-area:3/2;justify-self:end}
  .uV2eYG_tools>button,.uV2eYG_tools>div>button{min-height:32px;max-width:36px}
- .uV2eYG_tools>.dsh-phone-upload{max-width:none;padding:4px 6px!important;font-size:11px!important}
  .uV2eYG_primary{height:32px!important;transform:none!important}
  .uV2eYG_primary:not([data-composer-send]){width:32px!important}
  .dsh-phone-composer-more{position:relative;flex:none}

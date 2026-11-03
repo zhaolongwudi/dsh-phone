@@ -296,13 +296,14 @@
       const notice = document.createElement('small'); notice.setAttribute('role', 'status');
       notice.style.cssText = 'display:none;padding:4px 14px;color:var(--dsw-alias-button-info-fill,#2563eb);overflow-wrap:anywhere';
       card.append(notice); tools.append(button, picker);
-      const uploadButton = document.createElement('button'), uploadPicker = document.createElement('input');
-      uploadButton.type = 'button'; uploadButton.className = 'dsh-phone-upload'; uploadButton.textContent = '上传';
-      uploadButton.title = '选择图片或待分析文件'; uploadButton.setAttribute('aria-label', '上传图片或文件');
-      uploadButton.style.cssText = button.style.cssText;
+      // 「上传」按钮已移除：它与上游 + (uV2eYG_add) 完全重复 ——
+      // 原实现只是 onclick 转发 card.querySelector('.uV2eYG_add')?.click()，
+      // 而 + 本就打开上传菜单（含图片/文件/技能三项）。保留 picker 供菜单内的
+      // 「上传文件」项使用。
+      const uploadPicker = document.createElement('input');
       uploadPicker.type = 'file'; uploadPicker.multiple = true; uploadPicker.hidden = true; uploadPicker.className = 'dsh-phone-upload-picker';
       uploadPicker.accept = ''; // Ordinary attachments accept every file type.
-      tools.insertBefore(uploadButton, button); tools.append(uploadPicker);
+      tools.append(uploadPicker);
       const imagePicker = document.createElement('input'), fileButton = document.createElement('button');
       imagePicker.type = 'file'; imagePicker.accept = 'image/png,image/jpeg,image/webp,image/gif'; imagePicker.multiple = true; imagePicker.hidden = true;
       imagePicker.className = 'dsh-phone-image-picker'; tools.append(imagePicker);
@@ -332,7 +333,6 @@
         if (input.disabled || input.readOnly) { notice.style.display = 'block'; notice.textContent = '请先选择工作区，并等当前任务结束后上传。'; return; }
         closeUploadMenu(); picker.click();
       };
-      uploadButton.onclick = event => { event.stopPropagation(); card.querySelector('.uV2eYG_add')?.click(); };
       imageButton.onclick = event => { event.stopPropagation(); selectFile(imagePicker); };
       fileButton.onclick = event => { event.stopPropagation(); selectFile(uploadPicker); };
       // A pending ordinary-file upload must not submit the existing draft.
@@ -368,7 +368,7 @@
         if (card.dataset.dshFileUploadPending) {
           notice.style.display = 'block'; notice.textContent = '正在上传文件，请完成后再选择其他文件。'; picker.value = ''; return;
         }
-        uploadButton.disabled = fileButton.disabled = imageButton.disabled = button.disabled = true; card.dataset.dshFileUploadPending = 'true'; notice.style.display = 'block'; notice.textContent = '正在读取文件…';
+        fileButton.disabled = imageButton.disabled = button.disabled = true; card.dataset.dshFileUploadPending = 'true'; notice.style.display = 'block'; notice.textContent = '正在读取文件…';
         try {
           const { prepareChatFiles, uploadChatDocuments, chatDocumentReferences } = await import('/phone-skill-import.js');
           const prepared = await prepareChatFiles(files);
@@ -394,7 +394,7 @@
           notice.textContent = [...imported, prepared.images.length ? '图片已加入草稿，可预览或移除；请选支持看图的模型后发送。' : documents.length ? '附件已保存，可点击文件查看；写下分析要求后发送。' : ''].filter(Boolean).join(' ');
           input.focus();
         } catch (error) { notice.textContent = error.message; }
-        finally { delete card.dataset.dshFileUploadPending; uploadButton.disabled = fileButton.disabled = imageButton.disabled = button.disabled = false; picker.value = ''; }
+        finally { delete card.dataset.dshFileUploadPending; fileButton.disabled = imageButton.disabled = button.disabled = false; picker.value = ''; }
       };
       uploadPicker.onchange = () => receiveFiles(uploadPicker);
       imagePicker.onchange = () => receiveFiles(imagePicker);
@@ -420,11 +420,11 @@
       button.onclick = event => { event.stopPropagation(); selectFile(picker); };
       picker.onchange = async () => {
         const file = picker.files[0]; if (!file) return;
-        uploadButton.disabled = fileButton.disabled = imageButton.disabled = button.disabled = true;
+        fileButton.disabled = imageButton.disabled = button.disabled = true;
         notice.style.display = 'block'; notice.textContent = '正在读取并导入技能…';
         try { notice.textContent = await importSkillFile(file); input.focus(); }
         catch (error) { notice.textContent = error.message; }
-        finally { uploadButton.disabled = fileButton.disabled = imageButton.disabled = button.disabled = false; picker.value = ''; }
+        finally { fileButton.disabled = imageButton.disabled = button.disabled = false; picker.value = ''; }
       };
     });
     // Both the labeled upload entry and the native + entry open the same menu.
