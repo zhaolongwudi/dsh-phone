@@ -309,7 +309,10 @@ object NodeRunner {
     }
 
     /** 已退役插件的包名（新旧两种写法都要看：老快照里都可能出现）。 */
-    private val RETIRED_BUNDLES = listOf("dsh-our-free-model", "dsh-codearts-auth")
+    // 【回退验证补丁 2026-11-03】临时把 2026-11-02 新装的两个插件也列为退役，用于判定
+    // 「新版网络失败」是否由它们引入。验证完成后应连同 home-template 的对应条目一并撤销；
+    // 设备侧可用 dsh-home/KEEP-RETIRED-BUNDLES 豁免保留。
+    private val RETIRED_BUNDLES = listOf("dsh-our-free-model", "dsh-codearts-auth", "dsh-model-routing", "dsh-knowledge-workbench")
 
     fun start(ctx: Context, cancelled: () -> Boolean = { false }): Process {
         check(!cancelled()) { "Engine start cancelled" }
