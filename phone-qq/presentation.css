@@ -338,7 +338,7 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
     ⚠️ `._7KE1Ra_trigger{width:100%}` 必须保留：网格格子里它是撑满整格的点击面。
     ⚠️ 本段新引用的两个哈希锚点（.uV2eYG_standardControls / .uV2eYG_activity）已同步
        登记进 app/src/main/assets/ui-anchors.json，构建期 check-ui-anchors 可查。 */
- .uV2eYG_row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:6px 8px!important;align-items:center!important;padding:2px 8px 6px!important}
+ .uV2eYG_row{display:grid!important;grid-template-columns:auto minmax(0,1fr) auto!important;gap:6px 6px!important;align-items:center!important;padding:2px 8px 6px!important}
  .uV2eYG_trailing,.uV2eYG_standardControls{display:contents!important}
  /* ⚠️⚠️ DSH-PHONE PATCH (2026-10-30 第二轮)：徽标改为**跨两列独占第一行**（右对齐）。
     为什么必须独占一行：网格列宽是**所有行共享**的 —— 徽标占第 2 列时，
@@ -348,19 +348,25 @@ html[data-dsh-settings-open] [data-dsh-rail],html[data-dsh-settings-open] .pI_x6
     （「· 高」一个字都看不到）。徽标跨列后不再参与列宽计算 ⇒ 第 2 列 = 发送 32 ⇒
     第 1 列 271px：文案 173.3/173 全文可见、努力值 17.3/17 可见、工具行也从 151.8 放宽到 271。
     代价：多占一行（行高 76 → 97.2、输入卡 122 → 143.2）——比「截断模型名 + 丢失努力值」划算。
-    ⚠️ 四行分工：① 徽标（跨列右对齐）② 工具 ③ 模型选择器 + 发送 ④ 活动槽（有内容才占位）。
+    ⚠️ 三行分工（2026-11-04 由四行合并）：① 徽标（跨列右对齐）② 工具 + 模型选择器 + 发送同行 ③ 活动槽（有内容才占位）。
     ⚠️ 全部在 `@media (max-width:767px)` 内：≥768px（平板/桌面）逐字段不变。 */
- .uV2eYG_row .dim-jh-badge{grid-area:1/1/2/3;justify-self:end;min-width:0}
- .uV2eYG_tools{grid-area:2/1;gap:4px!important;min-width:0}
+ .uV2eYG_row .dim-jh-badge{grid-area:1/1/2/4;justify-self:end;min-width:0}
+ /* 2026-11-04：工具行与模型选择器合并到同一行（原为独立两行，加上徽标+活动槽共 4 行）。
+    徽标仍独占第 1 行（跨列后不参与列宽计算，模型名才不会被压扁）；工具与模型共享第 2 行，
+    发送固定在行尾。活动槽第 3 行。 */
+ .uV2eYG_tools{grid-area:2/1;gap:4px!important;min-width:0;flex-wrap:nowrap}
  /* 活动槽（streaming 指示等按需渲染）默认空 ⇒ 自身 display:none；有内容时独占第四行，
     不与会挤的徽标/模型选择器抢格。 */
- .uV2eYG_activity{grid-area:4/1/5/3;min-width:0}
- .uV2eYG_trailing ._7KE1Ra_root{grid-area:3/1;min-width:0}
+ .uV2eYG_activity{grid-area:3/1/4/4;min-width:0}
+ .uV2eYG_trailing ._7KE1Ra_root{grid-area:2/2;min-width:0;max-width:100%}
  .uV2eYG_trailing ._7KE1Ra_trigger{max-width:100%!important;width:100%;min-width:0;font-size:12px;padding:2px 8px!important;min-height:28px!important;height:28px!important;border-radius:8px!important}
- .uV2eYG_primary{grid-area:3/2;justify-self:end}
- .uV2eYG_tools>button,.uV2eYG_tools>div>button{min-height:32px;max-width:36px}
- .uV2eYG_primary{height:32px!important;transform:none!important}
- .uV2eYG_primary:not([data-composer-send]){width:32px!important}
+ .uV2eYG_primary{grid-area:2/3;justify-self:end}
+ /* 2026-11-04：工具行与模型选择器同处一行后，按钮需更窄（原 36px 会挤掉模型名）。
+    28px 与模型选择器同高，视觉也统一。 */
+ .uV2eYG_tools>button,.uV2eYG_tools>div>button{min-height:28px;height:28px;max-width:30px;min-width:0;padding:0 4px!important}
+ /* 2026-11-04：与工具按钮、模型选择器统一 28px，否则同行时上下不齐（实测 32 vs 28）。 */
+ .uV2eYG_primary{height:28px!important;min-height:28px!important;transform:none!important}
+ .uV2eYG_primary:not([data-composer-send]){width:28px!important}
  .dsh-phone-composer-more{position:relative;flex:none}
  .dsh-phone-composer-more>summary{list-style:none;cursor:pointer;display:grid;place-items:center;min-width:28px;min-height:32px;font-size:20px;border-radius:8px;color:var(--dsw-alias-label-secondary,#52627a)}
  .dsh-phone-composer-more>summary::-webkit-details-marker{display:none}
