@@ -105,7 +105,7 @@ object NodeRunner {
             val profile = dsh.optJSONObject("profile") ?: JSONObject().also { dsh.put("profile", it) }
             val bundles = profile.optJSONArray("bundles") ?: JSONArray().also { profile.put("bundles", it) }
             val dependencies = packageJson.optJSONObject("dependencies") ?: JSONObject().also { packageJson.put("dependencies", it) }
-            listOf("dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema", "dsh-providers-hub", "dsh-team", "dsh-appearance-center", "dsh-knowledge-link").forEach { bundle ->
+            listOf("dsh-phone-account", "dsh-phone-qq", "@zseven-w/dsh-noema", "dsh-providers-hub", "dsh-team", "dsh-appearance-center", "dsh-knowledge-link", "dsh-model-routing", "dsh-knowledge-workbench").forEach { bundle ->
                 if ((0 until bundles.length()).none { bundles.optString(it) == bundle }) bundles.put(bundle)
                 dependencies.put(bundle, "file:./node_modules/$bundle")
             }
