@@ -101,10 +101,6 @@ async function privateContext(tree,home) {
   if(current.phase!=='installed'||!/^[A-Za-z0-9_-]+$/.test(current.token??''))throw Error('Invalid active private SDK path/state');
   const plugin=path.join(tree,'node_modules/dsh-phone-qq');
   const plan=JSON.parse(await readFile(path.join(plugin,'private-sdk-patches.json'),'utf8'));
-  // 【回退验证补丁 2026-11-03】方案是特定内核的评审回执：内核不同则不激活私有 SDK，
-  // 与 scripts/build-assets.py 面对版本不匹配时的跳过意图一致。
-  const coreManifest=JSON.parse(await readFile(path.join(tree,'node_modules/@deepseek-ai/dsh/package.json'),'utf8'));
-  if(plan.sdkVersion!==coreManifest.version)return null;
   return{currentFile,current,plugin,plan,guard:{relative:path.relative(home,currentFile),sha256:createHash('sha256').update(bytes).digest('hex')}};
 }
 export async function migratePrivateSdk(tree,home){

@@ -21,6 +21,15 @@ REPO = "https://packages.termux.dev/apt/termux-main"
 ROOT = Path(__file__).resolve().parents[2]
 TARGET = ROOT / "app/src/main/jniLibs/arm64-v8a"
 PACKAGE = "nodejs"
+# 【钉死运行时版本 2026-11-03】此前每次构建都取 Termux 当时的 nodejs 最新版，
+# 导致 2026-11-02 构建的 Node 从 26.4.0 静默跳到 26.13.0：该版本默认 CA 存储为
+# openssl，而包内不存在 /data/data/com.termux/files/usr/etc/tls/cert.pem，
+# 于是所有 HTTPS 请求报 SELF_SIGNED_CERT_IN_CHAIN（上层表现为 fetch failed），
+# JetHub 加账号、聚合模型、直连 api.deepseek.com 全部失败。
+# 26.13.0 是经实测（配合 NodeRunner 的 --use-bundled-ca）可用的版本，
+# 故钉在此处；Termux 仓库若不匹配，构建会明确失败并要求人工确认，
+# 而不是换掉运行时后等到装机才暴露。升级需真机验证 TLS 与网络后再改此值。
+PINNED_VERSION = "26.13.0"
 # Android 系统分区自带、无需随包携带的库
 SYSTEM_LIBS = {"libc.so", "libdl.so", "libm.so", "liblog.so"}
 
@@ -40,7 +49,7 @@ def get_index() -> str:
     return _index["text"]
 
 
-def find_package(name: str):
+def find_package(name: str, wanted: str | None = None):
     for stanza in get_index().split("\n\n"):
         fields = {}
         for line in stanza.splitlines():
@@ -48,6 +57,12 @@ def find_package(name: str):
                 key, value = line.split(": ", 1)
                 fields[key] = value
         if fields.get("Package") == name:
+            # 【钉死版本】只接受指定版本，避免上游更新静默改变运行时行为。
+            if wanted is not None and not fields.get("Version", "").startswith(wanted):
+                raise SystemExit(
+                    f"{name} 版本不匹配：仓库为 {fields.get(Version)}，"
+                    f"仓库钉死为 {wanted}。请先在真机验证新版本的 TLS/网络行为，"
+                    f"再修改 PINNED_VERSION。")
             return fields
     return None
 
@@ -121,7 +136,7 @@ def depends(fields: dict) -> list:
 def main() -> None:
     root = Path(tempfile.mkdtemp(prefix="dsh-node-"))
     try:
-        fields = find_package(PACKAGE)
+        fields = find_package(PACKAGE, PINNED_VERSION)
         usr = unpack_package(PACKAGE, root / PACKAGE)
         node = usr / "bin/node"
         if not node.is_file():
